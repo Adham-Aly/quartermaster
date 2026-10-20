@@ -147,7 +147,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits
         .or_else(|| app.view.flash.as_ref().map(|f| f.text.clone()));
     if let Some(notice) = notice {
         left.push(Span::styled(notice, theme::accent()));
-    } else if app.view.popup == Some(Popup::Settings) {
+    } else if app.popup() == Some(Popup::Settings) {
         // The tab's own hint row: what the mouse does.
         left.push(Span::styled(
             crate::settings::status_hints(app).0,
@@ -165,7 +165,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits
     frame.render_widget(left, area);
 
     // The popup's or the screen's keys on the right: one bottom row, never a second hint row.
-    let hints: String = match (app.view.popup, app.screen) {
+    let hints: String = match (app.popup(), app.screen) {
         (Some(Popup::Settings), _) => crate::settings::status_hints(app).1.to_owned(),
         (Some(Popup::Help), _) => HELP_HINTS.to_owned(),
         (None, Screen::Bridge) => BRIDGE_HINTS.to_owned(),

@@ -133,7 +133,7 @@ impl App {
         }
         // A click outside the folded task overlay closes it, then acts as usual (a popup over it
         // takes its clicks).
-        if self.view.task_overlay && self.view.popup.is_none() && !in_overlay(hit) {
+        if self.view.task_overlay && self.view.popups.is_empty() && !in_overlay(hit) {
             self.close_overlay();
         }
         // A click without a drag clears the selection; one on text may start a new one.
@@ -256,7 +256,8 @@ impl App {
             _ => return,
         };
         self.select_target(target);
-        self.open_menu(target, at);
+        let anchor = self.anchor_at(target, at);
+        self.open_menu(target, anchor);
     }
 
     /// The wheel scrolls the pane under the pointer, never the focused one, and clears the
@@ -265,7 +266,7 @@ impl App {
         if self.view.menu.is_some() || matches!(self.quit, Quit::Confirm { .. }) {
             return;
         }
-        if self.screen == crate::router::Screen::Diff && self.view.popup.is_none() {
+        if self.screen == crate::router::Screen::Diff && self.view.popups.is_empty() {
             self.pointer.selecting = false;
             self.change(|app| &mut app.view.selection, None);
             self.diff_wheel(up);

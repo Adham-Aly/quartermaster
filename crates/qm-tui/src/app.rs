@@ -189,8 +189,11 @@ impl App {
             let rows = select::rows_for(&map, selection.anchor);
             select::paint(frame.buffer_mut(), &rows, selection);
         }
-        if let Some(open) = &self.view.menu {
-            menu::draw(frame, self, open, &mut map.hits);
+        // A menu whose row isn't drawn any more (scrolled away, or gone) closes.
+        if let Some(open) = &self.view.menu
+            && !menu::draw(frame, self, open, &mut map.hits)
+        {
+            self.view.menu = None;
         }
         if let Quit::Confirm { working } = self.quit {
             chrome::draw_quit_dialog(frame, area, working, self.hover, &mut map.hits);
@@ -210,7 +213,7 @@ impl App {
         if let Some(field) = &self.drawn.field {
             self.view.input_scroll = field.scroll;
         }
-        if self.view.popup == Some(Popup::Settings) {
+        if self.popup() == Some(Popup::Settings) {
             let max = self.drawn.scroll_max_of(Pane::Settings);
             let mut scroll = self.view.settings.scroll.min(max);
             if std::mem::take(&mut self.view.settings.reveal)
@@ -362,7 +365,7 @@ impl App {
     /// Shows `screen`; going to another screen closes an open popup.
     pub(crate) fn show(&mut self, screen: Screen) {
         if self.screen != screen {
-            self.close_popup();
+            self.close_popups();
         }
         // Leaving a session puts the Bridge's draft back and sends `ViewSession { agent: None }`.
         if matches!(self.screen, Screen::Session(_)) && self.screen != screen {

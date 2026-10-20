@@ -53,8 +53,11 @@ Map core `Tone`s with `theme::tone`.
   goes back where you were. The window is `widgets/popup.rs` (`centered` places it, `draw`
   records backdrop, window and close hits and returns the inside); lists are
   `widgets/dropdown.rs` (`Item` with a key hint and a badge), used by context menus and the menu
-  (`MenuTarget::Main`). A new popup or menu entry: see the notes at the top of `popups.rs`. A
-  badge: make `App::entry_badge` true for the entry; the menu button follows.
+  (`MenuTarget::Main`). Open popups are a stack (`View::popups`, top last; `Esc` closes the top)
+  of serialisable `OpenPopup`s. Popups and menus store an `Anchor` (centre, menu button, a row
+  plus an offset), never screen cells, resolved and clamped each frame (`popups::resolve`). A new
+  popup or menu entry: see the notes at the top of `popups.rs`. A badge: make
+  `App::entry_badge` true for the entry; the menu button follows.
 - Buttons: `widgets/button.rs` (`" label "`), one space apart. Hints go on the status bar's right.
 - Long labels are cut with `…` so status columns always fit; long problem text wraps instead.
 

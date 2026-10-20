@@ -65,6 +65,19 @@ pub(crate) fn centered(within: Rect, width: u16, height: u16) -> Rect {
     )
 }
 
+/// A box of at most `width` × `height` cells with its left edge at `at.x` and its first row
+/// inside the border at `at.y` (its border on the row above), shifted to stay inside `within`.
+pub(crate) fn at(within: Rect, at: ratatui::layout::Position, width: u16, height: u16) -> Rect {
+    let width = width.min(within.width);
+    let height = height.min(within.height);
+    let x = at.x.min(within.right().saturating_sub(width)).max(within.x);
+    let y =
+        at.y.saturating_sub(1)
+            .min(within.bottom().saturating_sub(height))
+            .max(within.y);
+    Rect::new(x, y, width, height)
+}
+
 /// Draws `window` at `area` over the frame, clearing what's beneath, and records its regions
 /// (see the module's notes). Drops the scroll areas and selectable text recorded so far, so the
 /// wheel and selection act only on what the popup holds. Returns the area inside the border.

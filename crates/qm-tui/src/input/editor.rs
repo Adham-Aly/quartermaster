@@ -265,7 +265,7 @@ impl App {
     /// Pasted text goes into the input box at the cursor, with line endings made `\n`.
     pub(crate) fn on_paste(&mut self, pasted: &str) {
         // An open popup takes the paste: Settings into its text field, Help nowhere.
-        if let Some(popup) = self.view.popup {
+        if let Some(popup) = self.popup() {
             if popup == crate::popups::Popup::Settings && self.view.menu.is_none() {
                 self.settings_paste(pasted);
             }

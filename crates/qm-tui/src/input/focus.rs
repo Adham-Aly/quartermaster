@@ -60,7 +60,7 @@ impl App {
     pub(crate) fn escape(&mut self) {
         if self.view.menu.is_some() {
             self.change(|app| &mut app.view.menu, None);
-        } else if self.view.popup.is_some() {
+        } else if !self.view.popups.is_empty() {
             self.close_popup();
         } else if self.view.task_overlay {
             self.close_overlay();

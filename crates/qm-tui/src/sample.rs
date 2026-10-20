@@ -553,7 +553,7 @@ pub(crate) fn install_settings_from_env(app: &mut App) -> bool {
             install(app);
             app.view.settings.model = settings_broken();
             app.view.settings.loaded = true;
-            app.view.popup = Some(crate::popups::Popup::Settings);
+            app.open_popup(crate::popups::Popup::Settings);
             return true;
         }
         _ => return false,
@@ -561,7 +561,7 @@ pub(crate) fn install_settings_from_env(app: &mut App) -> bool {
     install(app);
     app.view.settings.model = settings_with(login);
     app.view.settings.loaded = true;
-    app.view.popup = Some(crate::popups::Popup::Settings);
+    app.open_popup(crate::popups::Popup::Settings);
     true
 }
 

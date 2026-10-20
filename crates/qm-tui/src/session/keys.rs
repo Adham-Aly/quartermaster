@@ -78,8 +78,8 @@ impl App {
             return true;
         }
         match key.code {
-            KeyCode::Char('?') => self.open_entry(crate::popups::MenuEntry::Help),
-            KeyCode::Char(',') => self.open_entry(crate::popups::MenuEntry::Settings),
+            KeyCode::Char('?') => self.choose_entry(crate::popups::MenuEntry::Help),
+            KeyCode::Char(',') => self.choose_entry(crate::popups::MenuEntry::Settings),
             KeyCode::Char('i') => self.interrupt_session(),
             KeyCode::Char('e') => self.expand_in_view(),
             KeyCode::Enter => self.focus_pane(Pane::Input),

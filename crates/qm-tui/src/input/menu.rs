@@ -6,7 +6,7 @@
 
 use crate::app::App;
 use crate::hit::{Hit, Hits};
-use crate::popups::MenuEntry;
+use crate::popups::{self, Anchor, MenuEntry, Placement};
 use crate::view::{Menu, MenuTarget};
 use crate::widgets::dropdown::{self, Item};
 use qm_types::api::{AgentRef, Command};
@@ -53,42 +53,61 @@ fn rows<'a>(app: &App, menu: &'a Menu) -> Vec<Item<'a>> {
         .collect()
 }
 
-/// Draws the open menu over everything beneath it, and records its regions: `Dialog` over the
-/// whole box, then one `MenuItem` per row.
-pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, menu: &Menu, hits: &mut Hits) {
+/// Draws the open menu over everything beneath it, placed against its anchor in this frame, and
+/// records its regions: `Dialog` over the whole box, then one `MenuItem` per row. Returns `false`
+/// (drawing nothing) when the row it is anchored to isn't drawn any more.
+pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, menu: &Menu, hits: &mut Hits) -> bool {
     let rows = rows(app, menu);
-    let area = dropdown::area(&rows, menu.at, frame.area());
+    let screen = frame.area();
+    let Some(placement) = popups::resolve(menu.anchor, Some(menu.target.row()), hits, screen)
+    else {
+        return false;
+    };
+    let at = match placement {
+        Placement::At(at) => at,
+        Placement::Centred => {
+            let size = dropdown::area(&rows, Position::new(0, 1), screen);
+            Position::new(
+                screen.x + screen.width.saturating_sub(size.width) / 2,
+                screen.y + screen.height.saturating_sub(size.height) / 2 + 1,
+            )
+        }
+    };
+    let area = dropdown::area(&rows, at, screen);
     dropdown::draw(frame, area, &rows, menu.cursor, hits, Hit::MenuItem);
+    true
 }
 
 impl App {
-    /// Opens the menu on `target` at `at`, unless it would be empty.
-    pub(crate) fn open_menu(&mut self, target: MenuTarget, at: Position) {
+    /// Opens the menu on `target` against `anchor`, unless it would be empty.
+    pub(crate) fn open_menu(&mut self, target: MenuTarget, anchor: Anchor) {
         let items = items(target, self.snapshot.turn_running);
         if items.is_empty() {
             return;
         }
         let menu = Menu {
             target,
-            at,
+            anchor,
             items,
             cursor: 0,
         };
         self.change(|app| &mut app.view.menu, Some(menu));
     }
 
-    /// Selects a row and opens its menu (right-click, or `Space` from the keyboard): at the
-    /// pointer for a click, under the row for `Space`.
-    pub(crate) fn open_menu_for_row(&mut self, target: MenuTarget, row: Hit) {
+    /// Selects a row and opens its menu (`Space` from the keyboard), under the row's label.
+    pub(crate) fn open_menu_for_row(&mut self, target: MenuTarget) {
         self.select_target(target);
-        let at = self
-            .drawn
-            .hits
-            .rect_of(row)
-            .map_or(Position::new(0, 0), |area| {
-                Position::new(area.x + 2, area.y + 1)
-            });
-        self.open_menu(target, at);
+        self.open_menu(target, Anchor::Row { dx: 2, dy: 1 });
+    }
+
+    /// The anchor for a menu on `target` opened at the pointer `at` (a right-click): its first
+    /// item on the pointer's row, as far into the target's row as the pointer was.
+    pub(crate) fn anchor_at(&self, target: MenuTarget, at: Position) -> Anchor {
+        let row = self.drawn.hits.rect_of(target.row());
+        row.map_or(Anchor::Row { dx: 0, dy: 0 }, |row| Anchor::Row {
+            dx: at.x.saturating_sub(row.x),
+            dy: at.y.saturating_sub(row.y),
+        })
     }
 
     /// Selects the row a menu acts on.
@@ -140,7 +159,7 @@ impl App {
             }
             (item, MenuTarget::Main) => {
                 if let Some(entry) = MenuEntry::from_label(item) {
-                    self.open_entry(entry);
+                    self.choose_entry(entry);
                 }
             }
             (item, MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_)) => {

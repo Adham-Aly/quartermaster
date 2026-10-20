@@ -12,7 +12,7 @@ use super::{
 use crate::app::App;
 use crate::hit::Hit;
 use crate::input::keys::list_move;
-use crate::popups::Popup;
+use crate::popups::{Anchor, Popup};
 use crate::router::Screen;
 use crate::view::MenuTarget;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -24,6 +24,9 @@ use std::time::Instant;
 
 /// One picker row: its label and what choosing it means.
 type PickOption = (String, PickValue);
+
+/// Where a menu opened from the keyboard sits: just under its row's label.
+const BELOW: Anchor = Anchor::Row { dx: 4, dy: 1 };
 
 const ADD_TO_TIER: &str = "Add to tier ▸";
 const REMOVE_FROM_PREMIUM: &str = "Remove from Premium";
@@ -538,7 +541,7 @@ impl App {
 
     /// Whether a model is being dragged on the board.
     pub(crate) fn settings_dragging(&self) -> bool {
-        self.view.popup == Some(Popup::Settings) && self.view.settings.drag.is_some()
+        self.popup() == Some(Popup::Settings) && self.view.settings.drag.is_some()
     }
 
     /// The pointer moved with a model held: light up the zone under it (not the one it left).
@@ -573,6 +576,7 @@ impl App {
 
     /// The clock: the login's spinner and countdown move on.
     pub(crate) fn settings_tick(&mut self, now: Instant) {
+        let showing = self.popup() == Some(Popup::Settings);
         let s = &mut self.view.settings;
         let Some(login) = &mut s.model.login else {
             return;
@@ -593,7 +597,7 @@ impl App {
             connect::spinner_frame(&login, s),
             connect::remaining(&login, s).map(|d| d.as_secs()),
         );
-        if self.view.popup == Some(Popup::Settings) && s.connecting && before != after {
+        if showing && s.connecting && before != after {
             self.redraw();
         }
     }
@@ -602,8 +606,9 @@ impl App {
 
     fn open_board_menu(&mut self, item: BoardItem, at: Option<Position>) {
         self.settings_set(|s| &mut s.board, Some(item));
-        let at = at.unwrap_or_else(|| self.below(SettingsHit::Board(item)));
-        self.open_menu(MenuTarget::Model(item), at);
+        let target = MenuTarget::Model(item);
+        let anchor = at.map_or(BELOW, |at| self.anchor_at(target, at));
+        self.open_menu(target, anchor);
     }
 
     fn open_account_menu(&mut self, i: usize, at: Option<Position>) {
@@ -622,14 +627,9 @@ impl App {
             },
         };
         self.settings_set(|s| &mut s.account, Some(i));
-        let at = at.unwrap_or_else(|| self.below(SettingsHit::Account(i)));
-        self.open_menu(MenuTarget::Account(target), at);
-    }
-
-    /// Just under where `hit` was drawn, for a menu opened from the keyboard.
-    fn below(&self, hit: SettingsHit) -> Position {
-        self.settings_rect(hit)
-            .map_or(Position::new(0, 0), |r| Position::new(r.x + 4, r.y + 1))
+        let target = MenuTarget::Account(target);
+        let anchor = at.map_or(BELOW, |at| self.anchor_at(target, at));
+        self.open_menu(target, anchor);
     }
 
     /// Selects what a Settings menu acts on.
@@ -654,8 +654,7 @@ impl App {
                 };
                 match item {
                     ADD_TO_TIER => {
-                        let at = self.below(SettingsHit::Board(board));
-                        self.open_menu(MenuTarget::AddToTier(board), at);
+                        self.open_menu(MenuTarget::AddToTier(board), BELOW);
                     }
                     REMOVE_FROM_ALL => self.intend(Command::TakeOutOfUse { model: id }),
                     ALWAYS_USE => {

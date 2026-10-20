@@ -88,7 +88,7 @@ impl App {
             return;
         }
         // An open popup takes every other key.
-        if let Some(popup) = self.view.popup {
+        if let Some(popup) = self.popup() {
             self.on_popup_key(popup, key, now);
             return;
         }
@@ -110,9 +110,9 @@ impl App {
         }
         if self.screen != Screen::Bridge {
             if key.code == KeyCode::Char('?') {
-                self.open_entry(MenuEntry::Help);
+                self.choose_entry(MenuEntry::Help);
             } else if key.code == KeyCode::Char(',') {
-                self.open_entry(MenuEntry::Settings);
+                self.choose_entry(MenuEntry::Settings);
             }
             return;
         }
@@ -132,12 +132,12 @@ impl App {
             return;
         }
         if key.code == KeyCode::Char('?') {
-            self.open_entry(MenuEntry::Help);
+            self.choose_entry(MenuEntry::Help);
             return;
         }
         // `,` opens Settings, as in most Mac apps.
         if key.code == KeyCode::Char(',') {
-            self.open_entry(MenuEntry::Settings);
+            self.choose_entry(MenuEntry::Settings);
             return;
         }
         match self.focus {
@@ -175,7 +175,7 @@ impl App {
         let rows = self.snapshot.projects.len();
         if code == KeyCode::Char(' ') {
             if let Some(i) = self.view.selected_project.filter(|&i| i < rows) {
-                self.open_menu_for_row(MenuTarget::Project(i), Hit::Project(i));
+                self.open_menu_for_row(MenuTarget::Project(i));
             }
             return;
         }
@@ -200,7 +200,7 @@ impl App {
             }
             KeyCode::Char(' ') => {
                 if let Some(at) = current {
-                    self.open_menu_for_row(MenuTarget::Crew(rows[at]), Hit::Crew(rows[at]));
+                    self.open_menu_for_row(MenuTarget::Crew(rows[at]));
                 }
             }
             _ => {
