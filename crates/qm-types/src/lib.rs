@@ -13,6 +13,7 @@
 //!   override;
 //! - [`config`]: the schema of `config.toml` (no secrets);
 //! - [`api`]: the messages between the core and the terminal UI;
+//! - [`wire`]: the frames between the UI host and a terminal client;
 //! - [`error`]: [`error::Refusal`], the plain reason a rule gives an agent;
 //! - [`rules`]: what the rules in `qm-policy` judge: [`rules::TurnCounters`], [`rules::ToolClass`]
 //!   and [`rules::HoldReason`].
@@ -29,6 +30,7 @@ pub mod env;
 pub mod error;
 pub mod ids;
 pub mod rules;
+pub mod wire;
 
 use std::future::Future;
 use std::pin::Pin;
