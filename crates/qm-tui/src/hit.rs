@@ -81,6 +81,8 @@ pub(crate) enum Hit {
     CloseOverlay,
     /// Item `index` of the open context menu.
     MenuItem(usize),
+    /// Row `index` of the slash-command menu.
+    SlashItem(usize),
     /// Something in the Settings popup.
     Settings(crate::settings::SettingsHit),
     /// Something on the setup check screen, or the banner.
