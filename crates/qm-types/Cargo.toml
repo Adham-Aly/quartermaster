@@ -16,8 +16,9 @@ jiff.workspace = true
 rusqlite = { workspace = true, optional = true }
 schemars.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "sync", "time"] }
 
 [lints]
 workspace = true

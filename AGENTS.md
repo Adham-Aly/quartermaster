@@ -21,7 +21,7 @@ outdated, and when your change makes this file or a skill wrong, update it in th
 | Format and lint | `cargo xtask check` (`cargo fmt --all --check`, then clippy with `-D warnings`) |
 | Exactly what CI runs | `cargo xtask ci` (format check, clippy with `-D warnings`, build) |
 | Install on this Mac | `cargo xtask install` (release build into `~/.cargo/bin/quartermaster`) |
-| Run it by hand | `QUARTERMASTER_HOME=$(mktemp -d) cargo run -p quartermaster` |
+| Run it by hand | `QUARTERMASTER_HOME=$(mktemp -d) cargo run -p quartermaster -- --foreground` |
 
 CI (`.github/workflows/ci.yml`) runs `cargo xtask ci` on macOS on every push. Releases are built by
 cargo-dist: pushing a `v*` tag runs `.github/workflows/release.yml` (skill `release`).
@@ -44,7 +44,7 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
 
 | Crate | What it holds |
 |---|---|
-| `quartermaster` | data directory, run lock, logging, config, store, engines, core, then the UI; `dev` commands |
+| `quartermaster` | arguments, `server` (background server, socket, attach client), data directory, run lock, logging, config, store, engines, core, then the UI; `dev` commands |
 | `qm-types` | IDs, domain enums, `Clock`, data-dir paths, config schema, `Refusal`, the core ⇄ UI API |
 | `qm-core` | tasks, agents, turns, wake inbox, scheduler, watchdogs, settling, secondmates; `config_file` |
 | `qm-store` | SQLite schema, migrations, queries, the database thread |
@@ -65,7 +65,8 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
 - `auth.json`: non-Claude credentials (0600, atomic, never logged). Claude uses the user's own
   `claude` login, which the app never reads or copies.
 - `state.db`: SQLite, migrated in one transaction at startup, used only through one thread.
-- `run.lock`: a second instance on the same data directory says so and exits non-zero.
+- `run.lock`: held by the server (or `--foreground`); a second `server run` exits quietly, a second
+  `--foreground` says so and exits non-zero. `server.sock` (0600, same-uid peers) is bound only under the lock.
 - `logs/quartermaster-YYYY-MM-DD.log`: redacted; level from `QM_LOG` (default `info`). The
   terminal belongs to the UI, so nothing is logged there.
 - `seat/`, `secondmates/SM-n/`, `tasks/T-n/` (worktree, brief, session, jobs, evidence),

@@ -61,7 +61,13 @@ The **Setup check** on first run offers to install or log in anything missing. P
 
 ![The data directory](assets/datadir.svg)
 
-One app runs per data directory. For a throwaway one: `QUARTERMASTER_HOME=$(mktemp -d) quartermaster`.
+`quartermaster` attaches this window to a background server, starting it if none is running.
+Closing the window (or `Ctrl`+`C` twice on an empty field) only detaches: the server and your
+agents keep running, and any number of windows can attach. `quartermaster server status`,
+`server stop` (asks first when agents are working; `--force` skips the question) and
+`server restart` manage it. `quartermaster --foreground` runs server and window in one process.
+One server runs per data directory. For a throwaway one:
+`QUARTERMASTER_HOME=$(mktemp -d) quartermaster --foreground`.
 
 ## Code
 
