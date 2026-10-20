@@ -1,6 +1,7 @@
-//! The Model levels tab: a board of tiers. A model can sit in more than one tier; drag it between
-//! tiers or select it and press `m`. Each placement has its own effort, offering only the levels
-//! that model supports. An empty tier says where its work goes instead.
+//! The Model levels tab: a board of tiers. Each row is a tier entry: a model plus an effort level,
+//! so one model can sit in several tiers, and in one tier more than once at different efforts.
+//! Drag an entry between tiers or select it and press `m`; its effort offers only the levels that
+//! model supports. An empty tier says where its work goes instead.
 
 use super::model::{
     BOARD, Model, Settings, effort_label, fallback_tier, model_tier_default, tier_heading,
@@ -11,6 +12,7 @@ use super::{BoardItem, SettingsHit, Zone, boxed};
 use crate::app::App;
 use crate::text::{cells, truncate, width};
 use crate::theme;
+use qm_types::domain::{Effort, Tier};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
@@ -21,11 +23,13 @@ const UNUSED_GAP: u16 = 6;
 pub(super) fn items(settings: &Settings) -> Vec<BoardItem> {
     let mut out = Vec::new();
     for tier in BOARD {
-        for (model, m) in settings.models.iter().enumerate() {
-            if m.placement(tier).is_some() {
-                out.push(BoardItem::Placed { model, tier });
-            }
-        }
+        out.extend(
+            entries(settings, tier).map(|(model, _, effort)| BoardItem::Placed {
+                model,
+                tier,
+                effort,
+            }),
+        );
     }
     for (model, m) in settings.models.iter().enumerate() {
         if m.unused() && m.listed {
@@ -33,6 +37,19 @@ pub(super) fn items(settings: &Settings) -> Vec<BoardItem> {
         }
     }
     out
+}
+
+/// A tier's entries, board order (by model, then in the order they were made): the model's index,
+/// the model and the entry's effort.
+fn entries(
+    settings: &Settings,
+    tier: Tier,
+) -> impl Iterator<Item = (usize, &Model, Option<Effort>)> {
+    settings
+        .models
+        .iter()
+        .enumerate()
+        .flat_map(move |(i, m)| m.placements_in(tier).map(move |p| (i, m, p.effort)))
 }
 
 /// "⠿ GPT-6.1 Sol · ChatGPT Pro" and, for a new model, " new".
@@ -71,14 +88,7 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let unused_rows = unused.last().map_or(0, |&(row, _, _)| row + 1);
     let tier_rows: u16 = BOARD
         .iter()
-        .map(|&t| {
-            let n = settings
-                .models
-                .iter()
-                .filter(|m| m.placement(t).is_some())
-                .count();
-            1 + cells(n.max(1))
-        })
+        .map(|&t| 1 + cells(entries(settings, t).count().max(1)))
         .sum();
     let rows = tier_rows + 1 + unused_rows + 1;
     let inner = boxed(p, area, "Model levels", rows, theme::dim(), theme::dim());
@@ -89,12 +99,7 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let mut y = inner.y;
 
     for tier in BOARD {
-        let models: Vec<(usize, &Model)> = settings
-            .models
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.placement(tier).is_some())
-            .collect();
+        let models: Vec<(usize, &Model, Option<Effort>)> = entries(settings, tier).collect();
         let zone = Zone::Tier(tier);
         let height = 1 + cells(models.len().max(1));
         p.hit(
@@ -121,8 +126,12 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
             p.text(x + 2, y, &note, theme::dim());
             y += 1;
         }
-        for (model, m) in models {
-            let item = BoardItem::Placed { model, tier };
+        for (model, m, effort) in models {
+            let item = BoardItem::Placed {
+                model,
+                tier,
+                effort,
+            };
             draw_placed(p, inner, y, item, m, app);
             y += 1;
         }
@@ -212,7 +221,7 @@ fn draw_placed(
     app: &App,
 ) {
     let Some(tier) = item.tier() else { return };
-    let Some(placement) = m.placement(tier) else {
+    let Some(placement) = m.placement(tier, item.effort()) else {
         return;
     };
     let x = inner.x + 3;

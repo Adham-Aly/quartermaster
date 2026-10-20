@@ -6,10 +6,11 @@
 //! the core saves it when you change a setting.
 //!
 //! What lives here and what lives in the database: `config.toml` holds your preferences that
-//! aren't about a particular detected model or account (the Quartermaster's model, the "always
-//! use" pin, each tier's default effort, the folders `find_project_folder` searches,
-//! notifications). Which models sit in which tier, with per-placement effort overrides, are rows
-//! in `placements`; accounts, labels, the preferred account and pauses are rows in `accounts`.
+//! aren't about a particular detected model or account (the Quartermaster's model and effort, the
+//! "always use" pin, each tier's default effort, the folders `find_project_folder` searches,
+//! notifications). Which models sit in which tier at which effort (a model may sit in one tier at
+//! several efforts) are rows in `placements`; accounts, labels, the preferred account and pauses
+//! are rows in `accounts`.
 
 use crate::domain::Effort;
 use crate::ids::ModelId;
@@ -26,12 +27,16 @@ pub struct Config {
     pub notifications: NotificationsConfig,
 }
 
-/// The Quartermaster's own model: a separate setting routing never changes. Secondmates follow it
-/// too.
+/// The Quartermaster's own model and effort: separate settings routing never changes.
+/// Secondmates follow them too.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QuartermasterConfig {
     pub model: QuartermasterModel,
+    /// `effort = "high"`: the level it runs at, capped by what its model supports. Absent, it
+    /// follows the tier its model came from (High's default for a named model in no tier).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
 }
 
 /// `model = "auto"` or a model ID.

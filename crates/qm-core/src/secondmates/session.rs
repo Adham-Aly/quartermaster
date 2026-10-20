@@ -20,8 +20,8 @@ use qm_policy::limits::engine_limits;
 use qm_policy::markers::neutralise;
 use qm_prompts::charter::{CharterFacts, secondmate_prompt};
 use qm_prompts::session_summary::{
-    self, REASON_CLOSED, REASON_ENGINE_SWITCH, REASON_RESUME_FAILED, REASON_STARTUP, SUMMARY_TURNS,
-    Said, SummaryLine, Who,
+    self, REASON_CLOSED, REASON_EFFORT_CHANGE, REASON_ENGINE_SWITCH, REASON_RESUME_FAILED,
+    REASON_STARTUP, SUMMARY_TURNS, Said, SummaryLine, Who,
 };
 use qm_store::events::{self, NewEvent};
 use qm_store::messages::{self, MessageRow};
@@ -167,6 +167,7 @@ impl SecondmateSeat {
             OpenReason::ResumeFailed { .. } => REASON_RESUME_FAILED,
             OpenReason::Closed { .. } => REASON_CLOSED,
             OpenReason::EngineSwitch => REASON_ENGINE_SWITCH,
+            OpenReason::EffortChange => REASON_EFFORT_CHANGE,
             OpenReason::Cleared => return Ok(None),
         };
         Ok(Some(session_summary::render(reason, &lines)))
@@ -210,8 +211,10 @@ impl SeatSession for SecondmateSeat {
 
             // Resume where the stored engine and account still serve the model; an idle
             // shutdown is resumed by the engine itself on the next turn.
+            // A new effort level resumes the conversation too; the level is always the one the
+            // Quartermaster's settings give now.
             let resume = match (&why, &row.session_ref) {
-                (OpenReason::Startup, Some(session))
+                (OpenReason::Startup | OpenReason::EffortChange, Some(session))
                     if row.engine == Some(pick.engine) && row.account == Some(pick.account.id) =>
                 {
                     Some(session.clone())
@@ -219,10 +222,7 @@ impl SeatSession for SecondmateSeat {
                 _ => None,
             };
             let resumed = resume.is_some();
-            let effort = match (resumed, row.effort) {
-                (true, Some(stored)) => stored,
-                _ => pick.effort,
-            };
+            let effort = pick.effort;
             let preamble = if resumed {
                 None
             } else {
@@ -327,6 +327,9 @@ impl SeatSession for SecondmateSeat {
             };
             if row.engine != Some(pick.engine) || row.account != Some(pick.account.id) {
                 return Ok(IdleOutcome::Reopen(OpenReason::EngineSwitch));
+            }
+            if row.effort != Some(pick.effort) {
+                return Ok(IdleOutcome::Reopen(OpenReason::EffortChange));
             }
             if row.model.as_ref() == Some(&pick.model) {
                 return Ok(IdleOutcome::Unchanged);

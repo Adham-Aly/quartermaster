@@ -73,6 +73,8 @@ pub(crate) struct Settings {
     pub(crate) models: Vec<Model>,
     pub(crate) pin: Pin,
     pub(crate) quartermaster: QuartermasterModel,
+    /// Your effort for the Quartermaster; `None` follows its model's tier.
+    pub(crate) quartermaster_effort: Option<Effort>,
     /// What the Quartermaster runs on now: a model and its effort.
     pub(crate) quartermaster_now: Option<QuartermasterNow>,
     pub(crate) providers: Vec<Provider>,
@@ -147,7 +149,7 @@ pub(crate) const fn tier_heading(tier: Tier) -> &'static str {
 /// Where an empty tier's work goes instead: the nearest tier with a model, looking up first
 /// (low → medium → high → premium), then down.
 pub(crate) fn fallback_tier(settings: &Settings, tier: Tier) -> Option<Tier> {
-    let filled = |t: Tier| settings.models.iter().any(|m| m.placement(t).is_some());
+    let filled = |t: Tier| settings.models.iter().any(|m| m.in_tier(t));
     let order: [Tier; 3] = match tier {
         Tier::Low => [Tier::Medium, Tier::High, Tier::Premium],
         Tier::Medium => [Tier::High, Tier::Premium, Tier::Low],
@@ -218,10 +220,20 @@ impl Settings {
                     a.preferred = *account == Some(a.id);
                 }
             }
-            Command::PlaceModel { model, from, to } => self.place(model, *from, *to),
-            Command::RemovePlacement { model, tier } => {
+            Command::PlaceModel {
+                model,
+                from,
+                effort,
+                to,
+            } => self.place(model, *from, *effort, *to),
+            Command::RemovePlacement {
+                model,
+                tier,
+                effort,
+            } => {
                 if let Some(m) = self.model_mut(model) {
-                    m.placements.retain(|p| p.tier != *tier);
+                    m.placements
+                        .retain(|p| !(p.tier == *tier && p.effort == *effort));
                     m.listed |= m.placements.is_empty();
                 }
             }
@@ -234,11 +246,16 @@ impl Settings {
             Command::SetPlacementEffort {
                 model,
                 tier,
+                current,
                 effort,
             } => {
-                if let Some(p) = self
-                    .model_mut(model)
-                    .and_then(|m| m.placements.iter_mut().find(|p| p.tier == *tier))
+                // The core refuses an effort the tier already holds the model at.
+                if let Some(m) = self.model_mut(model)
+                    && m.placement(*tier, *effort).is_none()
+                    && let Some(p) = m
+                        .placements
+                        .iter_mut()
+                        .find(|p| p.tier == *tier && p.effort == *current)
                 {
                     p.effort = *effort;
                 }
@@ -258,6 +275,7 @@ impl Settings {
             Command::SetQuartermasterModel { choice } => {
                 self.quartermaster = choice.clone();
             }
+            Command::SetQuartermasterEffort { effort } => self.quartermaster_effort = *effort,
             Command::SetNotifications { enabled } => self.notifications = *enabled,
             // Only the core can act on the rest (logins it runs, keys it checks).
             _ => {}
@@ -272,16 +290,20 @@ impl Settings {
         self.models.iter_mut().find(|m| &m.id == id)
     }
 
-    /// Adds `model` to `to`, out of `from` when it moves; a placement keeps its effort.
-    fn place(&mut self, model: &ModelId, from: Option<Tier>, to: Tier) {
+    /// Adds `model`'s entry at `effort` to `to`, out of `from` when it moves (keeping its
+    /// effort); moving onto an entry the tier already has merges the two.
+    fn place(&mut self, model: &ModelId, from: Option<Tier>, effort: Option<Effort>, to: Tier) {
         let Some(m) = self.model_mut(model) else {
             return;
         };
-        let effort = from.and_then(|t| m.placement(t)).and_then(|p| p.effort);
-        if let Some(from) = from {
-            m.placements.retain(|p| p.tier != from);
+        if from == Some(to) {
+            return;
         }
-        if m.placement(to).is_none() {
+        if let Some(from) = from {
+            m.placements
+                .retain(|p| !(p.tier == from && p.effort == effort));
+        }
+        if m.placement(to, effort).is_none() {
             m.placements.push(Placement::new(to, effort));
         }
         m.new = false;

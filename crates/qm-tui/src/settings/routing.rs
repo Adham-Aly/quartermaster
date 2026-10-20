@@ -1,5 +1,5 @@
-//! The Routing tab: the pin and the Quartermaster's own model. There is no switch to turn routing
-//! off; while a pin is on, a notice says tiers are being skipped.
+//! The Routing tab: the pin and the Quartermaster's own model and effort. There is no switch to
+//! turn routing off; while a pin is on, a notice says tiers are being skipped.
 
 use super::model::{QuartermasterModel, Settings, effort_label};
 use super::paint::Painter;
@@ -32,7 +32,7 @@ pub(crate) fn pin_notice(settings: &Settings) -> Option<String> {
 pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let view = &app.view.settings;
     let settings = &view.model;
-    let inner = boxed(p, area, "Routing", 8, theme::dim(), theme::dim());
+    let inner = boxed(p, area, "Routing", 9, theme::dim(), theme::dim());
     let x = inner.x + 1;
     let col = inner.x + COLUMN;
     let right = inner.right().saturating_sub(1);
@@ -72,15 +72,23 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
         p.select_row(inner, y);
     }
 
-    // The Quartermaster's model.
+    // The Quartermaster: its model and its effort, then what it runs on now.
     let y = inner.y + 3;
-    p.text(x, y, "Quartermaster's model", bold);
-    let choice = match &settings.quartermaster {
+    p.text(x, y, "Quartermaster", bold);
+    let model = match &settings.quartermaster {
         QuartermasterModel::Model(id) => format!("{} ▾", settings.model_name(id)),
         // Auto.
         _ => String::from("Auto ▾"),
     };
-    let left = p.button_left_of(right, y, &choice, SettingsHit::QuartermasterModel);
+    let effort = settings.quartermaster_effort.map_or_else(
+        || String::from("Auto ▾"),
+        |e| format!("{} ▾", effort_label(e)),
+    );
+    let mut end = p.text(col + 1, y, "model ", theme::dim());
+    end = p.button(end, y, &model, SettingsHit::QuartermasterModel);
+    end = p.text(end + 4, y, "effort ", theme::dim());
+    p.button(end, y, &effort, SettingsHit::QuartermasterEffort);
+    let room = usize::from(right.saturating_sub(col + 1));
     let now = settings.quartermaster_now.as_ref().map_or_else(
         || String::from("now nothing yet"),
         |now| {
@@ -94,24 +102,23 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
             )
         },
     );
-    p.text(
-        col,
-        y,
-        &truncate(&now, usize::from(left.saturating_sub(col + 1))),
-        theme::text(),
-    );
-    let explain = match settings.quartermaster {
-        QuartermasterModel::Auto => {
-            "Auto tries high → medium → premium → low. Changes apply when it's next idle."
+    p.text(col + 1, y + 1, &truncate(&now, room), theme::text());
+    let explain = match (&settings.quartermaster, settings.quartermaster_effort) {
+        (QuartermasterModel::Auto, None) => {
+            "Auto tries high → medium → premium → low, at that tier's effort."
         }
-        _ => "Changes apply when it's next idle.",
+        (QuartermasterModel::Auto, Some(_)) => "Auto tries high → medium → premium → low.",
+        (_, None) => "Auto effort is its model's tier default.",
+        _ => "Its model's supported levels cap the effort.",
     };
-    let room = usize::from(right.saturating_sub(col + 1));
-    p.text(col + 1, y + 1, &truncate(explain, room), theme::dim());
+    p.text(col + 1, y + 2, &truncate(explain, room), theme::dim());
     p.text(
         col + 1,
-        y + 2,
-        &truncate("Secondmates follow this setting.", room),
+        y + 3,
+        &truncate(
+            "Changes apply when it's next idle. Secondmates follow these settings.",
+            room,
+        ),
         theme::dim(),
     );
     if view.routing_row == 1 {
@@ -119,7 +126,7 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     }
 
     // Decisions, not in this version.
-    let y = inner.y + 7;
+    let y = inner.y + 8;
     p.text(x, y, "Decisions", theme::dim().add_modifier(Modifier::BOLD));
     let left = p.text_left_of(right, y, "not in this version", theme::dim());
     let text = truncate(

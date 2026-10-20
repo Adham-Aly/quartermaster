@@ -9,8 +9,9 @@
 //!   (written by code from the stored conversation).
 //! - **`session_ready`** stores the engine's session reference on the Quartermaster's row, so the
 //!   next launch can resume it, and checks that every Quartermaster tool reached the session.
-//! - **`idle`** applies a change of the seat's model between turns: `SetModel` within the same
-//!   engine and account, a new session for another engine or account.
+//! - **`idle`** applies a change of the seat's model or effort between turns: `SetModel` within
+//!   the same engine and account, the same conversation resumed at a new effort level, a new
+//!   session for another engine or account.
 //!
 //! Where the model comes from is behind [`SeatModel`]: the app's routing in the running app, a
 //! [`FixedSeatModel`] for the developer seat.
@@ -25,8 +26,8 @@ use qm_engine::{
 use qm_policy::limits::engine_limits;
 use qm_policy::markers::neutralise;
 use qm_prompts::session_summary::{
-    self, REASON_CLOSED, REASON_ENGINE_SWITCH, REASON_RESUME_FAILED, REASON_STARTUP, SUMMARY_TURNS,
-    Said, SummaryLine, Who,
+    self, REASON_CLOSED, REASON_EFFORT_CHANGE, REASON_ENGINE_SWITCH, REASON_RESUME_FAILED,
+    REASON_STARTUP, SUMMARY_TURNS, Said, SummaryLine, Who,
 };
 use qm_store::accounts;
 use qm_store::db::Db;
@@ -350,6 +351,7 @@ fn summary_reason(why: &OpenReason) -> Option<&'static str> {
         OpenReason::ResumeFailed { .. } => REASON_RESUME_FAILED,
         OpenReason::Closed { .. } => REASON_CLOSED,
         OpenReason::EngineSwitch => REASON_ENGINE_SWITCH,
+        OpenReason::EffortChange => REASON_EFFORT_CHANGE,
         OpenReason::Cleared => return None,
     })
 }
@@ -363,6 +365,7 @@ fn why_payload(why: &OpenReason) -> serde_json::Value {
         }
         OpenReason::Closed { reason } => serde_json::json!({"why": "closed", "reason": reason}),
         OpenReason::EngineSwitch => serde_json::json!({"why": "engine_switch"}),
+        OpenReason::EffortChange => serde_json::json!({"why": "effort_change"}),
         OpenReason::Cleared => serde_json::json!({"why": "cleared"}),
     }
 }
@@ -391,10 +394,10 @@ impl SeatSession for Seat {
             let agent = self.agent().await?;
             let pick = self.pick().await?;
 
-            // Resume only at startup, and only where the stored engine and account still serve
-            // the seat: a resumed conversation keeps the level it started with.
+            // Resume at startup or for a new effort level, and only where the stored engine and
+            // account still serve the seat. The level is always the one your settings give now.
             let resume = match (&why, &agent.session_ref) {
-                (OpenReason::Startup, Some(session))
+                (OpenReason::Startup | OpenReason::EffortChange, Some(session))
                     if agent.engine == Some(pick.engine)
                         && agent.account == Some(pick.account.id) =>
                 {
@@ -403,10 +406,7 @@ impl SeatSession for Seat {
                 _ => None,
             };
             let resumed = resume.is_some();
-            let effort = match (resumed, agent.effort) {
-                (true, Some(stored)) => stored,
-                _ => pick.effort,
-            };
+            let effort = pick.effort;
 
             let preamble = if resumed {
                 None
@@ -540,6 +540,11 @@ impl SeatSession for Seat {
             if row.engine != Some(pick.engine) || row.account != Some(pick.account.id) {
                 // `SetModel` carries no account, so another account is a new session too.
                 return Ok(IdleOutcome::Reopen(OpenReason::EngineSwitch));
+            }
+            if row.effort != Some(pick.effort) {
+                // An engine fixes the level when its session starts: resume the conversation at
+                // the new one (with the new model too, if that changed).
+                return Ok(IdleOutcome::Reopen(OpenReason::EffortChange));
             }
             if row.model.as_ref() == Some(&pick.model) {
                 return Ok(IdleOutcome::Unchanged);

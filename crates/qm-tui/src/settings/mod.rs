@@ -71,12 +71,19 @@ impl Tab {
     }
 }
 
-/// One item on the tier board: a model's placement in a tier, or a model in NOT IN USE. The
-/// model is an index into `Settings::models`.
+/// One item on the tier board: a tier entry (a model at an effort in a tier; `None` is the tier
+/// default), or a model in NOT IN USE. The model is an index into `Settings::models`. One model
+/// may have several entries in a tier, one per effort.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BoardItem {
-    Placed { model: usize, tier: Tier },
-    Unused { model: usize },
+    Placed {
+        model: usize,
+        tier: Tier,
+        effort: Option<Effort>,
+    },
+    Unused {
+        model: usize,
+    },
 }
 
 impl BoardItem {
@@ -89,6 +96,14 @@ impl BoardItem {
     pub(crate) const fn tier(self) -> Option<Tier> {
         match self {
             Self::Placed { tier, .. } => Some(tier),
+            Self::Unused { .. } => None,
+        }
+    }
+
+    /// A tier entry's effort (`None` is the tier default, and every NOT IN USE item).
+    pub(crate) const fn effort(self) -> Option<Effort> {
+        match self {
+            Self::Placed { effort, .. } => effort,
             Self::Unused { .. } => None,
         }
     }
@@ -119,11 +134,12 @@ pub(crate) enum SettingsHit {
     Effort(BoardItem),
     Zone(Zone),
     Find,
-    /// Routing: the pin's switch, its model and fallback, the Quartermaster's model.
+    /// Routing: the pin's switch, its model and fallback, the Quartermaster's model and effort.
     PinSwitch,
     PinModel,
     PinFallback,
     QuartermasterModel,
+    QuartermasterEffort,
     /// System: the notifications switch and the setup check's "Open".
     NotificationsSwitch,
     SetupCheck,
@@ -167,10 +183,13 @@ pub(crate) enum AccountLogin {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PickFor {
     Effort(BoardItem),
+    /// The effort a new entry for this model goes into the tier at ("Add to tier ▸ Low ▸ High").
+    AddAt(BoardItem, Tier),
     MoveTo(BoardItem),
     PinModel,
     PinFallback,
     QuartermasterModel,
+    QuartermasterEffort,
     Find,
     KeyProvider,
 }
@@ -270,7 +289,7 @@ pub(crate) struct SettingsView {
     pub(crate) connecting: bool,
     pub(crate) account: Option<usize>,
     pub(crate) board: Option<BoardItem>,
-    /// Routing: 0 the pin, 1 the Quartermaster's model.
+    /// Routing: 0 the pin, 1 the Quartermaster.
     pub(crate) routing_row: usize,
     /// Connect: a provider row, or `providers.len()` for the API-key row.
     pub(crate) provider: Option<usize>,
@@ -439,7 +458,7 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
         ),
         Tab::Routing => (
             "click to change",
-            "space pin · c model · f fallback · q quartermaster · esc close",
+            "space pin · c model · f fallback · q quartermaster · e effort · esc close",
         ),
         Tab::System => (
             "click to change",

@@ -28,10 +28,11 @@ pub struct SeatChoice {
 /// subscriptions; a named model may run on any account that serves it, subscriptions first.
 /// `None` when nothing can serve.
 ///
-/// The orchestrators' effort is the default of the tier the model came from (high's for a named
-/// model outside any tier), capped by the model.
+/// The orchestrators' effort is `effort` when you set one, else the default of the tier the model
+/// came from (high's for a named model outside any tier); either way capped by the model.
 pub fn choose(
     setting: &QuartermasterModel,
+    effort: Option<Effort>,
     placed: &[Candidate],
     preferred: Option<AccountId>,
     tiers: &TierEfforts,
@@ -42,7 +43,10 @@ pub fn choose(
         model: c.model.clone(),
         account: c.account,
         tier,
-        effort: cap_to_supported(tier_default(tiers, tier.unwrap_or(Tier::High)), &c.efforts),
+        effort: cap_to_supported(
+            effort.unwrap_or_else(|| tier_default(tiers, tier.unwrap_or(Tier::High))),
+            &c.efforts,
+        ),
     };
     match setting {
         QuartermasterModel::Auto => AUTO_ORDER.iter().find_map(|&tier| {

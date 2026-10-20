@@ -827,6 +827,7 @@ pub(crate) fn settings_with(login: SampleLogin) -> Settings {
             Some(model_id("claude:sonnet-5-5")),
         ),
         quartermaster: QuartermasterModel::Auto,
+        quartermaster_effort: None,
         quartermaster_now: Some(QuartermasterNow::new(
             model_id("claude:opus-5-5"),
             Effort::High,
