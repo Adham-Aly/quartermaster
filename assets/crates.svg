@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="526" viewBox="0 0 1000 526" role="img" aria-labelledby="title desc">
+  <title id="title">Crate map</title>
+  <desc id="desc">The binary crate quartermaster depends on qm-tui, qm-core, qm-providers and qm-engine-claude. qm-core depends on qm-tools, qm-auth, qm-prompts, qm-store, qm-routing, qm-git and qm-github. qm-providers depends on qm-tools and qm-auth. qm-engine-claude and qm-tools depend on qm-engine; qm-tools and qm-prompts depend on qm-policy. Every crate depends on qm-types.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d1d9e0; }
+    .t { fill: #1f2328; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 600; }
+    .s { fill: #59636e; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12.5px; font-weight: 400; }
+    .l { fill: #59636e; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; font-weight: 400; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .t.m { font-size: 14px; }
+    .n { fill: #f6f8fa; stroke: #d1d9e0; }
+    .blue { fill: #ddf4ff; stroke: #0969da; }
+    .green { fill: #dafbe1; stroke: #1a7f37; }
+    .orange { fill: #fff1e5; stroke: #bc4c00; }
+    .purple { fill: #fbefff; stroke: #8250df; }
+    .box { stroke-width: 1.5; }
+    .grp { fill: none; stroke: #d1d9e0; stroke-width: 1.5; stroke-dasharray: 5 4; }
+    .ln { fill: none; stroke: #818b98; stroke-width: 1.5; }
+    .ah { fill: #818b98; }
+    .gap { fill: none; stroke: #ffffff; stroke-width: 8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; stroke: #3d444d; }
+      .t { fill: #f0f6fc; }
+      .s, .l { fill: #9198a1; }
+      .n { fill: #151b23; stroke: #3d444d; }
+      .blue { fill: #0f2541; stroke: #4493f8; }
+      .green { fill: #0f2a1b; stroke: #3fb950; }
+      .orange { fill: #2f1b0c; stroke: #db6d28; }
+      .purple { fill: #251a3d; stroke: #ab7df8; }
+      .grp { stroke: #3d444d; }
+      .ln { stroke: #7d8590; }
+      .ah { fill: #7d8590; }
+      .gap { stroke: #0d1117; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+      <path class="ah" d="M0,1 L9,5 L0,9 Z"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0.5" y="0.5" width="999" height="525" rx="12"/>
+
+  <!-- quartermaster, the binary -->
+  <rect class="box n" x="422" y="32" width="156" height="52" rx="8"/>
+  <text class="t m" x="500" y="54" text-anchor="middle">quartermaster</text>
+  <text class="s" x="500" y="72" text-anchor="middle">the binary</text>
+
+  <path class="ln" d="M500,84 V102"/>
+  <path class="ln" d="M134,102 H886"/>
+  <path class="ln" d="M134,102 V124" marker-end="url(#a)"/>
+  <path class="ln" d="M310,102 V124" marker-end="url(#a)"/>
+  <path class="ln" d="M618,102 V124" marker-end="url(#a)"/>
+  <path class="ln" d="M886,102 V124" marker-end="url(#a)"/>
+
+  <!-- layer 1 -->
+  <rect class="box orange" x="56" y="124" width="156" height="52" rx="8"/>
+  <text class="t m" x="134" y="146" text-anchor="middle">qm-engine-claude</text>
+  <text class="s" x="134" y="164" text-anchor="middle">Claude engine</text>
+  <rect class="box purple" x="232" y="124" width="156" height="52" rx="8"/>
+  <text class="t m" x="310" y="146" text-anchor="middle">qm-providers</text>
+  <text class="s" x="310" y="164" text-anchor="middle">provider engine</text>
+  <rect class="box blue" x="540" y="124" width="156" height="52" rx="8"/>
+  <text class="t m" x="618" y="146" text-anchor="middle">qm-core</text>
+  <text class="s" x="618" y="164" text-anchor="middle">orchestration</text>
+  <rect class="box n" x="808" y="124" width="156" height="52" rx="8"/>
+  <text class="t m" x="886" y="146" text-anchor="middle">qm-tui</text>
+  <text class="s" x="886" y="164" text-anchor="middle">terminal UI</text>
+
+  <!-- qm-core's dependencies -->
+  <path class="ln" d="M618,176 V210"/>
+  <path class="ln" d="M144,210 H906"/>
+  <path class="ln" d="M144,210 V232" marker-end="url(#a)"/>
+  <path class="ln" d="M276,210 V232" marker-end="url(#a)"/>
+  <path class="ln" d="M378,210 V232" marker-end="url(#a)"/>
+  <path class="ln" d="M510,210 V232" marker-end="url(#a)"/>
+  <path class="ln" d="M642,210 V232" marker-end="url(#a)"/>
+  <path class="ln" d="M774,210 V232" marker-end="url(#a)"/>
+  <path class="ln" d="M906,210 V232" marker-end="url(#a)"/>
+
+  <!-- qm-providers' dependencies (crosses qm-core's bus once, bridged) -->
+  <path class="ln" d="M310,176 V194"/>
+  <path class="ln" d="M94,194 H310"/>
+  <path class="ln" d="M94,194 V232" marker-end="url(#a)"/>
+  <path class="gap" d="M216,204 V216"/>
+  <path class="ln" d="M216,194 V232" marker-end="url(#a)"/>
+
+  <!-- layer 2 -->
+  <rect class="box n" x="56" y="232" width="116" height="52" rx="8"/>
+  <text class="t m" x="114" y="254" text-anchor="middle">qm-tools</text>
+  <text class="s" x="114" y="272" text-anchor="middle">agent tools</text>
+  <rect class="box n" x="188" y="232" width="116" height="52" rx="8"/>
+  <text class="t m" x="246" y="254" text-anchor="middle">qm-auth</text>
+  <text class="s" x="246" y="272" text-anchor="middle">logins · keys</text>
+  <rect class="box n" x="320" y="232" width="116" height="52" rx="8"/>
+  <text class="t m" x="378" y="254" text-anchor="middle">qm-prompts</text>
+  <text class="s" x="378" y="272" text-anchor="middle">prompts</text>
+  <rect class="box n" x="452" y="232" width="116" height="52" rx="8"/>
+  <text class="t m" x="510" y="254" text-anchor="middle">qm-store</text>
+  <text class="s" x="510" y="272" text-anchor="middle">SQLite</text>
+  <rect class="box n" x="584" y="232" width="116" height="52" rx="8"/>
+  <text class="t m" x="642" y="254" text-anchor="middle">qm-routing</text>
+  <text class="s" x="642" y="272" text-anchor="middle">model routing</text>
+  <rect class="box n" x="716" y="232" width="116" height="52" rx="8"/>
+  <text class="t m" x="774" y="254" text-anchor="middle">qm-git</text>
+  <text class="s" x="774" y="272" text-anchor="middle">worktrees</text>
+  <rect class="box n" x="848" y="232" width="116" height="52" rx="8"/>
+  <text class="t m" x="906" y="254" text-anchor="middle">qm-github</text>
+  <text class="s" x="906" y="272" text-anchor="middle">PRs · CI</text>
+
+  <!-- layer 3 -->
+  <path class="ln" d="M114,284 V330" marker-end="url(#a)"/>
+  <path class="ln" d="M56,150 H30 V356 H56" marker-end="url(#a)"/>
+  <path class="ln" d="M154,284 V306 H338 V330" marker-end="url(#a)"/>
+  <path class="ln" d="M378,284 V330" marker-end="url(#a)"/>
+
+  <rect class="box n" x="56" y="330" width="116" height="52" rx="8"/>
+  <text class="t m" x="114" y="352" text-anchor="middle">qm-engine</text>
+  <text class="s" x="114" y="370" text-anchor="middle">Engine trait</text>
+  <rect class="box n" x="320" y="330" width="116" height="52" rx="8"/>
+  <text class="t m" x="378" y="352" text-anchor="middle">qm-policy</text>
+  <text class="s" x="378" y="370" text-anchor="middle">enforced rules</text>
+
+  <!-- the foundation -->
+  <rect class="box n" x="56" y="418" width="908" height="52" rx="8"/>
+  <text class="t m" x="510" y="440" text-anchor="middle">qm-types</text>
+  <text class="s" x="510" y="458" text-anchor="middle">IDs · domain types · config · the core ⇄ UI API</text>
+
+  <text class="l" x="510" y="500" text-anchor="middle">A → B: A depends on B. Every crate depends on qm-types; edges implied by others are left out.</text>
+</svg>

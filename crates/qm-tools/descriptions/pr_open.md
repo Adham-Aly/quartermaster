@@ -1,0 +1,3 @@
+Push your branch and open or update its pull request. Direct-PR projects only. Refused for answer-only tasks, while the task is held, before a required review passes, and when a check is failing on your last push and you haven't declared a diagnosis for it with ci_diagnosis. Your commit names and the title are checked: type(scope): summary, lowercase imperative, at most 72 characters, and no Co-Authored-By line naming a model. The app then polls the checks on your new head every 30 seconds and wakes you once with the result.
+- title: the pull request title, in the same form as a commit name.
+- body: Intent, What changed, Verified, Risk and Not done, each as a heading (required at the standard and reviewed levels; Verified names the exact commands, tests and evidence).

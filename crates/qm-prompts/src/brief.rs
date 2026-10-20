@@ -1,0 +1,680 @@
+//! The crewmate's brief and the crewmate's system prompt.
+//!
+//! **The brief** is the crewmate's first message, rendered by the app from the facts the core
+//! recorded when the task started ([`BriefFacts`]) and saved as `tasks/T-0042/brief.md` exactly
+//! as sent. Its sections, in order: the header lines, Goal, the user's own
+//! words, the one-time instructions, Constraints, Builds on, Before your first edit, Verification,
+//! Delivery and Reporting. A section with nothing to say is left out (no instructions, no
+//! constraints, nothing to build on, no words of the user's); the rest change with the task's
+//! kind, delivery mode and verification level.
+//!
+//! The whole brief sits inside one supervisor marker (`<qm:supervisor from="quartermaster"
+//! task="T-0042">`). Every piece of text that didn't come from this module (the goal,
+//! the user's words, instructions, constraints, the summary and answer it builds on) is
+//! neutralised with [`qm_policy::markers::neutralise`] here, so nothing in it can open or close a
+//! marker, whatever the caller passed.
+//!
+//! **The crewmate prompt** ([`crewmate_prompt`]) is the static `prompts/crewmate.md`, preceded on
+//! the provider engine by `prompts/crewmate-provider.md` (which stands in for Claude Code's own
+//! preset), then the instruction files (your `~/.agents/AGENTS.md` first, then the project's),
+//! then, on the provider engine only, the skills list. On Claude it is appended to Claude Code's
+//! `claude_code` preset, which already lists the skills from the plugin folder.
+//!
+//! Rendering is pure: the core passes in facts, this module returns text.
+
+use std::fmt::Write as _;
+
+use qm_policy::markers::neutralise;
+use qm_types::domain::{DeliveryMode, TaskKind, VerificationLevel, VerificationSource};
+use qm_types::ids::{CommitSha, PortBlock, SecondmateId, TaskId};
+
+use crate::index;
+
+/// Where free text (the user's words, a builds-on summary) wraps, in characters per line,
+/// counting the `> "` quote prefix.
+pub const WRAP: usize = 88;
+
+/// The column the `[structured: …]` tag of a constraint starts at.
+pub const CONSTRAINT_TAG_COLUMN: usize = 59;
+
+/// The most of a builds-on answer the brief embeds, in characters; the rest is pointed to.
+pub const BUILDS_ON_ANSWER_CHARS: usize = 16_000;
+
+/// Who started the task: the name in the supervisor marker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BriefSupervisor {
+    /// `from="quartermaster"`.
+    Quartermaster,
+    /// `from="SM-02"`.
+    Secondmate(SecondmateId),
+}
+
+/// The task's verification level as the brief states it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BriefVerification {
+    /// No level: answer-only and review tasks, and any task of a build-in-place project.
+    None,
+    /// A level, where it came from, and whether Careful ships as standard because the project
+    /// doesn't deliver by pull request (`qm_policy::verification::effective`).
+    Level {
+        level: VerificationLevel,
+        source: VerificationSource,
+        ships_as_standard: bool,
+    },
+}
+
+/// One constraint, with its structured part.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BriefConstraint {
+    /// The constraint in words: "Don't change the public /auth API."
+    pub text: String,
+    /// Path globs the task must not change: `/auth/*`.
+    pub freeze: Vec<String>,
+}
+
+/// What the task builds on: a finished plan, a reproduction, a diagnosis, the work a review checks,
+/// or the failed attempt a stronger-model retry carries on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BriefBuildsOn {
+    pub task: TaskId,
+    pub kind: TaskKind,
+    /// The fact the app checked, as the header line shows it: `reproduced: yes`, `finished plan`,
+    /// `confirmed diagnosis`, `the work under review at a1b2c3d`, `the failed attempt this task
+    /// retries`, or `not a finished plan or confirmed diagnosis`.
+    pub fact: String,
+    /// One paragraph saying what it found, wrapped at [`WRAP`]; " Full answer below." follows.
+    pub summary: String,
+    /// The full answer (`answer.md`) or report, embedded on the next lines; cut at
+    /// [`BUILDS_ON_ANSWER_CHARS`] with a pointer to `answer_path`.
+    pub body: String,
+    /// Where the full text lives, for when the body is cut: `tasks/T-0041/answer.md`.
+    pub answer_path: String,
+}
+
+/// Everything a brief says, recorded by the core when the task started.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BriefFacts {
+    pub task: TaskId,
+    pub kind: TaskKind,
+    pub supervisor: BriefSupervisor,
+    /// The project's name.
+    pub project: String,
+    pub delivery: DeliveryMode,
+    /// Whether the project has a remote (the personal workspace and local-only projects don't).
+    pub has_remote: bool,
+    pub verification: BriefVerification,
+    /// Where the branch starts, as shown: `origin/main` (`tasks.base_ref`), or for a review task
+    /// the builder's branch `qm/task-0040`.
+    pub start_ref: String,
+    /// The commit the branch starts at (`tasks.base_commit`).
+    pub start_commit: CommitSha,
+    /// The branch a pull request targets (direct pull request only): `main`, `release/2.4`.
+    pub pr_target: Option<String>,
+    /// The task's block of ten ports.
+    pub ports: PortBlock,
+    /// The supervisor's goal: its understanding of done.
+    pub goal: String,
+    /// The user's own words, copied by the app (empty when there are none).
+    pub user_words: String,
+    /// One-time instructions from the supervisor, for this task only.
+    pub instructions: Vec<String>,
+    pub constraints: Vec<BriefConstraint>,
+    /// The "tests required" constraint.
+    pub tests_required: bool,
+    pub builds_on: Option<BriefBuildsOn>,
+    /// Failed repairs of its own regression allowed before the app holds the task
+    /// (`qm_policy::repair::MAX_FAILED_REPAIRS`).
+    pub repair_attempts: u8,
+}
+
+/// Renders the brief exactly as it is sent and saved.
+pub fn render_brief(f: &BriefFacts) -> String {
+    let mut out = String::new();
+    let from = match f.supervisor {
+        BriefSupervisor::Quartermaster => "quartermaster".to_owned(),
+        BriefSupervisor::Secondmate(id) => id.to_string(),
+    };
+    let _ = writeln!(out, "<qm:supervisor from=\"{from}\" task=\"{}\">", f.task);
+    header(&mut out, f);
+    section_goal(&mut out, f);
+    section_user_words(&mut out, f);
+    section_instructions(&mut out, f);
+    section_constraints(&mut out, f);
+    section_builds_on(&mut out, f);
+    section_first_edit(&mut out, f);
+    section_verification(&mut out, f);
+    section_delivery(&mut out, f);
+    section_reporting(&mut out, f);
+    out.push_str("</qm:supervisor>\n");
+    out
+}
+
+fn is_review(kind: TaskKind) -> bool {
+    kind == TaskKind::Review
+}
+
+fn delivery_words(delivery: DeliveryMode) -> &'static str {
+    match delivery {
+        DeliveryMode::DirectPr => "direct pull request",
+        DeliveryMode::BranchOnly => "branch only",
+        DeliveryMode::BuildInPlace => "build in place",
+    }
+}
+
+fn source_words(source: VerificationSource) -> &'static str {
+    match source {
+        VerificationSource::User => "the user's words",
+        VerificationSource::Project => "project setting",
+        VerificationSource::Default => "default",
+    }
+}
+
+/// The level the task runs under, if any.
+fn running_level(f: &BriefFacts) -> Option<VerificationLevel> {
+    match f.verification {
+        BriefVerification::None => None,
+        BriefVerification::Level {
+            ships_as_standard: true,
+            ..
+        } => Some(VerificationLevel::Standard),
+        BriefVerification::Level { level, .. } => Some(level),
+    }
+}
+
+fn header(out: &mut String, f: &BriefFacts) {
+    let _ = writeln!(out, "# Brief · {} · {}", f.task, f.kind);
+    let verification = match f.verification {
+        BriefVerification::None => {
+            let why = if is_review(f.kind) {
+                "review task"
+            } else if f.kind.is_answer_only() {
+                "answer-only task"
+            } else {
+                "build in place"
+            };
+            format!("none ({why})")
+        }
+        BriefVerification::Level {
+            level,
+            source,
+            ships_as_standard,
+        } => {
+            if ships_as_standard {
+                format!(
+                    "standard ({}: {level}, which ships as standard without a pull request)",
+                    source_words(source)
+                )
+            } else {
+                format!("{level} ({})", source_words(source))
+            }
+        }
+    };
+    let _ = writeln!(
+        out,
+        "Project {} · Delivery {} · Verification {verification}",
+        neutralise(&f.project),
+        delivery_words(f.delivery)
+    );
+    let fate = if is_review(f.kind) {
+        "review only: change and commit nothing".to_owned()
+    } else if f.kind.is_answer_only() {
+        "answer only: commit nothing".to_owned()
+    } else {
+        match (f.delivery, &f.pr_target) {
+            (DeliveryMode::DirectPr, Some(target)) => {
+                format!("the pull request targets {}", neutralise(target))
+            }
+            (DeliveryMode::DirectPr, None) => "the pull request targets the default branch".into(),
+            (DeliveryMode::BranchOnly, _) if f.has_remote => "settling pushes this branch".into(),
+            (DeliveryMode::BranchOnly, _) => "the branch stays in this repository".into(),
+            (DeliveryMode::BuildInPlace, _) => "settling merges it into the user's checkout".into(),
+        }
+    };
+    let _ = writeln!(
+        out,
+        "Branch {} from {} @ {} · {fate}",
+        f.task.branch(),
+        neutralise(&f.start_ref),
+        f.start_commit.short()
+    );
+    out.push_str("Evidence folder $QM_EVIDENCE_DIR, outside the worktree; never commit it\n");
+    let ports = f.ports.ports();
+    let _ = writeln!(
+        out,
+        "Ports {}–{} ($QM_PORT_BASE) for anything that listens",
+        ports.start(),
+        ports.end()
+    );
+}
+
+fn section_goal(out: &mut String, f: &BriefFacts) {
+    out.push_str("\n## Goal\n");
+    push_block(out, &neutralise(f.goal.trim()));
+}
+
+fn section_user_words(out: &mut String, f: &BriefFacts) {
+    let words = neutralise(f.user_words.trim());
+    if words.is_empty() {
+        return;
+    }
+    out.push_str(
+        "\n## The user's own words (copied by the app; these outrank everything else here)\n",
+    );
+    let quoted = format!("\"{words}\"");
+    let mut first = true;
+    for line in quoted.lines() {
+        if line.trim().is_empty() {
+            out.push_str(">\n");
+            continue;
+        }
+        for piece in wrap(line, WRAP - 3) {
+            out.push_str(if first { "> " } else { ">  " });
+            out.push_str(&piece);
+            out.push('\n');
+            first = false;
+        }
+    }
+}
+
+fn section_instructions(out: &mut String, f: &BriefFacts) {
+    let items: Vec<String> = f
+        .instructions
+        .iter()
+        .map(|i| neutralise(i.trim()))
+        .filter(|i| !i.is_empty())
+        .collect();
+    if items.is_empty() {
+        return;
+    }
+    out.push_str("\n## Instructions for this task only (from your supervisor)\n");
+    for item in items {
+        push_bullet(out, &item);
+    }
+}
+
+fn section_constraints(out: &mut String, f: &BriefFacts) {
+    if f.constraints.is_empty() && !f.tests_required {
+        return;
+    }
+    out.push_str("\n## Constraints\n");
+    for c in &f.constraints {
+        let text = format!("- {}", neutralise(c.text.trim()));
+        if c.freeze.is_empty() {
+            out.push_str(&text);
+        } else {
+            let globs: Vec<String> = c.freeze.iter().map(|g| neutralise(g.trim())).collect();
+            push_tagged(out, &text, &format!("freeze={}", globs.join(",")));
+        }
+        out.push('\n');
+    }
+    if f.tests_required {
+        push_tagged(
+            out,
+            "- Tests are required: cover this change with tests.",
+            "tests_required",
+        );
+        out.push('\n');
+    }
+}
+
+fn push_tagged(out: &mut String, text: &str, tag: &str) {
+    out.push_str(text);
+    let used = text.chars().count();
+    let pad = if used + 2 <= CONSTRAINT_TAG_COLUMN {
+        CONSTRAINT_TAG_COLUMN - used
+    } else {
+        2
+    };
+    out.extend(std::iter::repeat_n(' ', pad));
+    let _ = write!(out, "[structured: {tag}]");
+}
+
+fn section_builds_on(out: &mut String, f: &BriefFacts) {
+    let Some(b) = &f.builds_on else {
+        return;
+    };
+    out.push_str("\n## Builds on\n");
+    let _ = writeln!(
+        out,
+        "{} ({}) · {}",
+        b.task,
+        b.kind,
+        neutralise(b.fact.trim())
+    );
+    let summary = neutralise(b.summary.trim());
+    let lead = if summary.is_empty() {
+        "Full answer below.".to_owned()
+    } else {
+        format!("{summary} Full answer below.")
+    };
+    for line in wrap(&lead, WRAP) {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    let body = neutralise(b.body.trim());
+    if body.chars().count() > BUILDS_ON_ANSWER_CHARS {
+        let cut: String = body.chars().take(BUILDS_ON_ANSWER_CHARS).collect();
+        push_block(out, cut.trim_end());
+        let _ = writeln!(
+            out,
+            "… (cut here; the rest is in {})",
+            neutralise(&b.answer_path)
+        );
+    } else if !body.is_empty() {
+        push_block(out, &body);
+    }
+}
+
+fn section_first_edit(out: &mut String, f: &BriefFacts) {
+    if f.kind.is_answer_only() {
+        return;
+    }
+    out.push_str("\n## Before your first edit\n");
+    out.push_str("Call delivery_check. Close any gap you can; report the rest as blockers.\n");
+}
+
+fn section_verification(out: &mut String, f: &BriefFacts) {
+    let rebase = format!(
+        "Rebase onto {} and resolve conflicts yourself. Never squash your own commits.\n",
+        neutralise(&f.start_ref)
+    );
+    match f.verification {
+        BriefVerification::None => {
+            out.push_str("\n## Verification: none\n");
+            out.push_str(if is_review(f.kind) {
+                "Check every changed file, and the builder's Verified section and evidence against\n\
+                 the user's words. Run what you need to confirm a claim; change nothing.\n"
+            } else if f.kind == TaskKind::Reproduce {
+                "Reproduce it with product-level evidence saved to $QM_EVIDENCE_DIR: the exact steps,\n\
+                 what happened and what should have. Use throwaway data, never the user's real state.\n"
+            } else if f.kind.is_answer_only() {
+                "Back every claim with what you read or ran: file paths and lines, commands and\n\
+                 their output, links. Say plainly what you couldn't confirm.\n"
+            } else {
+                "Build in place has no level: nothing about CI or evidence is required.\n"
+            });
+        }
+        BriefVerification::Level {
+            level,
+            ships_as_standard,
+            ..
+        } => {
+            let running = running_level(f).unwrap_or(level);
+            if ships_as_standard {
+                out.push_str(
+                    "\n## Verification: standard (Careful needs a pull request, so it ships as standard)\n",
+                );
+            } else {
+                let _ = writeln!(out, "\n## Verification: {running}");
+            }
+            if running == VerificationLevel::Quick {
+                out.push_str(if f.delivery == DeliveryMode::DirectPr {
+                    "CI must be green on your final commit. Nothing more is required: no evidence,\n\
+                     and the report headings are optional. Never squash your own commits.\n"
+                } else {
+                    "Name the local checks you ran on your final commit under Verified. Nothing more is\n\
+                     required: no evidence, and the other headings are optional. Never squash your own\n\
+                     commits.\n"
+                });
+                return;
+            }
+            out.push_str(&rebase);
+            out.push_str(
+                "Evidence first: what the user would see, before your first edit and after your last,\n\
+                 saved to $QM_EVIDENCE_DIR. Unit tests and reading code are not evidence on their own.\n\
+                 Run the smallest set of existing tests that would catch a user-visible break, including\n\
+                 end-to-end tests over what you changed. Read your whole diff against the user's words.\n\
+                 Update any docs the change makes stale.\n",
+            );
+            if f.delivery != DeliveryMode::DirectPr {
+                out.push_str(
+                    "There's no pull request to run CI: name the local checks you ran on your final\n\
+                     commit under Verified.\n",
+                );
+            }
+            if running == VerificationLevel::Reviewed {
+                out.push_str(
+                    "Then an independent review: commit locally and report done without pushing or\n\
+                     opening the pull request. Fix what it finds when your supervisor passes it on.\n",
+                );
+            }
+        }
+    }
+}
+
+fn section_delivery(out: &mut String, f: &BriefFacts) {
+    out.push_str("\n## Delivery\n");
+    if is_review(f.kind) {
+        out.push_str(
+            "You change nothing, commit nothing, push nothing and open nothing. The review is your\n\
+             report.\n",
+        );
+        return;
+    }
+    if f.kind.is_answer_only() {
+        out.push_str(
+            "This task delivers an answer, not code. Don't commit, push or open anything; put\n\
+             scratch work in your temporary folder.\n",
+        );
+        return;
+    }
+    match f.delivery {
+        // Quick has no failed-check rules ("CI is green. Nothing more."), so no diagnosis
+        // and no repair count.
+        DeliveryMode::DirectPr if running_level(f) == Some(VerificationLevel::Quick) => out.push_str(
+            "Open the pull request with pr_open. Keep going until every check on your latest commit\n\
+             passes; the app wakes you with each result.\n",
+        ),
+        DeliveryMode::DirectPr => {
+            if running_level(f) == Some(VerificationLevel::Reviewed) {
+                out.push_str("Once the review passes, open the pull request with pr_open.");
+            } else {
+                out.push_str("Open the pull request with pr_open.");
+            }
+            let _ = write!(
+                out,
+                " If a check fails, read the logs and declare a\n\
+                 diagnosis with ci_diagnosis before repairing. You have {} repair attempts for your own\n\
+                 regression. Keep going until every check on your latest commit passes; the app wakes\n\
+                 you with each result.\n",
+                f.repair_attempts
+            );
+        }
+        DeliveryMode::BranchOnly if f.has_remote => out.push_str(
+            "Commit your work on this branch. Don't push and don't open a pull request: settling\n\
+             pushes the branch, and the user merges it. If GitHub runs checks on the pushed branch\n\
+             and one fails, the app wakes you with it: fix it, commit and report again.\n",
+        ),
+        DeliveryMode::BranchOnly => out.push_str(
+            "Commit your work on this branch. It stays in this repository, where the user merges or\n\
+             deletes it.\n",
+        ),
+        DeliveryMode::BuildInPlace => out.push_str(
+            "Commit your work on this branch. Settling merges it into the branch the user's checkout\n\
+             has checked out; never touch the checkout yourself.\n",
+        ),
+    }
+}
+
+fn section_reporting(out: &mut String, f: &BriefFacts) {
+    out.push_str("\n## Reporting\n");
+    match f.kind {
+        TaskKind::Review => out.push_str(
+            "Call report with review: the verdict (pass, findings or blocked); each finding with its\n\
+             severity, file and line, one sentence and an action (auto_fix, ask_user or no_op); and\n\
+             the risk (low, medium or high) with its reason. Put the whole review in answer.\n",
+        ),
+        TaskKind::Reproduce => out.push_str(
+            "Call report with your whole answer in answer, opening with reproduced: yes or\n\
+             reproduced: no, and set reproduced to match.\n",
+        ),
+        kind if kind.is_answer_only() => {
+            out.push_str("Call report with your whole answer in answer.");
+            if kind == TaskKind::Research {
+                out.push_str("\nIf it is a confirmed diagnosis a fix can build on, set diagnosis.");
+            }
+            out.push('\n');
+        }
+        _ => {
+            out.push_str("Call report with: Intent · What changed · Verified · Risk · Not done.");
+            if running_level(f) == Some(VerificationLevel::Quick) {
+                out.push_str(" (Optional at quick.)");
+            }
+            if let BriefVerification::Level {
+                ships_as_standard: true,
+                ..
+            } = f.verification
+            {
+                out.push_str("\nSay under Risk that Careful shipped as standard.");
+            }
+            out.push('\n');
+        }
+    }
+}
+
+/// Pushes text as it is, line by line, ending with a newline.
+fn push_block(out: &mut String, text: &str) {
+    for line in text.lines() {
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+}
+
+fn push_bullet(out: &mut String, text: &str) {
+    let mut lines = text.lines();
+    if let Some(first) = lines.next() {
+        let _ = writeln!(out, "- {}", first.trim_end());
+    }
+    for line in lines {
+        let _ = writeln!(out, "  {}", line.trim_end());
+    }
+}
+
+/// Wraps one line of text at `width` characters, breaking at spaces; a word longer than the
+/// width gets a line of its own.
+fn wrap(line: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in line.split(' ').filter(|w| !w.is_empty()) {
+        let needed = if current.is_empty() {
+            word.chars().count()
+        } else {
+            current.chars().count() + 1 + word.chars().count()
+        };
+        if needed > width && !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// Which engine the crewmate prompt is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptEngine {
+    /// Appended to Claude Code's `claude_code` preset; skills arrive as a plugin folder.
+    Claude,
+    /// The whole system prompt on the provider (and scripted) engine; skills are listed.
+    Provider,
+}
+
+/// Where an instruction file came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstructionSource {
+    /// `~/.agents/AGENTS.md`.
+    Personal,
+    /// The worktree's `AGENTS.md`, or `CLAUDE.md` when there is none.
+    Project,
+}
+
+/// One instruction file, read by the app.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstructionFile {
+    pub source: InstructionSource,
+    /// How the prompt names it: `~/.agents/AGENTS.md`, `AGENTS.md`, `CLAUDE.md`.
+    pub shown_as: String,
+    pub text: String,
+}
+
+/// One skill the app gathered into `tasks/T-0042/skills/`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+    /// Its `SKILL.md`, as an absolute path the crewmate can read.
+    pub path: String,
+}
+
+/// The crewmate's system prompt: on the provider engine `crewmate-provider` first, then
+/// `crewmate`, the instruction files (personal first, then the project's), and on the provider
+/// engine the skills list. The instruction files and skills are your files and the project's,
+/// passed on as they are.
+pub fn crewmate_prompt(
+    engine: PromptEngine,
+    files: &[InstructionFile],
+    skills: &[SkillEntry],
+) -> String {
+    let mut out = String::new();
+    if engine == PromptEngine::Provider {
+        out.push_str(
+            index::get("crewmate-provider")
+                .expect("the crewmate-provider prompt is registered")
+                .trim_end(),
+        );
+        out.push_str("\n\n");
+    }
+    out.push_str(
+        index::get("crewmate")
+            .expect("the crewmate prompt is registered")
+            .trim_end(),
+    );
+    out.push('\n');
+
+    let mut ordered: Vec<&InstructionFile> = files
+        .iter()
+        .filter(|f| f.source == InstructionSource::Personal)
+        .collect();
+    ordered.extend(
+        files
+            .iter()
+            .filter(|f| f.source == InstructionSource::Project),
+    );
+    ordered.retain(|f| !f.text.trim().is_empty());
+    if !ordered.is_empty() {
+        out.push_str("\n# Instruction files\n");
+        for file in ordered {
+            let whose = match file.source {
+                InstructionSource::Personal => "The user's own instructions",
+                InstructionSource::Project => "This project's instructions",
+            };
+            let _ = writeln!(
+                out,
+                "\n## {whose} ({})\n\n{}",
+                neutralise(&file.shown_as),
+                neutralise(file.text.trim_end())
+            );
+        }
+    }
+
+    if engine == PromptEngine::Provider && !skills.is_empty() {
+        out.push_str(
+            "\n# Skills\n\nRead a skill's SKILL.md when its description fits what you're doing.\n\n",
+        );
+        for skill in skills {
+            let _ = writeln!(
+                out,
+                "- {}: {} ({})",
+                neutralise(&skill.name),
+                neutralise(skill.description.trim()),
+                neutralise(&skill.path)
+            );
+        }
+    }
+    out
+}

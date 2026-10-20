@@ -1,0 +1,136 @@
+# Quartermaster: one Rust binary, a Cargo workspace.
+#
+# Keep the `members` list and `[workspace.dependencies]` in order; add to them, don't reshuffle.
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/quartermaster",
+    "crates/qm-types",
+    "crates/qm-core",
+    "crates/qm-policy",
+    "crates/qm-routing",
+    "crates/qm-tools",
+    "crates/qm-prompts",
+    "crates/qm-store",
+    "crates/qm-git",
+    "crates/qm-github",
+    "crates/qm-engine",
+    "crates/qm-engine-claude",
+    "crates/qm-providers",
+    "crates/qm-auth",
+    "crates/qm-tui",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+repository = "https://github.com/Adham-Aly/quartermaster"
+
+[workspace.dependencies]
+# Our own crates.
+qm-auth = { path = "crates/qm-auth" }
+qm-core = { path = "crates/qm-core" }
+qm-engine = { path = "crates/qm-engine" }
+qm-engine-claude = { path = "crates/qm-engine-claude" }
+qm-git = { path = "crates/qm-git" }
+qm-github = { path = "crates/qm-github" }
+qm-policy = { path = "crates/qm-policy" }
+qm-prompts = { path = "crates/qm-prompts" }
+qm-providers = { path = "crates/qm-providers" }
+qm-routing = { path = "crates/qm-routing" }
+qm-store = { path = "crates/qm-store" }
+qm-tools = { path = "crates/qm-tools" }
+qm-tui = { path = "crates/qm-tui" }
+qm-types = { path = "crates/qm-types" }
+
+# Serialisation and schemas.
+schemars = "1.2.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_ignored = "0.1.14"
+serde_json = "1.0.154"
+toml = "0.9.8"
+
+# Errors, time, async, logging.
+anyhow = "1.0.104"
+jiff = { version = "0.2.38", features = ["serde"] }
+thiserror = "2.0.21"
+tokio = { version = "1.54.0", default-features = false }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+# Provider engine and logins.
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream", "rustls"] }
+base64 = "0.22.1"
+sha2 = "0.10.9"
+rand = "0.9.2"
+url = "2.5.8"
+uuid = { version = "1.28.0", features = ["v4", "v7"] }
+futures-util = "0.3.34"
+bytes = "1.12.1"
+
+# Store: SQLite compiled in.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite_migration = "2.6.0"
+
+# Processes.
+nix = { version = "0.31.3", features = ["process", "signal"] }
+# Claude engine and supervision.
+libproc = "0.14.11"
+
+# GitHub.
+octocrab = "0.54.5"
+# File tools.
+globset = "0.4.20"
+grep-regex = "0.1.14"
+grep-searcher = "0.1.17"
+ignore = "0.4.33"
+regex = "1.13.1"
+
+# Terminal UI.
+crossterm = "0.29.0"
+pulldown-cmark = "0.13.4"
+ratatui = "0.30.2"
+syntect = "5.3.0"
+unicode-width = "0.2.2"
+# The setup check's embedded terminal pane.
+portable-pty = "0.9.0"
+vt100 = "0.18.1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Pedantic lints that cost more than they give in this codebase.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+similar_names = "allow"
+# A few restriction lints worth having everywhere.
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+[profile.dev]
+# Every agent worktree builds its own target/: keep debug info small.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

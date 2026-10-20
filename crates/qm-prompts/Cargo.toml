@@ -1,0 +1,15 @@
+[package]
+name = "qm-prompts"
+description = "System prompts, briefs, charters and the context block, from the prompts/ sources."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+jiff.workspace = true
+qm-types.workspace = true
+qm-policy.workspace = true
+
+[lints]
+workspace = true

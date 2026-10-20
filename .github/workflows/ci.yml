@@ -1,0 +1,39 @@
+# CI on every push: exactly `cargo xtask ci`, on macOS.
+name: ci
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    name: cargo xtask ci
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      # rust-toolchain.toml is the single source of truth: with no version given, rustup installs
+      # exactly its channel, components and profile. No version is named here.
+      - name: Install the toolchain from rust-toolchain.toml
+        run: rustup toolchain install && rustup show active-toolchain && rustc --version
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      - name: cargo xtask ci
+        run: cargo xtask ci

@@ -1,0 +1,22 @@
+[package]
+name = "qm-types"
+description = "The shared vocabulary: IDs, domain enums, clock, data directory, config, the core API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# ToSql/FromSql for IDs and enums, used by qm-store.
+rusqlite = ["dep:rusqlite"]
+
+[dependencies]
+jiff.workspace = true
+rusqlite = { workspace = true, optional = true }
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "qm-engine-claude"
+description = "The Claude engine: drives your installed claude over its stream-json protocol."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64.workspace = true
+jiff.workspace = true
+qm-engine.workspace = true
+qm-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

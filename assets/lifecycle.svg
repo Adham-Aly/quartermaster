@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="436" viewBox="0 0 960 436" role="img" aria-labelledby="title desc">
+  <title id="title">A task's life</title>
+  <desc id="desc">A task goes queued, preparing (its worktree), running (work and verify), reported, in review (Careful level only), settling (CI and your approval), landed, closed. While running it can wait, be held for your decision, or go stuck, and comes back to running. A steer from reported, or review findings, send it back to running; a refused settle returns it to reported. Answer-only tasks close straight from reported. Failed, stopped and discarded tasks also close. Settling follows the project's delivery mode: direct pull request merged on GitHub at the approved commit, branch only (pushed, you merge), or build in place (merged into your checkout's current branch). Merges and pushes wait for your approval unless the project's autonomy is on.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d1d9e0; }
+    .t { fill: #1f2328; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 600; }
+    .s { fill: #59636e; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12.5px; font-weight: 400; }
+    .l { fill: #59636e; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; font-weight: 400; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .t.m { font-size: 14px; }
+    .n { fill: #f6f8fa; stroke: #d1d9e0; }
+    .blue { fill: #ddf4ff; stroke: #0969da; }
+    .green { fill: #dafbe1; stroke: #1a7f37; }
+    .orange { fill: #fff1e5; stroke: #bc4c00; }
+    .purple { fill: #fbefff; stroke: #8250df; }
+    .box { stroke-width: 1.5; }
+    .grp { fill: none; stroke: #d1d9e0; stroke-width: 1.5; stroke-dasharray: 5 4; }
+    .ln { fill: none; stroke: #818b98; stroke-width: 1.5; }
+    .ah { fill: #818b98; }
+    .gap { fill: none; stroke: #ffffff; stroke-width: 8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; stroke: #3d444d; }
+      .t { fill: #f0f6fc; }
+      .s, .l { fill: #9198a1; }
+      .n { fill: #151b23; stroke: #3d444d; }
+      .blue { fill: #0f2541; stroke: #4493f8; }
+      .green { fill: #0f2a1b; stroke: #3fb950; }
+      .orange { fill: #2f1b0c; stroke: #db6d28; }
+      .purple { fill: #251a3d; stroke: #ab7df8; }
+      .grp { stroke: #3d444d; }
+      .ln { stroke: #7d8590; }
+      .ah { fill: #7d8590; }
+      .gap { stroke: #0d1117; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+      <path class="ah" d="M0,1 L9,5 L0,9 Z"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0.5" y="0.5" width="959" height="435" rx="12"/>
+
+  <!-- side states of running -->
+  <rect class="box n" x="219" y="40" width="180" height="48" rx="8"/>
+  <text class="t" x="309" y="60" text-anchor="middle">waiting · held · stuck</text>
+  <text class="s" x="309" y="78" text-anchor="middle">until it's cleared</text>
+  <path class="ln" d="M309,88 V126" marker-start="url(#a)" marker-end="url(#a)"/>
+
+  <!-- answer-only tasks close from reported; a refused settle returns to reported -->
+  <path class="ln" d="M437,126 V56 H879 V126" marker-end="url(#a)"/>
+  <text class="l" x="658" y="48" text-anchor="middle">answer-only tasks close here, answered</text>
+  <path class="ln" d="M637,126 V104 H455 V126" marker-end="url(#a)"/>
+  <text class="l" x="546" y="96" text-anchor="middle">refused</text>
+
+  <!-- the main path -->
+  <rect class="box n" x="35" y="126" width="92" height="56" rx="8"/>
+  <text class="t" x="81" y="150" text-anchor="middle">queued</text>
+  <text class="s" x="81" y="169" text-anchor="middle">routed</text>
+  <rect class="box n" x="149" y="126" width="92" height="56" rx="8"/>
+  <text class="t" x="195" y="150" text-anchor="middle">preparing</text>
+  <text class="s" x="195" y="169" text-anchor="middle">worktree</text>
+  <rect class="box green" x="263" y="126" width="92" height="56" rx="8"/>
+  <text class="t" x="309" y="150" text-anchor="middle">running</text>
+  <text class="s" x="309" y="169" text-anchor="middle">work · verify</text>
+  <rect class="box n" x="377" y="126" width="92" height="56" rx="8"/>
+  <text class="t" x="423" y="150" text-anchor="middle">reported</text>
+  <text class="s" x="423" y="169" text-anchor="middle">report</text>
+  <rect class="box n" x="491" y="126" width="92" height="56" rx="8"/>
+  <text class="t" x="537" y="150" text-anchor="middle">in review</text>
+  <text class="s" x="537" y="169" text-anchor="middle">Careful only</text>
+  <rect class="box blue" x="605" y="126" width="92" height="56" rx="8"/>
+  <text class="t" x="651" y="150" text-anchor="middle">settling</text>
+  <text class="s" x="651" y="169" text-anchor="middle">CI · approval</text>
+  <rect class="box green" x="719" y="126" width="92" height="56" rx="8"/>
+  <text class="t" x="765" y="150" text-anchor="middle">landed</text>
+  <text class="s" x="765" y="169" text-anchor="middle">delivered</text>
+  <rect class="box n" x="833" y="126" width="92" height="56" rx="8"/>
+  <text class="t" x="879" y="150" text-anchor="middle">closed</text>
+  <text class="s" x="879" y="169" text-anchor="middle">cleaned up</text>
+
+  <path class="ln" d="M127,154 H149" marker-end="url(#a)"/>
+  <path class="ln" d="M241,154 H263" marker-end="url(#a)"/>
+  <path class="ln" d="M355,154 H377" marker-end="url(#a)"/>
+  <path class="ln" d="M469,154 H491" marker-end="url(#a)"/>
+  <path class="ln" d="M583,154 H605" marker-end="url(#a)"/>
+  <path class="ln" d="M697,154 H719" marker-end="url(#a)"/>
+  <path class="ln" d="M811,154 H833" marker-end="url(#a)"/>
+
+  <!-- back to running -->
+  <path class="ln" d="M423,182 V206 H323 V182" marker-end="url(#a)"/>
+  <text class="l" x="373" y="200" text-anchor="middle">steer</text>
+  <path class="ln" d="M537,182 V230 H295 V182" marker-end="url(#a)"/>
+  <text class="l" x="416" y="248" text-anchor="middle">review findings</text>
+
+  <!-- side exits -->
+  <rect class="box orange" x="745" y="212" width="180" height="40" rx="8"/>
+  <text class="s" x="835" y="237" text-anchor="middle">failed · stopped · discarded</text>
+  <path class="ln" d="M879,212 V182" marker-end="url(#a)"/>
+
+  <!-- delivery modes -->
+  <path class="ln" d="M665,182 V292"/>
+  <text class="l" x="677" y="272">by the project's delivery mode</text>
+  <path class="ln" d="M175,292 H785"/>
+  <path class="ln" d="M175,292 V316" marker-end="url(#a)"/>
+  <path class="ln" d="M480,292 V316" marker-end="url(#a)"/>
+  <path class="ln" d="M785,292 V316" marker-end="url(#a)"/>
+
+  <rect class="box blue" x="35" y="316" width="280" height="64" rx="8"/>
+  <text class="t" x="175" y="342" text-anchor="middle">Direct pull request</text>
+  <text class="s" x="175" y="362" text-anchor="middle">merged on GitHub at the approved commit</text>
+  <rect class="box blue" x="340" y="316" width="280" height="64" rx="8"/>
+  <text class="t" x="480" y="342" text-anchor="middle">Branch only</text>
+  <text class="s" x="480" y="362" text-anchor="middle">the branch is pushed; you merge it</text>
+  <rect class="box blue" x="645" y="316" width="280" height="64" rx="8"/>
+  <text class="t" x="785" y="342" text-anchor="middle">Build in place</text>
+  <text class="s" x="785" y="362" text-anchor="middle">merged into your checkout's branch</text>
+
+  <text class="l" x="480" y="412" text-anchor="middle">Merges and pushes wait for your approval unless you turn the project's autonomy on.</text>
+</svg>

@@ -1,0 +1,16 @@
+[package]
+name = "qm-git"
+description = "A typed wrapper over the real git: worktrees, base branches, kept refs, landing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+nix.workspace = true
+qm-types.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

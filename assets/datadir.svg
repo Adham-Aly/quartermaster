@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="474" viewBox="0 0 720 474" role="img" aria-labelledby="title desc">
+  <title id="title">The data directory</title>
+  <desc id="desc">Everything lives in ~/.quartermaster, or QUARTERMASTER_HOME when set: config.toml — settings, never secrets; state.db — SQLite: tasks, conversations, schedules; auth.json — logins and keys for non-Claude accounts; run.lock — one running app per data directory; logs/ — one log a day, secrets redacted; workspace/ — the built-in personal project; seat/ — the Quartermaster's session; secondmates/SM-02/ — a secondmate's session; tasks/T-0042/ — one folder per task; worktree/ — the git worktree, on branch qm/task-0042; brief.md — the brief, exactly as sent; evidence/ — screenshots, recordings, logs; never committed; session/ — the crewmate's transcript; skills/ jobs/ answer.md — its skills, shell jobs, an answer.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d1d9e0; }
+    .t { fill: #1f2328; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 600; }
+    .s { fill: #59636e; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12.5px; font-weight: 400; }
+    .l { fill: #59636e; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; font-weight: 400; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .t.m { font-size: 14px; }
+    .n { fill: #f6f8fa; stroke: #d1d9e0; }
+    .blue { fill: #ddf4ff; stroke: #0969da; }
+    .green { fill: #dafbe1; stroke: #1a7f37; }
+    .orange { fill: #fff1e5; stroke: #bc4c00; }
+    .purple { fill: #fbefff; stroke: #8250df; }
+    .box { stroke-width: 1.5; }
+    .grp { fill: none; stroke: #d1d9e0; stroke-width: 1.5; stroke-dasharray: 5 4; }
+    .ln { fill: none; stroke: #818b98; stroke-width: 1.5; }
+    .ah { fill: #818b98; }
+    .gap { fill: none; stroke: #ffffff; stroke-width: 8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; stroke: #3d444d; }
+      .t { fill: #f0f6fc; }
+      .s, .l { fill: #9198a1; }
+      .n { fill: #151b23; stroke: #3d444d; }
+      .blue { fill: #0f2541; stroke: #4493f8; }
+      .green { fill: #0f2a1b; stroke: #3fb950; }
+      .orange { fill: #2f1b0c; stroke: #db6d28; }
+      .purple { fill: #251a3d; stroke: #ab7df8; }
+      .grp { stroke: #3d444d; }
+      .ln { stroke: #7d8590; }
+      .ah { fill: #7d8590; }
+      .gap { stroke: #0d1117; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+      <path class="ah" d="M0,1 L9,5 L0,9 Z"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0.5" y="0.5" width="719" height="473" rx="12"/>
+
+  <text class="t m" x="40" y="54">~/.quartermaster</text>
+  <text class="s" x="190" y="54">or <tspan class="m">$QUARTERMASTER_HOME</tspan> · private to you (0700)</text>
+
+  <path class="ln" d="M52,66 V300"/>
+  <path class="ln" d="M88,310 V430"/>
+  <path class="ln" d="M52,92 H68"/>
+  <text class="t m" x="76" y="97">config.toml</text>
+  <text class="s" x="352" y="97">settings, never secrets</text>
+  <path class="ln" d="M52,118 H68"/>
+  <text class="t m" x="76" y="123">state.db</text>
+  <text class="s" x="352" y="123">SQLite: tasks, conversations, schedules</text>
+  <path class="ln" d="M52,144 H68"/>
+  <text class="t m" x="76" y="149">auth.json</text>
+  <text class="s" x="352" y="149">logins and keys for non-Claude accounts</text>
+  <path class="ln" d="M52,170 H68"/>
+  <text class="t m" x="76" y="175">run.lock</text>
+  <text class="s" x="352" y="175">one running app per data directory</text>
+  <path class="ln" d="M52,196 H68"/>
+  <text class="t m" x="76" y="201">logs/</text>
+  <text class="s" x="352" y="201">one log a day, secrets redacted</text>
+  <path class="ln" d="M52,222 H68"/>
+  <text class="t m" x="76" y="227">workspace/</text>
+  <text class="s" x="352" y="227">the built-in personal project</text>
+  <path class="ln" d="M52,248 H68"/>
+  <text class="t m" x="76" y="253">seat/</text>
+  <text class="s" x="352" y="253">the Quartermaster's session</text>
+  <path class="ln" d="M52,274 H68"/>
+  <text class="t m" x="76" y="279">secondmates/SM-02/</text>
+  <text class="s" x="352" y="279">a secondmate's session</text>
+  <path class="ln" d="M52,300 H68"/>
+  <text class="t m" x="76" y="305">tasks/T-0042/</text>
+  <text class="s" x="352" y="305">one folder per task</text>
+  <path class="ln" d="M88,326 H104"/>
+  <text class="t m" x="112" y="331">worktree/</text>
+  <text class="s" x="352" y="331">the git worktree, on branch qm/task-0042</text>
+  <path class="ln" d="M88,352 H104"/>
+  <text class="t m" x="112" y="357">brief.md</text>
+  <text class="s" x="352" y="357">the brief, exactly as sent</text>
+  <path class="ln" d="M88,378 H104"/>
+  <text class="t m" x="112" y="383">evidence/</text>
+  <text class="s" x="352" y="383">screenshots, recordings, logs; never committed</text>
+  <path class="ln" d="M88,404 H104"/>
+  <text class="t m" x="112" y="409">session/</text>
+  <text class="s" x="352" y="409">the crewmate's transcript</text>
+  <path class="ln" d="M88,430 H104"/>
+  <text class="t m" x="112" y="435">skills/ jobs/ answer.md</text>
+  <text class="s" x="352" y="435">its skills, shell jobs, an answer</text>
+</svg>

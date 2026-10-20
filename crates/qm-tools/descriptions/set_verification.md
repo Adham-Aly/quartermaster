@@ -1,0 +1,3 @@
+Change a running task's verification level, only when the user's own message on this turn asked for it; refused on turns started by an app event. Raising the level means the missing validation or review happens before the next push or merge, even if a pull request is already open. Lowering it removes only the review hold; history, failed checks and other holds stay. A level change never grants permission to merge. Answer-only, review and build-in-place tasks have no level, so the call is refused for them.
+- task: the task ID, e.g. T-0042.
+- level: quick, standard or reviewed (shown to the user as Quick, Default and Careful).

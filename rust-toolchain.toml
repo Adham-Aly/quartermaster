@@ -1,0 +1,8 @@
+# The one Rust toolchain this repository builds with, on every Mac and in CI: the single source of
+# truth. rustup reads this file and installs the exact release (with rustfmt and clippy) the first
+# time cargo runs here; CI installs it from this file too. Bump it deliberately, in its own commit,
+# and fix whatever the new clippy flags.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

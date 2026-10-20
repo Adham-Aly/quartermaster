@@ -1,0 +1,1 @@
+Ask whether you can deliver this task, before your first edit: push your branch, open the pull request and read check results. The app answers from its own checks, per capability (ok, missing, or not_needed under this delivery mode), with each gap it can't close in a plain sentence. Close any gap you can yourself; put the rest in your report's blockers. Takes no arguments.

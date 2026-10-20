@@ -1,0 +1,153 @@
+# Hand-kept corrections on top of snapshot.json. Kept small and reviewed like code.
+#
+# The snapshot (from models.dev, refreshed with refresh.py) says what each provider lists. This file
+# says what models.dev doesn't, or gets wrong: which rungs of our effort ladder a model supports and
+# the provider value each one is sent as, compatibility flags for the Chat Completions adapter, and
+# image support or context windows that need fixing.
+#
+# Compatibility flags (`compat`) are the Chat Completions adapter's (`CompatFlag` in
+# src/adapters/chat_completions.rs names each one and its default, OpenAI's own behaviour), the
+# Responses adapter's (`ResponsesCompat` in src/adapters/responses.rs: `supports_developer_role`
+# and `supports_max_output_tokens`, on by default, and `always_include_encrypted_reasoning`, off
+# by default) and the Anthropic adapter's (`supports_eager_tool_input_streaming`,
+# `supports_cache_control_on_tools`, both on by default). A rung's effort value `off` means
+# "turn thinking off" in whatever way the provider's API does it.
+#
+# `[providers.<wire name>]` sets defaults for every model of that provider; `[[models]]` entries
+# override them for one model. Effort names are our ladder: low, medium, high, xhigh, max. A
+# provider value missing from `effort_values` means the rung is sent as its own name.
+#
+# The snapshot was refreshed from models.dev on 2026-10-19; corrections naming models that
+# models.dev no longer lists were removed then.
+
+[providers.claude]
+efforts = ["low", "medium", "high", "xhigh", "max"]
+
+[providers.anthropic]
+efforts = ["low", "medium", "high", "xhigh", "max"]
+
+[providers.chatgpt]
+efforts = ["low", "medium", "high", "xhigh"]
+
+[providers.openai]
+efforts = ["low", "medium", "high", "xhigh"]
+
+[providers.gemini]
+# Gemini's thinking levels are low and high only: a set, not a ceiling.
+efforts = ["low", "high"]
+
+[providers.xai]
+# Grok goes over xAI's Responses API, which takes `reasoning.effort` low, medium and high
+# (https://docs.x.ai/developers/model-capabilities/text/reasoning); xhigh only where a model entry
+# below says so. Pi's xAI catalog at the pin maps the same rungs.
+efforts = ["low", "medium", "high"]
+# xAI's reasoning models always reason; ask for the encrypted reasoning on every request so it
+# can be replayed (Pi does the same for xAI).
+compat = { always_include_encrypted_reasoning = true }
+
+[providers.kimi]
+# Kimi exposes thinking on or off, not levels: no effort setting is ever sent.
+efforts = []
+# Kimi For Coding: `max_tokens`, and assistant messages carry `reasoning_content`.
+compat = { supports_developer_role = false, supports_reasoning_effort = false, supports_store = false, uses_max_tokens = true, requires_reasoning_content = true }
+
+[providers.openrouter]
+efforts = ["low", "medium", "high"]
+# OpenRouter: reasoning as `reasoning: {effort}`, session affinity through `x-session-id`.
+compat = { supports_store = false, supports_developer_role = false, openrouter_reasoning = true, session_affinity = true, supports_strict_mode = true }
+
+[providers.copilot]
+efforts = ["low", "medium", "high"]
+# Copilot serves many vendors' models; its Chat Completions takes `reasoning_effort` for OpenAI's
+# only, and the catalog can't yet say so per vendor, so no effort is sent through Copilot.
+compat = { supports_developer_role = false, supports_store = false, copilot_headers = true, supports_strict_mode = true, supports_reasoning_effort = false }
+
+[[models]]
+provider = "claude"
+id = "claude-haiku-5-5"
+efforts = ["low", "medium", "high"]
+
+[[models]]
+provider = "anthropic"
+id = "claude-haiku-5-5"
+efforts = ["low", "medium", "high"]
+
+# grok-4.7 and grok-4.6 add xhigh (https://docs.x.ai/developers/grok-4-7, the reasoning guide).
+[[models]]
+provider = "xai"
+id = "grok-4.7"
+efforts = ["low", "medium", "high", "xhigh"]
+
+[[models]]
+provider = "xai"
+id = "grok-4.6"
+efforts = ["low", "medium", "high", "xhigh"]
+
+# The grok-4.20 models and Grok Build: xAI documents no reasoning effort for them (and none for
+# the non-reasoning model), so none is ever sent.
+[[models]]
+provider = "xai"
+id = "grok-4.20-0309-non-reasoning"
+efforts = []
+
+[[models]]
+provider = "xai"
+id = "grok-4.20-0309-reasoning"
+efforts = []
+
+[[models]]
+provider = "xai"
+id = "grok-build-0.1"
+efforts = []
+
+[[models]]
+provider = "chatgpt"
+id = "gpt-5.3-codex-spark"
+efforts = ["low", "medium", "high"]
+
+[[models]]
+provider = "openai"
+id = "gpt-5.3-codex-spark"
+efforts = ["low", "medium", "high"]
+
+# Claude through OpenRouter caches with Anthropic-style cache_control.
+[[models]]
+provider = "openrouter"
+id = "anthropic/claude-fable-5"
+compat = { anthropic_cache_control = true }
+
+# Claude through OpenRouter caches with Anthropic-style cache_control.
+[[models]]
+provider = "openrouter"
+id = "anthropic/claude-fable-5.1"
+compat = { anthropic_cache_control = true }
+
+# Claude through OpenRouter caches with Anthropic-style cache_control.
+[[models]]
+provider = "openrouter"
+id = "anthropic/claude-haiku-5.5"
+compat = { anthropic_cache_control = true }
+
+# Claude through OpenRouter caches with Anthropic-style cache_control.
+[[models]]
+provider = "openrouter"
+id = "anthropic/claude-opus-5"
+compat = { anthropic_cache_control = true }
+
+# Claude through OpenRouter caches with Anthropic-style cache_control.
+[[models]]
+provider = "openrouter"
+id = "anthropic/claude-opus-5.5"
+compat = { anthropic_cache_control = true }
+
+# Claude through OpenRouter caches with Anthropic-style cache_control.
+[[models]]
+provider = "openrouter"
+id = "anthropic/claude-sonnet-5"
+compat = { anthropic_cache_control = true }
+
+# Claude through OpenRouter caches with Anthropic-style cache_control.
+[[models]]
+provider = "openrouter"
+id = "anthropic/claude-sonnet-5.5"
+compat = { anthropic_cache_control = true }

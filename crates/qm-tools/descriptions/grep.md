@@ -1,0 +1,11 @@
+Search file contents with a regular expression (ripgrep syntax). Files ignored by .gitignore and hidden files are skipped.
+- pattern: the regular expression.
+- path: the file or folder to search (optional; defaults to your worktree).
+- glob: only files matching this glob, e.g. "*.rs" or "*.{ts,tsx}" (optional).
+- type: only files of this type, e.g. "rust", "py", "js" (optional).
+- output_mode: files_with_matches (the default: matching files, newest first), content (matching lines) or count (matches per file).
+- -i: ignore case.
+- -n: show line numbers in content mode (on by default).
+- -A, -B, -C: lines of context after, before, or around each match (content mode).
+- head_limit: return at most this many results (lines, files or counts).
+- multiline: let the pattern span lines, with . matching newlines.

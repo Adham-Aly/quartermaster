@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="580" viewBox="0 0 960 580" role="img" aria-labelledby="title desc">
+  <title id="title">How Quartermaster works</title>
+  <desc id="desc">You talk to the Quartermaster through the terminal UI. It routes work to secondmates and starts crewmates; each crewmate works in its own git worktree and branch and delivers through GitHub pull requests, merged on your approval. Every agent runs on the Claude engine or the provider engine, depending on the account behind its model.</desc>
+  <style>
+    .bg { fill: #ffffff; stroke: #d1d9e0; }
+    .t { fill: #1f2328; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 600; }
+    .s { fill: #59636e; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12.5px; font-weight: 400; }
+    .l { fill: #59636e; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; font-weight: 400; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .t.m { font-size: 14px; }
+    .n { fill: #f6f8fa; stroke: #d1d9e0; }
+    .blue { fill: #ddf4ff; stroke: #0969da; }
+    .green { fill: #dafbe1; stroke: #1a7f37; }
+    .orange { fill: #fff1e5; stroke: #bc4c00; }
+    .purple { fill: #fbefff; stroke: #8250df; }
+    .box { stroke-width: 1.5; }
+    .grp { fill: none; stroke: #d1d9e0; stroke-width: 1.5; stroke-dasharray: 5 4; }
+    .ln { fill: none; stroke: #818b98; stroke-width: 1.5; }
+    .ah { fill: #818b98; }
+    .gap { fill: none; stroke: #ffffff; stroke-width: 8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; stroke: #3d444d; }
+      .t { fill: #f0f6fc; }
+      .s, .l { fill: #9198a1; }
+      .n { fill: #151b23; stroke: #3d444d; }
+      .blue { fill: #0f2541; stroke: #4493f8; }
+      .green { fill: #0f2a1b; stroke: #3fb950; }
+      .orange { fill: #2f1b0c; stroke: #db6d28; }
+      .purple { fill: #251a3d; stroke: #ab7df8; }
+      .grp { stroke: #3d444d; }
+      .ln { stroke: #7d8590; }
+      .ah { fill: #7d8590; }
+      .gap { stroke: #0d1117; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+      <path class="ah" d="M0,1 L9,5 L0,9 Z"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0.5" y="0.5" width="959" height="579" rx="12"/>
+
+  <!-- top row: you, the terminal UI, the Quartermaster -->
+  <rect class="box n" x="32" y="32" width="116" height="60" rx="8"/>
+  <text class="t" x="90" y="58" text-anchor="middle">You</text>
+  <text class="s" x="90" y="77" text-anchor="middle">ask · approve</text>
+
+  <rect class="box n" x="200" y="32" width="164" height="60" rx="8"/>
+  <text class="t" x="282" y="58" text-anchor="middle">Terminal UI</text>
+  <text class="s m" x="282" y="77" text-anchor="middle">quartermaster</text>
+
+  <rect class="box blue" x="416" y="32" width="220" height="60" rx="8"/>
+  <text class="t" x="526" y="58" text-anchor="middle">Quartermaster</text>
+  <text class="s" x="526" y="77" text-anchor="middle">the one agent you talk to</text>
+
+  <path class="ln" d="M148,62 H200" marker-start="url(#a)" marker-end="url(#a)"/>
+  <path class="ln" d="M364,62 H416" marker-start="url(#a)" marker-end="url(#a)"/>
+
+  <!-- secondmates -->
+  <rect class="box blue" x="96" y="160" width="220" height="56" rx="8"/>
+  <text class="t" x="206" y="184" text-anchor="middle">Secondmates</text>
+  <text class="s" x="206" y="202" text-anchor="middle">orchestrators with a charter</text>
+
+  <path class="ln" d="M470,92 V188 H316" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l" x="393" y="178" text-anchor="middle">request · report</text>
+
+  <!-- briefs down to crewmates -->
+  <path class="ln" d="M206,216 V252"/>
+  <path class="ln" d="M126,252 H286"/>
+  <path class="ln" d="M126,252 V296" marker-end="url(#a)"/>
+  <path class="ln" d="M286,252 V296" marker-end="url(#a)"/>
+
+  <path class="ln" d="M580,92 V252"/>
+  <path class="ln" d="M446,252 H606"/>
+  <path class="ln" d="M446,252 V296" marker-end="url(#a)"/>
+  <path class="ln" d="M606,252 V296" marker-end="url(#a)"/>
+  <text class="l" x="590" y="178">brief · report</text>
+  <text class="l" x="216" y="240">brief · report</text>
+
+  <!-- crewmates in worktrees -->
+  <rect class="grp" x="32" y="276" width="668" height="128" rx="10"/>
+  <rect class="box green" x="56" y="296" width="140" height="56" rx="8"/>
+  <text class="t m" x="126" y="320" text-anchor="middle">T-0041</text>
+  <text class="s m" x="126" y="338" text-anchor="middle">qm/task-0041</text>
+  <rect class="box green" x="216" y="296" width="140" height="56" rx="8"/>
+  <text class="t m" x="286" y="320" text-anchor="middle">T-0042</text>
+  <text class="s m" x="286" y="338" text-anchor="middle">qm/task-0042</text>
+  <rect class="box green" x="376" y="296" width="140" height="56" rx="8"/>
+  <text class="t m" x="446" y="320" text-anchor="middle">T-0043</text>
+  <text class="s m" x="446" y="338" text-anchor="middle">qm/task-0043</text>
+  <rect class="box green" x="536" y="296" width="140" height="56" rx="8"/>
+  <text class="t m" x="606" y="320" text-anchor="middle">T-0044</text>
+  <text class="s m" x="606" y="338" text-anchor="middle">qm/task-0044</text>
+  <text class="s" x="366" y="384" text-anchor="middle">Crewmates · each in its own git worktree and branch</text>
+
+  <!-- GitHub -->
+  <rect class="box n" x="776" y="32" width="152" height="320" rx="8"/>
+  <text class="t" x="852" y="184" text-anchor="middle">GitHub</text>
+  <text class="s" x="852" y="203" text-anchor="middle">PRs · checks · merges</text>
+
+  <path class="ln" d="M636,62 H776" marker-end="url(#a)"/>
+  <text class="l" x="706" y="52" text-anchor="middle">merge on your OK</text>
+  <path class="ln" d="M676,324 H776" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l" x="726" y="314" text-anchor="middle">PR · CI</text>
+
+  <!-- engines -->
+  <text class="s" x="480" y="446" text-anchor="middle">Every agent runs on one of two engines; the account behind its model picks which</text>
+  <rect class="box orange" x="32" y="464" width="436" height="84" rx="8"/>
+  <text class="t" x="250" y="494" text-anchor="middle">Claude engine</text>
+  <text class="s" x="250" y="514" text-anchor="middle"><tspan class="m">claude</tspan> CLI</text>
+  <text class="s" x="250" y="532" text-anchor="middle">your Claude subscription</text>
+  <rect class="box purple" x="492" y="464" width="436" height="84" rx="8"/>
+  <text class="t" x="710" y="494" text-anchor="middle">Provider engine</text>
+  <text class="s" x="710" y="514" text-anchor="middle">ChatGPT · Copilot · Grok · Kimi · OpenRouter</text>
+  <text class="s" x="710" y="532" text-anchor="middle">API keys: Anthropic · OpenAI · Gemini · xAI · custom</text>
+</svg>

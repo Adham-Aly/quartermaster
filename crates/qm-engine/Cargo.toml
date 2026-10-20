@@ -1,0 +1,21 @@
+[package]
+name = "qm-engine"
+description = "The engine interface both engines implement, its event stream, and the process supervisor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+jiff.workspace = true
+libproc.workspace = true
+nix = { workspace = true, features = ["process", "signal"] }
+qm-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
+toml.workspace = true
+
+[lints]
+workspace = true

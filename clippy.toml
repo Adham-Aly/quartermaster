@@ -1,0 +1,4 @@
+# Workspace clippy configuration. The lint levels themselves are in Cargo.toml [workspace.lints].
+
+# Proper names that `doc_markdown` would otherwise want in backticks. ".." keeps clippy's defaults.
+doc-valid-idents = ["ChatGPT", "OpenAI", "OpenRouter", "SQLite", "xAI", ".."]

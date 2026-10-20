@@ -1,0 +1,14 @@
+Start a task in your scope: a crewmate in its own worktree does the work and reports back to you. You declare facts about the work; the app picks the model and effort, fills in the base branch (from the routed request, your standing branch, or the default), and copies the user's own words into the brief.
+- project: one of the projects in your scope.
+- correlation: the routed request this task serves, e.g. C-0193. The app applies what the request carries: the user's words, its base branch, and any model, effort, premium or later steps the user named.
+- base_branch: leave it out; the app fills it in. If you pass one, it must be the branch the app would use, or the call is refused.
+- kind: build, fix, plan, research, lookup, teach, review, unclear or reproduce. Use unclear when unsure.
+- title: a conventional-commit style summary, e.g. "feat(settings): dark mode toggle".
+- goal: what done looks like, in plain words.
+- constraints: limits the work must respect; each has text and optional freeze paths the crewmate must not change.
+- tests_required: true if tests were asked for.
+- builds_on: the task this continues.
+- instructions: one-time instructions for this task only, including the parts of a routed request meant for crewmates.
+- later_steps: models or effort the user named for later steps, each with a kind.
+- model, effort, premium, verification: only when the user asked for them on this turn.
+- stronger_retry_of: re-run that task's failed work on a stronger model, only when the user asked.

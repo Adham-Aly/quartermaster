@@ -1,0 +1,212 @@
+//! The Help tab: every key and what the mouse does, grouped by where they apply. It scrolls
+//! (wheel, arrows, `PgUp`/`PgDn`, `g`/`G`), and descriptions wrap under their column. (Settings
+//! lives in `settings`.)
+
+use crate::app::App;
+use crate::bridge::pane_block;
+use crate::hit::{FrameMap, Hit, Pane};
+use crate::text::{width, wrap};
+use crate::theme;
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
+
+/// Cells between the key column and the descriptions.
+const GAP: usize = 3;
+
+/// Draws Help into `area`, scrolled by `app.view.help_scroll` (clamped), and records its scroll
+/// area for the wheel.
+pub(crate) fn draw_help(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut FrameMap) {
+    // A box like every other: dim border and title, one cell of padding.
+    let block = pane_block("Help", theme::border(false, false));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let lines = lines(usize::from(inner.width));
+    let max = lines.len().saturating_sub(usize::from(inner.height));
+    let scroll = app.view.help_scroll.min(max);
+    let shown: Vec<Line<'static>> = lines
+        .into_iter()
+        .skip(scroll)
+        .take(usize::from(inner.height))
+        .collect();
+    frame.render_widget(Paragraph::new(shown), inner);
+    map.hits.add(area, Hit::Pane(Pane::Help));
+    map.scroll_areas.push((area, Pane::Help));
+    map.scroll_max.push((Pane::Help, max));
+}
+
+/// Help's rows at `room` cells: each group's heading, then its keys, a blank row between groups;
+/// a description too long for its line wraps under the description column.
+pub(crate) fn lines(room: usize) -> Vec<Line<'static>> {
+    let key_width = HELP
+        .iter()
+        .flat_map(|(_, keys)| keys.iter())
+        .map(|(k, _)| width(k))
+        .max()
+        .unwrap_or(0);
+    let lead = 2 + key_width + GAP;
+    let text_room = room.saturating_sub(lead).max(12);
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for (i, (group, keys)) in HELP.iter().enumerate() {
+        if i > 0 {
+            out.push(Line::default());
+        }
+        out.push(Line::styled(*group, theme::accent()));
+        for (key, what) in *keys {
+            for (j, row) in wrap(what, text_room).into_iter().enumerate() {
+                let head = if j == 0 {
+                    vec![
+                        Span::raw("  "),
+                        Span::styled(*key, theme::strong()),
+                        Span::raw(" ".repeat(key_width - width(key) + GAP)),
+                    ]
+                } else {
+                    vec![Span::raw(" ".repeat(lead))]
+                };
+                let mut spans = head;
+                spans.push(Span::styled(row, theme::dim()));
+                out.push(Line::from(spans));
+            }
+        }
+    }
+    out
+}
+
+/// The keys and the mouse, grouped by where they apply, and the Settings, setup-check, session
+/// and Diff screens' own keys.
+const HELP: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Anywhere",
+        &[
+            ("ctrl+c twice", "quit"),
+            ("ctrl+z", "suspend to the shell; fg comes back"),
+            ("tab · shift+tab", "next or previous pane"),
+            (
+                "esc",
+                "close the menu or overlay, clear the selection, leave guidance, interrupt the Quartermaster, back",
+            ),
+            (
+                "?",
+                "this help (when not typing); esc goes back where you were",
+            ),
+            (",", "settings (when not typing)"),
+        ],
+    ),
+    (
+        "Projects and crew",
+        &[
+            ("↑ ↓ · k j", "move the selection"),
+            ("home end · g G", "first or last row"),
+            ("⏎ · o", "open the selected crewmate"),
+            ("space", "the selected row's menu"),
+        ],
+    ),
+    (
+        "Conversation",
+        &[
+            ("↑ ↓ · k j", "scroll a line"),
+            ("pgup pgdn", "scroll a page"),
+            ("home end · g G", "oldest or newest"),
+            ("a d r · 1 2 3", "press the current card's button"),
+            ("[ ]", "previous or next card"),
+        ],
+    ),
+    (
+        "Task",
+        &[
+            ("↑ ↓ · pgup pgdn", "scroll"),
+            ("⏎", "open session"),
+            ("s", "stop"),
+        ],
+    ),
+    (
+        "Worker session",
+        &[
+            (
+                "⏎ · o · double-click",
+                "open the selected crewmate's session",
+            ),
+            ("tab · shift+tab", "session or your message"),
+            ("⏎", "send to the worker directly"),
+            ("i", "interrupt its running turn"),
+            ("e", "expand or collapse the newest detail in view"),
+            ("↑ ↓ · pgup pgdn · g G", "scroll the session"),
+            ("esc · ← Back", "back to the Bridge"),
+        ],
+    ),
+    (
+        "Diff",
+        &[
+            ("d", "open the current approval card's diff"),
+            ("↑ ↓ · pgup pgdn · g G", "scroll"),
+            ("a · r", "approve or reject from the diff"),
+            ("esc · ← Back", "back to the Bridge"),
+        ],
+    ),
+    (
+        "Settings",
+        &[
+            ("tab · ← → · 1 to 5", "the next, previous or a numbered tab"),
+            ("↑ ↓ · home end", "move the selection"),
+            ("pgup pgdn", "scroll a tab taller than the screen"),
+            (
+                "⏎ · space",
+                "the selected row's menu, or what its control does",
+            ),
+            (
+                "c p * l d r",
+                "accounts: connect, pause, preferred, label, disconnect, reconnect",
+            ),
+            (
+                "m x e /",
+                "model levels: move, remove, effort, find a model",
+            ),
+            (
+                "space c f q",
+                "routing: the pin, its model, its fallback, the Quartermaster's model",
+            ),
+            ("n s", "system: notifications, the setup check"),
+        ],
+    ),
+    (
+        "Setup check",
+        &[
+            ("↑ ↓", "move between the tools that need you"),
+            ("⏎", "run the selected tool's first step in a pane"),
+            ("c", "copy its command"),
+            ("esc", "later (cancels a running pane)"),
+        ],
+    ),
+    (
+        "Your message",
+        &[
+            ("⏎", "send"),
+            ("⌥⏎ · shift+⏎ · ctrl+j", "new line"),
+            ("← → · ⌥← ⌥→", "move by a character or a word"),
+            ("home end · ctrl+a ctrl+e", "start or end of the line"),
+            ("⌫ · delete", "delete a character back or forward"),
+            (
+                "⌥⌫ · ctrl+w · ctrl+u",
+                "delete a word, or to the line's start",
+            ),
+        ],
+    ),
+    (
+        "Mouse",
+        &[
+            (
+                "click",
+                "focus a pane, select a row, press a button, switch tabs",
+            ),
+            ("double-click", "open a crewmate"),
+            ("right-click", "a row's menu"),
+            ("drag a border", "resize the columns beside it"),
+            ("drag over text", "select and copy it"),
+            ("wheel", "scroll the pane under the pointer"),
+        ],
+    ),
+];

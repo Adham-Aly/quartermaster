@@ -1,0 +1,34 @@
+[package]
+name = "quartermaster"
+description = "The quartermaster binary: arguments, startup, lock, wiring."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+qm-auth.workspace = true
+qm-core.workspace = true
+qm-engine.workspace = true
+qm-engine-claude.workspace = true
+qm-github.workspace = true
+qm-providers.workspace = true
+qm-store.workspace = true
+qm-tools.workspace = true
+qm-tui.workspace = true
+qm-types.workspace = true
+jiff.workspace = true
+nix = { workspace = true, features = ["fs", "hostname"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.dist]
+# The workspace sets publish = false, which hides binaries from dist; release this one.
+dist = true
