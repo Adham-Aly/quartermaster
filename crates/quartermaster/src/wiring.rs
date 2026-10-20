@@ -58,15 +58,18 @@ use qm_core::tasks::delivery_probe::DeliveryProbe;
 use qm_core::tasks::startup::{ReconcileOutcome, catch_up, reconcile};
 use qm_core::tasks::{TaskHooks, TaskService, TaskWiring, TasksPart};
 use qm_core::tool_host::CoreToolHost;
-use qm_core::turn_io::{SeatInboxRx, seat_inbox};
+use qm_core::turn_io::{ChatLog, SeatInboxRx, seat_inbox};
 use qm_core::turns::{TurnLoop, TurnLoopDeps};
+use qm_core::updates::{
+    GithubReleases, ShellInstaller, Updates, UpdatesDeps, UpdatesPart, Version,
+};
 use qm_core::verification::{VerificationDeps, VerificationService};
 use qm_engine::scripted::{Script, ScriptedEngine};
 use qm_engine::supervisor::{OsSupervisor, Supervisor};
 use qm_engine::{AccountRef, Engine};
 use qm_engine_claude::detect::{ClaudeInstall, LoginState};
 use qm_engine_claude::{ClaudeConfig, ClaudeEngine};
-use qm_github::{GhCli, GhProgram, GithubClient};
+use qm_github::{GhCli, GhProgram, GithubClient, RepoRef};
 use qm_providers::{
     BuiltinProfiles, CatalogProfiles, FileToolsFactory, ModelProfiles, ProviderEngine,
     ProviderEngineConfig,
@@ -97,6 +100,10 @@ pub(crate) const LOOP_GRACE: Duration = Duration::from_secs(20);
 
 /// Behind the developer gate: a script file the seat runs on, on the scripted engine.
 pub(crate) const DEV_SEAT_SCRIPT: &str = "QM_DEV_SEAT_SCRIPT";
+
+/// Behind the developer gate: the version this copy says it is, for the update check ("0.0.1"
+/// makes the newest release look newer, so the update notice and the install can be tried).
+pub(crate) const DEV_RUNNING_VERSION: &str = "QM_DEV_RUNNING_VERSION";
 
 /// The scripted account the developer seat runs on.
 const DEV_ACCOUNT_LABEL: &str = "Scripted (developer seat)";
@@ -267,6 +274,7 @@ pub(crate) async fn start_core(
         secondmates.clone(),
         attachments.clone(),
     )));
+    parts.push(Arc::new(updates_part(&dir, &clock, &conversation)));
     // Last, so it sees every card the other parts add.
     parts.push(Arc::new(NotificationsPart::new(
         notify_config,
@@ -809,6 +817,45 @@ pub(crate) fn dev_seat_script(dir: &DataDir) -> Result<Option<Script>, String> {
     Script::load(&path)
         .map(Some)
         .map_err(|e| format!("can't load the seat script {}: {e}", path.display()))
+}
+
+/// The app's own update check, started at once in the background (it checks at launch and then
+/// every few hours), and the install it runs when you press Update.
+fn updates_part(
+    dir: &DataDir,
+    clock: &Arc<dyn Clock>,
+    conversation: &Arc<Conversation>,
+) -> UpdatesPart {
+    let built = env!("CARGO_PKG_VERSION");
+    let mut current = Version::parse(built).unwrap_or(Version {
+        major: 0,
+        minor: 0,
+        patch: 0,
+    });
+    if dev_gate_open(dir.root())
+        && let Some(version) = std::env::var(DEV_RUNNING_VERSION)
+            .ok()
+            .and_then(|v| Version::parse(&v))
+    {
+        tracing::info!(%version, "running as an older version for the update check (developer gate)");
+        current = version;
+    }
+    let repo = RepoRef::from_remote(env!("CARGO_PKG_REPOSITORY")).unwrap_or_else(|| RepoRef {
+        owner: "Adham-Aly".to_owned(),
+        name: "quartermaster".to_owned(),
+    });
+    let exe = std::env::current_exe().unwrap_or_default();
+    let env: BTreeMap<String, String> = std::env::vars().collect();
+    let chat = Arc::clone(conversation);
+    let updates = Updates::new(UpdatesDeps {
+        current,
+        source: Arc::new(GithubReleases::new(repo.clone())),
+        installer: Arc::new(ShellInstaller::new(exe, repo, &env, Arc::clone(clock))),
+        clock: Arc::clone(clock),
+        changed: Arc::new(move || chat.changed()),
+    });
+    updates.start();
+    UpdatesPart::new(updates)
 }
 
 /// The developer gate of `crates/quartermaster/src/dev/mod.rs`: `QM_DEV=1` and an explicit

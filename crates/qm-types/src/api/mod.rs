@@ -211,6 +211,12 @@ pub enum Command {
     RunSlashCommand {
         slash: SlashCommand,
     },
+    // ---- The app's own updates. ----
+    /// Look for a newer release now (the core also looks at launch and every few hours).
+    CheckForUpdate,
+    /// Install the newer release the last check found ([`UpdateView::available`]). Ignored when
+    /// there is none, or one is already installing.
+    StartUpdate,
 }
 
 /// The Quartermaster's slash commands. The UI's command menu lists them (with their names and
@@ -368,6 +374,77 @@ pub struct Snapshot {
     /// shows the busy indicator where its words will appear.
     #[serde(default)]
     pub thinking: bool,
+    /// The app's own updates: the menu's update entry, its popup and the status bar's notice.
+    #[serde(default)]
+    pub update: UpdateView,
+}
+
+/// The app's own updates, display-ready. `UpdateView::default()` says nothing at all.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+#[non_exhaustive]
+pub struct UpdateView {
+    /// This copy's version: "0.1.0".
+    pub current: String,
+    /// The newer release to install, installing or installed: "0.2.0". `None` while this copy is
+    /// the latest, or before the first check has answered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available: Option<String>,
+    pub phase: UpdatePhase,
+    /// The popup's sentence on where things stand ("Quartermaster 0.2.0 is available.").
+    pub status: Styled,
+    /// Lines under it: when the last check ran, why this copy can't update itself, the
+    /// installer's last lines after a failure.
+    pub detail: Vec<String>,
+    /// The status bar's short notice ("update 0.2.0 available"), which also puts the badge on the
+    /// menu's update entry. `None` when there's nothing to tell you, so nothing nags.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<Styled>,
+    /// The popup's button; `None` while checking or installing, and after an install.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub button: Option<UpdateButton>,
+    /// The release's page on GitHub, for its notes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_page: Option<String>,
+}
+
+/// Where the app's update stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum UpdatePhase {
+    /// No check has answered yet (the first is running, or GitHub couldn't be reached).
+    #[default]
+    Unknown,
+    Checking,
+    /// This copy is the latest release.
+    UpToDate,
+    /// A newer release can be installed.
+    Available,
+    Installing,
+    /// The newer release is installed; it runs from the next launch.
+    Installed,
+    /// The install didn't finish; this copy is unchanged.
+    Failed,
+}
+
+/// The update popup's button.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct UpdateButton {
+    /// As shown: "Update to 0.2.0", "Try again", "Check now".
+    pub label: String,
+    /// The command it sends: [`Command::StartUpdate`] or [`Command::CheckForUpdate`].
+    pub command: Command,
+}
+
+impl UpdateButton {
+    pub fn new(label: impl Into<String>, command: Command) -> Self {
+        Self {
+            label: label.into(),
+            command,
+        }
+    }
 }
 
 /// What the Diff screen shows for one held merge, push or in-place merge: the stat and the patch
