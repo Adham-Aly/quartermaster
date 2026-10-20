@@ -56,9 +56,13 @@ Map core `Tone`s with `theme::tone`.
   the screen it was opened from). Letters are commands in list panes; they don't jump to the input.
 - Mouse: widgets record clickable regions (`Hit`) and scroll areas in the `FrameMap` while
   drawing; input reads geometry only from the `FrameMap`, never recomputes it. Hover never moves
-  focus. The wheel scrolls the pane under the pointer (3 lines a notch). A double-click is a second
-  press on the same `Hit` within 400 ms. Right-click (or `Space`) opens a row's context menu with
-  its first item on the pointer's row. Record overlapping regions so the topmost is recorded last.
+  focus. A click leaves no shading once the pointer moves on: after a mouse press, selected rows
+  (projects, crew, Settings) keep their selection but drop the fill (`View::pointer_picked`)
+  until a list key (`Tab`, arrows, Settings keys) shows it again. Focus borders always show,
+  since letters act in the focused pane. The wheel scrolls the pane under the pointer (3 lines a
+  notch). A double-click is a second press on the same `Hit` within 400 ms. Right-click (or
+  `Space`) opens a row's context menu with its first item on the pointer's row. Record
+  overlapping regions so the topmost is recorded last.
 - Selection and copy: widgets push `TextRow`s for selectable text; a drag selects, release copies
   through `pbcopy` (OSC 52 over SSH or as a fallback) and flashes `Copied`.
 

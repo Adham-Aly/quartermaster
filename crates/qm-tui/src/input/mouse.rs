@@ -57,6 +57,7 @@ impl App {
             MouseEventKind::Moved => self.hover_at(hit),
             MouseEventKind::Down(MouseButton::Left) => {
                 self.hover_at(hit);
+                self.change(|app| &mut app.view.pointer_picked, true);
                 self.left_press(hit, at, now);
             }
             MouseEventKind::Drag(MouseButton::Left) if self.settings_dragging() => {
@@ -88,7 +89,10 @@ impl App {
                 }
                 self.hover_at(hit);
             }
-            MouseEventKind::Down(MouseButton::Right) => self.right_press(hit, at),
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.change(|app| &mut app.view.pointer_picked, true);
+                self.right_press(hit, at);
+            }
             MouseEventKind::ScrollUp => self.wheel(at, true),
             MouseEventKind::ScrollDown => self.wheel(at, false),
             _ => {}
