@@ -83,9 +83,6 @@ pub enum Command {
     /// Run the setup check again: after an install or login in the setup screen's terminal pane
     /// finishes, and when you come back to the window.
     RecheckSetup,
-    /// You closed the setup check (Done, Not now, `Esc`): it opens by itself again only when
-    /// something it found changes.
-    SetupSeen,
     /// Your folder for a pending project proposal: the core checks it and updates the held action's
     /// stored payload, which is then what Approve performs.
     ChangeHeldLocation {
@@ -343,7 +340,8 @@ pub struct Snapshot {
     pub conversation: Vec<ChatLine>,
     /// The status bar's counts.
     pub attention: Attention,
-    /// What the setup check found missing; non-empty shows the one-line banner.
+    /// What the setup check found missing; non-empty shows the red dot on the menu and in
+    /// Settings.
     pub setup_issues: Vec<String>,
     /// Detail for each task the crew tree shows, for the task pane.
     pub tasks: Vec<TaskDetail>,
@@ -415,11 +413,6 @@ pub struct SetupView {
     /// Homebrew.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub homebrew: Option<String>,
-    /// Open the screen now: the first run, or something it found changed since you last closed
-    /// it.
-    pub prompt: bool,
-    /// `git` is missing: nothing works without it, so the check can't be put off.
-    pub blocking: bool,
     /// How many times the check has run since the app started: the UI waits for a higher number
     /// after asking for a re-check.
     pub generation: u64,
