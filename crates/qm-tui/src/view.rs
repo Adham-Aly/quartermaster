@@ -78,6 +78,9 @@ pub(crate) struct View {
     pub(crate) settings: crate::settings::SettingsView,
     /// The worker-session screen: its scroll, expanded lines and drafts.
     pub(crate) session: Option<crate::session::SessionUi>,
+    /// The sessions' expanded tool-call runs. Shared state, not per window: keyed by the run,
+    /// never by screen position, and kept when you leave a session.
+    pub(crate) tool_groups: std::collections::HashSet<crate::session::ToolGroupKey>,
     /// How far the Diff screen is scrolled down from its first line.
     pub(crate) diff_scroll: usize,
     /// The screen `?` opened Help from: `Esc` on Help goes back there.
