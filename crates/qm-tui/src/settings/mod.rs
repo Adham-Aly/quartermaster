@@ -324,11 +324,14 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
         body
     } else {
         draw_tabs(&mut p, body.x, body.y, view.tab);
+        // A rule under the tabs sets them apart from the tab's content.
+        let rule = "─".repeat(usize::from(body.width));
+        p.text(body.x, body.y + 1, &rule, theme::dim());
         Rect::new(
             body.x,
-            body.y + 1,
+            body.y + 2,
             body.width,
-            body.height.saturating_sub(1),
+            body.height.saturating_sub(2),
         )
     };
     // The page runs on below the screen; the painter scrolls and clips it.
@@ -367,7 +370,7 @@ fn draw_page(p: &mut Painter<'_, '_>, page: Rect, app: &App) {
     } else if view.connecting {
         connect::draw(p, page, app);
     } else if !view.loaded && matches!(view.tab, Tab::Accounts | Tab::ModelLevels | Tab::Routing) {
-        draw_loading(p, page, view.tab);
+        draw_loading(p, page);
     } else {
         match view.tab {
             Tab::Accounts => accounts::draw(p, page, app),
@@ -399,7 +402,7 @@ fn needs_core(view: &SettingsView) -> bool {
     view.connecting || matches!(view.tab, Tab::Accounts | Tab::ModelLevels | Tab::Routing)
 }
 
-/// The tab's box when the core's settings part didn't start: the reason, wrapped, in place of the
+/// The tab (or the connect flow's box) when the core's settings part didn't start: the reason, wrapped, in place of the
 /// tab.
 fn draw_unavailable(p: &mut Painter<'_, '_>, area: Rect, view: &SettingsView, reason: &str) {
     let title = if view.connecting {
@@ -410,7 +413,11 @@ fn draw_unavailable(p: &mut Painter<'_, '_>, area: Rect, view: &SettingsView, re
     let room = area.width.saturating_sub(4).max(1);
     let runs = [(reason.to_owned(), theme::warn())];
     let rows = cells(crate::text::wrap_styled(&runs, usize::from(room)).len());
-    let inner = boxed(p, area, title, rows, theme::dim(), theme::dim());
+    let inner = if view.connecting {
+        boxed(p, area, title, rows, theme::dim(), theme::dim())
+    } else {
+        section(area, rows)
+    };
     let text = Rect::new(
         inner.x + 1,
         inner.y,
@@ -420,9 +427,9 @@ fn draw_unavailable(p: &mut Painter<'_, '_>, area: Rect, view: &SettingsView, re
     paragraph(p, text, &runs);
 }
 
-/// The tab's box before the core has sent its settings: says so, rather than look empty.
-fn draw_loading(p: &mut Painter<'_, '_>, area: Rect, tab: Tab) {
-    let inner = boxed(p, area, tab.label(), 1, theme::dim(), theme::dim());
+/// The tab before the core has sent its settings: says so, rather than look empty.
+fn draw_loading(p: &mut Painter<'_, '_>, area: Rect) {
+    let inner = section(area, 1);
     p.text(inner.x + 1, inner.y, "Loading settings…", theme::dim());
 }
 
@@ -466,6 +473,18 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
         ),
         Tab::Projects => ("click a tab", "tab next · esc close"),
     }
+}
+
+/// A tab's content area: `rows` rows at the top of `area`, unframed. The popup's border and the
+/// tab bar already say where you are, so a tab draws flat, its text one cell in, in line with
+/// the tab labels.
+const fn section(area: Rect, rows: u16) -> Rect {
+    let height = if rows < area.height {
+        rows
+    } else {
+        area.height
+    };
+    Rect::new(area.x, area.y, area.width, height)
 }
 
 /// A rounded box titled `title`, `rows` rows of content tall (clamped to `area`); returns the

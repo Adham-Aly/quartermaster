@@ -3,7 +3,7 @@
 
 use super::model::{QuartermasterModel, Settings, effort_label};
 use super::paint::Painter;
-use super::{SettingsHit, boxed, paragraph};
+use super::{SettingsHit, boxed, paragraph, section};
 use crate::app::App;
 use crate::text::truncate;
 use crate::theme;
@@ -11,9 +11,12 @@ use qm_types::ids::ModelId;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-/// Where the second column starts, in cells from the box's inner left edge (its padding cell):
-/// 24 cells after the labels' start.
-const COLUMN: u16 = 25;
+/// Where the second column starts, in cells from the content's left edge: past the longest label
+/// ("Quartermaster") and a gap.
+const COLUMN: u16 = 17;
+
+/// Where a control's value starts, in cells after its label ("fallback" and a gap).
+const VALUE: u16 = 10;
 
 /// The notice shown here and on the Bridge while a pin is on, if it names a model.
 pub(crate) fn pin_notice(settings: &Settings) -> Option<String> {
@@ -32,13 +35,13 @@ pub(crate) fn pin_notice(settings: &Settings) -> Option<String> {
 pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let view = &app.view.settings;
     let settings = &view.model;
-    let inner = boxed(p, area, "Routing", 9, theme::dim(), theme::dim());
+    let inner = section(area, 11);
     let x = inner.x + 1;
     let col = inner.x + COLUMN;
     let right = inner.right().saturating_sub(1);
     let bold = theme::strong();
 
-    // The pin.
+    // The pin, then its model and fallback, one control a row.
     let y = inner.y;
     p.text(x, y, "Always use", bold);
     let switch = if settings.pin.on { "● On" } else { "○ Off" };
@@ -54,17 +57,19 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
             |id| format!("{} ▾", settings.model_name(id)),
         )
     };
-    let mut end = p.text(col + 1, y + 1, "model ", theme::dim());
-    end = p.button(
-        end,
+    control(
+        p,
+        col,
         y + 1,
+        "model",
         &choose(&settings.pin.model),
         SettingsHit::PinModel,
     );
-    end = p.text(end + 4, y + 1, "fallback ", theme::dim());
-    p.button(
-        end,
-        y + 1,
+    control(
+        p,
+        col,
+        y + 2,
+        "fallback",
         &choose(&settings.pin.fallback),
         SettingsHit::PinFallback,
     );
@@ -73,7 +78,7 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     }
 
     // The Quartermaster: its model and its effort, then what it runs on now.
-    let y = inner.y + 3;
+    let y = inner.y + 4;
     p.text(x, y, "Quartermaster", bold);
     let model = match &settings.quartermaster {
         QuartermasterModel::Model(id) => format!("{} ▾", settings.model_name(id)),
@@ -84,11 +89,16 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
         || String::from("Auto ▾"),
         |e| format!("{} ▾", effort_label(e)),
     );
-    let mut end = p.text(col + 1, y, "model ", theme::dim());
-    end = p.button(end, y, &model, SettingsHit::QuartermasterModel);
-    end = p.text(end + 4, y, "effort ", theme::dim());
-    p.button(end, y, &effort, SettingsHit::QuartermasterEffort);
-    let room = usize::from(right.saturating_sub(col + 1));
+    control(p, col, y, "model", &model, SettingsHit::QuartermasterModel);
+    control(
+        p,
+        col,
+        y + 1,
+        "effort",
+        &effort,
+        SettingsHit::QuartermasterEffort,
+    );
+    let room = usize::from(right.saturating_sub(col));
     let now = settings.quartermaster_now.as_ref().map_or_else(
         || String::from("now nothing yet"),
         |now| {
@@ -102,7 +112,7 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
             )
         },
     );
-    p.text(col + 1, y + 1, &truncate(&now, room), theme::text());
+    p.text(col, y + 2, &truncate(&now, room), theme::text());
     let explain = match (&settings.quartermaster, settings.quartermaster_effort) {
         (QuartermasterModel::Auto, None) => {
             "Auto tries high → medium → premium → low, at that tier's effort."
@@ -111,22 +121,15 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
         (_, None) => "Auto effort is its model's tier default.",
         _ => "Its model's supported levels cap the effort.",
     };
-    p.text(col + 1, y + 2, &truncate(explain, room), theme::dim());
-    p.text(
-        col + 1,
-        y + 3,
-        &truncate(
-            "Changes apply when it's next idle. Secondmates follow these settings.",
-            room,
-        ),
-        theme::dim(),
-    );
+    p.text(col, y + 3, &truncate(explain, room), theme::dim());
+    let applies = "Changes apply when it's next idle. Secondmates follow too.";
+    p.text(col, y + 4, &truncate(applies, room), theme::dim());
     if view.routing_row == 1 {
         p.select_row(inner, y);
     }
 
     // Decisions, not in this version.
-    let y = inner.y + 8;
+    let y = inner.y + 10;
     p.text(x, y, "Decisions", theme::dim().add_modifier(Modifier::BOLD));
     let left = p.text_left_of(right, y, "not in this version", theme::dim());
     let text = truncate(
@@ -138,7 +141,13 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     draw_notice(p, area, inner, settings);
 }
 
-/// The notice under the box while a pin is on.
+/// One labelled control on its own row: `label` dim at `col`, its button `VALUE` cells on.
+fn control(p: &mut Painter<'_, '_>, col: u16, y: u16, label: &str, value: &str, hit: SettingsHit) {
+    p.text(col, y, label, theme::dim());
+    p.button(col + VALUE, y, value, hit);
+}
+
+/// The notice under the tab while a pin is on.
 fn draw_notice(p: &mut Painter<'_, '_>, area: Rect, inner: Rect, settings: &Settings) {
     if let Some(notice) = pin_notice(settings) {
         // The card goes right under the box.

@@ -8,7 +8,7 @@ use super::model::{
     tier_label,
 };
 use super::paint::Painter;
-use super::{BoardItem, SettingsHit, Zone, boxed};
+use super::{BoardItem, SettingsHit, Zone, section};
 use crate::app::App;
 use crate::text::{cells, truncate, width};
 use crate::theme;
@@ -91,7 +91,7 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
         .map(|&t| 1 + cells(entries(settings, t).count().max(1)))
         .sum();
     let rows = tier_rows + 1 + unused_rows + 1;
-    let inner = boxed(p, area, "Model levels", rows, theme::dim(), theme::dim());
+    let inner = section(area, rows);
     // The board is indented two cells in from the padding.
     let x = inner.x + 3;
     let right = inner.right().saturating_sub(1);

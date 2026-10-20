@@ -5,7 +5,7 @@
 
 use super::model::{Account, AccountStatus};
 use super::paint::Painter;
-use super::{SettingsHit, boxed};
+use super::{SettingsHit, section};
 use crate::app::App;
 use crate::text::{cells, truncate, width, wrap};
 use crate::theme;
@@ -22,7 +22,7 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let line_room = usize::from(area.width.saturating_sub(8)).max(1);
     let rows: u16 = accounts.iter().map(|a| rows_of(a, line_room)).sum::<u16>()
         + if accounts.is_empty() { 3 } else { 1 };
-    let inner = boxed(p, area, "Accounts", rows, theme::dim(), theme::dim());
+    let inner = section(area, rows);
     let x = inner.x + 1;
     let right = inner.right().saturating_sub(1);
     let name_width = accounts

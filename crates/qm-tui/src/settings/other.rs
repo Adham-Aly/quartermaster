@@ -3,7 +3,7 @@
 //! to the setup check.
 
 use super::paint::Painter;
-use super::{SettingsHit, boxed};
+use super::{SettingsHit, section};
 use crate::app::App;
 use crate::text::{cells, truncate, width};
 use crate::theme;
@@ -13,7 +13,7 @@ use ratatui::layout::Rect;
 pub(super) fn draw_projects(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let projects = &app.snapshot.projects;
     let rows = cells(projects.len().max(1)) + 2;
-    let inner = boxed(p, area, "Projects", rows, theme::dim(), theme::dim());
+    let inner = section(area, rows);
     let x = inner.x + 1;
     let room = usize::from(inner.width.saturating_sub(2));
     if projects.is_empty() {
@@ -54,7 +54,7 @@ pub(super) fn draw_projects(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
 }
 
 pub(super) fn draw_system(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
-    let inner = boxed(p, area, "System", 5, theme::dim(), theme::dim());
+    let inner = section(area, 5);
     let x = inner.x + 1;
     let room = usize::from(inner.width.saturating_sub(2));
     let machine = if app.snapshot.machine.is_empty() {
