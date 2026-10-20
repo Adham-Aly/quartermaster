@@ -19,7 +19,7 @@ pub(super) struct Painter<'f, 'a> {
     pub(super) frame: &'f mut Frame<'a>,
     hits: &'f mut Hits,
     hover: Option<Hit>,
-    /// Selected rows are filled (the mouse wasn't used last; see `View::pointer_picked`).
+    /// Selected rows are filled, not only marked (see `View::pointer_picked`).
     fill_selection: bool,
     /// Nothing is drawn or recorded outside this (screen coordinates).
     clip: Rect,
