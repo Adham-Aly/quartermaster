@@ -331,9 +331,14 @@ pub fn turn_origins(
     Ok(out)
 }
 
-/// The visible lines of an agent's last `turns` turns, oldest first, for the summary a new session
-/// opens with: your messages that started them, and the replies, questions and acknowledgements
-/// written during them. App notes are left out.
+/// The last turn before the agent's latest `/clear` (`seat.cleared`), or 0: only turns after it
+/// count for a new session's summary.
+const CLEARED_AFTER: &str = "(SELECT COALESCE(MAX(json_extract(payload, '$.after_turn')), 0)
+       FROM events WHERE kind = 'seat.cleared' AND agent_id = ?1)";
+
+/// The visible lines of an agent's last `turns` turns since your last `/clear`, oldest first, for
+/// the summary a new session opens with: your messages that started them, and the replies,
+/// questions and acknowledgements written during them. App notes are left out.
 pub fn for_summary(
     conn: &Connection,
     agent: AgentId,
@@ -341,7 +346,8 @@ pub fn for_summary(
 ) -> Result<Vec<MessageRow>, StoreError> {
     let mut stmt = conn.prepare(&format!(
         "WITH recent AS (
-             SELECT id, message_id FROM turns WHERE agent_id = ?1 ORDER BY id DESC LIMIT ?2
+             SELECT id, message_id FROM turns WHERE agent_id = ?1 AND id > {CLEARED_AFTER}
+             ORDER BY id DESC LIMIT ?2
          )
          SELECT {COLUMNS} FROM messages
          WHERE agent_id = ?1 AND kind <> 'app_note'
@@ -355,10 +361,12 @@ pub fn for_summary(
     )
 }
 
-/// Whether the agent has had any turn before.
+/// Whether the agent has had any turn since your last `/clear` (or ever, if you never ran it).
 pub fn has_turns(conn: &Connection, agent: AgentId) -> Result<bool, StoreError> {
     Ok(conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM turns WHERE agent_id = ?1)",
+        &format!(
+            "SELECT EXISTS (SELECT 1 FROM turns WHERE agent_id = ?1 AND id > {CLEARED_AFTER})"
+        ),
         params![agent],
         |r| r.get(0),
     )?)

@@ -300,6 +300,9 @@ impl Seat {
         agent: AgentId,
         why: &OpenReason,
     ) -> Result<Option<String>, SeatError> {
+        let Some(reason) = summary_reason(why) else {
+            return Ok(None);
+        };
         let (had_turns, rows) = self
             .db
             .call(move |conn| {
@@ -313,7 +316,7 @@ impl Seat {
             return Ok(None);
         }
         let lines: Vec<SummaryLine> = rows.iter().filter_map(|m| self.summary_line(m)).collect();
-        Ok(Some(session_summary::render(summary_reason(why), &lines)))
+        Ok(Some(session_summary::render(reason, &lines)))
     }
 
     fn summary_line(&self, m: &MessageRow) -> Option<SummaryLine> {
@@ -339,14 +342,16 @@ impl Seat {
     }
 }
 
-/// The summary's reason for each way a session can be new.
-fn summary_reason(why: &OpenReason) -> &'static str {
-    match why {
+/// The summary's reason for each way a session can be new; `None` after `/clear`, which opens
+/// with no summary at all.
+fn summary_reason(why: &OpenReason) -> Option<&'static str> {
+    Some(match why {
         OpenReason::Startup => REASON_STARTUP,
         OpenReason::ResumeFailed { .. } => REASON_RESUME_FAILED,
         OpenReason::Closed { .. } => REASON_CLOSED,
         OpenReason::EngineSwitch => REASON_ENGINE_SWITCH,
-    }
+        OpenReason::Cleared => return None,
+    })
 }
 
 /// `seat.session_opened`'s `why`, with its detail.
@@ -358,6 +363,7 @@ fn why_payload(why: &OpenReason) -> serde_json::Value {
         }
         OpenReason::Closed { reason } => serde_json::json!({"why": "closed", "reason": reason}),
         OpenReason::EngineSwitch => serde_json::json!({"why": "engine_switch"}),
+        OpenReason::Cleared => serde_json::json!({"why": "cleared"}),
     }
 }
 

@@ -29,6 +29,9 @@ pub mod kind {
     pub const LIMIT_HIT: &str = "seat.limit_hit";
     pub const COMPACTED: &str = "seat.compacted";
     pub const END_CONVERSATION: &str = "seat.end_conversation";
+    /// You ran `/clear`: the payload's `after_turn` is the last turn before it (0 for none), and
+    /// a new session's summary covers only the turns after it.
+    pub const CLEARED: &str = "seat.cleared";
 }
 
 /// The reason a turn the app stopped in the middle of is marked with at startup.
@@ -376,6 +379,30 @@ fn clamp(n: u64) -> i64 {
 pub fn record_event(conn: &Connection, e: &SeatEvent) -> Result<EventId, StoreError> {
     insert_event(
         conn, e.kind, e.agent, None, e.turn, &e.summary, &e.payload, e.at,
+    )
+}
+
+/// Records `seat.cleared` for `agent` (you ran `/clear`), with the last turn before it.
+pub fn record_cleared(
+    conn: &Connection,
+    agent: AgentId,
+    summary: &str,
+    at: Timestamp,
+) -> Result<EventId, StoreError> {
+    let after_turn: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(id), 0) FROM turns WHERE agent_id = ?1",
+        params![agent],
+        |r| r.get(0),
+    )?;
+    insert_event(
+        conn,
+        kind::CLEARED,
+        agent,
+        None,
+        None,
+        summary,
+        &serde_json::json!({ "after_turn": after_turn }),
+        at,
     )
 }
 
