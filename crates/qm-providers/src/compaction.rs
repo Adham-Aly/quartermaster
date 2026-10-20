@@ -24,6 +24,9 @@ use crate::transcript::{AssistantBlock, Block, Message};
 pub const RESERVE_TOKENS: u64 = 16_384;
 /// About how many of the newest tokens a compaction keeps.
 pub const KEEP_RECENT_TOKENS: u64 = 20_000;
+/// About how many of the newest tokens a compaction you asked for (`/compact`) keeps: little
+/// more than the last exchange, since you asked to make room.
+pub const ON_REQUEST_KEEP_TOKENS: u64 = 2_000;
 /// What an image counts as, in characters, for the estimate.
 const IMAGE_CHARS: u64 = 4_800;
 /// The longest tool result the summary request quotes, in characters.

@@ -73,6 +73,8 @@ const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(10);
 const MIRROR_FALLBACK: Duration = Duration::from_millis(500);
 /// How long stdout is drained after an unrequested exit.
 const CRASH_DRAIN: Duration = Duration::from_millis(200);
+/// The message that makes `claude` compact its conversation (`SessionCommand::Compact`).
+const COMPACT_COMMAND: &str = "/compact";
 
 /// One session's task. Built by `ClaudeEngine::open` and run on the Tokio runtime.
 // The flags are independent facts that overlap (a session can be closing while its process
@@ -732,6 +734,16 @@ impl Session {
                     self.write_set_model(model.as_str());
                 } else if self.proc.is_some() {
                     self.pending_model = Some(model.as_str().to_owned());
+                }
+            }
+            SessionCommand::Compact => {
+                if self.turn.is_some() {
+                    // The core sends it only between turns.
+                    tracing::warn!("Compact arrived during a turn; ignored");
+                } else {
+                    // A user message that is only `/compact` runs `claude`'s own compaction: a
+                    // turn with a `compact_boundary` and a `result`, and no model text.
+                    self.begin_turn(TurnInput::text(COMPACT_COMMAND)).await;
                 }
             }
             SessionCommand::Close => self.on_close().await,

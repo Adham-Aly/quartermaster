@@ -205,6 +205,25 @@ pub enum Command {
         #[serde(default)]
         agent: Option<AgentRef>,
     },
+    // ---- The Quartermaster's slash commands. ----
+    /// A slash command you ran in the Quartermaster's chat. It waits behind a running turn and
+    /// your queued messages, in order; the chat says what it did.
+    RunSlashCommand {
+        slash: SlashCommand,
+    },
+}
+
+/// The Quartermaster's slash commands. The UI's command menu lists them (with their names and
+/// descriptions, in `qm-tui`); the core runs them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SlashCommand {
+    /// `/clear`: end the Quartermaster's session and start a new one with an empty conversation
+    /// (no summary of earlier turns).
+    Clear,
+    /// `/compact`: compact the Quartermaster's conversation now.
+    Compact,
 }
 
 /// Text that must never be shown or logged, such as an API key on its way to the credential

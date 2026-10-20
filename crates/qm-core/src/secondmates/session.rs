@@ -145,6 +145,9 @@ impl SecondmateSeat {
         agent: AgentId,
         why: &OpenReason,
     ) -> Result<Option<String>, SeatError> {
+        if *why == OpenReason::Cleared {
+            return Ok(None);
+        }
         let (had_turns, rows) = self
             .svc
             .db()
@@ -164,6 +167,7 @@ impl SecondmateSeat {
             OpenReason::ResumeFailed { .. } => REASON_RESUME_FAILED,
             OpenReason::Closed { .. } => REASON_CLOSED,
             OpenReason::EngineSwitch => REASON_ENGINE_SWITCH,
+            OpenReason::Cleared => return Ok(None),
         };
         Ok(Some(session_summary::render(reason, &lines)))
     }

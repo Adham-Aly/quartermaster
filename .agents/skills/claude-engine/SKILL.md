@@ -86,6 +86,9 @@ undocumented: after a `claude` update, check no socket opens.
 - **Self-started turns.** A `system/init` with no turn running is a turn `claude` started by
   itself (after a background task finished): it is interrupted before the model acts. Never
   interrupt a queued message's second query.
+- **`/compact`.** `SessionCommand::Compact` is a user message that is only `/compact`: `claude`
+  runs its own compaction as a turn (`compact_boundary`, then a `result` with no text). On a
+  conversation too short to compact the turn ends with no `compact_boundary`.
 - Text is committed line by line; silent work is reported as `Activity` at most every 30 s.
 - `--settings` turns off Claude Code's own commit and PR attribution.
 

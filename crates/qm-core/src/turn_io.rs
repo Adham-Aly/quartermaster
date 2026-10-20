@@ -9,6 +9,7 @@
 use qm_engine::{EngineError, InitReport, SessionHandle};
 use qm_store::StoreError;
 use qm_types::BoxFuture;
+use qm_types::api::SlashCommand;
 use qm_types::ids::{AgentId, MessageId, SessionRef, TurnId};
 use std::fmt;
 use tokio::sync::{mpsc, watch};
@@ -33,6 +34,8 @@ pub mod event_kind {
     pub const SESSION_OPENED: &str = "seat.session_opened";
     /// The model called Claude's `EndConversation`; the seat reopened its session.
     pub const END_CONVERSATION: &str = "seat.end_conversation";
+    /// You ran `/clear`: the session was replaced by one with an empty conversation.
+    pub const CLEARED: &str = "seat.cleared";
 }
 
 /// Why the loop asks for a session.
@@ -47,6 +50,9 @@ pub enum OpenReason {
     Closed { reason: String },
     /// The seat's model moved to another engine.
     EngineSwitch,
+    /// You ran `/clear`: a new session with an empty conversation, and no summary of earlier
+    /// turns.
+    Cleared,
 }
 
 /// A session the loop can drive.
@@ -181,6 +187,9 @@ pub enum SeatInput {
     Wake,
     /// `Esc`: stop the running turn, keep the session.
     Interrupt,
+    /// A slash command you ran (`/clear`, `/compact`): it waits behind a running turn and your
+    /// queued messages, in order.
+    Slash(SlashCommand),
     /// The app is quitting: interrupt a running turn, record it, close the session, and end the
     /// loop.
     Shutdown,

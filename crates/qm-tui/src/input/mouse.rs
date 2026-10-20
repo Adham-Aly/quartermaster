@@ -112,6 +112,9 @@ impl App {
         if let Some(Hit::MenuItem(i)) = hit {
             self.set_menu_cursor(i);
         }
+        if let Some(Hit::SlashItem(i)) = hit {
+            self.set_slash_cursor(i);
+        }
         self.change(|app| &mut app.hover, hit);
     }
 
@@ -196,6 +199,7 @@ impl App {
             Hit::Setup(hit) => self.setup_click(hit, now),
             Hit::Session(hit) => self.session_click(hit),
             Hit::Diff(hit) => self.diff_click(hit),
+            Hit::SlashItem(i) => self.run_slash_row(i),
             Hit::MenuItem(_) | Hit::Dialog => {}
             Hit::MenuButton
             | Hit::Popup(_)

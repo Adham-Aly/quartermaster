@@ -10,7 +10,7 @@ use crate::hit::{Divider, FrameMap, Hit, Pane};
 use crate::router::Screen;
 use crate::text::{cells, wrap};
 use crate::theme;
-use crate::widgets::{conversation, crew, input_box, projects, selection, task};
+use crate::widgets::{conversation, crew, input_box, projects, selection, slash_menu, task};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -113,6 +113,10 @@ pub(crate) fn draw_body(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut 
     };
     map.conversation_scroll_max = conversation::draw(frame, conversation_area, app, map);
     input_box::draw(frame, input_area, app, map);
+    // The slash-command menu sits on the conversation, just above the input box.
+    if let Some(menu) = app.slash_menu() {
+        slash_menu::draw(frame, conversation_area, input_area, &menu, app, map);
+    }
 
     // Right column: the selected task.
     if let Some(task_area) = cols.right {

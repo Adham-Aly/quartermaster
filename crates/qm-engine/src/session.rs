@@ -31,6 +31,9 @@ pub enum SessionCommand {
     /// Switch model at the next idle moment, within this engine. Moving between engines is a new
     /// session instead.
     SetModel { model: ModelId },
+    /// Compact the conversation now, as you asked (`/compact`): the engine runs it as a turn of
+    /// its own (rule 7 of [`EngineEvent`]'s order). Sent only between turns.
+    Compact,
     /// End the session.
     Close,
 }
@@ -117,6 +120,10 @@ impl SessionHandle {
 
     pub fn tool_result(&self, call: ToolCallId, result: ToolResult) -> Result<(), EngineError> {
         self.send(SessionCommand::ToolResult { call, result })
+    }
+
+    pub fn compact(&self) -> Result<(), EngineError> {
+        self.send(SessionCommand::Compact)
     }
 
     pub fn interrupt(&self) -> Result<(), EngineError> {

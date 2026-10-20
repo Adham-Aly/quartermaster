@@ -104,6 +104,10 @@ impl App {
         {
             return;
         }
+        // The slash-command menu takes its keys (Tab included) before focus and the editor.
+        if self.on_slash_key(key) {
+            return;
+        }
         if key.code == KeyCode::Esc {
             self.escape();
             return;

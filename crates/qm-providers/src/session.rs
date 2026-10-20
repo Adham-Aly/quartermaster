@@ -79,7 +79,8 @@ pub(crate) struct Session {
     jobs: Jobs,
     pub(crate) context: Context,
     pub(crate) file: SessionFile,
-    queued_turns: VecDeque<TurnInput>,
+    /// Turns and compactions that wait for the running turn to end, in order.
+    queued_turns: VecDeque<Queued>,
     pub(crate) steering: Vec<TurnInput>,
     /// Results the core sent for our pending tool calls, by call ID.
     pub(crate) pending_results: HashMap<String, Option<ToolResult>>,
@@ -87,6 +88,14 @@ pub(crate) struct Session {
     pub(crate) in_turn: bool,
     /// The last rate-limit status reported per window, so only changes are reported.
     pub(crate) rate_limits: HashMap<String, RateLimitStatus>,
+}
+
+/// What waits to run after the current turn.
+#[derive(Debug)]
+enum Queued {
+    Turn(TurnInput),
+    /// A compaction you asked for (`SessionCommand::Compact`).
+    Compact,
 }
 
 /// Job bookkeeping, so each job gets exactly one `JobStarted` and one `JobFinished`.
@@ -337,10 +346,18 @@ impl Session {
                 self.close().await;
                 return;
             }
-            if let Some(input) = self.queued_turns.pop_front() {
-                self.run_turn(input).await;
-                self.after_turn().await;
-                continue;
+            match self.queued_turns.pop_front() {
+                Some(Queued::Turn(input)) => {
+                    self.run_turn(input).await;
+                    self.after_turn().await;
+                    continue;
+                }
+                Some(Queued::Compact) => {
+                    self.run_compaction().await;
+                    self.after_turn().await;
+                    continue;
+                }
+                None => {}
             }
             tokio::select! {
                 command = self.commands.recv() => self.idle_command(command),
@@ -354,8 +371,9 @@ impl Session {
         match command {
             None | Some(SessionCommand::Close) => self.close_requested = true,
             Some(SessionCommand::StartTurn { input } | SessionCommand::Inject { input }) => {
-                self.queued_turns.push_back(input);
+                self.queued_turns.push_back(Queued::Turn(input));
             }
+            Some(SessionCommand::Compact) => self.queued_turns.push_back(Queued::Compact),
             Some(SessionCommand::ToolResult { call, .. }) => {
                 tracing::debug!(
                     call = call.as_str(),
@@ -383,7 +401,12 @@ impl Session {
             Some(SessionCommand::Interrupt) => Some(Cancel::Interrupt),
             Some(SessionCommand::StartTurn { input }) => {
                 tracing::warn!("StartTurn during a turn; queued for after it");
-                self.queued_turns.push_back(input);
+                self.queued_turns.push_back(Queued::Turn(input));
+                None
+            }
+            Some(SessionCommand::Compact) => {
+                tracing::warn!("Compact during a turn; queued for after it");
+                self.queued_turns.push_back(Queued::Compact);
                 None
             }
             Some(SessionCommand::Inject { input }) => {
@@ -425,7 +448,7 @@ impl Session {
             }
         }
         for input in self.steering.drain(..) {
-            self.queued_turns.push_back(input);
+            self.queued_turns.push_back(Queued::Turn(input));
         }
     }
 
