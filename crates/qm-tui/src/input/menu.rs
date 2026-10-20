@@ -1,19 +1,17 @@
-//! Context menus: their items, drawing them, and running the choice.
+//! Context menus and the top bar's menu: their items, drawing them (through
+//! `widgets::dropdown`), and running the choice.
 //!
 //! Menus offer only items that work (open session, stop, the model actions on the Settings
 //! board, …).
 
 use crate::app::App;
 use crate::hit::{Hit, Hits};
-use crate::text;
-use crate::theme;
+use crate::popups::{self, Anchor, MenuEntry, Placement};
 use crate::view::{Menu, MenuTarget};
+use crate::widgets::dropdown::{self, Item};
 use qm_types::api::{AgentRef, Command};
 use ratatui::Frame;
-use ratatui::layout::{Position, Rect};
-use ratatui::style::Modifier;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::layout::Position;
 use std::time::Instant;
 
 const OPEN_SESSION: &str = "Open session";
@@ -36,97 +34,80 @@ pub(crate) fn items(target: MenuTarget, turn_running: bool) -> Vec<&'static str>
         MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_) => {
             crate::settings::menu_items(target)
         }
+        MenuTarget::Main => MenuEntry::ALL.into_iter().map(MenuEntry::label).collect(),
     }
 }
 
-/// Where a menu of `items` opened at `at` sits: right of the pointer with its first item on the
-/// pointer's row, shifted to stay inside `screen`.
-pub(crate) fn area(items: &[&str], at: Position, screen: Rect) -> Rect {
-    let widest = items
+/// The rows of `menu` as drawn: the top bar's menu with each entry's key and badge.
+fn rows<'a>(app: &App, menu: &'a Menu) -> Vec<Item<'a>> {
+    menu.items
         .iter()
-        .map(|item| text::width(item))
-        .max()
-        .unwrap_or(0);
-    // A border and one cell of padding on each side.
-    let width = text::cells(widest + 4).min(screen.width);
-    let height = text::cells(items.len() + 2).min(screen.height);
-    let x = at.x.min(screen.right().saturating_sub(width)).max(screen.x);
-    let y =
-        at.y.saturating_sub(1)
-            .min(screen.bottom().saturating_sub(height))
-            .max(screen.y);
-    Rect::new(x, y, width, height)
-}
-
-/// Draws the open menu over everything beneath it, and records its regions: `Dialog` over the
-/// whole box, then one `MenuItem` per row.
-pub(crate) fn draw(frame: &mut Frame<'_>, menu: &Menu, hits: &mut Hits) {
-    let area = area(&menu.items, menu.at, frame.area());
-    frame.render_widget(Clear, area);
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme::accent());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    hits.add(area, Hit::Dialog);
-    let inner_width = usize::from(inner.width);
-    let lines: Vec<Line<'static>> = menu
-        .items
-        .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            let label = text::truncate(&format!(" {item}"), inner_width);
-            let pad = inner_width.saturating_sub(text::width(&label));
-            let style = if i == menu.cursor {
-                theme::text().add_modifier(Modifier::REVERSED)
-            } else {
-                theme::text()
-            };
-            Line::from(Span::styled(format!("{label}{}", " ".repeat(pad)), style))
+        .map(|&label| match menu.target {
+            MenuTarget::Main => MenuEntry::from_label(label).map_or(Item::new(label), |entry| {
+                Item::new(label)
+                    .hint(entry.key())
+                    .badge(app.entry_badge(entry))
+            }),
+            _ => Item::new(label),
         })
-        .collect();
-    frame.render_widget(Paragraph::new(lines), inner);
-    for i in 0..menu.items.len() {
-        let Ok(row) = u16::try_from(i) else { break };
-        if row >= inner.height {
-            break;
+        .collect()
+}
+
+/// Draws the open menu over everything beneath it, placed against its anchor in this frame, and
+/// records its regions: `Dialog` over the whole box, then one `MenuItem` per row. Returns `false`
+/// (drawing nothing) when the row it is anchored to isn't drawn any more.
+pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, menu: &Menu, hits: &mut Hits) -> bool {
+    let rows = rows(app, menu);
+    let screen = frame.area();
+    let Some(placement) = popups::resolve(menu.anchor, Some(menu.target.row()), hits, screen)
+    else {
+        return false;
+    };
+    let at = match placement {
+        Placement::At(at) => at,
+        Placement::Centred => {
+            let size = dropdown::area(&rows, Position::new(0, 1), screen);
+            Position::new(
+                screen.x + screen.width.saturating_sub(size.width) / 2,
+                screen.y + screen.height.saturating_sub(size.height) / 2 + 1,
+            )
         }
-        hits.add(
-            Rect::new(inner.x, inner.y + row, inner.width, 1),
-            Hit::MenuItem(i),
-        );
-    }
+    };
+    let area = dropdown::area(&rows, at, screen);
+    dropdown::draw(frame, area, &rows, menu.cursor, hits, Hit::MenuItem);
+    true
 }
 
 impl App {
-    /// Opens the menu on `target` at `at`, unless it would be empty.
-    pub(crate) fn open_menu(&mut self, target: MenuTarget, at: Position) {
+    /// Opens the menu on `target` against `anchor`, unless it would be empty.
+    pub(crate) fn open_menu(&mut self, target: MenuTarget, anchor: Anchor) {
         let items = items(target, self.snapshot.turn_running);
         if items.is_empty() {
             return;
         }
         let menu = Menu {
             target,
-            at,
+            anchor,
             items,
             cursor: 0,
         };
         self.change(|app| &mut app.view.menu, Some(menu));
     }
 
-    /// Selects a row and opens its menu (right-click, or `Space` from the keyboard): at the
-    /// pointer for a click, under the row for `Space`.
-    pub(crate) fn open_menu_for_row(&mut self, target: MenuTarget, row: Hit) {
+    /// Selects a row and opens its menu (`Space` from the keyboard), under the row's label.
+    pub(crate) fn open_menu_for_row(&mut self, target: MenuTarget) {
         self.select_target(target);
-        let at = self
-            .drawn
-            .hits
-            .rect_of(row)
-            .map_or(Position::new(0, 0), |area| {
-                Position::new(area.x + 2, area.y + 1)
-            });
-        self.open_menu(target, at);
+        self.open_menu(target, Anchor::Row { dx: 2, dy: 1 });
+    }
+
+    /// The anchor for a menu on `target` opened at the pointer `at` (a right-click): its first
+    /// item on the pointer's row, as far into the target's row as the pointer was.
+    pub(crate) fn anchor_at(&self, target: MenuTarget, at: Position) -> Anchor {
+        let row = self.drawn.hits.rect_of(target.row());
+        row.map_or(Anchor::Row { dx: 0, dy: 0 }, |row| Anchor::Row {
+            dx: at.x.saturating_sub(row.x),
+            dy: at.y.saturating_sub(row.y),
+        })
     }
 
     /// Selects the row a menu acts on.
@@ -137,6 +118,7 @@ impl App {
             MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_) => {
                 self.settings_select_target(target);
             }
+            MenuTarget::Main => {}
         }
     }
 
@@ -173,6 +155,11 @@ impl App {
             (COPY_NAME, MenuTarget::Project(i)) => {
                 if let Some(name) = self.snapshot.projects.get(i).map(|p| p.name.clone()) {
                     self.copy(&name, now);
+                }
+            }
+            (item, MenuTarget::Main) => {
+                if let Some(entry) = MenuEntry::from_label(item) {
+                    self.choose_entry(entry);
                 }
             }
             (item, MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_)) => {
