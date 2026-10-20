@@ -58,12 +58,14 @@ pub fn build(data: &CrewData, now: Timestamp) -> CrewView {
         } else {
             SECONDMATE_IDLE
         };
-        view.crew.push(CrewRow::new(
+        let mut row = CrewRow::new(
             AgentRef::Secondmate { id: secondmate.id },
             1,
             format!("{} {}", secondmate.id, secondmate.name),
             status,
-        ));
+        );
+        row.busy = secondmate.working;
+        view.crew.push(row);
         let Some(agent) = secondmate.agent else {
             continue;
         };
@@ -123,6 +125,7 @@ fn push_task(view: &mut CrewView, task: &OpenTask, depth: u8, now: Timestamp) {
     );
     row.waiting = waiting;
     row.needs_you = waiting.is_some();
+    row.busy = task.in_turn;
     view.crew.push(row);
     view.tasks.push(detail(task, &status, waiting, now));
 }

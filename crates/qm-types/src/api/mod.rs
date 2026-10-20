@@ -335,6 +335,10 @@ pub struct Snapshot {
     /// on.
     #[serde(default)]
     pub bell: u64,
+    /// The Quartermaster is in a turn and hasn't written anything in it yet: the conversation
+    /// shows the busy indicator where its words will appear.
+    #[serde(default)]
+    pub thinking: bool,
 }
 
 /// What the Diff screen shows for one held merge, push or in-place merge: the stat and the patch
@@ -584,6 +588,9 @@ pub struct CrewRow {
     /// Which card the flag stands for: an approval (accent) or a decision (warning colour).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<Waiting>,
+    /// The agent is in a turn right now: the row's glyph is the busy indicator.
+    #[serde(default)]
+    pub busy: bool,
 }
 
 impl CrewRow {
@@ -601,6 +608,7 @@ impl CrewRow {
             status: status.into(),
             needs_you: false,
             waiting: None,
+            busy: false,
         }
     }
 }
@@ -903,6 +911,10 @@ pub struct SessionView {
     /// first line. Empty for a crewmate.
     #[serde(default)]
     pub subtitle: String,
+    /// A secondmate is in a turn and hasn't written anything in it yet: its conversation shows
+    /// the busy indicator. A crewmate's session shows it from `turn_running` and `lines`.
+    #[serde(default)]
+    pub thinking: bool,
 }
 
 impl SessionView {
@@ -919,6 +931,7 @@ impl SessionView {
             placeholder: String::new(),
             conversation: Vec::new(),
             subtitle: String::new(),
+            thinking: false,
         }
     }
 }

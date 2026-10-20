@@ -1,10 +1,10 @@
 //! The conversation with the Quartermaster: message headers by source, acknowledgement ticks,
-//! queued messages, cards, and scrolling.
+//! queued messages, cards, the busy indicator while it thinks, and scrolling.
 //!
 //! Content is top-aligned while it fits and pinned to the newest line once it overflows; you
 //! scroll up from there (`App::scroll_from_bottom`).
 
-use super::{card, markdown, stream};
+use super::{card, markdown, spinner, stream};
 use crate::app::App;
 use crate::bridge::{empty_lines, pane_block, pane_style};
 use crate::hit::{FrameMap, Hit, Pane, TextRow};
@@ -105,7 +105,8 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
     if inner.height == 0 || inner.width == 0 {
         return 0;
     }
-    if app.snapshot.conversation.is_empty() {
+    let thinking = app.snapshot.thinking;
+    if app.snapshot.conversation.is_empty() && !thinking {
         let lines = empty_lines(
             &[
                 "No messages yet.",
@@ -121,12 +122,15 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
         );
         return 0;
     }
-    let rows = rows(
+    let mut rows = rows(
         &app.snapshot.conversation,
         inner.width,
         app.hover,
         &Voices::QUARTERMASTER,
     );
+    if thinking {
+        rows.extend(thinking_rows(&app.snapshot.conversation, app));
+    }
     let visible = usize::from(inner.height);
     let max = rows.len().saturating_sub(visible);
     let offset = app.scroll_from_bottom.min(max);
@@ -166,6 +170,21 @@ pub(crate) fn rows(
         }
         out.extend(message_rows(chat, width, hover, voices));
     }
+    out
+}
+
+/// The busy indicator under a conversation whose agent is in a turn and hasn't written yet: right
+/// under your message, on the row the reply's header will take; after a blank row otherwise, as
+/// any other message would be.
+pub(crate) fn thinking_rows(chats: &[ChatLine], app: &App) -> Vec<Row> {
+    let answering = chats
+        .last()
+        .is_none_or(|c| c.source == MessageSource::You && c.card.is_none() && !c.queued);
+    let mut out = Vec::new();
+    if !answering {
+        out.push(Row::plain(Line::default()));
+    }
+    out.push(Row::plain(spinner::line(app, "thinking")));
     out
 }
 

@@ -350,6 +350,7 @@ impl TurnLoop {
             .await?;
         self.turn_running = false;
         self.running_message = None;
+        self.running_turn = None;
         self.deps.chat.changed();
         self.publish();
 

@@ -40,6 +40,9 @@ pub const DECISION: &str = "decision";
 /// The value of [`ENV`] that shows the sample worker session.
 pub const SESSION: &str = "session";
 
+/// The value of [`ENV`] that shows the Bridge sample with the Quartermaster thinking.
+pub const THINKING: &str = "thinking";
+
 /// Puts the sample worker session into `app`: T-0042's session open over the Bridge sample, the
 /// input focused and empty. Nothing waits for you.
 pub(crate) fn install_session(app: &mut App) {
@@ -130,6 +133,7 @@ pub(crate) fn install_from_env(app: &mut App) -> bool {
         Ok(BRIDGE) => install(app),
         Ok(CHAT) => install_chat(app),
         Ok(SESSION) => install_session(app),
+        Ok(THINKING) => install_thinking(app),
         Ok(DECISION) => install_decision(app),
         Ok(SECONDMATE) => install_secondmate(app),
         _ => return false,
@@ -206,6 +210,37 @@ pub(crate) fn install_chat(app: &mut App) {
     app.focus = Pane::Input;
     app.draft.text = String::new();
     app.view.card = None;
+}
+
+/// Puts the thinking sample into `app`: the sample Bridge after you sent your reply, the
+/// Quartermaster in a turn that hasn't written anything yet, the input focused and empty.
+pub(crate) fn install_thinking(app: &mut App) {
+    install(app);
+    app.snapshot = thinking();
+    app.focus = Pane::Input;
+    app.draft.text = String::new();
+    app.view.card = None;
+}
+
+/// The thinking sample's data: the sample Bridge, your reply to its card sent, the
+/// Quartermaster's row busy.
+#[doc(hidden)]
+pub fn thinking() -> Snapshot {
+    let mut out = snapshot();
+    out.conversation.push(ChatLine::new(
+        MessageId::new(3),
+        MessageSource::You,
+        MessageKind::Message,
+        at(14, 3),
+        "yes, start the rate limiting build",
+    ));
+    out.turn_running = true;
+    out.thinking = true;
+    if let Some(root) = out.crew.first_mut() {
+        "working".clone_into(&mut root.status);
+        root.busy = true;
+    }
+    out
 }
 
 /// Puts the sample Bridge into `app`: the data, the crew pane focused with T-0042 selected, and
@@ -288,14 +323,19 @@ fn crew() -> Vec<CrewRow> {
     let secondmate = AgentRef::Secondmate {
         id: SecondmateId::new(2).expect("secondmate ids start at 1"),
     };
+    // T-0042 and T-0045 are in a turn; T-0046 runs but sits between turns.
+    let busy = |mut row: CrewRow| {
+        row.busy = true;
+        row
+    };
     vec![
         CrewRow::new(AgentRef::Quartermaster, 0, "Quartermaster", "ready"),
-        CrewRow::new(task(42), 1, "T-0042 fix", "12m"),
+        busy(CrewRow::new(task(42), 1, "T-0042 fix", "12m")),
         CrewRow::new(task(46), 1, "T-0046 review", "2m"),
         approve,
         decide,
         CrewRow::new(secondmate, 1, "SM-02 web-app", "idle"),
-        CrewRow::new(task(45), 2, "T-0045 build", "3m"),
+        busy(CrewRow::new(task(45), 2, "T-0045 build", "3m")),
     ]
 }
 
