@@ -3,8 +3,10 @@
 use super::facts::{self, Fact};
 use super::land_pr::moved;
 use super::{Landing, Origin, SettleError, SettlingService};
+use crate::delivery::models;
 use qm_git::{InPlaceMerge, InPlaceOutcome, Repo};
 use qm_policy::delivery::check_checkout_clean;
+use qm_policy::names::{Boundary, check_commits};
 use qm_store::held::MergePayload;
 use qm_types::domain::TaskStatus;
 use qm_types::ids::{CommitSha, TaskId};
@@ -44,8 +46,39 @@ pub async fn merge_in_place(
         let reason = format!("{task} is {}, not settling", loaded.row.status);
         return refused(svc, task, head, reason, false, origin).await;
     }
+    // The task's own commit names again, on exactly the approved head.
+    let models = svc
+        .delivery()
+        .read(|conn| models(conn))
+        .await
+        .map_err(|e| SettleError::Failed(e.render()))?;
     let git = svc.delivery().git();
     let checkout_path = PathBuf::from(checkout);
+    let (names_git, names_path, names_head, names_target) = (
+        git.clone(),
+        checkout_path.clone(),
+        head.clone(),
+        loaded.target(),
+    );
+    let own = tokio::task::spawn_blocking(move || {
+        Repo::open(names_git, &names_path)?.own_commits(&names_head, &names_target)
+    })
+    .await
+    .map_err(|e| SettleError::Failed(e.to_string()))?;
+    let names = match own {
+        Ok(own) => check_commits(
+            own.commits.iter().map(|(_, m)| m.as_str()),
+            &models,
+            Boundary::LandingInPlace,
+        )
+        .map_err(|r| r.reason),
+        Err(e) => Err(format!(
+            "the task's commit names couldn't be read from git ({e}), so they can't be checked"
+        )),
+    };
+    if let Err(reason) = names {
+        return refused(svc, task, head, reason, false, origin).await;
+    }
     let message = in_place_message(branch, &loaded.row.title);
     let (b, h, t) = (branch.clone(), head.clone(), target_branch.clone());
     // Under the repository lock, exactly the approved commit into exactly the approved branch of a

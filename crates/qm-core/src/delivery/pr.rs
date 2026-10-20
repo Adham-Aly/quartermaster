@@ -5,7 +5,7 @@ use super::{DeliveryService, callers_task, missing_body_headings, models};
 use crate::held::HeldService;
 use crate::inbox::Inbox;
 use crate::tasks::lifecycle::{TaskEvent, next};
-use crate::tasks::{failed, new_wake, refuse};
+use crate::tasks::{failed, new_wake, own_commits_failure, refuse};
 use qm_git::{ORIGIN, Repo};
 use qm_github::PrState as GhState;
 use qm_policy::merge_gate::check_pr_open;
@@ -54,32 +54,29 @@ pub(crate) async fn open(
     };
     let target = loaded.target();
 
-    // The worktree's head and the commit names since the base, off the async threads.
+    // The worktree's head and the task's own commit names, off the async threads.
     let git = svc.git();
     let checkout = loaded.project.path.clone();
     let worktree = svc.tasks().deps().data_dir.task(task).worktree;
-    let base = row.base_commit.clone();
-    let (head, messages) = tokio::task::spawn_blocking(move || {
+    let branch = target.clone();
+    let (head, own) = tokio::task::spawn_blocking(move || {
         let repo = Repo::open(git, &checkout)?;
-        let head = repo.worktree_head(&worktree)?;
-        let messages = match &base {
-            Some(base) => repo.commit_messages(&worktree, base)?,
-            None => Vec::new(),
+        let Some(head) = repo.worktree_head(&worktree)? else {
+            return Ok(None);
         };
-        Ok::<_, qm_git::GitError>((head, messages))
+        let own = repo.own_commits(&head, &branch)?;
+        Ok::<_, qm_git::GitError>(Some((head, own)))
     })
     .await
     .map_err(|e| failed(&e))?
-    .map_err(|e| failed(&e))?;
-    let Some(head) = head else {
-        return Err(refuse(
-            "your branch has no commit yet; commit your work first",
-        ));
-    };
+    .map_err(|e| own_commits_failure(&e))?
+    .ok_or_else(|| refuse("your branch has no commit yet; commit your work first"))?;
+    let messages = own.commits;
     if messages.is_empty() {
-        return Err(refuse(
-            "your branch has no commits since its base; commit your work before pr_open",
-        ));
+        return Err(refuse(format!(
+            "your branch has no commits of its own on top of {}; commit your work before pr_open",
+            own.against
+        )));
     }
 
     // The body: the five headings at standard and reviewed, optional at quick.

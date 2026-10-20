@@ -21,7 +21,7 @@
 //! - [`Repo::retire`] saves unmerged work to the kept ref, then removes the worktree and branch,
 //!   crash-safe and idempotent.
 //! - [`Repo::reattach_worktree`] adds a vanished worktree back on its existing branch.
-//! - [`Repo::worktree_head`], [`Repo::commit_messages`] and [`Repo::changed_files`] read a task's
+//! - [`Repo::worktree_head`], [`Repo::own_commits`] and [`Repo::changed_files`] read a task's
 //!   head, commit messages and changed files for its report and reviews.
 //! - [`reconcile`] matches worktrees on disk against tasks at startup and deletes nothing.
 //!
@@ -45,6 +45,7 @@ mod worktree;
 pub use base::{BaseRequest, BaseSource, SettledBase};
 pub use error::{BaseRefusal, GitError};
 pub use git::Git;
+pub use inspect::OwnCommits;
 pub use land::{DiffStat, InPlaceMerge, InPlaceOutcome, PushCredential, PushOutcome, PushSpec};
 pub use network::RepoTransportSetting;
 pub use reconcile::{

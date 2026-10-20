@@ -369,39 +369,6 @@ impl Repo {
         }
     }
 
-    /// Every commit reachable from `head` but not from `base`, oldest first, each with its full
-    /// message (trailing whitespace trimmed): the names a settle checks on exactly the commit being
-    /// settled, whatever the worktree's `HEAD` is now.
-    pub fn commit_messages_between(
-        &self,
-        base: &CommitSha,
-        head: &CommitSha,
-    ) -> Result<Vec<(CommitSha, String)>, GitError> {
-        let range = format!("{}..{}", base.as_str(), head.as_str());
-        let out = self.run([
-            "log",
-            "--reverse",
-            "--no-show-signature",
-            "--format=%H%x00%B%x1e",
-            range.as_str(),
-            "--",
-        ])?;
-        out.split('\u{1e}')
-            .map(|record| record.trim_start_matches('\n'))
-            .filter(|record| !record.trim().is_empty())
-            .map(|record| {
-                let (sha, message) =
-                    record
-                        .split_once('\0')
-                        .ok_or_else(|| GitError::UnexpectedOutput {
-                            command: "log".to_owned(),
-                            why: "a commit without a separator".to_owned(),
-                        })?;
-                Ok((parse_sha("log", sha)?, message.trim_end().to_owned()))
-            })
-            .collect()
-    }
-
     fn diff_range(&self, base: &CommitSha, head: &CommitSha) -> Result<String, GitError> {
         let from = self.merge_base(base, head)?.unwrap_or_else(|| base.clone());
         Ok(format!("{}..{}", from.as_str(), head.as_str()))

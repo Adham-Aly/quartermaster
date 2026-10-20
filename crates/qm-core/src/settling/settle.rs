@@ -119,22 +119,23 @@ pub(crate) async fn settle(
         )));
     }
 
-    // 5. Names at settling on exactly the commits being settled (base..the reported head, which
-    // the agreed-head check below holds every other head to), and the facts of the checkout.
+    // 5. Names at settling on exactly the commits being settled (the task's own up to the reported
+    // head, which the agreed-head check below holds every other head to), and the facts of the
+    // checkout.
     let git = svc.delivery().git();
     let checkout = loaded.project.path.clone();
     let base = row.base_commit.clone();
+    let target = loaded.target();
+    let target_of_names = target.clone();
     let branch = row.branch.clone();
     let in_place = row.delivery == DeliveryMode::BuildInPlace;
     let settled_head = reported_head.clone();
     let local = tokio::task::spawn_blocking(move || {
         let repo = Repo::open(git, &checkout)?;
-        let messages = match &base {
-            Some(base) => repo
-                .commit_messages_between(base, &settled_head)
-                .map_err(|e| e.to_string()),
-            None => Ok(Vec::new()),
-        };
+        let messages = repo
+            .own_commits(&settled_head, &target_of_names)
+            .map(|own| own.commits)
+            .map_err(|e| e.to_string());
         let tip = repo.local_branch_commit(&branch)?;
         let has_origin = repo.remotes()?.iter().any(|r| r == ORIGIN);
         let (clean, current) = if in_place {
@@ -173,7 +174,6 @@ pub(crate) async fn settle(
 
     // 6. The agreed head, and 7. the checks verdict on it.
     let repo = loaded.repo();
-    let target = loaded.target();
     let mut card = CardFacts::default();
     let (head, verdict, pr) = match row.delivery {
         DeliveryMode::DirectPr => {
@@ -718,7 +718,7 @@ fn review_of(
 /// What the checkout told settling.
 #[derive(Clone, Debug)]
 struct LocalFacts {
-    /// The commit messages of base..the reported head, or why git couldn't give them.
+    /// The task's own commit messages up to the reported head, or why git couldn't give them.
     messages: Result<Vec<String>, String>,
     tip: Option<CommitSha>,
     has_origin: bool,

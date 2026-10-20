@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use qm_types::domain::DeliveryMode;
 use qm_types::error::Refusal;
+use qm_types::ids::CommitSha;
 
 use crate::network::RepoTransportSetting;
 
@@ -91,6 +92,17 @@ pub enum GitError {
     /// inside some other repository).
     #[error("{} is not the top folder of a git worktree", .path.display())]
     NotAWorktree { path: PathBuf },
+
+    /// Neither `origin/<branch>` nor the local `branch` exists, so the task's own commits can't be
+    /// told from the ones it builds on.
+    #[error(
+        "neither origin/{branch} nor {branch} exists, so the task's own commits can't be found"
+    )]
+    NoTargetBranch { branch: String },
+
+    /// The task's head shares no history with the branch it targets.
+    #[error("{} shares no history with {against}, so the task's own commits can't be found", .head.short())]
+    NoMergeBase { head: CommitSha, against: String },
 
     /// The task's branch is checked out somewhere other than the task's own worktree.
     #[error("branch {branch} is checked out at {}; it was left untouched", .path.display())]

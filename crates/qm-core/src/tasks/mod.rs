@@ -779,3 +779,14 @@ impl ApiPart for TasksPart {
 pub(crate) fn refuse(reason: impl Into<String>) -> ToolFailure {
     ToolFailure::Refused(Refusal::new(reason))
 }
+
+/// A failure reading the task's own commits ([`qm_git::Repo::own_commits`]): a refusal when the
+/// branch it targets is missing or shares no history with it, a failure of the app otherwise.
+pub(crate) fn own_commits_failure(e: &qm_git::GitError) -> ToolFailure {
+    match e {
+        qm_git::GitError::NoTargetBranch { .. } | qm_git::GitError::NoMergeBase { .. } => {
+            refuse(e.to_string())
+        }
+        _ => failed(e),
+    }
+}
