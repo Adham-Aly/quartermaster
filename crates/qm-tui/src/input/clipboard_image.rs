@@ -197,7 +197,14 @@ impl App {
         }
         if !placeholders.is_empty() {
             self.focus_pane(Pane::Input);
-            self.insert(&format!("{} ", placeholders.join(" ")));
+            // Set apart from the word before it, and from what you type next.
+            let from = self.selection().map_or(self.cursor(), |(from, _)| from);
+            let joined = self.draft.text[..from]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !c.is_whitespace());
+            let lead = if joined { " " } else { "" };
+            self.insert(&format!("{lead}{} ", placeholders.join(" ")));
         }
         if skipped > 0 {
             let limit = MAX_IMAGE_BYTES / (1024 * 1024);
