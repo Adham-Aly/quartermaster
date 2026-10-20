@@ -10,7 +10,7 @@ use crate::hit::{Divider, FrameMap, Hit, Pane};
 use crate::router::Screen;
 use crate::text::{cells, wrap};
 use crate::theme;
-use crate::widgets::{conversation, crew, input_box, projects, task};
+use crate::widgets::{conversation, crew, input_box, projects, selection, task};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -184,8 +184,9 @@ pub(crate) struct ListRow {
     pub(crate) line: Line<'static>,
     /// What a click on the row does; recorded across the box's inner width.
     pub(crate) hit: Option<Hit>,
-    /// Drawn on the selection fill, padding included.
-    pub(crate) selected: bool,
+    /// The selected row: `Some(true)` filled, padding included; `Some(false)` only marked, after
+    /// a mouse press (`widgets::selection`).
+    pub(crate) selected: Option<bool>,
 }
 
 impl ListRow {
@@ -194,7 +195,7 @@ impl ListRow {
         Self {
             line,
             hit: None,
-            selected: false,
+            selected: None,
         }
     }
 }
@@ -221,14 +222,10 @@ pub(crate) fn draw_list(
     let wide_width = area.width.saturating_sub(2);
     for (y, row) in (inner.y..inner.bottom()).zip(rows.into_iter().skip(scroll.min(max))) {
         let wide = Rect::new(wide_x, y, wide_width, 1);
-        let mut line = row.line;
-        if row.selected {
-            frame.render_widget(Paragraph::new("").style(theme::filled()), wide);
-            for span in &mut line.spans {
-                span.style = theme::on_selection(span.style);
-            }
+        frame.render_widget(row.line, Rect::new(inner.x, y, inner.width, 1));
+        if let Some(filled) = row.selected {
+            selection::paint(frame.buffer_mut(), wide, area, filled);
         }
-        frame.render_widget(line, Rect::new(inner.x, y, inner.width, 1));
         if let Some(hit) = row.hit {
             map.hits.add(wide, hit);
         }
