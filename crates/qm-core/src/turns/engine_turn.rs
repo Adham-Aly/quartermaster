@@ -153,6 +153,7 @@ impl TurnLoop {
         // Step 2.3: publish.
         self.turn_running = true;
         self.running_message = cx.message;
+        self.running_turn = Some(cx.turn);
         self.publish();
 
         if start == Start::Adopted {
