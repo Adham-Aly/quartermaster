@@ -51,7 +51,7 @@ pub(crate) fn draw(
         .enumerate()
         .map(|(i, entry)| {
             let selected = i == menu.cursor;
-            let hovered = app.hover == Some(Hit::SlashItem(i));
+            let hovered = app.term.hover == Some(Hit::SlashItem(i));
             let paint = |style: Style| {
                 if selected {
                     theme::on_selection(style)
