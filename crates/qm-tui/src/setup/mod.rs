@@ -493,8 +493,19 @@ impl App {
         }
     }
 
-    /// A new snapshot: finished runs whose re-check came back show their result.
+    /// A new snapshot: the Settings entry's red dot shows while the check finds anything that
+    /// needs you, and finished runs whose re-check came back show their result.
     pub(crate) fn setup_after_snapshot(&mut self) {
+        let entry = crate::popups::MenuEntry::Settings;
+        let needs_you = !self.snapshot.setup_issues.is_empty();
+        if needs_you != self.view.badges.contains(&entry) {
+            if needs_you {
+                self.view.badges.push(entry);
+            } else {
+                self.view.badges.retain(|e| *e != entry);
+            }
+            self.redraw();
+        }
         let generation = self.snapshot.setup.generation;
         for run in &mut self.setup.runs {
             if run.awaiting.is_some_and(|g| generation > g) {
