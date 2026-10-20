@@ -924,7 +924,7 @@ fn registry(
     config: watch::Receiver<Config>,
 ) -> (SetupCheck, ProjectService) {
     let app_env: BTreeMap<String, String> = std::env::vars().collect();
-    let setup = SetupCheck::new(db.clone(), Arc::clone(clock), app_env.clone());
+    let setup = SetupCheck::new(Arc::clone(clock), app_env.clone());
     let projects = ProjectService::new(ProjectDeps {
         db: db.clone(),
         clock: Arc::clone(clock),
@@ -937,7 +937,7 @@ fn registry(
 }
 
 /// The registry's API parts: held actions with the add-project performer, the projects pane, and
-/// the setup check, whose first run and the personal workspace start in the background.
+/// the setup check, whose checks and the personal workspace run in the background.
 fn registry_parts(
     held: &HeldService,
     conversation: &Arc<Conversation>,
