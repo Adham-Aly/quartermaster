@@ -20,7 +20,7 @@ directly in a widget. `Backend16` (`backend.rs`) sends 16-colour SGR codes (`30`
 | `strong()` | default fg, bold | names (`you`, `quartermaster`), headings |
 | `dim()` | `DarkGray` (bright black) | secondary text, idle borders, hints |
 | `accent()` | `Yellow` | focus, the active input, approvals |
-| `warn()` | `Yellow` | decisions, notices, the setup banner, tier headings |
+| `warn()` | `Yellow` | decisions, notices, tier headings |
 | `ok()` | `Green` | running, ready, passed |
 | `error()` | `Red` | errors |
 | `badge()` | `Red` | the dot on a menu entry and the menu button: something there needs you |
@@ -38,9 +38,8 @@ Map core `Tone`s with `theme::tone`.
 
 ## Layout
 
-- Rows: top bar (the ` ☰ Menu ` button at the left, this Mac and the accounts at the right), then
-  the setup banner (Bridge only, when something is missing), the body, the
-  status bar. Below 60×16 a too-small notice shows.
+- Rows: top bar (the ` ☰ Menu ` button at the left, this Mac and the accounts at the right), the
+  body, the status bar. Below 60×16 a too-small notice shows.
 - Bridge columns: left 31 (20–60), a one-cell gap, the middle (never under 36), a gap, the task
   column 36 (24–70; `LEFT_DEFAULT`, `RIGHT_DEFAULT` in `app.rs`). Below 120 body columns the layout **folds**: no task column; the task pane opens as
   an overlay from the right edge with a ` ✕ `. Widths dragged on the dividers are saved to
