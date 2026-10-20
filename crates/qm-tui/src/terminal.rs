@@ -1,8 +1,8 @@
 //! Entering and leaving full-screen mode.
 //!
 //! [`TerminalGuard::enter`] puts the terminal in raw mode on the alternate screen with mouse
-//! capture (clicks, drags, the wheel, and motion tracking for hover, in SGR encoding) and
-//! bracketed paste, and, where the terminal supports it, asks for disambiguated keys so `⇧⏎`
+//! capture (clicks, drags, the wheel, and motion tracking for hover, in SGR encoding), bracketed
+//! paste and focus reports (coming back to the window re-runs the setup check), and, where the terminal supports it, asks for disambiguated keys so `⇧⏎`
 //! arrives as itself. Dropping the guard undoes all of it in reverse, and so does a panic: a hook
 //! restores the terminal before the panic message prints, so you never land in a broken shell.
 //! [`TerminalGuard::suspend`] does the same for `Ctrl`+`Z`, and enters again when the shell's
@@ -14,8 +14,9 @@
 use crate::backend::Backend16;
 use crossterm::cursor::Show;
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::queue;
 use crossterm::terminal::{
@@ -31,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static ENHANCED: AtomicBool = AtomicBool::new(false);
 
 /// Writes the sequences that enter full-screen mode: the alternate screen, mouse capture with
-/// motion tracking in SGR encoding, bracketed paste, and, when `enhanced`, the keyboard
+/// motion tracking in SGR encoding, bracketed paste, focus reports, and, when `enhanced`, the keyboard
 /// enhancement that disambiguates escape codes. Raw mode is not a byte sequence and is not
 /// included.
 pub(crate) fn write_enter(w: &mut impl Write, enhanced: bool) -> io::Result<()> {
@@ -39,7 +40,8 @@ pub(crate) fn write_enter(w: &mut impl Write, enhanced: bool) -> io::Result<()> 
         w,
         EnterAlternateScreen,
         EnableMouseCapture,
-        EnableBracketedPaste
+        EnableBracketedPaste,
+        EnableFocusChange
     )?;
     if enhanced {
         queue!(
@@ -57,6 +59,7 @@ pub(crate) fn write_leave(w: &mut impl Write, enhanced: bool) -> io::Result<()> 
     }
     queue!(
         w,
+        DisableFocusChange,
         DisableBracketedPaste,
         DisableMouseCapture,
         LeaveAlternateScreen,
