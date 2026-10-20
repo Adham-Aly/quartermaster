@@ -1,0 +1,26 @@
+# Replaces dist's generated release body (its download table and install snippets) with
+# .github/release-notes.md, which sends people to the install command instead of the download
+# links. dist calls this after its "announce" job (post-announce-jobs in dist-workspace.toml).
+name: Release notes
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  notes:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Replace the release body
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file .github/release-notes.md

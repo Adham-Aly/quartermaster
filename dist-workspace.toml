@@ -19,6 +19,8 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+# Replace dist's release body with .github/release-notes.md (install command first, no download table)
+post-announce-jobs = ["./release-notes"]
 # Build only the quartermaster package (like `cargo xtask install`), not the whole workspace: xtask stays
 # out of the build.
 precise-builds = true

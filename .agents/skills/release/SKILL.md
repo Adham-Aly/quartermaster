@@ -24,8 +24,10 @@ Pushing a tag is a GitHub write: do it only when the user asks for this release.
    workspace version, or dist refuses to build.
 7. Watch the Release workflow: `gh run list --workflow release.yml --limit 1`, `gh run watch <id>`.
 8. `gh release view vX.Y.Z` must list, for each target, `quartermaster-<triple>.tar.xz` and its
-   `.sha256`, plus `sha256.sum`, `source.tar.gz` and `quartermaster-installer.sh`. Release notes
-   are dist's default body. Never write or hand-edit a `CHANGELOG.md`.
+   `.sha256`, plus `sha256.sum`, `source.tar.gz` and `quartermaster-installer.sh`. The release
+   body must be `.github/release-notes.md` (install command first, a warning not to click the
+   assets, no download table): the `custom-release-notes` job swaps it in after dist's `announce`.
+   Never write or hand-edit a `CHANGELOG.md`.
 9. Check a binary by hand:
 
    ```sh
@@ -43,9 +45,8 @@ Pushing a tag is a GitHub write: do it only when the user asks for this release.
 `curl -fsSL https://github.com/Adham-Aly/quartermaster/releases/latest/download/quartermaster-installer.sh | sh`
 installs into `$CARGO_HOME/bin` (`QUARTERMASTER_INSTALL_DIR` overrides it;
 `QUARTERMASTER_NO_MODIFY_PATH=1` leaves the shell's PATH alone) and writes its receipt to
-`~/.config/quartermaster/quartermaster-receipt.json`. While the repository is private, an
-unauthenticated download can't reach the release: use `gh release download` as above, or
-`cargo xtask install` from a checkout.
+`~/.config/quartermaster/quartermaster-receipt.json`. The README and the release notes present
+this command as the only way to install; keep them pointing at it, never at the asset links.
 
 ## When it fails
 
@@ -62,7 +63,9 @@ All dist config is in `dist-workspace.toml`: `targets` (`aarch64-apple-darwin`,
 `[package.metadata.dist] dist = true` in `crates/quartermaster/Cargo.toml` (needed because of
 `publish = false`), `dist = false` in `xtask/Cargo.toml`, and `repository` and `[profile.dist]`
 (inherits `release`, thin LTO) in the root `Cargo.toml`. `release.yml` is generated: never
-hand-edit it; change the config and run `dist generate`.
+hand-edit it; change the config and run `dist generate`. `post-announce-jobs = ["./release-notes"]`
+makes it call the hand-written `.github/workflows/release-notes.yml`, which replaces the release
+body with `.github/release-notes.md`; edit that file to change the notes.
 
 - **Add a platform:** add the triple to `targets`; for Windows also add `"powershell"` to
   `installers` (the app is macOS-only today: `nix`, `libproc`, `osascript`, `pbcopy`, so it must

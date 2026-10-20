@@ -1,5 +1,14 @@
 # Quartermaster
 
+```sh
+curl -fsSL https://github.com/Adham-Aly/quartermaster/releases/latest/download/quartermaster-installer.sh | sh
+```
+
+> [!IMPORTANT]
+> **This one command is how you install Quartermaster** (Apple silicon or Intel). Paste it into
+> Terminal, then run `quartermaster`. Run it again to update. Don't download the files on the
+> Releases page: in a browser they install nothing.
+
 A macOS terminal app where you talk to one agent, the Quartermaster. It hands project work to
 crewmates, each in its own git worktree, and delivers the results through GitHub once you approve.
 
@@ -15,20 +24,9 @@ crewmates, each in its own git worktree, and delivers the results through GitHub
 
 ## Install
 
-**One line** (Apple silicon or Intel; installs into `~/.cargo/bin`, or `$QUARTERMASTER_INSTALL_DIR`):
-
-```sh
-curl -fsSL https://github.com/Adham-Aly/quartermaster/releases/latest/download/quartermaster-installer.sh | sh
-```
-
-**By hand:** download `quartermaster-aarch64-apple-darwin.tar.xz` (Apple silicon) or
-`quartermaster-x86_64-apple-darwin.tar.xz` (Intel) from
-[Releases](https://github.com/Adham-Aly/quartermaster/releases/latest), unpack it, put
-`quartermaster` on your `PATH`, and clear the download quarantine once:
-
-```sh
-xattr -d com.apple.quarantine <path-to-binary>
-```
+Use the command at the top of this page. It picks the build for your Mac, checks its checksum,
+installs `quartermaster` into `~/.cargo/bin` (or `$QUARTERMASTER_INSTALL_DIR`) and adds that folder
+to your `PATH`.
 
 **From source:** install [rustup](https://rustup.rs) (it installs the Rust release pinned in
 `rust-toolchain.toml` by itself; Homebrew's `rust` ignores that file), then:
