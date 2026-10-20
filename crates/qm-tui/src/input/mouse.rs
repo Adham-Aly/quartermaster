@@ -182,6 +182,11 @@ impl App {
                 self.change(|app| &mut app.view.selected_project, Some(i));
                 self.focus_pane(Pane::Projects);
             }
+            // The Projects box outside its rows (its title, border or empty text): how to add one.
+            Hit::Pane(Pane::Projects) => {
+                self.focus_pane(Pane::Projects);
+                self.open_projects_hint();
+            }
             Hit::Crew(agent) => {
                 self.focus_pane(Pane::Crew);
                 // A single click selects (and opens the overlay when folded); a double-click

@@ -27,6 +27,8 @@ const SLASH_HINTS: &str = "↑↓ pick · tab complete · ⏎ run · esc close";
 const OTHER_HINTS: &str = "esc back";
 /// The status bar's hints on Help, which scrolls.
 const HELP_HINTS: &str = "↑↓ pgup pgdn scroll · esc close";
+/// The status bar's right side under the projects hint.
+const PROJECTS_HINT_HINTS: &str = "esc or click to close";
 /// The menu button's label.
 const MENU: &str = "☰ Menu";
 
@@ -170,6 +172,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits
     let hints: String = match (app.popup(), app.screen) {
         (Some(Popup::Settings), _) => crate::settings::status_hints(app).1.to_owned(),
         (Some(Popup::Help), _) => HELP_HINTS.to_owned(),
+        (Some(Popup::ProjectsHint), _) => PROJECTS_HINT_HINTS.to_owned(),
         (None, Screen::Bridge) if app.slash_menu().is_some() => SLASH_HINTS.to_owned(),
         (None, Screen::Bridge) => BRIDGE_HINTS.to_owned(),
         (None, Screen::Setup) => crate::setup::hints(app),
