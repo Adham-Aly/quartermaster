@@ -514,18 +514,22 @@ fn syntaxes() -> &'static SyntaxSet {
     SET.get_or_init(SyntaxSet::load_defaults_newlines)
 }
 
+/// A palette role: one of the `theme` style functions.
+type Role = fn() -> Style;
+
 /// The syntax scope map, most specific first within each role.
 fn scope_style(stack: &ScopeStack) -> Style {
-    static MAP: OnceLock<Vec<(Scope, Style)>> = OnceLock::new();
+    // Roles, not styles: the palette is the frame's.
+    static MAP: OnceLock<Vec<(Scope, Role)>> = OnceLock::new();
     let map = MAP.get_or_init(|| {
         [
-            ("comment", theme::dim()),
-            ("string", theme::ok()),
-            ("constant.numeric", theme::warn()),
-            ("constant.language", theme::warn()),
-            ("entity.name.function", theme::strong()),
-            ("keyword", theme::accent()),
-            ("storage", theme::accent()),
+            ("comment", theme::dim as Role),
+            ("string", theme::ok),
+            ("constant.numeric", theme::warn),
+            ("constant.language", theme::warn),
+            ("entity.name.function", theme::strong),
+            ("keyword", theme::accent),
+            ("storage", theme::accent),
         ]
         .into_iter()
         .filter_map(|(name, style)| Scope::new(name).ok().map(|scope| (scope, style)))
@@ -534,7 +538,7 @@ fn scope_style(stack: &ScopeStack) -> Style {
     // The innermost scope with a role wins.
     for scope in stack.as_slice().iter().rev() {
         if let Some((_, style)) = map.iter().find(|(role, _)| role.is_prefix_of(*scope)) {
-            return *style;
+            return style();
         }
     }
     theme::text()

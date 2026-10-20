@@ -14,7 +14,17 @@ Never an RGB or 256-colour value. Use the roles in `crates/qm-tui/src/theme.rs`,
 directly in a widget. `Backend16` (`backend.rs`) sends 16-colour SGR codes (`30`–`37`, `90`–`97`,
 `40`–`47`, `100`–`107`); crossterm alone would send `38;5;n`.
 
-| Role | Style | Used for |
+On entering full-screen mode (and on every resume), `theme::detect` asks the terminal for its
+colours (OSC 10, 11 and 4 for all 16, ended by a DA1 query so a silent terminal costs no wait;
+`COLORFGBG` as the fallback; `theme/query.rs`). `theme/fit.rs` then gives each role the first of
+its colours that reads on that background (4.5:1, else 3:1, else the default text colour): a light
+theme whose yellow fades gets blue, a faint bright black gets a darker grey, and so on. The
+`Palette` lives on the window's state (`App::palette`) and `App::draw` puts it in force for the
+frame (`theme::scoped`); never cache a `Style` across frames, cache the role function instead. The table is the palette when the
+terminal says nothing; it is tuned for dark themes. Check a change in a light and a dark theme with
+tmux's `window-style` and `pane-colours[n]`, which tmux reports as the terminal's colours.
+
+| Role | Style (dark default) | Used for |
 |---|---|---|
 | text | default fg | body text |
 | `strong()` | default fg, bold | names (`you`, `quartermaster`), headings |
@@ -32,8 +42,9 @@ directly in a widget. `Backend16` (`backend.rs`) sends 16-colour SGR codes (`30`
 | `cursor()` | black on yellow | the cursor's cell in the prompt field |
 | `selected()` | reversed | selected text in the prompt field |
 
-Accent and warn are the same yellow; the words tell them apart. On the selected row, dim and
-default text become bright white (`on_selection`). The app's own text selection is `REVERSED`.
+Accent and warn are the same colour; the words tell them apart. On the selected row, dim and
+default text take the fill's text colour, and a coloured glyph that can't be read on the fill
+takes its other brightness (`on_selection`). The app's own text selection is `REVERSED`.
 Map core `Tone`s with `theme::tone`.
 
 ## Layout
