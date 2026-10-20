@@ -125,7 +125,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
     let mut rows = rows(
         &app.snapshot.conversation,
         inner.width,
-        app.hover,
+        app.term.hover,
         &Voices::QUARTERMASTER,
     );
     if thinking {

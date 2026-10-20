@@ -296,7 +296,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
     let mut p = Painter::new(
         frame,
         &mut map.hits,
-        app.hover,
+        app.term.hover,
         // A model held in a drag stays filled until it drops.
         !app.view.pointer_picked || app.view.settings.drag.is_some(),
         body,

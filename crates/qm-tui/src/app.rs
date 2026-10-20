@@ -4,6 +4,7 @@ use crate::hit::{Divider, FrameMap, Hit, Pane};
 use crate::input::{menu, prefs, select};
 use crate::popups::Popup;
 use crate::router::Screen;
+use crate::term::Term;
 use crate::terminal::TerminalGuard;
 use crate::view::Flash;
 use crate::{chrome, router};
@@ -53,10 +54,6 @@ pub(crate) struct App {
     pub(crate) snapshot: Snapshot,
     pub(crate) screen: Screen,
     pub(crate) focus: Pane,
-    /// What the pointer is over, from the last frame's hit map.
-    pub(crate) hover: Option<Hit>,
-    /// The divider being dragged, if any.
-    pub(crate) drag: Option<Divider>,
     /// Your message being typed: its text, cursor and selection (no gesture state; that is in
     /// `pointer`).
     pub(crate) draft: crate::input::draft::Draft,
@@ -68,11 +65,8 @@ pub(crate) struct App {
     pub(crate) right_width: u16,
     /// How far the conversation is scrolled up from its newest line.
     pub(crate) scroll_from_bottom: usize,
-    pub(crate) quit: Quit,
-    /// What the last frame drew.
-    pub(crate) drawn: FrameMap,
-    /// The terminal size at the last frame.
-    pub(crate) size: (u16, u16),
+    /// This window's own state.
+    pub(crate) term: Term,
     /// UI state: selection, menus, overlays.
     pub(crate) view: crate::view::View,
     /// Commands waiting to go to the core.
@@ -81,14 +75,6 @@ pub(crate) struct App {
     exit: bool,
     /// Set when something changed and the screen needs a new frame.
     dirty: bool,
-    /// `Ctrl`+`Z` was pressed: the loop suspends to the shell before the next frame.
-    pub(crate) suspend: bool,
-    /// The left button's recent history: double-clicks and drag-selections.
-    pub(crate) pointer: crate::input::mouse::Pointer,
-    /// An OSC 52 copy to write to the terminal right after the next frame.
-    pub(crate) osc52: Option<String>,
-    /// The core rang the bell: how many BELs to write to the terminal (at most one).
-    pub(crate) bells: u8,
     /// A card to scroll into view, a step per frame, until its buttons show.
     pub(crate) reveal: Option<MessageId>,
     /// Where column widths are remembered (`<data dir>/tui.toml`); `None` remembers nothing.
@@ -109,24 +95,16 @@ impl App {
             snapshot: Snapshot::default(),
             screen: Screen::Bridge,
             focus: Pane::Input,
-            hover: None,
-            drag: None,
             draft: crate::input::draft::Draft::default(),
             pasting: None,
             left_width: LEFT_DEFAULT,
             right_width: RIGHT_DEFAULT,
             scroll_from_bottom: 0,
-            quit: Quit::Idle,
-            drawn: FrameMap::default(),
-            size: (0, 0),
+            term: Term::new(),
             view: crate::view::View::default(),
             outbox: Vec::new(),
             exit: false,
             dirty: true,
-            suspend: false,
-            pointer: crate::input::mouse::Pointer::default(),
-            osc52: None,
-            bells: 0,
             reveal: None,
             prefs_path: None,
             setup: crate::setup::SetupState::default(),
@@ -149,7 +127,7 @@ impl App {
 
     /// Shows `text` in the status bar for a couple of seconds.
     pub(crate) fn flash(&mut self, text: impl Into<String>, now: Instant) {
-        self.view.flash = Some(Flash {
+        self.term.flash = Some(Flash {
             text: text.into(),
             until: now + FLASH_FOR,
         });
@@ -172,7 +150,7 @@ impl App {
     /// Draws a frame and keeps its hit map for the input that follows.
     pub(crate) fn draw(&mut self, frame: &mut Frame<'_>) {
         let area = frame.area();
-        self.size = (area.width, area.height);
+        self.term.size = (area.width, area.height);
         self.spinning.set(false);
         let mut map = FrameMap::default();
         // A worker's session owns the whole frame (no top bar or status bar).
@@ -185,7 +163,7 @@ impl App {
             router::draw(frame, body, self, &mut map);
             crate::popups::draw(frame, body, self, &mut map);
         }
-        if let Some(selection) = self.view.selection {
+        if let Some(selection) = self.term.selection {
             let rows = select::rows_for(&map, selection.anchor);
             select::paint(frame.buffer_mut(), &rows, selection);
         }
@@ -195,29 +173,26 @@ impl App {
         {
             self.view.menu = None;
         }
-        if let Quit::Confirm { working } = self.quit {
-            chrome::draw_quit_dialog(frame, area, working, self.hover, &mut map.hits);
+        if let Quit::Confirm { working } = self.term.quit {
+            chrome::draw_quit_dialog(frame, area, working, self.term.hover, &mut map.hits);
         }
-        self.drawn = map;
+        self.term.drawn = map;
         // Widening past the fold shows the task pane in place, so the overlay has nothing left
         // to do.
-        if !self.drawn.folded {
+        if !self.term.drawn.folded {
             self.view.task_overlay = false;
         }
+        self.clamp_settings_scroll();
     }
 
-    /// Work that needs the frame just drawn: the prompt field's scroll remembered, the Settings
-    /// popup's scroll kept in range and its selection in view, and a card scrolled into view a
-    /// step at a time.
-    pub(crate) fn after_draw(&mut self) {
-        if let Some(field) = &self.drawn.field {
-            self.view.input_scroll = field.scroll;
-        }
+    /// Keeps the Settings popup's scroll in range of the frame just drawn and its selection in
+    /// view.
+    fn clamp_settings_scroll(&mut self) {
         if self.popup() == Some(Popup::Settings) {
-            let max = self.drawn.scroll_max_of(Pane::Settings);
+            let max = self.term.drawn.scroll_max_of(Pane::Settings);
             let mut scroll = self.view.settings.scroll.min(max);
             if std::mem::take(&mut self.view.settings.reveal)
-                && let Some((row, shown)) = self.drawn.settings_selected
+                && let Some((row, shown)) = self.term.drawn.settings_selected
             {
                 // With two rows of context either side where there are any (a tier's heading,
                 // the box's border), so the first and last rows bring their surroundings.
@@ -229,22 +204,32 @@ impl App {
             }
             self.change(|app| &mut app.view.settings.scroll, scroll.min(max));
         }
+    }
+
+    /// Work that needs the frame just drawn: the prompt field's scroll remembered and a card
+    /// scrolled into view a step at a time.
+    pub(crate) fn after_draw(&mut self) {
+        if let Some(field) = &self.term.drawn.field {
+            self.view.input_scroll = field.scroll;
+        }
         self.after_draw_reveal();
     }
 
     fn after_draw_reveal(&mut self) {
         let Some(message) = self.reveal else { return };
         let shown = self
+            .term
             .drawn
             .hits
             .rect_of(Hit::CardButton { message, index: 0 })
             .is_some();
-        let max = self.drawn.conversation_scroll_max;
+        let max = self.term.drawn.conversation_scroll_max;
         if shown || self.scroll_from_bottom >= max {
             self.reveal = None;
             return;
         }
         let page = self
+            .term
             .drawn
             .hits
             .rect_of(Hit::Pane(Pane::Conversation))
@@ -257,7 +242,7 @@ impl App {
 
     /// The short notice the status bar shows instead of its counts, if any.
     pub(crate) fn quit_notice(&self) -> Option<&'static str> {
-        match self.quit {
+        match self.term.quit {
             Quit::Armed { .. } => Some("Press Ctrl+C again to quit"),
             Quit::Requested => Some("Quitting…"),
             Quit::Idle | Quit::Confirm { .. } => None,
@@ -280,14 +265,14 @@ impl App {
                     .settings
                     .refresh(&snapshot.settings, Instant::now());
                 if snapshot.bell > self.snapshot.bell {
-                    self.bells = 1;
+                    self.term.bells = 1;
                 }
                 self.snapshot = *snapshot;
                 self.dirty = true;
                 self.setup_after_snapshot();
             }
             Update::ConfirmQuit { working } => {
-                self.quit = Quit::Confirm { working };
+                self.term.quit = Quit::Confirm { working };
                 self.dirty = true;
             }
             Update::Closing => self.exit = true,
@@ -307,14 +292,14 @@ impl App {
         self.settings_tick(now);
         self.setup_tick(now);
         self.paste_tick(now);
-        if let Quit::Armed { until } = self.quit
+        if let Quit::Armed { until } = self.term.quit
             && now >= until
         {
-            self.quit = Quit::Idle;
+            self.term.quit = Quit::Idle;
             self.dirty = true;
         }
-        if self.view.flash.as_ref().is_some_and(|f| now >= f.until) {
-            self.view.flash = None;
+        if self.term.flash.as_ref().is_some_and(|f| now >= f.until) {
+            self.term.flash = None;
             self.dirty = true;
         }
     }
@@ -332,16 +317,16 @@ impl App {
     }
 
     pub(crate) fn on_ctrl_c(&mut self, now: Instant) {
-        match self.quit {
+        match self.term.quit {
             Quit::Idle => {
-                self.quit = Quit::Armed {
+                self.term.quit = Quit::Armed {
                     until: now + QUIT_WINDOW,
                 };
                 self.dirty = true;
             }
             Quit::Armed { .. } => {
                 self.outbox.push(Command::RequestQuit);
-                self.quit = Quit::Requested;
+                self.term.quit = Quit::Requested;
                 self.dirty = true;
             }
             // The core hasn't answered: a third Ctrl+C leaves anyway, so a stuck core can never
@@ -353,12 +338,12 @@ impl App {
 
     pub(crate) fn confirm_quit(&mut self) {
         self.outbox.push(Command::Quit);
-        self.quit = Quit::Requested;
+        self.term.quit = Quit::Requested;
         self.dirty = true;
     }
 
     pub(crate) fn cancel_quit(&mut self) {
-        self.quit = Quit::Idle;
+        self.term.quit = Quit::Idle;
         self.dirty = true;
     }
 
@@ -379,7 +364,7 @@ impl App {
     }
 
     pub(crate) fn click(&mut self, hit: Hit) {
-        if matches!(self.quit, Quit::Confirm { .. }) {
+        if matches!(self.term.quit, Quit::Confirm { .. }) {
             match hit {
                 Hit::ConfirmQuit => self.confirm_quit(),
                 Hit::CancelQuit => self.cancel_quit(),
@@ -392,7 +377,7 @@ impl App {
             Hit::Popup(hit) => self.popup_click(hit),
             Hit::Pane(pane) => self.focus_pane(pane),
             Hit::Divider(divider) => {
-                self.drag = Some(divider);
+                self.term.drag = Some(divider);
                 self.dirty = true;
             }
             _ => {}
@@ -407,6 +392,7 @@ impl App {
             }
             Divider::Right => {
                 let width = self
+                    .term
                     .size
                     .0
                     .saturating_sub(column)
@@ -453,7 +439,7 @@ pub(crate) fn run(client: &mut CoreClient) -> io::Result<()> {
             remembered.apply(&mut app);
             app.prefs_path.clone_from(&prefs_path);
         }
-        if std::mem::take(&mut app.suspend) {
+        if std::mem::take(&mut app.term.suspend) {
             terminal.suspend()?;
             app.dirty = true;
         }
@@ -462,12 +448,12 @@ pub(crate) fn run(client: &mut CoreClient) -> io::Result<()> {
             app.dirty = false;
             terminal.draw(|frame| app.draw(frame))?;
             app.after_draw();
-            if let Some(osc52) = app.osc52.take() {
+            if let Some(osc52) = app.term.osc52.take() {
                 // Outside the synchronized update, so the terminal acts on it at once.
                 terminal.write_raw(osc52.as_bytes())?;
             }
         }
-        if std::mem::take(&mut app.bells) > 0 {
+        if std::mem::take(&mut app.term.bells) > 0 {
             terminal.write_raw(b"\x07")?;
         }
         if event::poll(POLL)? {

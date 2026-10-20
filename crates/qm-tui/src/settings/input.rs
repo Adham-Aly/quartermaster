@@ -118,7 +118,7 @@ impl App {
 
     /// Where `hit` was drawn in the last frame.
     fn settings_rect(&self, hit: SettingsHit) -> Option<Rect> {
-        self.drawn.hits.rect_of(Hit::Settings(hit))
+        self.term.drawn.hits.rect_of(Hit::Settings(hit))
     }
 
     // ---------------------------------------------------------------- keys
@@ -130,8 +130,9 @@ impl App {
         self.show_selection();
         let overlay = self.view.settings.field.is_some() || self.view.settings.picker.is_some();
         if !overlay && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
-            let max = self.drawn.scroll_max_of(crate::hit::Pane::Settings);
+            let max = self.term.drawn.scroll_max_of(crate::hit::Pane::Settings);
             let page = self
+                .term
                 .drawn
                 .scroll_areas
                 .iter()
@@ -571,7 +572,7 @@ impl App {
         if let Some(zone) = drag.over {
             self.move_item(drag.item, zone);
         }
-        self.change(|app| &mut app.hover, hit);
+        self.change(|app| &mut app.term.hover, hit);
     }
 
     /// The clock: the login's spinner and countdown move on.
@@ -1020,7 +1021,7 @@ impl App {
             .unwrap_or(0);
         let under = self
             .settings_rect(under)
-            .unwrap_or_else(|| Rect::new(self.size.0 / 3, self.size.1 / 3, 1, 1));
+            .unwrap_or_else(|| Rect::new(self.term.size.0 / 3, self.term.size.1 / 3, 1, 1));
         let picker = Picker {
             purpose,
             options,
