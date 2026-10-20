@@ -8,5 +8,6 @@ pub(crate) mod crew;
 pub(crate) mod input_box;
 pub(crate) mod markdown;
 pub(crate) mod projects;
+pub(crate) mod selection;
 pub(crate) mod stream;
 pub(crate) mod task;

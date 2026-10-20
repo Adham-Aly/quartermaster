@@ -49,8 +49,9 @@ pub(crate) fn rows(app: &App, inner_width: u16) -> Vec<ListRow> {
         .enumerate()
         .map(|(i, row)| {
             let hit = Hit::Crew(row.agent);
-            let selected = app.view.selected_crew == Some(row.agent);
-            let hovered = !selected && app.hover == Some(hit);
+            let selected =
+                (app.view.selected_crew == Some(row.agent)).then_some(!app.view.pointer_picked);
+            let hovered = selected != Some(true) && app.hover == Some(hit);
             ListRow {
                 line: line(crew, i, columns[i], hovered),
                 hit: Some(hit),

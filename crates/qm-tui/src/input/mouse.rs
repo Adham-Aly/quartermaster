@@ -59,6 +59,7 @@ impl App {
             MouseEventKind::Moved => self.hover_at(hit),
             MouseEventKind::Down(MouseButton::Left) => {
                 self.hover_at(hit);
+                self.change(|app| &mut app.view.pointer_picked, true);
                 let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
                 self.left_press(hit, at, now, shift);
             }
@@ -96,7 +97,10 @@ impl App {
                 }
                 self.hover_at(hit);
             }
-            MouseEventKind::Down(MouseButton::Right) => self.right_press(hit, at),
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.change(|app| &mut app.view.pointer_picked, true);
+                self.right_press(hit, at);
+            }
             MouseEventKind::ScrollUp => self.wheel(at, true),
             MouseEventKind::ScrollDown => self.wheel(at, false),
             _ => {}
