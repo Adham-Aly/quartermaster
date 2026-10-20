@@ -175,6 +175,12 @@ impl Session {
                         return;
                     }
                 }
+                Some(SessionCommand::Compact) => {
+                    if let Some(reason) = self.compact_turn(index).await {
+                        self.close(reason).await;
+                        return;
+                    }
+                }
                 Some(SessionCommand::Close) | None => {
                     self.close(CloseReason::Requested).await;
                     return;
@@ -309,6 +315,38 @@ impl Session {
         }
         self.idle_since = Some(self.clock.instant());
         close
+    }
+
+    /// A compaction you asked for, as a turn of its own (rule 7 of the event order): it plays
+    /// no script and doesn't count as one of the script's turns. The scripted model has no real
+    /// context, so the sizes are unknown.
+    async fn compact_turn(&mut self, index: usize) -> Option<CloseReason> {
+        if !self.up {
+            if !self.script.sessions[index].resumable {
+                return Some(CloseReason::ResumeFailed {
+                    message: "this scripted session can't be resumed".into(),
+                });
+            }
+            self.ready(index, true).await;
+        }
+        self.idle_since = None;
+        self.in_turn = true;
+        self.emit(EngineEvent::TurnStarted).await;
+        self.emit(EngineEvent::Compacted {
+            automatic: false,
+            tokens_before: None,
+            tokens_after: None,
+        })
+        .await;
+        self.in_turn = false;
+        self.emit(EngineEvent::TurnEnded {
+            outcome: TurnOutcome::Completed,
+            usage: TurnUsage::default(),
+            final_text: String::new(),
+        })
+        .await;
+        self.idle_since = Some(self.clock.instant());
+        None
     }
 
     async fn play(
@@ -596,7 +634,8 @@ impl Session {
                     Some(SessionCommand::StartTurn { input }) => {
                         self.queued.push_back(SessionCommand::StartTurn { input });
                     }
-                    Some(SessionCommand::SetModel { .. }) => {}
+                    // The core sends `Compact` only between turns.
+                    Some(SessionCommand::SetModel { .. } | SessionCommand::Compact) => {}
                 },
                 () = sleep_opt(&*clock, job_at) => self.finish_due_jobs().await,
                 () = sleep_opt(&*clock, deadline) => {}
