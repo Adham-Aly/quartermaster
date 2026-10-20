@@ -4,8 +4,9 @@
 //! capture (clicks, drags, the wheel, and motion tracking for hover, in SGR encoding) and
 //! bracketed paste, and, where the terminal supports it, asks for disambiguated keys so `⇧⏎`
 //! arrives as itself. It also asks the terminal for its colours (`theme::detect`), again on every
-//! resume, so a theme changed meanwhile is picked up. Dropping the guard undoes all of it in reverse, and so does a panic: a hook
-//! restores the terminal before the panic message prints, so you never land in a broken shell.
+//! resume, so a theme changed meanwhile is picked up. Dropping the guard undoes all of it in
+//! reverse, and so does a panic: a hook restores the terminal before the panic message prints, so
+//! you never land in a broken shell.
 //! [`TerminalGuard::suspend`] does the same for `Ctrl`+`Z`, and enters again when the shell's
 //! `fg` resumes the process.
 //!
