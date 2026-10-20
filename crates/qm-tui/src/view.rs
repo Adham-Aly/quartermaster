@@ -69,6 +69,11 @@ pub(crate) struct View {
     /// Your message's cursor as a byte offset into `App::input` (on a char boundary); `None` is
     /// the end, where typing appends.
     pub(crate) cursor: Option<usize>,
+    /// The other end of your selection in `App::input`, as a byte offset (on a char boundary):
+    /// the text between it and the cursor is selected. `None` (or the cursor itself) is none.
+    pub(crate) anchor: Option<usize>,
+    /// The prompt field's first shown row in view, as the last frame drew it.
+    pub(crate) input_scroll: usize,
     /// The sample fixture is showing: core snapshots are ignored.
     pub(crate) sample: bool,
     /// The Settings screen.

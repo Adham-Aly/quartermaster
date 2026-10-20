@@ -28,6 +28,8 @@ directly in a widget. `Backend16` (`backend.rs`) sends 16-colour SGR codes (`30`
 | `filled()` | bright white on bright black | rest buttons, the current tab, the selected row |
 | `button(true)` | black on yellow | a hovered button |
 | `button_on_selection()` | black on bright white | a button on a selected row |
+| `cursor()` | black on yellow | the cursor's cell in the prompt field |
+| `selected()` | reversed | selected text in the prompt field |
 
 Accent and warn are the same yellow; the words tell them apart. On the selected row, dim and
 default text become bright white (`on_selection`). The app's own text selection is `REVERSED`.
@@ -50,7 +52,7 @@ Map core `Tone`s with `theme::tone`.
 ## Input
 
 - Every control has a key and every key is listed in Help (`placeholder.rs`), grouped by where it
-  works. Globals: `Ctrl`+`C` twice quits, `Ctrl`+`Z` suspends, `?` Help, `,` Settings, `Tab`/`⇧Tab`
+  works. Globals: `Ctrl`+`C` twice quits (in a prompt field holding text it clears it first), `Ctrl`+`Z` suspends, `?` Help, `,` Settings, `Tab`/`⇧Tab`
   move focus. `Esc` does the first that applies: close the menu, the overlay, the selection,
   guidance mode, interrupt a running Quartermaster turn, then back to the Bridge (Help returns to
   the screen it was opened from). Letters are commands in list panes; they don't jump to the input.
@@ -61,6 +63,12 @@ Map core `Tone`s with `theme::tone`.
   its first item on the pointer's row. Record overlapping regions so the topmost is recorded last.
 - Selection and copy: widgets push `TextRow`s for selectable text; a drag selects, release copies
   through `pbcopy` (OSC 52 over SSH or as a fallback) and flashes `Copied`.
+- The prompt field (`widgets/input_box.rs`, layout in `input/field.rs`) is shared by the Bridge
+  and every session. It soft-wraps, grows from 2 to 10 rows then scrolls, and over 30 wrapped
+  rows shows the first 4, `...[truncated N lines]...`, the last 5 and 2 rows around the cursor;
+  the whole text is kept and sent. It has its own selection (`View::anchor` to the cursor, byte
+  offsets): a drag or `Shift`+movement selects, release copies, typing replaces, delete keys
+  remove it. `Ctrl`+`V` is left free for image paste; `⌘V` arrives as a bracketed paste.
 
 ## Text and terminal
 

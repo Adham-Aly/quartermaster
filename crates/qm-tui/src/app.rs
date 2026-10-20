@@ -186,9 +186,13 @@ impl App {
         }
     }
 
-    /// Work that needs the frame just drawn: the Settings tab's scroll kept in range and its
-    /// selection in view, and a card scrolled into view a step at a time.
+    /// Work that needs the frame just drawn: the prompt field's scroll remembered, the Settings
+    /// tab's scroll kept in range and its selection in view, and a card scrolled into view a step
+    /// at a time.
     pub(crate) fn after_draw(&mut self) {
+        if let Some(field) = &self.drawn.field {
+            self.view.input_scroll = field.scroll;
+        }
         if self.screen == Screen::Settings {
             let max = self.drawn.scroll_max_of(Pane::Settings);
             let mut scroll = self.view.settings.scroll.min(max);

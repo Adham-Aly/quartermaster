@@ -7,7 +7,7 @@ use crate::app::{App, Quit};
 use crate::hit::{Hit, Pane, StatusItem, TaskButton};
 use crate::input::select;
 use crate::view::{MenuTarget, Selection};
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use qm_types::api::CardKind;
 use ratatui::layout::Position;
 use std::time::{Duration, Instant};
@@ -25,6 +25,8 @@ pub(crate) struct Pointer {
     pub(crate) last_click: Option<(Hit, Instant)>,
     /// A drag-selection is in progress (the left button went down on selectable text).
     pub(crate) selecting: bool,
+    /// A drag in the prompt field is in progress: it moves the cursor, selecting.
+    pub(crate) editing: bool,
 }
 
 /// Whether a press on `hit` at `now` doubles the previous press `last`.
@@ -57,7 +59,8 @@ impl App {
             MouseEventKind::Moved => self.hover_at(hit),
             MouseEventKind::Down(MouseButton::Left) => {
                 self.hover_at(hit);
-                self.left_press(hit, at, now);
+                let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+                self.left_press(hit, at, now, shift);
             }
             MouseEventKind::Drag(MouseButton::Left) if self.settings_dragging() => {
                 self.settings_drag_to(hit);
@@ -68,6 +71,8 @@ impl App {
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(divider) = self.drag {
                     self.drag_to(divider, mouse.column);
+                } else if self.pointer.editing {
+                    self.field_drag_to(at);
                 } else if self.pointer.selecting
                     && let Some(selection) = self.view.selection
                 {
@@ -86,6 +91,9 @@ impl App {
                 if std::mem::take(&mut self.pointer.selecting) {
                     self.finish_selection(now);
                 }
+                if std::mem::take(&mut self.pointer.editing) {
+                    self.finish_field_drag(now);
+                }
                 self.hover_at(hit);
             }
             MouseEventKind::Down(MouseButton::Right) => self.right_press(hit, at),
@@ -103,7 +111,7 @@ impl App {
         self.change(|app| &mut app.hover, hit);
     }
 
-    fn left_press(&mut self, hit: Option<Hit>, at: Position, now: Instant) {
+    fn left_press(&mut self, hit: Option<Hit>, at: Position, now: Instant, shift: bool) {
         if matches!(self.quit, Quit::Confirm { .. }) {
             if let Some(hit) = hit {
                 self.click(hit);
@@ -126,6 +134,20 @@ impl App {
         // A click without a drag clears the selection; one on text may start a new one.
         self.pointer.selecting = false;
         self.change(|app| &mut app.view.selection, None);
+        // A press in the prompt field puts the cursor there (shift extends the selection to it),
+        // and a drag from it selects.
+        self.pointer.editing = false;
+        if hit == Some(Hit::Pane(Pane::Input))
+            && let Some(offset) = self.field_offset_at(at)
+        {
+            if shift {
+                self.select_to(offset);
+            } else {
+                self.set_cursor(offset);
+                self.anchor_at_cursor();
+            }
+            self.pointer.editing = true;
+        }
         if starts_selection(hit) {
             let rows = select::rows_for(&self.drawn, at);
             if select::on_text(&rows, at) {
@@ -173,6 +195,28 @@ impl App {
             Hit::Tab(_) | Hit::Pane(_) | Hit::Divider(_) | Hit::ConfirmQuit | Hit::CancelQuit => {
                 self.click(hit);
             }
+        }
+    }
+
+    /// The byte of your message under `at`, when the last frame drew a field that takes text.
+    fn field_offset_at(&self, at: Position) -> Option<usize> {
+        self.drawn.field.as_ref()?.offset_at(&self.input, at)
+    }
+
+    /// A drag in the prompt field: the cursor follows the pointer, selecting from the press.
+    fn field_drag_to(&mut self, at: Position) {
+        if let Some(offset) = self.field_offset_at(at) {
+            self.select_to(offset);
+        }
+    }
+
+    /// The release of a drag in the prompt field: copies the selection, as a drag over any text
+    /// does, and keeps it so typing replaces it.
+    fn finish_field_drag(&mut self, now: Instant) {
+        self.drop_empty_selection();
+        if let Some((from, to)) = self.selection() {
+            let text = self.input[from..to].to_owned();
+            self.copy(&text, now);
         }
     }
 

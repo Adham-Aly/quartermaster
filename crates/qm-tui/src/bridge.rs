@@ -101,7 +101,7 @@ pub(crate) fn draw_body(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut 
     crew::draw(frame, crew_area, app, map);
 
     // Middle column: the conversation above your input.
-    let input_height = input_box::height(&app.input).min(cols.middle.height / 2);
+    let input_height = input_box::height(app, cols.middle.width).min(cols.middle.height / 2);
     let input_area = Rect {
         y: cols.middle.bottom() - input_height,
         height: input_height,

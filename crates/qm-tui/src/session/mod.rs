@@ -101,6 +101,7 @@ impl App {
         ui.bridge_cursor = self.view.cursor.take();
         ui.bridge_focus = Some(bridge_focus);
         self.input = ui.drafts.remove(&agent).unwrap_or_default();
+        self.view.anchor = None;
         self.screen = Screen::Session(agent);
         self.focus = Pane::Input;
         self.command(Command::ViewSession { agent: Some(agent) });
@@ -120,6 +121,7 @@ impl App {
         ui.agent = None;
         self.input = std::mem::take(&mut ui.bridge_draft);
         self.view.cursor = ui.bridge_cursor.take();
+        self.view.anchor = None;
         self.focus = ui.bridge_focus.take().unwrap_or(Pane::Crew);
         self.view.selection = None;
         self.pointer.selecting = false;

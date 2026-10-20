@@ -6,6 +6,7 @@
 
 pub(crate) mod clipboard;
 pub(crate) mod editor;
+pub(crate) mod field;
 pub(crate) mod focus;
 pub(crate) mod keys;
 pub(crate) mod menu;
@@ -139,8 +140,7 @@ impl App {
                 if let Some(held) = held {
                     self.change(|app| &mut app.view.guidance_for, None);
                     self.change(|app| &mut app.view.location_for, Some(held));
-                    self.input = location;
-                    self.view.cursor = None;
+                    self.set_input(location);
                     self.focus_pane(Pane::Input);
                 }
             }

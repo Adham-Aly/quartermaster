@@ -26,20 +26,20 @@
 //! conversation, drawn by the Bridge's chat widgets.
 
 use super::{BANNER, SESSION_SHOWS_ATTENTION, SessionHit};
-use crate::app::{App, Quit};
+use crate::app::App;
 use crate::bridge::pane_block;
 use crate::chrome::{MIN_HEIGHT, MIN_WIDTH};
 use crate::hit::{FrameMap, Hit, Pane, StatusItem};
-use crate::text::{cells, tail, truncate, width, wrap, wrap_rows, wrap_styled};
+use crate::text::{cells, truncate, width, wrap, wrap_rows, wrap_styled};
 use crate::theme;
 use crate::widgets::conversation::{self, Row, RowText, draw_rows};
 use crate::widgets::{button, input_box, markdown, stream};
 use qm_types::api::{AgentRef, SessionLine, SessionLineKind, SessionView};
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Position, Rect};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
+use ratatui::widgets::Paragraph;
 
 /// The `← Back` button's label.
 const BACK: &str = "← Back";
@@ -47,8 +47,6 @@ const BACK: &str = "← Back";
 const INTERRUPT: &str = "Interrupt";
 /// The hints after it.
 const HINTS: &str = "esc back · ⏎ send";
-/// The cursor glyph, as in the Bridge's input.
-const CURSOR: &str = "▌";
 
 /// Draws the whole screen for `agent`'s session into `area`.
 pub(crate) fn draw(
@@ -79,7 +77,7 @@ pub(crate) fn draw(
     );
     let status_row = area.bottom() - 1;
     let top = area.y + 2;
-    let input_height = input_box::height(&app.input).min((status_row - top) / 2);
+    let input_height = input_box::height(app, area.width).min((status_row - top) / 2);
     let input_area = Rect::new(area.x, status_row - input_height, area.width, input_height);
     let session_area = Rect::new(area.x, top, area.width, input_area.y - top);
     session_pane(frame, session_area, app, view, map);
@@ -427,7 +425,7 @@ fn expand_button(line: &SessionLine, app: &App) -> Option<(&'static str, Hit)> {
     Some((label, Hit::Session(SessionHit::Expand(line.id))))
 }
 
-/// Your message to the worker: the Accent border while focused, the Bridge input's editing; the
+/// Your message to the worker: the shared prompt field, the Accent border while focused; the
 /// reason, dim, once the session takes no more text.
 fn input(
     frame: &mut Frame<'_>,
@@ -439,22 +437,6 @@ fn input(
 ) {
     let open = app.session_open();
     let focused = app.focus == Pane::Input;
-    let style = if open && (focused || !app.input.is_empty()) {
-        theme::accent()
-    } else {
-        theme::border(false, app.hover == Some(Hit::Pane(Pane::Input)))
-    };
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(style)
-        .padding(Padding::horizontal(1));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    map.hits.add(area, Hit::Pane(Pane::Input));
-    if inner.height == 0 || inner.width < 4 {
-        return;
-    }
-    let room = usize::from(inner.width - 2);
     let placeholder = view
         .map(|v| v.placeholder.clone())
         .filter(|p| !p.is_empty())
@@ -462,83 +444,13 @@ fn input(
             AgentRef::Secondmate { id } => format!("{id}'s session isn't available yet."),
             _ => format!("message {} directly…", agent_label(agent)),
         });
-    let lead_style = if open { theme::accent() } else { theme::dim() };
-    let (lines, cursor) = if !open {
-        let line = Line::from(vec![
-            Span::styled("› ", lead_style),
-            Span::styled(truncate(&placeholder, room), theme::dim()),
-        ]);
-        (vec![line], None)
-    } else if app.input.is_empty() {
-        // No glyph in the empty box: only the placeholder shows.
-        let spans = vec![
-            Span::styled("› ", lead_style),
-            Span::styled(truncate(&placeholder, room), theme::dim()),
-        ];
-        (vec![Line::from(spans)], Some((0, 0)))
-    } else {
-        let (lines, cursor) = text_lines(app, room, usize::from(inner.height));
-        (lines, Some(cursor))
+    let field = input_box::Field {
+        placeholder,
+        open,
+        focused,
+        accent: open && (focused || !app.input.is_empty()),
     };
-    frame.render_widget(Paragraph::new(lines), inner);
-    if focused
-        && let Some((row, column)) = cursor
-        && !matches!(app.quit, Quit::Confirm { .. } | Quit::Requested)
-    {
-        frame.set_cursor_position(Position::new(
-            inner.x + 2 + cells(column),
-            inner.y + cells(row),
-        ));
-    }
-}
-
-/// Your draft's rows, scrolled so the cursor shows, with the glyph in place; and the cursor's
-/// (row, column) in the drawn rows, columns counted after the `› ` lead.
-fn text_lines(app: &App, room: usize, visible: usize) -> (Vec<Line<'static>>, (usize, usize)) {
-    let input = &app.input;
-    let at = app.cursor();
-    let cursor_line = input[..at].matches('\n').count();
-    let first = (cursor_line + 1).saturating_sub(visible);
-    let mut cursor = (0, 0);
-    let lines = input
-        .split('\n')
-        .enumerate()
-        .skip(first)
-        .take(visible)
-        .map(|(i, text)| {
-            let lead = if i == 0 {
-                Span::styled("› ", theme::accent())
-            } else {
-                Span::raw("  ")
-            };
-            if i != cursor_line {
-                return Line::from(vec![lead, Span::raw(truncate(text, room))]);
-            }
-            let line_start = input[..at].rfind('\n').map_or(0, |n| n + 1);
-            let (before, after) = text.split_at(at - line_start);
-            let before = tail(before, room.saturating_sub(1));
-            let after_room = room.saturating_sub(width(before) + 1);
-            cursor = (i - first, width(before));
-            Line::from(vec![
-                lead,
-                Span::raw(before.to_owned()),
-                Span::styled(CURSOR, theme::accent()),
-                Span::raw(cut(after, after_room)),
-            ])
-        })
-        .collect();
-    (lines, cursor)
-}
-
-/// `s` cut to `max` cells, with no ellipsis.
-fn cut(s: &str, max: usize) -> String {
-    let mut used = 0;
-    s.chars()
-        .take_while(|&c| {
-            used += width(c.encode_utf8(&mut [0; 4]));
-            used <= max
-        })
-        .collect()
+    input_box::draw_field(frame, area, app, &field, map);
 }
 
 /// `⚑ 1 approval · running 14m · job J3 idle` on the left; `Interrupt · esc back · ⏎ send` on

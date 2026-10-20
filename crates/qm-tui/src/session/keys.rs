@@ -4,7 +4,7 @@
 //! |---|---|
 //! | `Tab` / `⇧Tab` | focus Session ↔ Input (Input on entry) |
 //! | `⏎` (Input) | send to the worker; `⇧⏎`, `⌥⏎`, `Ctrl`+`J` a new line |
-//! | `Esc` | close the menu → clear the selection → back to the Bridge; never interrupts here |
+//! | `Esc` | close the menu → clear a selection → back to the Bridge; never interrupts here |
 //! | `i` (Session) | interrupt the worker's running turn |
 //! | `e` (Session) | expand or collapse the newest line with a detail in view |
 //! | ↑ ↓ `j` `k`, `PgUp` `PgDn`, `g` `G` (Session) | scroll |
@@ -32,6 +32,8 @@ impl App {
                 if self.view.selection.is_some() {
                     self.pointer.selecting = false;
                     self.change(|app| &mut app.view.selection, None);
+                } else if self.selection().is_some() {
+                    self.change(|app| &mut app.view.anchor, None);
                 } else {
                     self.leave_session();
                 }

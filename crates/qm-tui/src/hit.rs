@@ -155,6 +155,8 @@ pub(crate) struct FrameMap {
     /// The Settings tab's selected row, as (rows down from the tab's top, rows the tab shows):
     /// what the keys keep in view.
     pub(crate) settings_selected: Option<(usize, usize)>,
+    /// The prompt field, when one that takes text was drawn.
+    pub(crate) field: Option<crate::input::field::Drawn>,
 }
 
 impl FrameMap {
