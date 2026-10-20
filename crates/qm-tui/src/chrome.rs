@@ -1,5 +1,5 @@
-//! The frame around every screen: the top bar (the menu button, this Mac, the accounts), the setup
-//! banner, the status bar, the quit dialog, and the notice for a terminal too small to draw in.
+//! The frame around every screen: the top bar (the menu button, this Mac, the accounts), the
+//! status bar, the quit dialog, and the notice for a terminal too small to draw in.
 
 use crate::app::App;
 use crate::hit::{Hit, Hits, StatusItem};
@@ -30,7 +30,7 @@ const HELP_HINTS: &str = "↑↓ pgup pgdn scroll · esc close";
 /// The menu button's label.
 const MENU: &str = "☰ Menu";
 
-/// Draws the top bar, the banner and the status bar, and returns the body area between them, or
+/// Draws the top bar and the status bar, and returns the body area between them, or
 /// `None` when the terminal is too small (the notice is drawn instead).
 pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, hits: &mut Hits) -> Option<Rect> {
     let area = frame.area();
@@ -38,19 +38,8 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, hits: &mut Hits) -> Option<
         draw_too_small(frame, area);
         return None;
     }
-    let mut top = area.y;
-    draw_top_bar(frame, Rect::new(area.x, top, area.width, 1), app, hits);
-    top += 1;
-    // The setup banner is the Bridge's, never over the setup check itself.
-    if app.screen == Screen::Bridge && !app.snapshot.setup_issues.is_empty() {
-        draw_banner(frame, Rect::new(area.x, top, area.width, 1), app);
-        // A click opens the setup check.
-        hits.add(
-            Rect::new(area.x, top, area.width, 1),
-            Hit::Setup(crate::setup::SetupHit::Banner),
-        );
-        top += 1;
-    }
+    draw_top_bar(frame, Rect::new(area.x, area.y, area.width, 1), app, hits);
+    let top = area.y + 1;
     let status_row = area.bottom() - 1;
     draw_status_bar(
         frame,
@@ -125,19 +114,6 @@ fn draw_menu_button(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hit
     let x = area.x + 1;
     hits.add(Rect::new(x, area.y, button_width, 1), Hit::MenuButton);
     x + button_width
-}
-
-/// The one-line setup banner: what the setup check found missing.
-fn draw_banner(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let issues = app.snapshot.setup_issues.join(" · ");
-    let text = truncate(
-        &format!("⚠ Setup: {issues}"),
-        usize::from(area.width.saturating_sub(2)),
-    );
-    frame.render_widget(
-        Line::from(vec![Span::raw(" "), Span::styled(text, theme::warn())]),
-        area,
-    );
 }
 
 fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits) {

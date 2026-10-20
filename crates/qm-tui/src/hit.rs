@@ -85,7 +85,7 @@ pub(crate) enum Hit {
     SlashItem(usize),
     /// Something in the Settings popup.
     Settings(crate::settings::SettingsHit),
-    /// Something on the setup check screen, or the banner.
+    /// Something on the setup check screen.
     Setup(crate::setup::SetupHit),
     /// Something on the worker-session screen.
     Session(crate::session::SessionHit),

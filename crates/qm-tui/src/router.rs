@@ -14,7 +14,7 @@ use ratatui::layout::Rect;
 pub(crate) enum Screen {
     /// The main layout.
     Bridge,
-    /// The setup check: it opens by itself, and from the banner.
+    /// The setup check: it opens from Settings ▸ System, never by itself.
     Setup,
     /// A worker's session: opened from the crew. It owns the whole frame, with no top bar or
     /// status bar.
@@ -23,8 +23,8 @@ pub(crate) enum Screen {
     Diff,
 }
 
-/// Draws the body of the current screen into `body` (the area between the top bar, or the setup
-/// banner, and the status bar), recording what can be clicked (and what scrolls) in `map`.
+/// Draws the body of the current screen into `body` (the area between the top bar and the status
+/// bar), recording what can be clicked (and what scrolls) in `map`.
 pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut FrameMap) {
     match app.screen {
         Screen::Bridge => bridge::draw_body(frame, body, app, map),

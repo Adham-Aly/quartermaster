@@ -16,7 +16,7 @@ pub(crate) const DIM: Color = Color::DarkGray;
 pub(crate) const ACCENT: Color = Color::Yellow;
 /// Good news: running, ready, passed.
 pub(crate) const OK: Color = Color::Green;
-/// Warnings such as the setup banner, decisions and notices.
+/// Warnings such as decisions and notices.
 pub(crate) const WARN: Color = Color::Yellow;
 /// Blue runs: a session's `[from supervisor]` marker. Bright blue, because ANSI blue on a dark
 /// background can hardly be read.

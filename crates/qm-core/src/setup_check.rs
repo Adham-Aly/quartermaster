@@ -607,6 +607,11 @@ fn later() -> SetupAction {
     SetupAction::new("Not now", SetupActionKind::Later)
 }
 
+/// The fix line Settings ▸ System shows: "Log in to GitHub: press Open, or run gh auth login".
+fn fix(what: &str, command: &str) -> String {
+    format!("{what}: press Open, or run {command}.")
+}
+
 fn program(path: Option<&PathBuf>, name: &str) -> String {
     path.map_or_else(|| name.to_owned(), |p| p.display().to_string())
 }
@@ -631,6 +636,10 @@ fn git_item(facts: &SetupFacts) -> SetupItem {
                 ),
                 copy_action("xcode-select --install"),
             ];
+            item.fix = Some(fix(
+                "Install Apple's Command Line Tools",
+                "xcode-select --install",
+            ));
             item
         }
         state => {
@@ -645,6 +654,51 @@ fn git_item(facts: &SetupFacts) -> SetupItem {
     }
 }
 
+/// Claude Code isn't installed: Homebrew installs it, else the official installer's command.
+fn claude_missing_item(facts: &SetupFacts) -> SetupItem {
+    let mut item = SetupItem::new(SetupTool::Claude, SetupMark::Missing, "Claude Code");
+    "Claude Code · not installed".clone_into(&mut item.summary);
+    item.explanation = Some(
+        "Needed for the Claude engine. Until it's set up, routing uses your other \
+         accounts."
+            .to_owned(),
+    );
+    if let Some(brew) = &facts.homebrew {
+        item.state = vec![Styled::new("not installed", Tone::Error)];
+        item.actions = vec![
+            run_action(
+                "Install with Homebrew",
+                "brew install --cask claude-code",
+                vec![
+                    brew.path.display().to_string(),
+                    "install".to_owned(),
+                    "--cask".to_owned(),
+                    "claude-code".to_owned(),
+                ],
+                "install",
+            ),
+            copy_action("brew install --cask claude-code"),
+            later(),
+        ];
+        item.fix = Some(fix(
+            "Install it with Homebrew",
+            "brew install --cask claude-code",
+        ));
+    } else {
+        item.state = vec![
+            Styled::new("not installed", Tone::Error),
+            Styled::new(" · Homebrew isn't installed either", Tone::Text),
+        ];
+        item.steps = vec![SetupStep::new("1. Install Claude Code", CLAUDE_INSTALL)];
+        item.fix = Some(format!(
+            "Install it with {CLAUDE_INSTALL}; Open shows the command to copy."
+        ));
+        item.footnote =
+            Some("Or install it with Homebrew. I'll check again when you're back.".to_owned());
+    }
+    item
+}
+
 fn claude_item(facts: &SetupFacts) -> SetupItem {
     let login = run_action(
         "Log in to Claude",
@@ -657,43 +711,7 @@ fn claude_item(facts: &SetupFacts) -> SetupItem {
         "log in",
     );
     match &facts.claude {
-        ToolState::Missing => {
-            let mut item = SetupItem::new(SetupTool::Claude, SetupMark::Missing, "Claude Code");
-            "Claude Code · not installed".clone_into(&mut item.summary);
-            item.explanation = Some(
-                "Needed for the Claude engine. Until it's set up, routing uses your other \
-                 accounts."
-                    .to_owned(),
-            );
-            if let Some(brew) = &facts.homebrew {
-                item.state = vec![Styled::new("not installed", Tone::Error)];
-                item.actions = vec![
-                    run_action(
-                        "Install with Homebrew",
-                        "brew install --cask claude-code",
-                        vec![
-                            brew.path.display().to_string(),
-                            "install".to_owned(),
-                            "--cask".to_owned(),
-                            "claude-code".to_owned(),
-                        ],
-                        "install",
-                    ),
-                    copy_action("brew install --cask claude-code"),
-                    later(),
-                ];
-            } else {
-                item.state = vec![
-                    Styled::new("not installed", Tone::Error),
-                    Styled::new(" · Homebrew isn't installed either", Tone::Text),
-                ];
-                item.steps = vec![SetupStep::new("1. Install Claude Code", CLAUDE_INSTALL)];
-                item.footnote = Some(
-                    "Or install it with Homebrew. I'll check again when you're back.".to_owned(),
-                );
-            }
-            item
-        }
+        ToolState::Missing => claude_missing_item(facts),
         ToolState::LoggedOut { .. } | ToolState::Installed { .. } => {
             let mut item = SetupItem::new(SetupTool::Claude, SetupMark::Warn, "Claude Code");
             let words = if matches!(facts.claude, ToolState::LoggedOut { .. }) {
@@ -707,6 +725,7 @@ fn claude_item(facts: &SetupFacts) -> SetupItem {
             ];
             item.summary = format!("Claude Code · {words}");
             item.actions = vec![login];
+            item.fix = Some(fix("Log in to Claude", "claude auth login"));
             item.hint = Some("runs claude auth login in a pane".to_owned());
             item
         }
@@ -724,6 +743,10 @@ fn claude_item(facts: &SetupFacts) -> SetupItem {
             );
             item.actions = vec![login, later()];
             item.hint = Some("runs claude auth login in a pane".to_owned());
+            item.fix = Some(fix(
+                "Log in with a Claude subscription",
+                "claude auth login",
+            ));
             item
         }
         ToolState::LoggedIn { version, account } => {
@@ -767,6 +790,7 @@ fn gh_item(facts: &SetupFacts) -> SetupItem {
                     copy_action("brew install gh"),
                     later(),
                 ];
+                item.fix = Some(fix("Install it with Homebrew", "brew install gh"));
             } else {
                 item.state = vec![
                     Styled::new("not installed", Tone::Error),
@@ -776,6 +800,10 @@ fn gh_item(facts: &SetupFacts) -> SetupItem {
                     SetupStep::new("1. Install Homebrew", HOMEBREW_INSTALL),
                     SetupStep::new("2. Install gh", "brew install gh"),
                 ];
+                item.fix = Some(
+                    "Install Homebrew, then run brew install gh; Open shows the commands to copy."
+                        .to_owned(),
+                );
                 item.footnote = Some(
                     "Or download the installer from cli.github.com. I'll check again when \
                          you're back."
@@ -830,6 +858,7 @@ fn gh_item(facts: &SetupFacts) -> SetupItem {
                 later(),
             ];
             item.hint = Some("runs gh auth login in a pane".to_owned());
+            item.fix = Some(fix("Log in to GitHub", "gh auth login --web"));
             item
         }
     }
