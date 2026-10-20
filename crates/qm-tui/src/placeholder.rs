@@ -112,6 +112,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("home end · g G", "first or last row"),
             ("⏎ · o", "open the selected crewmate"),
             ("space", "the selected row's menu"),
+            ("a", "projects: how to add a project"),
         ],
     ),
     (
@@ -245,6 +246,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "click",
                 "focus a pane, select a row, press a button, switch tabs, open the menu",
             ),
+            ("click the Projects box", "how to add a project"),
             ("click outside · ✕", "close the popup"),
             ("double-click", "open a crewmate"),
             ("right-click", "a row's menu"),
