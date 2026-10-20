@@ -23,6 +23,8 @@ pub(crate) enum MenuTarget {
     Model(crate::settings::BoardItem),
     AddToTier(crate::settings::BoardItem),
     Account(crate::settings::AccountTarget),
+    /// The top bar's menu: its entries are `popups::MenuEntry::ALL`.
+    Main,
 }
 
 /// An open context menu: its items, top-left corner and the item under the keyboard cursor.
@@ -71,14 +73,16 @@ pub(crate) struct View {
     pub(crate) cursor: Option<usize>,
     /// The sample fixture is showing: core snapshots are ignored.
     pub(crate) sample: bool,
-    /// The Settings screen.
+    /// The Settings popup's state.
     pub(crate) settings: crate::settings::SettingsView,
     /// The worker-session screen: its scroll, expanded lines and drafts.
     pub(crate) session: Option<crate::session::SessionUi>,
     /// How far the Diff screen is scrolled down from its first line.
     pub(crate) diff_scroll: usize,
-    /// The screen `?` opened Help from: `Esc` on Help goes back there.
-    pub(crate) help_from: Option<crate::router::Screen>,
+    /// The popup open over the screen, if any.
+    pub(crate) popup: Option<crate::popups::Popup>,
+    /// The menu entries showing a badge (a red dot): something there needs you.
+    pub(crate) badges: Vec<crate::popups::MenuEntry>,
     /// How far Help is scrolled down from its top.
     pub(crate) help_scroll: usize,
 }

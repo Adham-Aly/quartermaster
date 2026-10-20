@@ -2,6 +2,7 @@
 
 use crate::hit::{Divider, FrameMap, Hit, Pane};
 use crate::input::{menu, prefs, select};
+use crate::popups::Popup;
 use crate::router::Screen;
 use crate::terminal::TerminalGuard;
 use crate::view::Flash;
@@ -167,13 +168,14 @@ impl App {
         };
         if let Some(body) = body {
             router::draw(frame, body, self, &mut map);
+            crate::popups::draw(frame, body, self, &mut map);
         }
         if let Some(selection) = self.view.selection {
             let rows = select::rows_for(&map, selection.anchor);
             select::paint(frame.buffer_mut(), &rows, selection);
         }
         if let Some(open) = &self.view.menu {
-            menu::draw(frame, open, &mut map.hits);
+            menu::draw(frame, self, open, &mut map.hits);
         }
         if let Quit::Confirm { working } = self.quit {
             chrome::draw_quit_dialog(frame, area, working, self.hover, &mut map.hits);
@@ -186,10 +188,10 @@ impl App {
         }
     }
 
-    /// Work that needs the frame just drawn: the Settings tab's scroll kept in range and its
+    /// Work that needs the frame just drawn: the Settings popup's scroll kept in range and its
     /// selection in view, and a card scrolled into view a step at a time.
     pub(crate) fn after_draw(&mut self) {
-        if self.screen == Screen::Settings {
+        if self.view.popup == Some(Popup::Settings) {
             let max = self.drawn.scroll_max_of(Pane::Settings);
             let mut scroll = self.view.settings.scroll.min(max);
             if std::mem::take(&mut self.view.settings.reveal)
@@ -331,33 +333,16 @@ impl App {
         self.dirty = true;
     }
 
+    /// Shows `screen`; going to another screen closes an open popup.
     pub(crate) fn show(&mut self, screen: Screen) {
+        if self.screen != screen {
+            self.close_popup();
+        }
         // Leaving a session puts the Bridge's draft back and sends `ViewSession { agent: None }`.
         if matches!(self.screen, Screen::Session(_)) && self.screen != screen {
             self.leave_session();
         }
-        if self.screen != screen {
-            self.view.help_from = None;
-        }
         Self::set(&mut self.dirty, &mut self.screen, screen);
-    }
-
-    /// `?`: Help, remembering where it was opened from so `Esc` goes back there.
-    pub(crate) fn open_help(&mut self) {
-        let from = self.screen;
-        self.show(Screen::Help);
-        if from != Screen::Help {
-            self.view.help_from = Some(from);
-        }
-    }
-
-    /// `Esc` on Help: back to the screen `?` opened it from, a session reopened as it was.
-    pub(crate) fn close_help(&mut self) {
-        match self.view.help_from.take() {
-            Some(Screen::Session(agent)) => self.enter_session(agent),
-            Some(screen) => self.show(screen),
-            None => self.show(Screen::Bridge),
-        }
     }
 
     pub(crate) fn focus_pane(&mut self, pane: Pane) {
@@ -374,7 +359,8 @@ impl App {
             return;
         }
         match hit {
-            Hit::Tab(screen) => self.show(screen),
+            Hit::MenuButton => self.toggle_main_menu(),
+            Hit::Popup(hit) => self.popup_click(hit),
             Hit::Pane(pane) => self.focus_pane(pane),
             Hit::Divider(divider) => {
                 self.drag = Some(divider);

@@ -88,6 +88,7 @@ impl App {
             return;
         }
         self.leave_session();
+        self.close_popup();
         self.view.menu = None;
         self.view.selection = None;
         self.pointer.selecting = false;

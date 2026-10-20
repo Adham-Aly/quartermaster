@@ -1,4 +1,4 @@
-//! What keys, clicks, drags and context-menu choices do on the Settings screen. A click and its key
+//! What keys, clicks, drags and context-menu choices do in the Settings popup. A click and its key
 //! always run the same action here.
 
 use super::model::{
@@ -12,6 +12,7 @@ use super::{
 use crate::app::App;
 use crate::hit::Hit;
 use crate::input::keys::list_move;
+use crate::popups::Popup;
 use crate::router::Screen;
 use crate::view::MenuTarget;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -79,7 +80,7 @@ pub(crate) fn menu_items(target: MenuTarget) -> Vec<&'static str> {
             }
             items
         }
-        MenuTarget::Crew(_) | MenuTarget::Project(_) => Vec::new(),
+        MenuTarget::Crew(_) | MenuTarget::Project(_) | MenuTarget::Main => Vec::new(),
     }
 }
 
@@ -98,6 +99,11 @@ impl App {
         self.change(|app| slot(&mut app.view.settings), value);
     }
 
+    /// Shows Settings tab `tab` (the menu's Model levels and Routing entries).
+    pub(crate) fn show_settings_tab(&mut self, tab: Tab) {
+        self.show_tab(tab);
+    }
+
     fn show_tab(&mut self, tab: Tab) {
         if self.view.settings.tab != tab {
             self.settings_set(|s| &mut s.scroll, 0);
@@ -114,8 +120,8 @@ impl App {
 
     // ---------------------------------------------------------------- keys
 
-    /// A key on the Settings screen; returns whether it was used (otherwise the global keys
-    /// apply: `esc` back to the Bridge, `?` help). `PgUp` and `PgDn` scroll a tab taller than
+    /// A key in the Settings popup; returns whether it was used (otherwise the popup's keys
+    /// apply: `esc` closes it, `?` help). `PgUp` and `PgDn` scroll a tab taller than
     /// the screen, and a selection the keys move is kept in view.
     pub(crate) fn on_settings_key(&mut self, key: KeyEvent, now: Instant) -> bool {
         let overlay = self.view.settings.field.is_some() || self.view.settings.picker.is_some();
@@ -531,7 +537,7 @@ impl App {
 
     /// Whether a model is being dragged on the board.
     pub(crate) fn settings_dragging(&self) -> bool {
-        self.screen == Screen::Settings && self.view.settings.drag.is_some()
+        self.view.popup == Some(Popup::Settings) && self.view.settings.drag.is_some()
     }
 
     /// The pointer moved with a model held: light up the zone under it (not the one it left).
@@ -586,7 +592,7 @@ impl App {
             connect::spinner_frame(&login, s),
             connect::remaining(&login, s).map(|d| d.as_secs()),
         );
-        if self.screen == Screen::Settings && s.connecting && before != after {
+        if self.view.popup == Some(Popup::Settings) && s.connecting && before != after {
             self.redraw();
         }
     }
@@ -634,7 +640,7 @@ impl App {
             MenuTarget::Account(account) => {
                 self.settings_set(|s| &mut s.account, Some(account.index));
             }
-            MenuTarget::Crew(_) | MenuTarget::Project(_) => {}
+            MenuTarget::Crew(_) | MenuTarget::Project(_) | MenuTarget::Main => {}
         }
     }
 
@@ -698,7 +704,7 @@ impl App {
                 RECONNECT => self.reconnect(account.index),
                 _ => {}
             },
-            MenuTarget::Crew(_) | MenuTarget::Project(_) => {}
+            MenuTarget::Crew(_) | MenuTarget::Project(_) | MenuTarget::Main => {}
         }
     }
 

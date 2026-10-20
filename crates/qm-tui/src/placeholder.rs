@@ -1,10 +1,9 @@
-//! The Help tab: every key and what the mouse does, grouped by where they apply. It scrolls
-//! (wheel, arrows, `PgUp`/`PgDn`, `g`/`G`), and descriptions wrap under their column. (Settings
-//! lives in `settings`.)
+//! Help, shown in a popup: every key and what the mouse does, grouped by where they apply. It
+//! scrolls (wheel, arrows, `PgUp`/`PgDn`, `g`/`G`), and descriptions wrap under their column.
+//! (Settings lives in `settings`.)
 
 use crate::app::App;
-use crate::bridge::pane_block;
-use crate::hit::{FrameMap, Hit, Pane};
+use crate::hit::{FrameMap, Pane};
 use crate::text::{width, wrap};
 use crate::theme;
 use ratatui::Frame;
@@ -15,13 +14,9 @@ use ratatui::widgets::Paragraph;
 /// Cells between the key column and the descriptions.
 const GAP: usize = 3;
 
-/// Draws Help into `area`, scrolled by `app.view.help_scroll` (clamped), and records its scroll
-/// area for the wheel.
-pub(crate) fn draw_help(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut FrameMap) {
-    // A box like every other: dim border and title, one cell of padding.
-    let block = pane_block("Help", theme::border(false, false));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+/// Draws Help into `inner`, the inside of its popup, scrolled by `app.view.help_scroll`
+/// (clamped), and records its scroll area for the wheel.
+pub(crate) fn draw_help(frame: &mut Frame<'_>, inner: Rect, app: &App, map: &mut FrameMap) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
@@ -34,8 +29,7 @@ pub(crate) fn draw_help(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut 
         .take(usize::from(inner.height))
         .collect();
     frame.render_widget(Paragraph::new(shown), inner);
-    map.hits.add(area, Hit::Pane(Pane::Help));
-    map.scroll_areas.push((area, Pane::Help));
+    map.scroll_areas.push((inner, Pane::Help));
     map.scroll_max.push((Pane::Help, max));
 }
 
@@ -86,14 +80,26 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("ctrl+z", "suspend to the shell; fg comes back"),
             ("tab · shift+tab", "next or previous pane"),
             (
+                "ctrl+o",
+                "the menu: settings, model levels, routing, help (even while typing)",
+            ),
+            (
                 "esc",
-                "close the menu or overlay, clear the selection, leave guidance, interrupt the Quartermaster, back",
+                "close the menu, popup or overlay, clear the selection, leave guidance, interrupt the Quartermaster, back",
             ),
             (
                 "?",
                 "this help (when not typing); esc goes back where you were",
             ),
             (",", "settings (when not typing)"),
+        ],
+    ),
+    (
+        "Menu",
+        &[
+            ("↑ ↓ · k j", "move between entries"),
+            ("⏎", "open the entry in a popup"),
+            ("esc", "close the menu"),
         ],
     ),
     (
@@ -200,8 +206,9 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             (
                 "click",
-                "focus a pane, select a row, press a button, switch tabs",
+                "focus a pane, select a row, press a button, switch tabs, open the menu",
             ),
+            ("click outside · ✕", "close the popup"),
             ("double-click", "open a crewmate"),
             ("right-click", "a row's menu"),
             ("drag a border", "resize the columns beside it"),

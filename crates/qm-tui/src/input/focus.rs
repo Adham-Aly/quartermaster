@@ -54,11 +54,14 @@ impl App {
         }
     }
 
-    /// `Esc`: the first that applies of close the menu, close the overlay, clear the selection,
-    /// leave guidance or location mode, interrupt a running Quartermaster turn, back to the Bridge.
+    /// `Esc`: the first that applies of close the menu, close the popup, close the overlay, clear
+    /// the selection, leave guidance or location mode, interrupt a running Quartermaster turn,
+    /// back to the Bridge.
     pub(crate) fn escape(&mut self) {
         if self.view.menu.is_some() {
             self.change(|app| &mut app.view.menu, None);
+        } else if self.view.popup.is_some() {
+            self.close_popup();
         } else if self.view.task_overlay {
             self.close_overlay();
         } else if self.view.selection.is_some() {
@@ -70,8 +73,6 @@ impl App {
             self.change(|app| &mut app.view.location_for, None);
             self.input.clear();
             self.view.cursor = None;
-        } else if self.screen == Screen::Help {
-            self.close_help();
         } else if self.screen != Screen::Bridge {
             self.show(Screen::Bridge);
         } else if self.snapshot.turn_running {

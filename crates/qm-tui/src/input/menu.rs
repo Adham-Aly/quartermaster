@@ -1,19 +1,17 @@
-//! Context menus: their items, drawing them, and running the choice.
+//! Context menus and the top bar's menu: their items, drawing them (through
+//! `widgets::dropdown`), and running the choice.
 //!
 //! Menus offer only items that work (open session, stop, the model actions on the Settings
 //! board, …).
 
 use crate::app::App;
 use crate::hit::{Hit, Hits};
-use crate::text;
-use crate::theme;
+use crate::popups::MenuEntry;
 use crate::view::{Menu, MenuTarget};
+use crate::widgets::dropdown::{self, Item};
 use qm_types::api::{AgentRef, Command};
 use ratatui::Frame;
-use ratatui::layout::{Position, Rect};
-use ratatui::style::Modifier;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::layout::Position;
 use std::time::Instant;
 
 const OPEN_SESSION: &str = "Open session";
@@ -36,67 +34,31 @@ pub(crate) fn items(target: MenuTarget, turn_running: bool) -> Vec<&'static str>
         MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_) => {
             crate::settings::menu_items(target)
         }
+        MenuTarget::Main => MenuEntry::ALL.into_iter().map(MenuEntry::label).collect(),
     }
 }
 
-/// Where a menu of `items` opened at `at` sits: right of the pointer with its first item on the
-/// pointer's row, shifted to stay inside `screen`.
-pub(crate) fn area(items: &[&str], at: Position, screen: Rect) -> Rect {
-    let widest = items
+/// The rows of `menu` as drawn: the top bar's menu with each entry's key and badge.
+fn rows<'a>(app: &App, menu: &'a Menu) -> Vec<Item<'a>> {
+    menu.items
         .iter()
-        .map(|item| text::width(item))
-        .max()
-        .unwrap_or(0);
-    // A border and one cell of padding on each side.
-    let width = text::cells(widest + 4).min(screen.width);
-    let height = text::cells(items.len() + 2).min(screen.height);
-    let x = at.x.min(screen.right().saturating_sub(width)).max(screen.x);
-    let y =
-        at.y.saturating_sub(1)
-            .min(screen.bottom().saturating_sub(height))
-            .max(screen.y);
-    Rect::new(x, y, width, height)
+        .map(|&label| match menu.target {
+            MenuTarget::Main => MenuEntry::from_label(label).map_or(Item::new(label), |entry| {
+                Item::new(label)
+                    .hint(entry.key())
+                    .badge(app.entry_badge(entry))
+            }),
+            _ => Item::new(label),
+        })
+        .collect()
 }
 
 /// Draws the open menu over everything beneath it, and records its regions: `Dialog` over the
 /// whole box, then one `MenuItem` per row.
-pub(crate) fn draw(frame: &mut Frame<'_>, menu: &Menu, hits: &mut Hits) {
-    let area = area(&menu.items, menu.at, frame.area());
-    frame.render_widget(Clear, area);
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme::accent());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    hits.add(area, Hit::Dialog);
-    let inner_width = usize::from(inner.width);
-    let lines: Vec<Line<'static>> = menu
-        .items
-        .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            let label = text::truncate(&format!(" {item}"), inner_width);
-            let pad = inner_width.saturating_sub(text::width(&label));
-            let style = if i == menu.cursor {
-                theme::text().add_modifier(Modifier::REVERSED)
-            } else {
-                theme::text()
-            };
-            Line::from(Span::styled(format!("{label}{}", " ".repeat(pad)), style))
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(lines), inner);
-    for i in 0..menu.items.len() {
-        let Ok(row) = u16::try_from(i) else { break };
-        if row >= inner.height {
-            break;
-        }
-        hits.add(
-            Rect::new(inner.x, inner.y + row, inner.width, 1),
-            Hit::MenuItem(i),
-        );
-    }
+pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, menu: &Menu, hits: &mut Hits) {
+    let rows = rows(app, menu);
+    let area = dropdown::area(&rows, menu.at, frame.area());
+    dropdown::draw(frame, area, &rows, menu.cursor, hits, Hit::MenuItem);
 }
 
 impl App {
@@ -137,6 +99,7 @@ impl App {
             MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_) => {
                 self.settings_select_target(target);
             }
+            MenuTarget::Main => {}
         }
     }
 
@@ -173,6 +136,11 @@ impl App {
             (COPY_NAME, MenuTarget::Project(i)) => {
                 if let Some(name) = self.snapshot.projects.get(i).map(|p| p.name.clone()) {
                     self.copy(&name, now);
+                }
+            }
+            (item, MenuTarget::Main) => {
+                if let Some(entry) = MenuEntry::from_label(item) {
+                    self.open_entry(entry);
                 }
             }
             (item, MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_)) => {

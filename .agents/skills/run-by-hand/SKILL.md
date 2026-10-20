@@ -44,7 +44,8 @@ Mouse input is easiest to check in a real terminal window.
 ## Sample screens
 
 `QM_DEV_SAMPLE` shows a fixed screen and ignores the core's snapshots (the picture holds still):
-`bridge`, `chat`, `decision` or `session` (values in `crates/qm-tui/src/sample.rs`). Use them to
+`bridge`, `chat`, `decision`, `session`, `settings` (the Settings popup over the Bridge) or
+`menu-badge` (a badge on the menu's Settings entry); all values are in `crates/qm-tui/src/sample.rs`. Use them to
 compare layout and styles without any account.
 
 ## Developer entry points (hidden)

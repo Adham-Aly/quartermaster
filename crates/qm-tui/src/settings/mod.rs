@@ -1,12 +1,12 @@
-//! The Settings screen and the connect-an-account flow.
+//! Settings, shown in a popup, and the connect-an-account flow.
 //!
 //! Tabs: Accounts, Model levels (the tier board), Routing (the pin and the Quartermaster's
 //! model), Projects and System, plus the connect-an-account flow opened from Accounts. Every
 //! control is clickable and has a key. The screens draw from [`model::Settings`], built from
 //! `qm_types::api`'s settings contract, and turn what you do into `api::Command`s.
 //!
-//! - `draw` (here) lays out the sub-tabs and the tab, which scrolls when it's taller than the
-//!   screen; `paint` is the small painter every tab draws through; the hints are the status
+//! - `draw` (here) lays out the sub-tabs and the tab inside the Settings popup (`popups`); the
+//!   tab scrolls when it's taller than the popup; `paint` is the small painter every tab draws through; the hints are the status
 //!   bar's (`status_hints`).
 //! - `accounts`, `levels`, `routing`, `other` and `connect` draw one tab each.
 //! - `overlay` draws the pickers (effort, model, move-to, find) and the one-line text fields.
@@ -24,8 +24,8 @@ mod routing;
 mod sync;
 
 use crate::app::App;
-use crate::hit::{FrameMap, Hits, Pane};
-use crate::text::{cells, width};
+use crate::hit::{FrameMap, Pane};
+use crate::text::cells;
 use crate::theme;
 use model::Settings;
 use paint::Painter;
@@ -101,7 +101,7 @@ pub(crate) enum Zone {
     NotInUse,
 }
 
-/// Something on the Settings screen a click acts on.
+/// Something in the Settings popup a click acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsHit {
     Tab(Tab),
@@ -256,7 +256,7 @@ pub(crate) struct Drag {
     pub(crate) over: Option<Zone>,
 }
 
-/// The Settings screen's state, held in `View::settings`.
+/// The Settings popup's state, held in `View::settings`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SettingsView {
     /// What the screens show: the core's settings, or the developer sample.
@@ -288,16 +288,16 @@ pub(crate) struct SettingsView {
     pub(crate) reveal: bool,
 }
 
-/// Draws the Settings screen into `body`. The sub-tabs are in the top bar when they fit there
-/// (`chrome` draws them), else on the body's first row. The tab's hints are
-/// the status bar's (`status_hints`). A tab taller than the body scrolls.
+/// Draws Settings into `body`, the inside of its popup: the sub-tabs on the first row (not while
+/// connecting), then the tab. The tab's hints are the status bar's (`status_hints`). A tab
+/// taller than the body scrolls.
 pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut FrameMap) {
     let view = &app.view.settings;
     let mut p = Painter::new(frame, &mut map.hits, app.hover, body);
-    let content = if view.connecting || tabs_in_top_bar(app, body.width) {
+    let content = if view.connecting {
         body
     } else {
-        draw_tabs(&mut p, body.x, body.y, body.right(), view.tab);
+        draw_tabs(&mut p, body.x, body.y, view.tab);
         Rect::new(
             body.x,
             body.y + 1,
@@ -357,41 +357,14 @@ fn draw_page(p: &mut Painter<'_, '_>, page: Rect, app: &App) {
 pub(crate) fn status_hints(app: &App) -> (&'static str, &'static str) {
     let view = &app.view.settings;
     if needs_core(view) && view.model.unavailable.is_some() {
-        ("", "tab next · esc back")
+        ("", "tab next · esc close")
     } else if view.connecting {
         connect::hints(view)
     } else if !view.loaded && matches!(view.tab, Tab::Accounts | Tab::ModelLevels | Tab::Routing) {
-        ("", "tab next · esc back")
+        ("", "tab next · esc close")
     } else {
         hints(view.tab)
     }
-}
-
-/// The main tabs' width in the top bar, from its left edge: one space, then `" Label "` each.
-fn main_tabs_end() -> u16 {
-    1 + crate::router::Screen::TABS
-        .iter()
-        .map(|s| cells(width(s.label()) + 2))
-        .sum::<u16>()
-}
-
-/// The sub-tabs' width.
-fn tabs_width() -> u16 {
-    Tab::ALL.iter().map(|t| cells(width(t.label()) + 2)).sum()
-}
-
-/// Whether the sub-tabs go in the top bar: on Settings (not while connecting), when they fit
-/// beside the main tabs with two cells between, ending one cell before the edge.
-pub(crate) fn tabs_in_top_bar(app: &App, screen_width: u16) -> bool {
-    app.screen == crate::router::Screen::Settings
-        && !app.view.settings.connecting
-        && main_tabs_end() + 2 + tabs_width() < screen_width
-}
-
-/// Draws the sub-tabs into the top bar `row` (see `tabs_in_top_bar`).
-pub(crate) fn draw_top_tabs(frame: &mut Frame<'_>, row: Rect, app: &App, hits: &mut Hits) {
-    let mut p = Painter::new(frame, hits, app.hover, row);
-    draw_tabs(&mut p, row.x, row.y, row.right(), app.view.settings.tab);
 }
 
 /// Whether what's showing comes from the core's settings part: the connect flow, Accounts, Model
@@ -427,9 +400,9 @@ fn draw_loading(p: &mut Painter<'_, '_>, area: Rect, tab: Tab) {
     p.text(inner.x + 1, inner.y, "Loading settings…", theme::dim());
 }
 
-/// The sub-tabs, right-aligned on row `y`, ending one cell before `right`.
-fn draw_tabs(p: &mut Painter<'_, '_>, left: u16, y: u16, right: u16, current: Tab) {
-    let mut x = right.saturating_sub(tabs_width() + 1).max(left);
+/// The sub-tabs on row `y`, from column `left`.
+fn draw_tabs(p: &mut Painter<'_, '_>, left: u16, y: u16, current: Tab) {
+    let mut x = left;
     for tab in Tab::ALL {
         let label = format!(" {} ", tab.label());
         let hit = SettingsHit::Tab(tab);
@@ -451,7 +424,7 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
     match tab {
         Tab::Accounts => (
             "right-click an account for more",
-            "⏎ open · p pause · * preferred · esc back",
+            "⏎ open · p pause · * preferred · esc close",
         ),
         Tab::ModelLevels => (
             "drag to move · right-click for options",
@@ -459,13 +432,13 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
         ),
         Tab::Routing => (
             "click to change",
-            "space pin · c model · f fallback · q quartermaster · esc back",
+            "space pin · c model · f fallback · q quartermaster · esc close",
         ),
         Tab::System => (
             "click to change",
-            "n notifications · s setup check · esc back",
+            "n notifications · s setup check · esc close",
         ),
-        Tab::Projects => ("click a tab", "tab next · esc back"),
+        Tab::Projects => ("click a tab", "tab next · esc close"),
     }
 }
 

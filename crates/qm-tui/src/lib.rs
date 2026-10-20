@@ -15,11 +15,13 @@
 //! - `terminal` enters and leaves full-screen mode (raw mode, alternate screen, mouse capture
 //!   with motion, bracketed paste) and restores the terminal on drop and on panic. Every frame is
 //!   wrapped in a synchronized update (DEC mode 2026), so it appears all at once.
-//! - `router` is the screen router; `chrome` draws the top bar, setup banner, status bar and quit
-//!   dialog around every screen; `bridge` draws the Bridge; `settings` the Settings screens;
-//!   `placeholder` the Help tab.
+//! - `router` is the screen router; `chrome` draws the top bar (its menu button), setup banner,
+//!   status bar and quit dialog around every screen; `bridge` draws the Bridge; `popups` opens
+//!   Settings (`settings`) and Help (`placeholder`) as popup windows over the screen, from the
+//!   top bar's menu or their keys.
 //! - `widgets` holds the Bridge's panes and their parts: projects, crew, conversation, cards,
-//!   streaming, the input box, the task pane and buttons.
+//!   streaming, the input box, the task pane and buttons; and the popup window and dropdown list
+//!   any screen can use.
 //! - `hit` is the per-frame hit map that drives clicks, drags, the wheel and hover alike.
 //! - `input` turns keys and the mouse into changes: focus and the key map, clicks, double-clicks,
 //!   the wheel, hover, divider drags and remembered column widths (`tui.toml`), context menus,
@@ -43,6 +45,7 @@ mod diff;
 mod hit;
 mod input;
 mod placeholder;
+mod popups;
 mod router;
 #[doc(hidden)]
 pub mod sample;
