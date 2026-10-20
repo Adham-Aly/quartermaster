@@ -38,8 +38,8 @@ Map core `Tone`s with `theme::tone`.
 
 ## Layout
 
-- Rows: top bar (the ` ☰ Menu ` button at the left, this Mac and the accounts at the right), then
-  the setup banner (Bridge only, when something is missing), the body, the
+- Rows: top bar (the ` ☰ Menu ` button at the left, then the core's update notice when it has
+  one and there's room, this Mac and the accounts at the right), then the setup banner (Bridge only, when something is missing), the body, the
   status bar. Below 60×16 a too-small notice shows.
 - Bridge columns: left 31 (20–60), a one-cell gap, the middle (never under 36), a gap, the task
   column 36 (24–70; `LEFT_DEFAULT`, `RIGHT_DEFAULT` in `app.rs`). Below 120 body columns the layout **folds**: no task column; the task pane opens as
@@ -48,8 +48,8 @@ Map core `Tone`s with `theme::tone`.
 - Boxes: rounded borders, the title in the top border, one cell of padding inside, no gap rows
   between boxes, boxes at the frame's edges. Border dim; accent when focused; text colour when
   hovered. The input box is accent while focused or holding text.
-- Popups: Settings and Help aren't screens; they open over the current screen (`popups.rs`) from
-  the menu or `,` / `?`, and leave its focus alone, so closing (`Esc`, ` ✕ `, a click outside)
+- Popups: Settings, Help and Update (`update.rs`) aren't screens; they open over the current
+  screen (`popups.rs`) from the menu or `,` / `?` (Update also from its top-bar notice), and leave its focus alone, so closing (`Esc`, ` ✕ `, a click outside)
   goes back where you were. The window is `widgets/popup.rs` (`centered` places it, `draw`
   records backdrop, window and close hits and returns the inside); lists are
   `widgets/dropdown.rs` (`Item` with a key hint and a badge), used by context menus and the menu
@@ -57,7 +57,8 @@ Map core `Tone`s with `theme::tone`.
   of serialisable `OpenPopup`s. Popups and menus store an `Anchor` (centre, menu button, a row
   plus an offset), never screen cells, resolved and clamped each frame (`popups::resolve`). A new
   popup or menu entry: see the notes at the top of `popups.rs`. A badge: make
-  `App::entry_badge` true for the entry; the menu button follows.
+  `App::entry_badge` true for the entry; the menu button follows (Update's comes from the core,
+  `UpdateView::badge`).
 - Buttons: `widgets/button.rs` (`" label "`), one space apart. Hints go on the status bar's right.
 - Long labels are cut with `…` so status columns always fit; long problem text wraps instead.
 

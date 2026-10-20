@@ -17,8 +17,8 @@
 //!   wrapped in a synchronized update (DEC mode 2026), so it appears all at once.
 //! - `router` is the screen router; `chrome` draws the top bar (its menu button), setup banner,
 //!   status bar and quit dialog around every screen; `bridge` draws the Bridge; `popups` opens
-//!   Settings (`settings`) and Help (`placeholder`) as popup windows over the screen, from the
-//!   top bar's menu or their keys.
+//!   Settings (`settings`), Help (`placeholder`) and Update (`update`) as popup windows over the
+//!   screen, from the top bar's menu or their keys.
 //! - `widgets` holds the Bridge's panes and their parts: projects, crew, conversation, cards,
 //!   streaming, the busy indicator, the input box, the task pane and buttons; and the popup window
 //!   and dropdown list any screen can use.
@@ -55,6 +55,7 @@ mod setup;
 mod terminal;
 mod text;
 mod theme;
+mod update;
 mod view;
 mod widgets;
 
