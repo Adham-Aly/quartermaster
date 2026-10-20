@@ -204,7 +204,7 @@ pub(crate) fn install_chat(app: &mut App) {
     install(app);
     app.snapshot = chat();
     app.focus = Pane::Input;
-    app.input = String::new();
+    app.draft.text = String::new();
     app.view.card = None;
 }
 
@@ -213,7 +213,7 @@ pub(crate) fn install_chat(app: &mut App) {
 pub(crate) fn install(app: &mut App) {
     app.snapshot = snapshot();
     app.focus = Pane::Crew;
-    app.input = String::from("yes, start the rate limiting build");
+    app.draft.text = String::from("yes, start the rate limiting build");
     app.view.selected_crew = Some(task(42));
     app.view.card = Some(MessageId::new(2));
     app.view.sample = true;
@@ -789,7 +789,7 @@ pub(crate) fn install_decision(app: &mut App) {
     install(app);
     app.snapshot = decision();
     app.focus = Pane::Conversation;
-    app.input = String::new();
+    app.draft.text = String::new();
     app.view.card = Some(MessageId::new(3));
 }
 

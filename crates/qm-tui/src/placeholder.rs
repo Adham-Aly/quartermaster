@@ -82,7 +82,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Anywhere",
         &[
-            ("ctrl+c twice", "quit"),
+            (
+                "ctrl+c twice",
+                "quit; while you are typing, the first clears your message",
+            ),
             ("ctrl+z", "suspend to the shell; fg comes back"),
             ("tab · shift+tab", "next or previous pane"),
             (
@@ -187,11 +190,21 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("⏎", "send"),
             ("⌥⏎ · shift+⏎ · ctrl+j", "new line"),
             ("← → · ⌥← ⌥→", "move by a character or a word"),
+            ("↑ ↓", "move a row, wrapped rows included"),
             ("home end · ctrl+a ctrl+e", "start or end of the line"),
-            ("⌫ · delete", "delete a character back or forward"),
+            ("shift + any of these", "select as you move"),
             (
-                "⌥⌫ · ctrl+w · ctrl+u",
-                "delete a word, or to the line's start",
+                "⌫ · delete",
+                "delete a character back or forward, or the selection",
+            ),
+            ("⌥⌫ · ctrl+w", "delete a word back"),
+            ("ctrl+u · ctrl+k", "delete to the line's start or end"),
+            ("typing or pasting", "replaces the selection"),
+            ("ctrl+c", "clear your message"),
+            ("drag · shift+click", "select (a drag copies it)"),
+            (
+                "over 30 rows",
+                "shows its start, ...[truncated N lines]... and its end; all of it is sent",
             ),
         ],
     ),

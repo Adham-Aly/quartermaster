@@ -55,8 +55,9 @@ pub(crate) struct App {
     pub(crate) hover: Option<Hit>,
     /// The divider being dragged, if any.
     pub(crate) drag: Option<Divider>,
-    /// Your message being typed.
-    pub(crate) input: String,
+    /// Your message being typed: its text, cursor and selection (no gesture state; that is in
+    /// `pointer`).
+    pub(crate) draft: crate::input::draft::Draft,
     /// Width of the left column (projects and crew), in cells.
     pub(crate) left_width: u16,
     /// Width of the task pane, in cells.
@@ -100,7 +101,7 @@ impl App {
             focus: Pane::Input,
             hover: None,
             drag: None,
-            input: String::new(),
+            draft: crate::input::draft::Draft::default(),
             left_width: LEFT_DEFAULT,
             right_width: RIGHT_DEFAULT,
             scroll_from_bottom: 0,
@@ -186,9 +187,13 @@ impl App {
         }
     }
 
-    /// Work that needs the frame just drawn: the Settings tab's scroll kept in range and its
-    /// selection in view, and a card scrolled into view a step at a time.
+    /// Work that needs the frame just drawn: the prompt field's scroll remembered, the Settings
+    /// tab's scroll kept in range and its selection in view, and a card scrolled into view a step
+    /// at a time.
     pub(crate) fn after_draw(&mut self) {
+        if let Some(field) = &self.drawn.field {
+            self.view.input_scroll = field.scroll;
+        }
         if self.screen == Screen::Settings {
             let max = self.drawn.scroll_max_of(Pane::Settings);
             let mut scroll = self.view.settings.scroll.min(max);
