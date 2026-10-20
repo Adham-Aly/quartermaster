@@ -20,6 +20,7 @@
 //! conversation as a turn you started, and steps 3 and 4 tell its supervisor, the Quartermaster
 //! ("you told SM-02 directly").
 
+use crate::attachments::Staged;
 use crate::held::HeldService;
 use crate::inbox::{Inbox, Notify};
 use crate::markers;
@@ -103,6 +104,7 @@ pub async fn intervene(
     svc: &ReconcileService,
     to: AgentRef,
     text: String,
+    mut staged: Staged,
 ) -> Result<(), Intervention> {
     let words = markers::user_text(&text);
     if words.is_blank() {
@@ -119,7 +121,7 @@ pub async fn intervene(
     let at = tasks.clock().now();
     let words = words.into_string();
     let recorded = tasks
-        .write(move |tx, notify| record(tx, notify, task, &words, at))
+        .write(move |tx, notify| record(tx, notify, task, (&words, &mut staged), at))
         .await;
     match recorded {
         Ok(Recorded::Sent { message }) => {
@@ -142,6 +144,7 @@ pub async fn intervene_secondmate(
     secondmates: &SecondmateService,
     id: SecondmateId,
     text: String,
+    mut staged: Staged,
 ) -> Result<(), Intervention> {
     let words = markers::user_text(&text);
     if words.is_blank() {
@@ -159,7 +162,7 @@ pub async fn intervene_secondmate(
             let Some(record) = qm_store::secondmates::load(&tx, id)? else {
                 return Ok(None);
             };
-            let message = record_secondmate(&tx, &record, &words, at)?;
+            let message = record_secondmate(&tx, &record, (&words, &mut staged), at)?;
             tx.commit()?;
             Ok(Some(message))
         })
@@ -181,7 +184,7 @@ pub async fn intervene_secondmate(
 fn record_secondmate(
     tx: &Connection,
     record: &qm_store::secondmates::SecondmateRecord,
-    words: &str,
+    (words, staged): (&str, &mut Staged),
     at: Timestamp,
 ) -> Result<MessageId, StoreError> {
     let id = record.id;
@@ -198,6 +201,8 @@ fn record_secondmate(
             at,
         },
     )?;
+    // Your pasted images' paths join your words, here and in every copy below.
+    let words = &staged.attach(tx, message, words)?;
     events::insert(
         tx,
         &NewEvent {
@@ -231,7 +236,7 @@ fn record(
     tx: &Connection,
     notify: &mut Notify,
     task: TaskId,
-    words: &str,
+    (words, staged): (&str, &mut Staged),
     at: Timestamp,
 ) -> Result<Recorded, StoreError> {
     let row = task_store::load(tx, task)?;
@@ -266,7 +271,9 @@ fn record(
             at,
         },
     )?;
-    let mut line = NewSessionLine::new(crewmate.id, LineKind::You, words, at);
+    // Your pasted images' paths join your words, here and in every copy below.
+    let words = &staged.attach(tx, message, words)?;
+    let mut line = NewSessionLine::new(crewmate.id, LineKind::You, words.as_str(), at);
     line.task = Some(task);
     line.message = Some(message);
     sessions::insert(tx, &line)?;

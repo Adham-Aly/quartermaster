@@ -115,6 +115,12 @@ impl DataDir {
         AgentPaths::at(self.secondmates_dir().join(id.to_string()))
     }
 
+    /// Images you pasted into a chat: `attachments/message-<id>/image-<n>.<ext>`, one folder per
+    /// message, removed by the cleanup policy in `qm_core::attachments`.
+    pub fn attachments(&self) -> PathBuf {
+        self.root.join("attachments")
+    }
+
     pub fn tasks_dir(&self) -> PathBuf {
         self.root.join("tasks")
     }

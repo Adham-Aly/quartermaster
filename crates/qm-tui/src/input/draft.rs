@@ -1,8 +1,11 @@
-//! Your unsent message in a prompt field: its text, the cursor and the selection, kept together.
+//! Your unsent message in a prompt field: its text, the cursor, the selection and the images
+//! pasted into it, kept together.
 //!
 //! A `Draft` is plain data with no screen geometry and no mouse or drag state (those live in
 //! `View` and `Pointer`), so one draft can be swapped between fields, kept per session, and later
 //! shared or saved as it is.
+
+use qm_types::api::PastedImage;
 
 /// The text of a message being written, with its cursor and selection as byte offsets.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -14,6 +17,9 @@ pub(crate) struct Draft {
     /// The other end of the selection, as a byte offset (on a char boundary): the text between it
     /// and the cursor is selected. `None` (or the cursor itself) is no selection.
     pub(crate) anchor: Option<usize>,
+    /// The images pasted with `Ctrl`+`V`, each shown in the text as its `[Image #N]`; one whose
+    /// placeholder is gone from the text is dropped.
+    pub(crate) images: Vec<PastedImage>,
 }
 
 impl Draft {
@@ -23,6 +29,7 @@ impl Draft {
             text: text.into(),
             cursor: None,
             anchor: None,
+            images: Vec::new(),
         }
     }
 
@@ -53,6 +60,53 @@ impl Draft {
     pub(crate) fn selected_text(&self) -> Option<&str> {
         self.selection().map(|(from, to)| &self.text[from..to])
     }
+
+    /// Where an image's placeholder ending at `at` starts, so `⌫` takes it as one piece.
+    pub(crate) fn placeholder_before(&self, at: usize) -> Option<usize> {
+        let before = self.text.get(..at)?;
+        self.images
+            .iter()
+            .map(PastedImage::placeholder)
+            .find(|p| before.ends_with(p.as_str()))
+            .map(|p| at - p.len())
+    }
+
+    /// Where an image's placeholder starting at `at` ends, so `delete` takes it as one piece.
+    pub(crate) fn placeholder_after(&self, at: usize) -> Option<usize> {
+        let after = self.text.get(at..)?;
+        self.images
+            .iter()
+            .map(PastedImage::placeholder)
+            .find(|p| after.starts_with(p.as_str()))
+            .map(|p| at + p.len())
+    }
+
+    /// Forgets the images whose placeholders are gone from the text.
+    pub(crate) fn prune_images(&mut self) {
+        let text = &self.text;
+        self.images
+            .retain(|image| text.contains(&image.placeholder()));
+    }
+
+    /// The number for the next pasted image: one past the highest still in the text.
+    pub(crate) fn next_image_number(&self) -> u32 {
+        self.images
+            .iter()
+            .filter(|image| self.text.contains(&image.placeholder()))
+            .map(|image| image.number)
+            .max()
+            .unwrap_or(0)
+            + 1
+    }
+
+    /// The images whose placeholders are still in the text: what goes with the message.
+    pub(crate) fn images_in_text(&self) -> Vec<PastedImage> {
+        self.images
+            .iter()
+            .filter(|image| self.text.contains(&image.placeholder()))
+            .cloned()
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -69,6 +123,40 @@ mod tests {
         assert_eq!(draft.selection(), Some((2, 6)));
         draft.anchor = Some(2);
         assert_eq!(draft.selection(), None);
+    }
+
+    fn png(number: u32) -> PastedImage {
+        PastedImage::new(
+            number,
+            qm_types::api::ImageFormat::Png,
+            b"\x89PNG\r\n\x1a\n".to_vec(),
+        )
+    }
+
+    #[test]
+    fn an_image_placeholder_deletes_as_one_piece() {
+        let mut draft = Draft::new("see [Image #1] and [Image #2]");
+        draft.images = vec![png(1), png(2)];
+        assert_eq!(draft.placeholder_before(14), Some(4));
+        assert_eq!(draft.placeholder_before(13), None);
+        assert_eq!(draft.placeholder_after(19), Some(29));
+        assert_eq!(draft.placeholder_after(4), Some(14));
+        // Only attached images count: a typed placeholder is plain text.
+        draft.images = vec![png(2)];
+        assert_eq!(draft.placeholder_before(14), None);
+    }
+
+    #[test]
+    fn only_images_still_in_the_text_go_and_numbering_follows_them() {
+        let mut draft = Draft::new("first [Image #1], gone, third [Image #3]");
+        draft.images = vec![png(1), png(2), png(3)];
+        let sent: Vec<u32> = draft.images_in_text().iter().map(|i| i.number).collect();
+        assert_eq!(sent, vec![1, 3]);
+        assert_eq!(draft.next_image_number(), 4);
+        draft.text = String::from("first [Image #1]");
+        assert_eq!(draft.next_image_number(), 2);
+        draft.prune_images();
+        assert_eq!(draft.images.len(), 1);
     }
 
     #[test]

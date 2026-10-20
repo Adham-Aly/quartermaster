@@ -23,6 +23,7 @@
 
 pub mod accounts;
 pub mod agents;
+pub mod attachments;
 pub mod connection;
 pub mod context;
 pub mod crew_view;

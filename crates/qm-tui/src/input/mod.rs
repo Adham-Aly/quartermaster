@@ -5,6 +5,7 @@
 //! and the context menu, so a click and its keyboard twin always do the same thing.
 
 pub(crate) mod clipboard;
+pub(crate) mod clipboard_image;
 pub(crate) mod draft;
 pub(crate) mod editor;
 pub(crate) mod field;
@@ -136,6 +137,7 @@ impl App {
             CardAction::Reply { text } => self.command(Command::Send {
                 to: AgentRef::Quartermaster,
                 text,
+                images: Vec::new(),
             }),
             CardAction::ChangeLocation { location } => {
                 if let Some(held) = held {
