@@ -197,10 +197,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "⌫ · delete",
                 "delete a character back or forward, or the selection",
             ),
-            (
-                "⌥⌫ · ctrl+w · ctrl+u · ctrl+k",
-                "delete a word, to the line's start, or to its end",
-            ),
+            ("⌥⌫ · ctrl+w", "delete a word back"),
+            ("ctrl+u · ctrl+k", "delete to the line's start or end"),
             ("typing or pasting", "replaces the selection"),
             ("ctrl+c", "clear your message"),
             ("drag · shift+click", "select (a drag copies it)"),
