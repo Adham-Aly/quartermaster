@@ -1,5 +1,5 @@
-//! The session screen's mouse: `← Back`, `Interrupt`, `Expand`/`Collapse`, and the wheel over the
-//! session. Clicks on the session box or the input focus them, drags select and copy, as everywhere
+//! The session screen's mouse: `← Back`, `Interrupt`, `Expand`/`Collapse`, a tool-call run's
+//! `▸ 3 tool calls` line, and the wheel over the session. Clicks on the session box or the input focus them, drags select and copy, as everywhere
 //! (`input::mouse`).
 
 use super::SessionHit;
@@ -16,6 +16,10 @@ impl App {
             SessionHit::Expand(id) => {
                 self.focus_pane(Pane::Session);
                 self.toggle_expanded(id);
+            }
+            SessionHit::ToolGroup(first) => {
+                self.focus_pane(Pane::Session);
+                self.toggle_tool_group(first);
             }
         }
     }
