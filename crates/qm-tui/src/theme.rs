@@ -123,6 +123,16 @@ pub(crate) fn button_on_selection() -> Style {
     Style::new().fg(Color::Black).bg(ON_FILL)
 }
 
+/// The cursor's cell in your message: black on the accent.
+pub(crate) fn cursor() -> Style {
+    Style::new().fg(Color::Black).bg(ACCENT)
+}
+
+/// Selected text, in your message as anywhere else: reversed.
+pub(crate) fn selected() -> Style {
+    Style::new().add_modifier(Modifier::REVERSED)
+}
+
 /// A button: bright white on bright black at rest, black on the accent under the pointer.
 pub(crate) fn button(hovered: bool) -> Style {
     if hovered {

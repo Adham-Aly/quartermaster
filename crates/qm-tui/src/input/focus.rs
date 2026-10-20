@@ -55,7 +55,8 @@ impl App {
     }
 
     /// `Esc`: the first that applies of close the menu, close the overlay, clear the selection,
-    /// leave guidance or location mode, interrupt a running Quartermaster turn, back to the Bridge.
+    /// clear the selection in your message while typing, leave guidance or location mode,
+    /// interrupt a running Quartermaster turn, back to the Bridge.
     pub(crate) fn escape(&mut self) {
         if self.view.menu.is_some() {
             self.change(|app| &mut app.view.menu, None);
@@ -64,12 +65,13 @@ impl App {
         } else if self.view.selection.is_some() {
             self.pointer.selecting = false;
             self.change(|app| &mut app.view.selection, None);
+        } else if self.focus == Pane::Input && self.selection().is_some() {
+            self.change(|app| &mut app.draft.anchor, None);
         } else if self.view.guidance_for.is_some() {
             self.change(|app| &mut app.view.guidance_for, None);
         } else if self.view.location_for.is_some() {
             self.change(|app| &mut app.view.location_for, None);
-            self.input.clear();
-            self.view.cursor = None;
+            self.set_input(String::new());
         } else if self.screen == Screen::Help {
             self.close_help();
         } else if self.screen != Screen::Bridge {

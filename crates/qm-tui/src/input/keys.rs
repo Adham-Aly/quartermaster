@@ -55,7 +55,10 @@ impl App {
     pub(crate) fn on_key(&mut self, key: KeyEvent, now: Instant) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && matches!(key.code, KeyCode::Char('c' | 'C')) {
-            self.on_ctrl_c(now);
+            // Your message first, as in Claude Code: Ctrl+C clears it; on an empty field it quits.
+            if !self.clear_input_on_ctrl_c() {
+                self.on_ctrl_c(now);
+            }
             return;
         }
         if let Quit::Confirm { .. } = self.quit {

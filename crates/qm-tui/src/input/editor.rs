@@ -1,11 +1,13 @@
 //! Editing your message: the cursor, words and lines.
 //!
 //! The cursor is a byte offset into the text, always on a char boundary. The functions here are
-//! pure, so they can be checked on multi-byte text without a terminal; `App` keeps the cursor in
-//! `view.cursor`, with `None` meaning the end.
+//! pure, so they can be checked on multi-byte text without a terminal; `App` keeps the text, the
+//! cursor and the selection together in `App::draft` (`input::draft`).
 
 use crate::app::App;
 use crate::hit::Pane;
+use crate::input::draft::Draft;
+use crate::input::field;
 use crate::text;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use qm_types::api::{AgentRef, Command, HeldAnswer, HeldChoice};
@@ -98,39 +100,123 @@ pub(crate) fn line_down(s: &str, at: usize) -> usize {
 }
 
 impl App {
-    /// The cursor as a byte offset.
+    /// The cursor in your message, as a byte offset.
     pub(crate) fn cursor(&self) -> usize {
-        self.view
-            .cursor
-            .filter(|&at| at <= self.input.len() && self.input.is_char_boundary(at))
-            .unwrap_or(self.input.len())
+        self.draft.cursor()
     }
 
-    fn set_cursor(&mut self, at: usize) {
-        let value = (at < self.input.len()).then_some(at);
-        self.change(|app| &mut app.view.cursor, value);
+    /// The selected bytes of your message, start before end, when there are any.
+    pub(crate) fn selection(&self) -> Option<(usize, usize)> {
+        self.draft.selection()
     }
 
-    /// Inserts `s` at the cursor and moves past it.
-    pub(crate) fn insert(&mut self, s: &str) {
+    /// Moves the cursor to `at`, keeping the anchor where it is.
+    fn move_cursor(&mut self, at: usize) {
+        let value = (at < self.draft.text.len()).then_some(at);
+        self.change(|app| &mut app.draft.cursor, value);
+    }
+
+    /// Moves the cursor to `at` and drops the selection.
+    pub(crate) fn set_cursor(&mut self, at: usize) {
+        self.change(|app| &mut app.draft.anchor, None);
+        self.move_cursor(at);
+    }
+
+    /// Moves the cursor to `at`, selecting from where the selection started (or from the cursor).
+    pub(crate) fn select_to(&mut self, at: usize) {
+        if self.draft.anchor.is_none() {
+            self.draft.anchor = Some(self.cursor());
+        }
+        self.move_cursor(at);
+    }
+
+    /// Starts a selection at the cursor (a press in the field, before a drag).
+    pub(crate) fn anchor_at_cursor(&mut self) {
         let at = self.cursor();
-        self.input.insert_str(at, s);
-        self.set_cursor(at + s.len());
+        self.change(|app| &mut app.draft.anchor, Some(at));
+    }
+
+    /// Drops an empty selection.
+    pub(crate) fn drop_empty_selection(&mut self) {
+        if self.selection().is_none() {
+            self.change(|app| &mut app.draft.anchor, None);
+        }
+    }
+
+    /// Replaces your message with `text`, the cursor at its end and nothing selected.
+    pub(crate) fn set_input(&mut self, text: String) {
+        self.draft = Draft::new(text);
         self.redraw();
     }
 
+    /// Takes your message's text out of the field, leaving it empty.
+    pub(crate) fn take_input(&mut self) -> String {
+        let text = std::mem::take(&mut self.draft).text;
+        self.redraw();
+        text
+    }
+
+    /// Inserts `s` at the cursor, in place of the selection if there is one, and moves past it.
+    pub(crate) fn insert(&mut self, s: &str) {
+        let (from, to) = self.selection().unwrap_or((self.cursor(), self.cursor()));
+        self.draft.text.replace_range(from..to, s);
+        self.set_cursor(from + s.len());
+        self.redraw();
+    }
+
+    /// Deletes `from..to`, or the selection instead when there is one.
     fn delete(&mut self, from: usize, to: usize) {
+        let (from, to) = self.selection().unwrap_or((from, to));
         if from < to {
-            self.input.replace_range(from..to, "");
+            self.draft.text.replace_range(from..to, "");
             self.set_cursor(from);
             self.redraw();
         }
     }
 
+    /// The cursor one row up or down in the field as last drawn (by line before the first frame).
+    fn row_step(&self, up: bool) -> usize {
+        let s = &self.draft.text;
+        let at = self.cursor();
+        let Some(room) = self.drawn.field.as_ref().map(|f| f.room) else {
+            return if up { line_up(s, at) } else { line_down(s, at) };
+        };
+        let rows = field::wrap(s, room);
+        if up {
+            field::row_up(s, &rows, at)
+        } else {
+            field::row_down(s, &rows, at)
+        }
+    }
+
+    /// `Ctrl`+`C` on a field holding text: clears it (another on the empty field starts quitting).
+    /// Returns whether it did.
+    pub(crate) fn clear_input_on_ctrl_c(&mut self) -> bool {
+        let field_showing = match self.screen {
+            crate::router::Screen::Bridge => true,
+            crate::router::Screen::Session(_) => self.session_open(),
+            _ => false,
+        };
+        if !field_showing
+            || self.focus != Pane::Input
+            || self.draft.text.is_empty()
+            || self.view.menu.is_some()
+            || !matches!(
+                self.quit,
+                crate::app::Quit::Idle | crate::app::Quit::Armed { .. }
+            )
+        {
+            return false;
+        }
+        self.set_input(String::new());
+        self.change(|app| &mut app.quit, crate::app::Quit::Idle);
+        true
+    }
+
     /// Sends your message, or in guidance mode answers the card with your words, or in location
     /// mode sends the folder for a project proposal.
     pub(crate) fn send_input(&mut self) {
-        if self.input.trim().is_empty() {
+        if self.draft.text.trim().is_empty() {
             return;
         }
         // In a worker's session: direct intervention, its own draft.
@@ -138,14 +224,12 @@ impl App {
             if !self.session_open() {
                 return;
             }
-            let text = std::mem::take(&mut self.input);
-            self.view.cursor = None;
+            let text = self.take_input();
             self.set_session_scroll(0);
             self.command(Command::Send { to: agent, text });
             return;
         }
-        let text = std::mem::take(&mut self.input);
-        self.view.cursor = None;
+        let text = self.take_input();
         let command = if let Some(held) = self.view.guidance_for.take() {
             Command::AnswerHeld {
                 held,
@@ -200,35 +284,79 @@ impl App {
         self.insert(&pasted.replace("\r\n", "\n").replace('\r', "\n"));
     }
 
-    /// A key while the input box has focus.
+    /// A key while the input box has focus. Shift with a movement key selects as it moves;
+    /// with a selection, typing replaces it and every delete key removes it.
     pub(crate) fn on_editor_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        let s = &self.input;
+        let command = key.modifiers.contains(KeyModifiers::SUPER);
+        let s = &self.draft.text;
         let at = self.cursor();
+        let selection = self.selection();
+        // Where a movement key takes the cursor.
+        let to = match key.code {
+            // ⌘← ⌘→ where the terminal passes them on; Terminal and iTerm2 send ⌥← and ⌥→ as
+            // Esc b and Esc f by default.
+            KeyCode::Left if command => Some(line_start(s, at)),
+            KeyCode::Right if command => Some(line_end(s, at)),
+            KeyCode::Left if alt || ctrl => Some(word_left(s, at)),
+            KeyCode::Right if alt || ctrl => Some(word_right(s, at)),
+            KeyCode::Char('b') if alt => Some(word_left(s, at)),
+            KeyCode::Char('f') if alt => Some(word_right(s, at)),
+            // Without shift, ← and → first collapse a selection to its edge.
+            KeyCode::Left if !shift && selection.is_some() => selection.map(|(from, _)| from),
+            KeyCode::Right if !shift && selection.is_some() => selection.map(|(_, to)| to),
+            KeyCode::Left => Some(prev_char(s, at)),
+            KeyCode::Char('b' | 'B') if ctrl => Some(prev_char(s, at)),
+            KeyCode::Right => Some(next_char(s, at)),
+            KeyCode::Char('f' | 'F') if ctrl => Some(next_char(s, at)),
+            KeyCode::Up if command => Some(0),
+            KeyCode::Down if command => Some(s.len()),
+            KeyCode::Home if ctrl => Some(0),
+            KeyCode::End if ctrl => Some(s.len()),
+            KeyCode::Home => Some(line_start(s, at)),
+            KeyCode::Char('a' | 'A') if ctrl => Some(line_start(s, at)),
+            KeyCode::End => Some(line_end(s, at)),
+            KeyCode::Char('e' | 'E') if ctrl => Some(line_end(s, at)),
+            KeyCode::Up => Some(self.row_step(true)),
+            KeyCode::Char('p' | 'P') if ctrl => Some(self.row_step(true)),
+            KeyCode::Down => Some(self.row_step(false)),
+            KeyCode::Char('n' | 'N') if ctrl => Some(self.row_step(false)),
+            _ => None,
+        };
+        if let Some(to) = to {
+            let selects = shift && !matches!(key.code, KeyCode::Char(_));
+            if selects {
+                self.select_to(to);
+            } else {
+                self.set_cursor(to);
+            }
+            return;
+        }
         match key.code {
             KeyCode::Enter if alt || shift => self.insert("\n"),
             KeyCode::Char('j' | 'J') if ctrl => self.insert("\n"),
             KeyCode::Enter => self.send_input(),
-            // Terminal and iTerm2 send ⌥← and ⌥→ as Esc b and Esc f by default.
-            KeyCode::Left | KeyCode::Char('b') if alt => self.set_cursor(word_left(s, at)),
-            KeyCode::Right | KeyCode::Char('f') if alt => self.set_cursor(word_right(s, at)),
-            KeyCode::Left => self.set_cursor(prev_char(s, at)),
-            KeyCode::Right => self.set_cursor(next_char(s, at)),
-            KeyCode::Home => self.set_cursor(line_start(s, at)),
-            KeyCode::Char('a' | 'A') if ctrl => self.set_cursor(line_start(s, at)),
-            KeyCode::End => self.set_cursor(line_end(s, at)),
-            KeyCode::Char('e' | 'E') if ctrl => self.set_cursor(line_end(s, at)),
-            KeyCode::Up => self.set_cursor(line_up(s, at)),
-            KeyCode::Down => self.set_cursor(line_down(s, at)),
-            KeyCode::Backspace if alt => self.delete(word_left(s, at), at),
+            KeyCode::Backspace if command => self.delete(line_start(s, at), at),
+            KeyCode::Backspace if alt || ctrl => self.delete(word_left(s, at), at),
             KeyCode::Char('w' | 'W') if ctrl => self.delete(word_left(s, at), at),
             KeyCode::Char('h' | 'H') if ctrl => self.delete(prev_char(s, at), at),
             KeyCode::Backspace => self.delete(prev_char(s, at), at),
+            KeyCode::Delete if alt || ctrl => self.delete(at, word_right(s, at)),
+            KeyCode::Char('d') if alt => self.delete(at, word_right(s, at)),
+            KeyCode::Char('d' | 'D') if ctrl => self.delete(at, next_char(s, at)),
             KeyCode::Delete => self.delete(at, next_char(s, at)),
             KeyCode::Char('u' | 'U') if ctrl => self.delete(line_start(s, at), at),
-            KeyCode::Char(c) if !ctrl && !alt => self.insert(c.encode_utf8(&mut [0; 4])),
+            // At a line's end, Ctrl+K joins the next line, as in Emacs.
+            KeyCode::Char('k' | 'K') if ctrl => {
+                let end = line_end(s, at);
+                let end = if end == at { next_char(s, at) } else { end };
+                self.delete(at, end);
+            }
+            KeyCode::Char(c) if !ctrl && !alt && !command => {
+                self.insert(c.encode_utf8(&mut [0; 4]));
+            }
             _ => {}
         }
     }
