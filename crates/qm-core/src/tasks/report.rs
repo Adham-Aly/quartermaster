@@ -1,13 +1,13 @@
 //! A crewmate's `report`.
 //!
 //! [`check_report`] checks the shape against the task's kind, level and delivery (pure); then the
-//! facts: on a done code report the commit names since the base and the head commit; the
+//! facts: on a done code report the task's own commit names and the head commit; the
 //! [`ReportGate`] (checks green in direct-PR mode, the review's state, the repair limit). Then one
 //! transaction: the `reports` row, the status (`reported`, or `waiting` for a decision), and the
 //! supervisor's wake. An answer-only task's answer is written to `answer.md` first.
 
 use super::lifecycle::{TaskEvent, next_for};
-use super::{TaskService, cut_chars, failed, new_wake, refuse};
+use super::{TaskService, cut_chars, failed, new_wake, own_commits_failure, refuse};
 use crate::inbox::Inbox;
 use crate::inbox::Notify;
 use jiff::Timestamp;
@@ -347,7 +347,7 @@ pub(crate) async fn record(
     }
     let to = next_for(task, row.status, event)?;
 
-    // On done for a code kind: the commit names since the base, and the head commit.
+    // On done for a code kind: the task's own commit names, and the head commit.
     let mut head: Option<CommitSha> = None;
     if args.outcome == ReportOutcome::Done && row.kind.can_change_code() {
         let paths = svc.deps().data_dir.task(task);
@@ -366,24 +366,26 @@ pub(crate) async fn record(
             .flat_map(|p| [p.facts.model, p.facts.canonical])
             .collect();
         let git = svc.deps().git.clone();
-        let base = row.base_commit.clone();
+        let branch = row
+            .base_branch
+            .clone()
+            .unwrap_or_else(|| project.default_branch.clone());
         let worktree = paths.worktree.clone();
         let checkout = project.path.clone();
         let (messages, worktree_head) = tokio::task::spawn_blocking(move || {
             let repo = Repo::open(git, &checkout)?;
-            let head = repo.worktree_head(&worktree)?;
-            let messages = match &base {
-                Some(base) => repo.commit_messages(&worktree, base)?,
-                None => Vec::new(),
+            let Some(head) = repo.worktree_head(&worktree)? else {
+                return Ok((Vec::new(), None));
             };
-            Ok::<_, qm_git::GitError>((messages, head))
+            let own = repo.own_commits(&head, &branch)?;
+            Ok::<_, qm_git::GitError>((own.commits, Some(head)))
         })
         .await
         .map_err(|e| failed(&e))?
-        .map_err(|e| failed(&e))?;
+        .map_err(|e| own_commits_failure(&e))?;
         if messages.is_empty() {
             return Err(refuse(
-                "a done report on code work needs at least one commit on the task's branch",
+                "a done report on code work needs at least one commit of the task's own on its branch",
             ));
         }
         check_commits(

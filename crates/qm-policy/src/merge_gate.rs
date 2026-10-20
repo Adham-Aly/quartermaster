@@ -230,3 +230,94 @@ pub fn check_approval(
     }
     check_green(checks_on_current, local_checks_named)
 }
+
+/// Every pull request the app merges is a squash merge, so a repository or ruleset that doesn't
+/// allow squash merges stops it, with the reason. `repo_allows` is the repository's "Allow squash
+/// merging" setting and `ruleset_methods` the methods the branch's rulesets allow; `None` is
+/// unknown, which doesn't stop the merge (GitHub then refuses it itself).
+pub fn check_squash_allowed(
+    repo: &str,
+    branch: &str,
+    repo_allows: Option<bool>,
+    ruleset_methods: Option<&[String]>,
+) -> Result<(), Refusal> {
+    if repo_allows == Some(false) {
+        return Err(Refusal::new(format!(
+            "{repo} doesn't allow squash merges, and the app merges every pull request by squash; turn on \"Allow squash merging\" in the repository's settings on GitHub, then settle again"
+        )));
+    }
+    if let Some(methods) = ruleset_methods
+        && !methods.iter().any(|m| m == "squash")
+    {
+        let allowed = if methods.is_empty() {
+            "none".to_owned()
+        } else {
+            methods.join(", ")
+        };
+        return Err(Refusal::new(format!(
+            "a ruleset on {repo}'s {branch} allows only these merge methods: {allowed}; the app merges every pull request by squash, so allow squash in that ruleset on GitHub, then settle again"
+        )));
+    }
+    Ok(())
+}
+
+/// GitHub's own refusal of a merge, in words that say what to change when it's about squash
+/// merges.
+pub fn merge_refused_reason(pr: u64, message: &str) -> String {
+    if message.to_lowercase().contains("squash") {
+        format!(
+            "GitHub won't squash-merge PR #{pr} ({message}); the app merges every pull request by squash, so allow squash merges for the repository and its rulesets on GitHub, then settle again"
+        )
+    } else {
+        format!("GitHub won't merge PR #{pr}: {message}")
+    }
+}
+
+#[cfg(test)]
+mod squash_tests {
+    use super::*;
+
+    #[test]
+    fn a_repository_without_squash_merges_is_refused_with_the_reason() {
+        let refusal = check_squash_allowed("o/r", "main", Some(false), None).expect_err("refused");
+        assert!(
+            refusal.reason.contains("doesn't allow squash merges"),
+            "{}",
+            refusal.reason
+        );
+        assert!(
+            refusal.reason.contains("Allow squash merging"),
+            "{}",
+            refusal.reason
+        );
+    }
+
+    #[test]
+    fn a_ruleset_without_squash_is_refused_with_the_methods_it_allows() {
+        let methods = vec!["merge".to_owned(), "rebase".to_owned()];
+        let refusal =
+            check_squash_allowed("o/r", "main", Some(true), Some(&methods)).expect_err("refused");
+        assert!(
+            refusal.reason.contains("merge, rebase"),
+            "{}",
+            refusal.reason
+        );
+    }
+
+    #[test]
+    fn squash_allowed_or_unknown_goes_ahead() {
+        let methods = vec!["squash".to_owned()];
+        assert!(check_squash_allowed("o/r", "main", Some(true), Some(&methods)).is_ok());
+        assert!(check_squash_allowed("o/r", "main", None, None).is_ok());
+    }
+
+    #[test]
+    fn githubs_squash_refusal_says_what_to_change() {
+        let reason = merge_refused_reason(4, "Squash merges are not allowed on this repository.");
+        assert!(reason.contains("allow squash merges"), "{reason}");
+        assert_eq!(
+            merge_refused_reason(4, "Pull Request is not mergeable"),
+            "GitHub won't merge PR #4: Pull Request is not mergeable"
+        );
+    }
+}

@@ -4,7 +4,6 @@
 use crate::client::{GithubClient, Method, encode_path, encode_query};
 use crate::error::GithubError;
 use crate::repo::RepoRef;
-use qm_types::domain::MergeMethod;
 use qm_types::ids::CommitSha;
 use serde::Deserialize;
 
@@ -13,6 +12,62 @@ use serde::Deserialize;
 pub enum PrState {
     Open,
     Closed,
+}
+
+/// The commit a squash merge makes: the pull request's title and description, as checked right
+/// before the merge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SquashCommit {
+    pub title: String,
+    pub message: String,
+}
+
+/// What GitHub says about squash-merging into a branch. `None` where it couldn't be read: the
+/// merge itself then says no if squash isn't allowed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SquashRules {
+    /// The repository's "Allow squash merging" setting.
+    pub repo_allows: Option<bool>,
+    /// The merge methods the branch's rulesets allow, when a ruleset limits them.
+    pub ruleset_methods: Option<Vec<String>>,
+}
+
+/// The body of GitHub's merge request: always a squash, at exactly `sha`, with the commit's title
+/// and message given, so the repository's defaults never choose them.
+pub fn squash_request(sha: &CommitSha, commit: &SquashCommit) -> serde_json::Value {
+    serde_json::json!({
+        "sha": sha.as_str(),
+        "merge_method": "squash",
+        "commit_title": commit.title,
+        "commit_message": commit.message,
+    })
+}
+
+/// The merge methods every `pull_request` rule allows (the rules endpoint's answer), or `None`
+/// when no rule limits them.
+fn ruleset_methods(rules: &serde_json::Value) -> Option<Vec<String>> {
+    let mut allowed: Option<Vec<String>> = None;
+    for rule in rules.as_array()? {
+        if rule.get("type").and_then(serde_json::Value::as_str) != Some("pull_request") {
+            continue;
+        }
+        let Some(methods) = rule
+            .pointer("/parameters/allowed_merge_methods")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        let methods: Vec<String> = methods
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        allowed = Some(match allowed {
+            None => methods,
+            Some(before) => before.into_iter().filter(|m| methods.contains(m)).collect(),
+        });
+    }
+    allowed
 }
 
 /// A pull request as GitHub reports it now.
@@ -30,6 +85,8 @@ pub struct PullRequest {
     pub head_repo: Option<RepoRef>,
     pub base_ref: String,
     pub title: String,
+    /// The description; empty when it has none.
+    pub body: String,
     /// `None` while GitHub is still computing it.
     pub mergeable: Option<bool>,
     pub mergeable_state: Option<String>,
@@ -92,6 +149,8 @@ struct RawPull {
     base: RawRef,
     title: String,
     #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
     mergeable: Option<bool>,
     #[serde(default)]
     mergeable_state: Option<String>,
@@ -130,6 +189,7 @@ impl RawPull {
             }),
             base_ref: self.base.name,
             title: self.title,
+            body: self.body.unwrap_or_default(),
             mergeable: self.mergeable,
             mergeable_state: self.mergeable_state,
             additions: self.additions.unwrap_or(0),
@@ -235,18 +295,43 @@ impl GithubClient {
         raw.into_pull()
     }
 
-    /// Merges pull request `number` only if its head is exactly `sha`: GitHub's merge endpoint with
-    /// `sha` and `merge_method`, and no commit title or message, so the repository's own settings
-    /// apply. Never retried here.
+    /// Whether GitHub lets a pull request into `branch` be squash-merged: the repository's own
+    /// setting and the branch's rulesets. What can't be read is `None`.
+    pub async fn squash_rules(&self, r: &RepoRef, branch: &str) -> SquashRules {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(default)]
+            allow_squash_merge: Option<bool>,
+        }
+        let repo_allows = match self.get_json::<Raw>(&r.path(), &r.to_string()).await {
+            Ok(raw) => raw.allow_squash_merge,
+            Err(_) => None,
+        };
+        let path = format!("{}/rules/branches/{}", r.path(), encode_path(branch));
+        let ruleset_methods = match self.send(Method::Get, &path, None).await {
+            Ok(response) if response.ok() => response
+                .json::<serde_json::Value>()
+                .ok()
+                .and_then(|rules| ruleset_methods(&rules)),
+            _ => None,
+        };
+        SquashRules {
+            repo_allows,
+            ruleset_methods,
+        }
+    }
+
+    /// Squash-merges pull request `number` only if its head is exactly `sha`, with `commit`'s title
+    /// and message ([`squash_request`]). Never retried here.
     pub async fn merge_pr(
         &self,
         r: &RepoRef,
         number: u64,
         sha: &CommitSha,
-        method: MergeMethod,
+        commit: &SquashCommit,
     ) -> MergeResult {
         // The request always carries the approved SHA as its precondition.
-        let request = serde_json::json!({ "sha": sha.as_str(), "merge_method": method.as_str() });
+        let request = squash_request(sha, commit);
         let response = match self
             .send(
                 Method::Put,
@@ -387,5 +472,54 @@ impl GithubClient {
         } else {
             Err(response.error(&format!("{r}'s branch {branch}"), self.rate()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_merge_is_always_a_squash_with_the_title_and_body() {
+        let sha: CommitSha = "0123456789abcdef0123456789abcdef01234567"
+            .parse()
+            .expect("sha");
+        let commit = SquashCommit {
+            title: "fix(core): check only a task's own commits".to_owned(),
+            message: "## Intent\nThe body.".to_owned(),
+        };
+        assert_eq!(
+            squash_request(&sha, &commit),
+            serde_json::json!({
+                "sha": "0123456789abcdef0123456789abcdef01234567",
+                "merge_method": "squash",
+                "commit_title": "fix(core): check only a task's own commits",
+                "commit_message": "## Intent\nThe body.",
+            })
+        );
+    }
+
+    #[test]
+    fn rulesets_limit_merge_methods_only_through_pull_request_rules() {
+        let none = serde_json::json!([{ "type": "required_status_checks", "parameters": {} }]);
+        assert_eq!(ruleset_methods(&none), None);
+        let rules = serde_json::json!([
+            { "type": "pull_request", "parameters": { "allowed_merge_methods": ["merge", "squash"] } },
+            { "type": "pull_request", "parameters": { "allowed_merge_methods": ["merge", "rebase"] } },
+        ]);
+        assert_eq!(ruleset_methods(&rules), Some(vec!["merge".to_owned()]));
+    }
+
+    #[test]
+    fn a_pull_without_a_body_reads_as_empty() {
+        let raw: RawPull = serde_json::from_value(serde_json::json!({
+            "number": 3, "html_url": "https://github.com/o/r/pull/3", "state": "open",
+            "head": { "sha": "0123456789abcdef0123456789abcdef01234567", "ref": "qm/task-0003",
+                      "repo": { "name": "r", "owner": { "login": "o" } } },
+            "base": { "sha": "0123456789abcdef0123456789abcdef01234567", "ref": "main" },
+            "title": "fix(core): one", "body": null,
+        }))
+        .expect("a pull");
+        assert_eq!(raw.into_pull().expect("pull").body, "");
     }
 }
