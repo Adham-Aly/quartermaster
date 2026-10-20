@@ -4,8 +4,8 @@
 //! (every [`RETRY_EVERY`] after a check that got no answer), in the background: a check never
 //! blocks the UI, and a failed one (offline, GitHub down, the rate limit) is only logged. When
 //! the newest release is newer than this copy, the snapshot's [`UpdateView`] carries a short
-//! notice for the status bar and an "Update to x.y.z" button for the menu's update popup;
-//! otherwise it carries no notice, so nothing nags.
+//! notice for the top bar, a badge for the menu's update entry and an "Update to x.y.z" button
+//! for its popup; otherwise it carries no notice and no badge, so nothing nags.
 //!
 //! The update runs only when you press that button ([`Command::StartUpdate`]): the
 //! [`ShellInstaller`] downloads that exact release's `quartermaster-installer.sh` (the installer
@@ -43,7 +43,7 @@ pub const INSTALL_TIMEOUT: Duration = Duration::from_mins(10);
 /// The installer each release carries.
 pub const INSTALLER_ASSET: &str = "quartermaster-installer.sh";
 /// The installer's last lines kept after a failure.
-const TAIL_LINES: usize = 6;
+const TAIL_LINES: usize = 4;
 
 /// A release version: `major.minor.patch`. A pre-release or build suffix is ignored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -654,6 +654,7 @@ fn install_view(view: &mut UpdateView, install: &Install) -> bool {
         }
         Install::Done(_) => {
             view.phase = UpdatePhase::Installed;
+            view.badge = true;
             view.status = Styled::new(
                 format!("Quartermaster {version} is installed. Quit and reopen the app to use it."),
                 Tone::Ok,
@@ -665,6 +666,7 @@ fn install_view(view: &mut UpdateView, install: &Install) -> bool {
         }
         Install::Failed(_, failure) => {
             view.phase = UpdatePhase::Failed;
+            view.badge = true;
             view.status = Styled::new(
                 format!(
                     "The update to {version} didn't finish: {}. This copy is unchanged.",
@@ -700,6 +702,7 @@ fn check_view(
     if let Some(release) = newer {
         let version = release.version;
         view.phase = UpdatePhase::Available;
+        view.badge = true;
         view.release_page = Some(release.page.clone());
         view.status = Styled::new(
             format!("Quartermaster {version} is available. You have {current}."),
@@ -727,15 +730,19 @@ fn check_view(
         view.button = Some(check_now());
     } else {
         view.phase = UpdatePhase::Unknown;
-        view.status = Styled::new(
-            format!("You have Quartermaster {current}. It hasn't been checked for updates yet."),
-            Tone::Dim,
-        );
+        let status = if state.check_error.is_some() {
+            format!("You have Quartermaster {current}. The app couldn't check for a newer version.")
+        } else {
+            format!("You have Quartermaster {current}. It hasn't been checked for updates yet.")
+        };
+        view.status = Styled::new(status, Tone::Dim);
         view.button = Some(check_now());
     }
     if let Some(error) = &state.check_error {
-        view.detail
-            .push(format!("The last check got no answer: {error}."));
+        view.detail.push(format!(
+            "The last check got no answer ({error}); it tries again every {} minutes.",
+            RETRY_EVERY.as_secs() / 60
+        ));
     }
     if let Some(at) = state.checked_at {
         view.detail.push(format!(

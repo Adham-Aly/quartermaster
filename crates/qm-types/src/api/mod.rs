@@ -396,10 +396,13 @@ pub struct UpdateView {
     /// Lines under it: when the last check ran, why this copy can't update itself, the
     /// installer's last lines after a failure.
     pub detail: Vec<String>,
-    /// The status bar's short notice ("update 0.2.0 available"), which also puts the badge on the
-    /// menu's update entry. `None` when there's nothing to tell you, so nothing nags.
+    /// The short notice beside the menu button ("update 0.2.0 available"). `None` when there's
+    /// nothing to tell you, so nothing nags.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notice: Option<Styled>,
+    /// The red dot on the menu's update entry (and so on the menu button): an update waits for
+    /// you to install it, retry it or reopen the app.
+    pub badge: bool,
     /// The popup's button; `None` while checking or installing, and after an install.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub button: Option<UpdateButton>,
