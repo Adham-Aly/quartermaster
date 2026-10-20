@@ -264,8 +264,11 @@ impl App {
 
     /// Pasted text goes into the input box at the cursor, with line endings made `\n`.
     pub(crate) fn on_paste(&mut self, pasted: &str) {
-        if self.screen == crate::router::Screen::Settings && self.view.menu.is_none() {
-            self.settings_paste(pasted);
+        // An open popup takes the paste: Settings into its text field, Help nowhere.
+        if let Some(popup) = self.view.popup {
+            if popup == crate::popups::Popup::Settings && self.view.menu.is_none() {
+                self.settings_paste(pasted);
+            }
             return;
         }
         if self.screen == crate::router::Screen::Setup {

@@ -6,7 +6,6 @@
 //!
 //! Drawing code records regions here; input code reads them.
 
-use crate::router::Screen;
 use qm_types::api::AgentRef;
 use qm_types::ids::MessageId;
 use ratatui::layout::{Position, Rect};
@@ -21,9 +20,9 @@ pub(crate) enum Pane {
     Task,
     /// The worker-session screen's session box (its input is `Input`).
     Session,
-    /// The Settings screen's tab: it scrolls.
+    /// The Settings popup's tab: it scrolls.
     Settings,
-    /// The Help screen: it scrolls.
+    /// The Help popup: it scrolls.
     Help,
 }
 
@@ -54,8 +53,10 @@ pub(crate) enum TaskButton {
 /// Something a click acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Hit {
-    /// A top-bar tab.
-    Tab(Screen),
+    /// The top bar's menu button.
+    MenuButton,
+    /// A popup window, its close button, or outside it.
+    Popup(crate::widgets::popup::PopupHit),
     /// A pane: a click focuses it.
     Pane(Pane),
     /// A border: drag it to resize the columns beside it.
@@ -80,7 +81,7 @@ pub(crate) enum Hit {
     CloseOverlay,
     /// Item `index` of the open context menu.
     MenuItem(usize),
-    /// Something on the Settings screen.
+    /// Something in the Settings popup.
     Settings(crate::settings::SettingsHit),
     /// Something on the setup check screen, or the banner.
     Setup(crate::setup::SetupHit),

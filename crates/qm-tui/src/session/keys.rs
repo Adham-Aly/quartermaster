@@ -8,7 +8,7 @@
 //! | `i` (Session) | interrupt the worker's running turn |
 //! | `e` (Session) | expand or collapse the newest detail or tool-call run in view |
 //! | ↑ ↓ `j` `k`, `PgUp` `PgDn`, `g` `G` (Session) | scroll |
-//! | `?` (Session) | Help |
+//! | `?` · `,` (Session) | Help · Settings, as popups over the session |
 //!
 //! `Ctrl`+`C`, `Ctrl`+`Z` and an open menu are handled before this, as on every screen.
 
@@ -78,8 +78,8 @@ impl App {
             return true;
         }
         match key.code {
-            KeyCode::Char('?') => self.open_help(),
-            KeyCode::Char(',') => self.show(Screen::Settings),
+            KeyCode::Char('?') => self.open_entry(crate::popups::MenuEntry::Help),
+            KeyCode::Char(',') => self.open_entry(crate::popups::MenuEntry::Settings),
             KeyCode::Char('i') => self.interrupt_session(),
             KeyCode::Char('e') => self.expand_in_view(),
             KeyCode::Enter => self.focus_pane(Pane::Input),

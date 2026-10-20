@@ -1,12 +1,14 @@
-//! The frame around every screen: the top bar (tabs, this Mac, the accounts), the setup banner,
-//! the status bar, the quit dialog, and the notice for a terminal too small to draw in.
+//! The frame around every screen: the top bar (the menu button, this Mac, the accounts), the setup
+//! banner, the status bar, the quit dialog, and the notice for a terminal too small to draw in.
 
 use crate::app::App;
 use crate::hit::{Hit, Hits, StatusItem};
+use crate::popups::Popup;
 use crate::router::Screen;
 use crate::text::{cells, truncate, width};
 use crate::theme;
-use crate::widgets::button;
+use crate::view::MenuTarget;
+use crate::widgets::{button, dropdown};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Modifier;
@@ -20,9 +22,11 @@ pub(crate) const MIN_HEIGHT: u16 = 16;
 /// The status bar's hints on the Bridge.
 const BRIDGE_HINTS: &str = "click or tab · ⏎ send · ⌥⏎ newline · ? help";
 /// The status bar's hints elsewhere.
-const OTHER_HINTS: &str = "click a tab · esc back";
+const OTHER_HINTS: &str = "esc back";
 /// The status bar's hints on Help, which scrolls.
-const HELP_HINTS: &str = "↑↓ pgup pgdn scroll · esc back";
+const HELP_HINTS: &str = "↑↓ pgup pgdn scroll · esc close";
+/// The menu button's label.
+const MENU: &str = "☰ Menu";
 
 /// Draws the top bar, the banner and the status bar, and returns the body area between them, or
 /// `None` when the terminal is too small (the notice is drawn instead).
@@ -73,29 +77,7 @@ fn draw_too_small(frame: &mut Frame<'_>, area: Rect) {
 }
 
 fn draw_top_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits) {
-    let mut x = area.x + 1;
-    let mut spans = vec![Span::raw(" ")];
-    for screen in Screen::TABS {
-        let label = format!(" {} ", screen.label());
-        let label_width = cells(width(&label));
-        let style = if app.screen == screen {
-            theme::filled().add_modifier(Modifier::BOLD)
-        } else if app.hover == Some(Hit::Tab(screen)) {
-            theme::dim().add_modifier(Modifier::UNDERLINED)
-        } else {
-            theme::dim()
-        };
-        hits.add(Rect::new(x, area.y, label_width, 1), Hit::Tab(screen));
-        spans.push(Span::styled(label, style));
-        x += label_width;
-    }
-    frame.render_widget(Line::from(spans), area);
-
-    // On Settings the sub-tabs take the right side.
-    if crate::settings::tabs_in_top_bar(app, area.width) {
-        crate::settings::draw_top_tabs(frame, area, app, hits);
-        return;
-    }
+    let x = draw_menu_button(frame, area, app, hits);
 
     // This Mac and one badge per account, right-aligned, never over the tabs.
     let snapshot = &app.snapshot;
@@ -117,6 +99,30 @@ fn draw_top_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits) {
             Rect::new(start, area.y, end - start, 1),
         );
     }
+}
+
+/// The menu button at the top bar's left, ` ☰ Menu `, with a badge when an entry has one; lit
+/// while the pointer is over it or its menu is open. Returns the column after it.
+fn draw_menu_button(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits) -> u16 {
+    let open = app
+        .view
+        .menu
+        .as_ref()
+        .is_some_and(|menu| menu.target == MenuTarget::Main);
+    let lit = open || app.hover == Some(Hit::MenuButton);
+    let badge = app.menu_badge();
+    let style = theme::button(lit);
+    let mut spans = vec![Span::raw(" "), Span::styled(format!(" {MENU} "), style)];
+    let mut button_width = button::width_of(MENU);
+    if badge {
+        spans.push(Span::styled(dropdown::BADGE, style.patch(theme::badge())));
+        spans.push(Span::styled(" ", style));
+        button_width += 2;
+    }
+    frame.render_widget(Line::from(spans), area);
+    let x = area.x + 1;
+    hits.add(Rect::new(x, area.y, button_width, 1), Hit::MenuButton);
+    x + button_width
 }
 
 /// The one-line setup banner: what the setup check found missing.
@@ -141,16 +147,16 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits
         .or_else(|| app.view.flash.as_ref().map(|f| f.text.clone()));
     if let Some(notice) = notice {
         left.push(Span::styled(notice, theme::accent()));
-    } else if app.screen == Screen::Setup {
-        if let Some(text) = crate::setup::status_left(app) {
-            left.push(Span::styled(text, theme::dim()));
-        }
-    } else if app.screen == Screen::Settings {
+    } else if app.view.popup == Some(Popup::Settings) {
         // The tab's own hint row: what the mouse does.
         left.push(Span::styled(
             crate::settings::status_hints(app).0,
             theme::dim(),
         ));
+    } else if app.screen == Screen::Setup {
+        if let Some(text) = crate::setup::status_left(app) {
+            left.push(Span::styled(text, theme::dim()));
+        }
     } else {
         status_counts(&mut left, area, app, hits);
     }
@@ -158,14 +164,14 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits
     let left_width = cells(left.width());
     frame.render_widget(left, area);
 
-    // The screen's keys on the right: one bottom row, never a second hint row.
-    let hints: String = match app.screen {
-        Screen::Bridge => BRIDGE_HINTS.to_owned(),
-        Screen::Setup => crate::setup::hints(app),
-        Screen::Settings => crate::settings::status_hints(app).1.to_owned(),
-        Screen::Diff => crate::diff::HINTS.to_owned(),
-        Screen::Help => HELP_HINTS.to_owned(),
-        Screen::Session(_) => OTHER_HINTS.to_owned(),
+    // The popup's or the screen's keys on the right: one bottom row, never a second hint row.
+    let hints: String = match (app.view.popup, app.screen) {
+        (Some(Popup::Settings), _) => crate::settings::status_hints(app).1.to_owned(),
+        (Some(Popup::Help), _) => HELP_HINTS.to_owned(),
+        (None, Screen::Bridge) => BRIDGE_HINTS.to_owned(),
+        (None, Screen::Setup) => crate::setup::hints(app),
+        (None, Screen::Diff) => crate::diff::HINTS.to_owned(),
+        (None, Screen::Session(_)) => OTHER_HINTS.to_owned(),
     };
     let hints = hints.as_str();
     let hints_width = cells(width(hints)) + 1;

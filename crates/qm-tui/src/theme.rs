@@ -33,6 +33,12 @@ pub(crate) fn text() -> Style {
     Style::new()
 }
 
+/// A badge: the red dot on a menu entry (and the menu button) that says something there needs
+/// you.
+pub(crate) fn badge() -> Style {
+    error()
+}
+
 /// Secondary text.
 pub(crate) fn dim() -> Style {
     Style::new().fg(DIM)

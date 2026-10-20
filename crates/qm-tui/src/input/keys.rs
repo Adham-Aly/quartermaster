@@ -2,6 +2,7 @@
 
 use crate::app::{App, Quit};
 use crate::hit::{Hit, Pane};
+use crate::popups::MenuEntry;
 use crate::router::Screen;
 use crate::view::MenuTarget;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -28,7 +29,7 @@ fn scrolled(current: usize, delta: isize, max: usize) -> usize {
 
 impl App {
     /// Help's keys: scrolling.
-    fn on_help_key(&mut self, code: KeyCode) {
+    pub(crate) fn on_help_key(&mut self, code: KeyCode) {
         let max = self.drawn.scroll_max_of(Pane::Help);
         let page = self
             .drawn
@@ -77,11 +78,18 @@ impl App {
             self.suspend = true;
             return;
         }
+        // `Ctrl`+`O` opens the top bar's menu from anywhere, even while typing.
+        if ctrl && matches!(key.code, KeyCode::Char('o' | 'O')) {
+            self.toggle_main_menu();
+            return;
+        }
         if self.view.menu.is_some() {
             self.on_menu_key(key.code, now);
             return;
         }
-        if self.screen == Screen::Settings && self.on_settings_key(key, now) {
+        // An open popup takes every other key.
+        if let Some(popup) = self.view.popup {
+            self.on_popup_key(popup, key, now);
             return;
         }
         if self.screen == Screen::Setup && self.on_setup_key(key, now) {
@@ -102,11 +110,9 @@ impl App {
         }
         if self.screen != Screen::Bridge {
             if key.code == KeyCode::Char('?') {
-                self.open_help();
+                self.open_entry(MenuEntry::Help);
             } else if key.code == KeyCode::Char(',') {
-                self.show(Screen::Settings);
-            } else if self.screen == Screen::Help {
-                self.on_help_key(key.code);
+                self.open_entry(MenuEntry::Settings);
             }
             return;
         }
@@ -126,12 +132,12 @@ impl App {
             return;
         }
         if key.code == KeyCode::Char('?') {
-            self.open_help();
+            self.open_entry(MenuEntry::Help);
             return;
         }
         // `,` opens Settings, as in most Mac apps.
         if key.code == KeyCode::Char(',') {
-            self.show(Screen::Settings);
+            self.open_entry(MenuEntry::Settings);
             return;
         }
         match self.focus {
@@ -139,7 +145,7 @@ impl App {
             Pane::Crew => self.on_crew_key(key.code, now),
             Pane::Conversation => self.on_conversation_key(key.code, now),
             Pane::Task => self.on_task_key(key.code, now),
-            // Other screens' panes: their keys are their screens'.
+            // Other screens' and popups' panes: their keys are theirs.
             Pane::Session | Pane::Settings | Pane::Help | Pane::Input => {}
         }
     }
