@@ -11,6 +11,7 @@
 //! thread.
 
 pub mod api;
+pub mod attachments;
 pub mod briefs;
 pub mod config_file;
 pub mod context_block;

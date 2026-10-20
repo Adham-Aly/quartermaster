@@ -23,6 +23,7 @@ use crate::catalog::Catalog;
 use qm_auth::login::LoginEndpoints;
 use qm_auth::{AuthError, CredentialStore, FileCredentialStore, LoginHealth, TokenKeeper};
 use qm_core::api::{self, ApiDeps, ApiPart, Conversation};
+use qm_core::attachments::Attachments;
 use qm_core::context_block::ContextBuilder;
 use qm_core::crew_view::CrewPart;
 use qm_core::decisions::cards::DecisionCards;
@@ -236,6 +237,9 @@ pub(crate) async fn start_core(
         }
     });
     let notify_config = base.config.subscribe();
+    // Pasted images, and their cleanup now and every hour.
+    let attachments = Attachments::new(dir.attachments(), Arc::clone(&clock));
+    attachments.clone().spawn_sweeper(db.clone());
 
     let mut parts = settings_parts(&db, &clock, &dir, base, &conversation);
     parts.extend(registry_parts(
@@ -254,11 +258,15 @@ pub(crate) async fn start_core(
                 Arc::clone(&clock),
                 ReconcileService::new(tasks.clone()),
                 recorder,
+                attachments.clone(),
             )
             .with_secondmates(secondmates.clone()),
         ));
     }
-    parts.push(Arc::new(SecondmatesPart::new(secondmates.clone())));
+    parts.push(Arc::new(SecondmatesPart::new(
+        secondmates.clone(),
+        attachments.clone(),
+    )));
     // Last, so it sees every card the other parts add.
     parts.push(Arc::new(NotificationsPart::new(
         notify_config,
@@ -269,6 +277,7 @@ pub(crate) async fn start_core(
         ApiDeps {
             inbox,
             conversation,
+            attachments,
             machine,
             parts,
         },

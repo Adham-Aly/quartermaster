@@ -11,6 +11,7 @@ publish.workspace = true
 rusqlite = ["dep:rusqlite"]
 
 [dependencies]
+base64.workspace = true
 jiff.workspace = true
 rusqlite = { workspace = true, optional = true }
 schemars.workspace = true

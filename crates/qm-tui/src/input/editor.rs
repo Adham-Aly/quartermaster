@@ -11,6 +11,7 @@ use crate::input::field;
 use crate::text;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use qm_types::api::{AgentRef, Command, HeldAnswer, HeldChoice};
+use std::time::Instant;
 
 /// The char boundary before `at` (or 0).
 pub(crate) fn prev_char(s: &str, at: usize) -> usize {
@@ -224,11 +225,18 @@ impl App {
             if !self.session_open() {
                 return;
             }
+            let images = self.draft.images_in_text();
             let text = self.take_input();
             self.set_session_scroll(0);
-            self.command(Command::Send { to: agent, text });
+            self.command(Command::Send {
+                to: agent,
+                text,
+                images,
+            });
             return;
         }
+        // Images go only with a message; guidance and a folder take none.
+        let images = self.draft.images_in_text();
         let text = self.take_input();
         let command = if let Some(held) = self.view.guidance_for.take() {
             Command::AnswerHeld {
@@ -248,6 +256,7 @@ impl App {
             Command::Send {
                 to: AgentRef::Quartermaster,
                 text,
+                images,
             }
         };
         self.command(command);
@@ -286,7 +295,7 @@ impl App {
 
     /// A key while the input box has focus. Shift with a movement key selects as it moves;
     /// with a selection, typing replaces it and every delete key removes it.
-    pub(crate) fn on_editor_key(&mut self, key: KeyEvent) {
+    pub(crate) fn on_editor_key(&mut self, key: KeyEvent, now: Instant) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -338,15 +347,24 @@ impl App {
             KeyCode::Enter if alt || shift => self.insert("\n"),
             KeyCode::Char('j' | 'J') if ctrl => self.insert("\n"),
             KeyCode::Enter => self.send_input(),
+            // An image from the clipboard; ⌘V stays the terminal's text paste.
+            KeyCode::Char('v' | 'V') if ctrl => self.paste_image(now),
             KeyCode::Backspace if command => self.delete(line_start(s, at), at),
             KeyCode::Backspace if alt || ctrl => self.delete(word_left(s, at), at),
             KeyCode::Char('w' | 'W') if ctrl => self.delete(word_left(s, at), at),
             KeyCode::Char('h' | 'H') if ctrl => self.delete(prev_char(s, at), at),
-            KeyCode::Backspace => self.delete(prev_char(s, at), at),
+            // An image's placeholder goes as one piece.
+            KeyCode::Backspace => {
+                let from = self.draft.placeholder_before(at);
+                self.delete(from.unwrap_or_else(|| prev_char(s, at)), at);
+            }
             KeyCode::Delete if alt || ctrl => self.delete(at, word_right(s, at)),
             KeyCode::Char('d') if alt => self.delete(at, word_right(s, at)),
             KeyCode::Char('d' | 'D') if ctrl => self.delete(at, next_char(s, at)),
-            KeyCode::Delete => self.delete(at, next_char(s, at)),
+            KeyCode::Delete => {
+                let to = self.draft.placeholder_after(at);
+                self.delete(at, to.unwrap_or_else(|| next_char(s, at)));
+            }
             KeyCode::Char('u' | 'U') if ctrl => self.delete(line_start(s, at), at),
             // At a line's end, Ctrl+K joins the next line, as in Emacs.
             KeyCode::Char('k' | 'K') if ctrl => {

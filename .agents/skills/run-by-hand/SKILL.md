@@ -36,6 +36,11 @@ tmux resize-window -t qm -x 119 -y 40     # fold the task pane
 tmux kill-session -t qm
 ```
 
+Use a private socket (`tmux -L <name>`) when other agents share this Mac: a `kill-server` on the
+default socket ends every session on it. To paste an image (`Ctrl`+`V`) without touching your
+clipboard, start the app with `QM_DEV_PASTEBOARD=<name>` and put the image on that named
+pasteboard (`NSPasteboard pasteboardWithName:` from a JXA script via `osascript -l JavaScript`).
+
 Check the sizes that change the layout: 150×45, 120×40 (unfolded), 119×40 and 100×30 (folded:
 the task pane becomes an overlay), and 60×16 (the smallest). With `-e`, every colour must be a
 16-colour SGR code (`30`–`37`, `90`–`97`, `40`–`47`, `100`–`107`); a `38;5;` or `38;2;` is a bug.

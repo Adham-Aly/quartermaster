@@ -122,7 +122,7 @@ impl App {
             _ => {}
         }
         if self.focus == Pane::Input {
-            self.on_editor_key(key);
+            self.on_editor_key(key, now);
             return;
         }
         if key.code == KeyCode::Char('?') {

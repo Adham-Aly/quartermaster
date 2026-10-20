@@ -205,6 +205,16 @@ pub fn get(conn: &Connection, message: MessageId) -> Result<Option<MessageRow>, 
     raw.map(parse).transpose()
 }
 
+/// Replaces a message's text, in the transaction that stored it: your message gets its pasted
+/// images' paths once its ID (their folder's name) is known.
+pub fn set_text(conn: &Connection, message: MessageId, text: &str) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE messages SET text = ?2 WHERE id = ?1",
+        params![message, text],
+    )?;
+    Ok(())
+}
+
 /// A message's text, as stored.
 pub fn text(conn: &Connection, message: MessageId) -> Result<Option<String>, StoreError> {
     Ok(conn

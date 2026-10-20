@@ -13,6 +13,7 @@
 //! handle itself and adds its facts to every snapshot (the settings screens' commands and
 //! `Snapshot.settings` are one such part, added in the binary's wiring).
 
+use crate::attachments::{Attachments, Staged};
 use crate::turn_io::{ChatLog, Notice, SeatError, SeatInbox, SeatInput, SeatStatus, event_kind};
 use qm_policy::markers::neutralise;
 use qm_prompts::context_block::cut;
@@ -88,8 +89,13 @@ impl Conversation {
     }
 
     /// Stores your message to the Quartermaster, neutralised so a marker can only come from the
-    /// app. `None` for a blank message, which is ignored.
-    pub async fn store_your_message(&self, text: &str) -> Result<Option<MessageId>, SeatError> {
+    /// app, with the paths of the images you pasted (`staged`). `None` for a blank message, which
+    /// is ignored.
+    pub async fn store_your_message(
+        &self,
+        text: &str,
+        mut staged: Staged,
+    ) -> Result<Option<MessageId>, SeatError> {
         if text.trim().is_empty() {
             return Ok(None);
         }
@@ -99,8 +105,9 @@ impl Conversation {
         let id = self
             .db
             .call(move |conn| {
-                messages::insert(
-                    conn,
+                let tx = conn.transaction()?;
+                let id = messages::insert(
+                    &tx,
                     &NewMessage {
                         agent,
                         source: MessageSource::You,
@@ -111,7 +118,10 @@ impl Conversation {
                         turn: None,
                         at,
                     },
-                )
+                )?;
+                staged.attach(&tx, id, &text)?;
+                tx.commit()?;
+                Ok(id)
             })
             .await?;
         Ok(Some(id))
@@ -538,6 +548,8 @@ pub struct ApiDeps {
     /// The seat's inbox: your messages, `Esc`, Ask again and the quit reach the loop through it.
     pub inbox: SeatInbox,
     pub conversation: Arc<Conversation>,
+    /// Where the images pasted into your messages to the Quartermaster are saved.
+    pub attachments: Attachments,
     /// This Mac's name, for the top bar.
     pub machine: String,
     pub parts: Vec<Arc<dyn ApiPart>>,
@@ -549,6 +561,7 @@ pub async fn serve(mut server: CoreServer, deps: ApiDeps) {
     let ApiDeps {
         inbox,
         conversation,
+        attachments,
         machine,
         parts,
     } = deps;
@@ -583,7 +596,7 @@ pub async fn serve(mut server: CoreServer, deps: ApiDeps) {
                     let _ = inbox.send(SeatInput::Shutdown);
                     return;
                 };
-                match handle(command, &inbox, &conversation, &parts).await {
+                match handle(command, &inbox, (&conversation, &attachments), &parts).await {
                     Handled::Unchanged => {}
                     Handled::Changed => fresh = true,
                     Handled::ConfirmQuit { working } => {
@@ -612,7 +625,7 @@ pub async fn serve(mut server: CoreServer, deps: ApiDeps) {
 async fn handle(
     command: Command,
     inbox: &SeatInbox,
-    conversation: &Conversation,
+    (conversation, attachments): (&Conversation, &Attachments),
     parts: &[Arc<dyn ApiPart>],
 ) -> Handled {
     // The quit reaches the parts first: crewmates stop before the seat's `Shutdown`.
@@ -630,7 +643,11 @@ async fn handle(
         Command::Send {
             to: AgentRef::Quartermaster,
             text,
-        } => match conversation.store_your_message(&text).await {
+            images,
+        } => match conversation
+            .store_your_message(&text, attachments.stage(&text, &images).await)
+            .await
+        {
             Ok(Some(message)) => {
                 send(inbox, SeatInput::User { message });
                 Handled::Changed

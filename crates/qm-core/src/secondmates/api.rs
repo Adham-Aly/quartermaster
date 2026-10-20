@@ -8,6 +8,7 @@
 
 use super::SecondmateService;
 use crate::api::{ApiPart, Handled};
+use crate::attachments::Attachments;
 use crate::reconcile::{self, Intervention};
 use qm_types::BoxFuture;
 use qm_types::api::{AgentRef, Command, Snapshot};
@@ -16,11 +17,13 @@ use qm_types::api::{AgentRef, Command, Snapshot};
 #[derive(Clone, Debug)]
 pub struct SecondmatesPart {
     svc: SecondmateService,
+    /// Where the images pasted into your messages to a secondmate are saved.
+    attachments: Attachments,
 }
 
 impl SecondmatesPart {
-    pub fn new(svc: SecondmateService) -> Self {
-        Self { svc }
+    pub fn new(svc: SecondmateService, attachments: Attachments) -> Self {
+        Self { svc, attachments }
     }
 }
 
@@ -30,10 +33,13 @@ impl ApiPart for SecondmatesPart {
             Command::Send {
                 to: AgentRef::Secondmate { id },
                 text,
+                images,
             } => {
                 let id = *id;
                 Some(Box::pin(async move {
-                    match reconcile::intervene_secondmate(&self.svc, id, text.clone()).await {
+                    let staged = self.attachments.stage(text, images).await;
+                    match reconcile::intervene_secondmate(&self.svc, id, text.clone(), staged).await
+                    {
                         Ok(()) => Handled::Changed,
                         Err(Intervention::Blank | Intervention::Closed { .. }) => {
                             Handled::Unchanged
