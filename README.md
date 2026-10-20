@@ -57,7 +57,9 @@ Never set `ANTHROPIC_API_KEY` or `CLAUDE_CONFIG_DIR`: they bypass the `claude` l
 quartermaster
 ```
 
-The **Setup check** on first run offers to install or log in anything missing. Press `?` for keys.
+When `git`, the GitHub CLI or Claude Code is missing or logged out, a red dot shows on the menu;
+**Settings ▸ System** says what's wrong, and its **Setup check** installs or logs in. Press `?`
+for keys.
 
 ![The data directory](assets/datadir.svg)
 

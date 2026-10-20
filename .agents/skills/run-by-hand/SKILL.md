@@ -12,10 +12,11 @@ export QUARTERMASTER_HOME=$(mktemp -d)
 cargo run -p quartermaster  # or: cargo build -p quartermaster && target/debug/quartermaster
 ```
 
-On first run it creates the data directory (0700), opens the setup check if `claude` or `gh` is
-missing or logged out, then the Bridge. `Ctrl`+`C` twice quits (it asks first if agents work).
-A second instance on the same data directory says "already running" and exits 1. The terminal
-must be at least 60×16.
+On first run it creates the data directory (0700) and opens the Bridge; if `git`, `claude` or `gh`
+is missing or logged out, a red dot shows on the menu (the setup check never opens by itself;
+hide a tool with `PATH=/usr/bin:/bin QM_HOMEBREW_BINS=` to see it). `Ctrl`+`C` twice quits (it
+asks first if agents work). A second instance on the same data directory says "already running"
+and exits 1. The terminal must be at least 60×16.
 
 Claude accounts come from the user's own `claude` login (found at startup, never copied), so a
 throwaway home still has Claude. Other accounts would need a login in Settings (`,`); never copy

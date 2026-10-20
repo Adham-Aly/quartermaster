@@ -190,7 +190,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("↑ ↓", "move between the tools that need you"),
             ("⏎", "run the selected tool's first step in a pane"),
             ("c", "copy its command"),
-            ("esc", "later (cancels a running pane)"),
+            ("esc", "back (cancels a running pane)"),
         ],
     ),
     (
