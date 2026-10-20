@@ -837,7 +837,10 @@ fn updates_part(
             .ok()
             .and_then(|v| Version::parse(&v))
     {
-        tracing::info!(%version, "running as an older version for the update check (developer gate)");
+        tracing::info!(
+            %version,
+            "running as an older version for the update check (developer gate)"
+        );
         current = version;
     }
     let repo = RepoRef::from_remote(env!("CARGO_PKG_REPOSITORY")).unwrap_or_else(|| RepoRef {

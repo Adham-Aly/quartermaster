@@ -349,7 +349,11 @@ impl Installer for ShellInstaller {
             })?;
             let result = self.install_in(&dir, release).await;
             if let Err(e) = std::fs::remove_dir_all(&dir) {
-                tracing::debug!(dir = %dir.display(), error = %e, "couldn't remove the update's folder");
+                tracing::debug!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "couldn't remove the update's folder"
+                );
             }
             result
         })
