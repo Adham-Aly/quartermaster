@@ -1,8 +1,8 @@
 //! Popups over the current screen, and the top bar's menu that opens them.
 //!
-//! Settings, Help and Update open as popup windows over whatever is showing (the Bridge, a session, the
-//! setup check, a diff); the screen beneath keeps its focus, so closing a popup (`Esc`, its ` ✕ `,
-//! or a click outside it) puts you back where you were. The window itself is
+//! Settings, Help and Update open as popup windows over whatever is showing (the Bridge, a
+//! session, the setup check, a diff); the screen beneath keeps its focus, so closing a popup
+//! (`Esc`, its ` ✕ `, or a click outside it) puts you back where you were. The window itself is
 //! `widgets::popup`; the menu's list is `widgets::dropdown`, through the context-menu machinery
 //! (`input::menu`, target `MenuTarget::Main`).
 //!
