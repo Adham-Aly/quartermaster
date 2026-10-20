@@ -10,6 +10,7 @@ use crossterm::event::{self, Event, KeyEventKind};
 use qm_types::api::{Command, CoreClient, Snapshot, Update};
 use qm_types::ids::MessageId;
 use ratatui::Frame;
+use std::cell::Cell;
 use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -91,6 +92,12 @@ pub(crate) struct App {
     pub(crate) prefs_path: Option<PathBuf>,
     /// The setup check screen: its terminal panes and what the keys act on.
     pub(crate) setup: crate::setup::SetupState,
+    /// When the UI started: the busy indicator's steps count from here.
+    started: Instant,
+    /// The busy indicator's step (`widgets::spinner`).
+    pub(crate) spin: usize,
+    /// The frame being drawn, or the last one, shows a busy indicator, so ticks advance it.
+    pub(crate) spinning: Cell<bool>,
 }
 
 impl App {
@@ -119,6 +126,9 @@ impl App {
             reveal: None,
             prefs_path: None,
             setup: crate::setup::SetupState::default(),
+            started: Instant::now(),
+            spin: 0,
+            spinning: Cell::new(false),
         }
     }
 
@@ -159,6 +169,7 @@ impl App {
     pub(crate) fn draw(&mut self, frame: &mut Frame<'_>) {
         let area = frame.area();
         self.size = (area.width, area.height);
+        self.spinning.set(false);
         let mut map = FrameMap::default();
         // A worker's session owns the whole frame (no top bar or status bar).
         let body = if let Screen::Session(_) = self.screen {
@@ -277,8 +288,14 @@ impl App {
         }
     }
 
-    /// Time-driven changes: the quit window closing, a flash running out.
+    /// Time-driven changes: the quit window closing, a flash running out, the busy indicator's
+    /// next step (only while one is on screen).
     pub(crate) fn tick(&mut self, now: Instant) {
+        if self.spinning.get() {
+            let step =
+                crate::widgets::spinner::step_at(now.saturating_duration_since(self.started));
+            self.change(|app| &mut app.spin, step);
+        }
         self.settings_tick(now);
         self.setup_tick(now);
         if let Quit::Armed { until } = self.quit

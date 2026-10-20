@@ -33,7 +33,7 @@ use crate::hit::{FrameMap, Hit, Pane, StatusItem};
 use crate::text::{cells, truncate, width, wrap, wrap_rows, wrap_styled};
 use crate::theme;
 use crate::widgets::conversation::{self, Row, RowText, draw_rows};
-use crate::widgets::{button, input_box, markdown, stream};
+use crate::widgets::{button, input_box, markdown, spinner, stream};
 use qm_types::api::{AgentRef, SessionLine, SessionLineKind, SessionView};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
@@ -240,7 +240,11 @@ fn session_pane(
             agent: &name,
             supervisor: "quartermaster",
         };
-        conversation::rows(chats, inner.width, app.hover, &voices)
+        let mut rows = conversation::rows(chats, inner.width, app.hover, &voices);
+        if view.is_some_and(|v| v.thinking) {
+            rows.extend(conversation::thinking_rows(chats, app));
+        }
+        rows
     };
     let visible = usize::from(inner.height);
     let max = rows.len().saturating_sub(visible);
@@ -294,7 +298,8 @@ impl Rows {
 }
 
 /// Every line's rows: a blank row after a supervisor or app line, and before and after your
-/// message.
+/// message; while the worker's turn runs, the busy indicator last, until a line of its text
+/// shows in its place.
 pub(crate) fn rows(lines: &[SessionLine], max: u16, app: &App) -> Vec<Row> {
     let mut out = Rows { rows: Vec::new() };
     for line in lines {
@@ -320,15 +325,22 @@ pub(crate) fn rows(lines: &[SessionLine], max: u16, app: &App) -> Vec<Row> {
             }
             // The worker's text, and any kind a later build adds.
             _ => {
+                // A block still arriving shows its whole lines; until it has one, the busy
+                // indicator below stands in for it.
                 let committed = stream::committed(&line.text, line.streaming);
-                if line.streaming && committed.is_empty() {
-                    out.rows.push(Row::plain(Line::styled("…", theme::dim())));
-                } else {
+                if !committed.is_empty() || !line.streaming {
                     let body = committed.strip_suffix('\n').unwrap_or(committed);
                     out.wrapped(body, max, 0, "", theme::text());
                 }
             }
         }
+    }
+    let busy = app.session_view().is_some_and(|v| v.turn_running);
+    let writing = lines
+        .last()
+        .is_some_and(|l| l.streaming && !stream::committed(&l.text, true).is_empty());
+    if busy && !writing {
+        out.rows.push(Row::plain(spinner::line(app, "working")));
     }
     out.rows
 }

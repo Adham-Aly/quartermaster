@@ -1,11 +1,12 @@
 //! The crew tree: the Quartermaster at the root, its crewmates and secondmates below, each with a
-//! status glyph and an aligned status column.
+//! status glyph (the busy indicator while the agent is in a turn) and an aligned status column.
 
 use crate::app::App;
 use crate::bridge::{ListRow, draw_list, empty_lines, pane_block, pane_style};
 use crate::hit::{FrameMap, Hit, Pane};
 use crate::text::{truncate, width};
 use crate::theme;
+use crate::widgets::spinner;
 use qm_types::api::{AgentRef, CrewRow, Waiting};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -52,8 +53,10 @@ pub(crate) fn rows(app: &App, inner_width: u16) -> Vec<ListRow> {
             let selected =
                 (app.view.selected_crew == Some(row.agent)).then_some(!app.view.pointer_picked);
             let hovered = selected != Some(true) && app.hover == Some(hit);
+            // A flag wins over the busy indicator, which then isn't drawn at all.
+            let busy = (row.busy && waiting(row).is_none()).then(|| spinner::glyph(app));
             ListRow {
-                line: line(crew, i, columns[i], hovered),
+                line: line(crew, i, columns[i], hovered, busy),
                 hit: Some(hit),
                 selected,
             }
@@ -145,7 +148,8 @@ fn waiting(row: &CrewRow) -> Option<Waiting> {
 
 /// Statuses of agents doing nothing right now, drawn with a dim `○`: an idle secondmate, and a
 /// task that is queued, waits, has reported or has landed. A flagged row
-/// keeps its `⚑`; every other row is working and gets the green `●`.
+/// keeps its `⚑`; a busy row (in a turn) spins; every other row is working and gets the green
+/// `●`.
 const RESTING: &[&str] = &["idle", "queued", "waits", "reported", "landed"];
 
 fn waiting_style(waiting: Waiting) -> Style {
@@ -155,12 +159,19 @@ fn waiting_style(waiting: Waiting) -> Style {
     }
 }
 
-/// One row of the tree, its status starting at cell `column`.
-fn line(rows: &[CrewRow], i: usize, column: usize, hovered: bool) -> Line<'static> {
+/// One row of the tree, its status starting at cell `column`; `busy` is the busy indicator's
+/// glyph when the agent is in a turn, drawn in place of the row's own (a flag still wins).
+fn line(
+    rows: &[CrewRow],
+    i: usize,
+    column: usize,
+    hovered: bool,
+    busy: Option<Span<'static>>,
+) -> Line<'static> {
     let row = &rows[i];
     let mut spans = Vec::new();
     if row.depth == 0 {
-        spans.push(Span::styled("◆", theme::accent()));
+        spans.push(busy.unwrap_or_else(|| Span::styled("◆", theme::accent())));
         spans.push(Span::raw(" "));
     } else {
         let indent = "  ".repeat(usize::from(row.depth - 1));
@@ -168,12 +179,15 @@ fn line(rows: &[CrewRow], i: usize, column: usize, hovered: bool) -> Line<'stati
         spans.push(Span::raw(indent));
         spans.push(Span::styled(branch, theme::dim()));
         spans.push(Span::raw(" "));
-        let (glyph, style) = match waiting(row) {
-            Some(w) => ("⚑", waiting_style(w)),
-            None if RESTING.contains(&row.status.as_str()) => ("○", theme::dim()),
-            None => ("●", theme::ok()),
+        let glyph = match (waiting(row), busy) {
+            (Some(w), _) => Span::styled("⚑", waiting_style(w)),
+            (None, Some(busy)) => busy,
+            (None, None) if RESTING.contains(&row.status.as_str()) => {
+                Span::styled("○", theme::dim())
+            }
+            (None, None) => Span::styled("●", theme::ok()),
         };
-        spans.push(Span::styled(glyph, style));
+        spans.push(glyph);
         spans.push(Span::raw(" "));
     }
     let label_style = if hovered {
