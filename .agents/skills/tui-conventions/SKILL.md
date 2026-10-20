@@ -67,9 +67,13 @@ Map core `Tone`s with `theme::tone`.
   works. Globals: `Ctrl`+`C` twice quits (in a prompt field holding text it clears it first),
   `Ctrl`+`Z` suspends, `Ctrl`+`O` the menu (even while typing), `?` Help, `,` Settings,
   `Tab`/`⇧Tab` move focus. An open popup takes every other key. `Esc` does the first that
-  applies: close the menu, the popup, the overlay, the selection, guidance mode, interrupt a
-  running Quartermaster turn, then back to the Bridge. Letters are commands in list panes; they
-  don't jump to the input.
+  applies: close the menu (or the slash-command menu), the popup, the overlay, the selection,
+  guidance mode, interrupt a running Quartermaster turn, then back to the Bridge. Letters are
+  commands in list panes; they don't jump to the input.
+- Slash commands: `/` at the start of your message to the Quartermaster (Bridge only) opens the
+  command menu above the input box (`input/slash.rs`, `widgets/slash_menu.rs`). A new command is
+  one `COMMANDS` entry, a `qm_types::api::SlashCommand` variant and its arm in `qm-core`
+  `turns/slash.rs`.
 - Mouse: widgets record clickable regions (`Hit`) and scroll areas in the `FrameMap` while
   drawing; input reads geometry only from the `FrameMap`, never recomputes it. Hover never moves
   focus. A click leaves no shading once the pointer moves on: after a mouse press, a selected

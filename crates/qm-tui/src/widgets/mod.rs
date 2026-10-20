@@ -12,6 +12,7 @@ pub(crate) mod markdown;
 pub(crate) mod popup;
 pub(crate) mod projects;
 pub(crate) mod selection;
+pub(crate) mod slash_menu;
 pub(crate) mod spinner;
 pub(crate) mod stream;
 pub(crate) mod task;

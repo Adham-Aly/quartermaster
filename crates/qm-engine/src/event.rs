@@ -20,6 +20,10 @@ use std::path::PathBuf;
 ///    `SessionClosed` with `ResumeFailed` and no `TurnStarted`, and the core keeps that input.
 /// 5. `SessionReady` comes only first, or to end a spell with the process down.
 /// 6. After `EndConversationCalled` the turn ends and the session closes; no new turn starts.
+/// 7. `SessionCommand::Compact` runs as a turn of its own: `TurnStarted`, then `Compacted
+///    { automatic: false }` if the conversation was compacted, then `TurnEnded` (`Completed`
+///    when it ran, even with nothing to compact; `Failed` with the reason when it couldn't).
+///    No text, tool calls or jobs come in it.
 ///
 /// `#[non_exhaustive]`: engines may gain events without breaking the core's `match`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -77,7 +81,8 @@ pub enum EngineEvent {
     /// A rate-limit report for the account. `Rejected` means the account hit its limit: its agents
     /// wait for the reset, which counts as a sign of life.
     RateLimit { info: RateLimitInfo },
-    /// The engine compacted the conversation; the TUI shows it.
+    /// The engine compacted the conversation: by itself (`automatic`), or because the core sent
+    /// `SessionCommand::Compact`. The chat shows it.
     Compacted {
         automatic: bool,
         tokens_before: Option<u64>,

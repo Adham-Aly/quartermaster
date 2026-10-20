@@ -235,6 +235,14 @@ impl App {
             });
             return;
         }
+        // A slash command typed out in full runs even with its menu closed.
+        if self.view.guidance_for.is_none()
+            && self.view.location_for.is_none()
+            && let Some(entry) = crate::input::slash::exact(&self.draft.text)
+        {
+            self.run_slash(entry);
+            return;
+        }
         // Images go only with a message; guidance and a folder take none.
         let images = self.draft.images_in_text();
         let text = self.take_input();

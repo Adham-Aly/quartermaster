@@ -23,7 +23,7 @@ use qm_store::messages::{self, MessageRow, NewMessage, TurnOrigin};
 use qm_types::BoxFuture;
 use qm_types::api::{
     AgentRef, Card, CardAction, CardButton, CardKind, CardLine, ChatLine, Command, CoreServer,
-    CrewRow, NoticeAnswer, Snapshot, Styled, Tone, Update,
+    CrewRow, NoticeAnswer, SlashCommand, Snapshot, Styled, Tone, Update,
 };
 use qm_types::clock::Clock;
 use qm_types::domain::{MessageKind, MessageSource};
@@ -697,11 +697,38 @@ async fn handle(
                 }
             }
         }
+        Command::RunSlashCommand { slash: command } => {
+            let status = inbox.status();
+            if status.turn_running || !status.queued.is_empty() {
+                // It waits its turn; say so, or nothing would show until it runs.
+                let text = format!(
+                    "{} runs when the Quartermaster's current work ends.",
+                    slash_name(command)
+                );
+                if let Err(e) = conversation
+                    .app_note(conversation.agent(), None, &text)
+                    .await
+                {
+                    tracing::warn!(error = %e, "couldn't note a queued slash command");
+                }
+            }
+            send(inbox, SeatInput::Slash(command));
+            Handled::Changed
+        }
         Command::RequestQuit | Command::Quit => {
             send(inbox, SeatInput::Shutdown);
             Handled::Quit
         }
         other => to_parts(other, parts).await,
+    }
+}
+
+/// A slash command as you typed it.
+fn slash_name(command: SlashCommand) -> &'static str {
+    match command {
+        SlashCommand::Clear => "/clear",
+        SlashCommand::Compact => "/compact",
+        _ => "That command",
     }
 }
 

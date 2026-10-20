@@ -16,6 +16,9 @@
 //! 5. **The commit**: the turn, its events and its wakes in one transaction. Wakes are consumed
 //!    only now; a crash mid-turn leaves them to be redelivered (`recover`).
 //!
+//! Your slash commands (`/clear`, `/compact`) queue with your messages and run between turns
+//! (`slash`).
+//!
 //! The loop reaches everything else through the seam in [`crate::turn_io`]. Time comes only from
 //! the injected clock.
 
@@ -23,6 +26,7 @@ mod dispatch;
 mod end;
 mod engine_turn;
 mod recover;
+mod slash;
 
 pub mod deadline;
 pub mod effects;
@@ -268,6 +272,11 @@ impl TurnLoop {
             };
             match next {
                 Next::User(_) => self.run_turn(engine_turn::Start::User).await?,
+                Next::Slash(_) => {
+                    if let Some(command) = self.queue.take_slash() {
+                        self.run_slash(command).await?;
+                    }
+                }
                 // A batch of only ride-along wakes (an intervention) starts no turn: it is
                 // claimed by the next turn, whatever signal closed the batch.
                 Next::Wakes if !self.a_pending_wake_wakes().await? => self.queue.wakes_taken(),
@@ -308,6 +317,10 @@ impl TurnLoop {
             }
             Some(SeatInput::Wake) => {
                 self.queue.note_wake(self.deps.clock.instant());
+                Control::Nothing
+            }
+            Some(SeatInput::Slash(command)) => {
+                self.queue.push_slash(command);
                 Control::Nothing
             }
             Some(SeatInput::Interrupt) => Control::Interrupt,
@@ -384,13 +397,7 @@ impl TurnLoop {
             // turn with no wakes and handled like any other.
             EngineEvent::TurnStarted => self.run_turn(engine_turn::Start::Adopted).await?,
             EngineEvent::SessionClosed { reason } => {
-                let why = match reason {
-                    CloseReason::ResumeFailed { message } => OpenReason::ResumeFailed { message },
-                    other => OpenReason::Closed {
-                        reason: close_reason(&other),
-                    },
-                };
-                self.lose_session(why);
+                self.lose_session(reopen_reason(reason));
                 self.ensure_session().await;
             }
             EngineEvent::Compacted {
@@ -557,6 +564,16 @@ async fn next_event(live: Option<&mut Live>) -> Option<EngineEvent> {
     match live {
         Some(live) => live.handle.next_event().await,
         None => std::future::pending().await,
+    }
+}
+
+/// Why the next session opens, after the engine closed this one for `reason`.
+fn reopen_reason(reason: CloseReason) -> OpenReason {
+    match reason {
+        CloseReason::ResumeFailed { message } => OpenReason::ResumeFailed { message },
+        other => OpenReason::Closed {
+            reason: close_reason(&other),
+        },
     }
 }
 

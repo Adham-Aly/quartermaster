@@ -40,7 +40,7 @@ use crate::adapters::{
     ModelRequest, StreamEvent, StreamParser, WireAdapter,
 };
 use crate::builtin::{BuiltinOutcome, JobNotice, summarize_args};
-use crate::compaction::{self, KEEP_RECENT_TOKENS, SUMMARY_SYSTEM_PROMPT};
+use crate::compaction::{self, KEEP_RECENT_TOKENS, ON_REQUEST_KEEP_TOKENS, SUMMARY_SYSTEM_PROMPT};
 use crate::replay::{self, ReplayTarget};
 use crate::retry::NoRetry;
 use crate::session::{Cancel, Session};
@@ -863,8 +863,51 @@ impl Session {
     /// Compacts the context (see [`crate::compaction`]). Mid-turn the summary request shows as
     /// `Activity { Thinking }`; it reports no `ModelCall*`.
     pub(crate) async fn compact(&mut self) -> Result<(), CompactError> {
+        self.compact_keeping(KEEP_RECENT_TOKENS, true).await
+    }
+
+    /// A compaction you asked for (`SessionCommand::Compact`), as a turn of its own: `TurnStarted`,
+    /// `Compacted` if anything was summarised, `TurnEnded` (rule 7 of the event order).
+    pub(crate) async fn run_compaction(&mut self) {
+        let started = self.shared.clock.instant();
+        self.emit(EngineEvent::TurnStarted).await;
+        let outcome = match self.compact_keeping(ON_REQUEST_KEEP_TOKENS, false).await {
+            Ok(()) | Err(CompactError::Nothing) => TurnOutcome::Completed,
+            Err(CompactError::Failed(reason)) => TurnOutcome::Failed {
+                failure: provider_failure(reason),
+            },
+            Err(CompactError::Cancelled(_)) => TurnOutcome::Interrupted,
+        };
+        let usage = TurnUsage {
+            duration_ms: u64::try_from(
+                self.shared
+                    .clock
+                    .instant()
+                    .saturating_duration_since(started)
+                    .as_millis(),
+            )
+            .unwrap_or(u64::MAX),
+            ..TurnUsage::default()
+        };
+        self.emit(EngineEvent::TurnEnded {
+            outcome,
+            usage,
+            final_text: String::new(),
+        })
+        .await;
+        if let Err(e) = self.file.sync() {
+            tracing::warn!(error = %e, "couldn't sync the session file after a compaction");
+        }
+    }
+
+    /// Summarises all but about the newest `keep_tokens` of the context.
+    async fn compact_keeping(
+        &mut self,
+        keep_tokens: u64,
+        automatic: bool,
+    ) -> Result<(), CompactError> {
         let tokens_before = compaction::context_tokens(&self.context);
-        let Some(cut) = compaction::find_cut(&self.context.items, KEEP_RECENT_TOKENS) else {
+        let Some(cut) = compaction::find_cut(&self.context.items, keep_tokens) else {
             return Err(CompactError::Nothing);
         };
         let split = compaction::is_split_turn(&self.context.items, cut);
@@ -920,7 +963,7 @@ impl Session {
             tracing::warn!(error = %e, "couldn't record a compaction");
         }
         self.emit(EngineEvent::Compacted {
-            automatic: true,
+            automatic,
             tokens_before: Some(tokens_before),
             tokens_after: Some(tokens_after),
         })

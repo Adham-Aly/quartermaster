@@ -7,10 +7,13 @@
 //!   itself is in the `wakes` table). Wakes are ready once none has arrived for
 //!   [`WAKE_QUIET`] (so wakes within about two seconds of each other go together), or once the
 //!   first has waited [`WAKE_MAX_HOLD`] (so a steady trickle can't hold a turn off forever).
+//! - **Slash commands** (`/clear`, `/compact`) wait in the same FIFO as your messages, so each
+//!   runs after what you sent before it.
 //! - **Order:** a waiting message always goes first and takes every pending wake with it; a wake
-//!   turn starts only when no message of yours is waiting.
+//!   turn starts only when no message or command of yours is waiting.
 
 use super::{WAKE_MAX_HOLD, WAKE_QUIET};
+use qm_types::api::SlashCommand;
 use qm_types::ids::MessageId;
 use std::collections::VecDeque;
 use std::time::Instant;
@@ -20,6 +23,8 @@ use std::time::Instant;
 pub enum Next {
     /// Start a turn for this message of yours (it takes every pending wake along).
     User(MessageId),
+    /// Run this slash command of yours.
+    Slash(SlashCommand),
     /// Start a wake turn.
     Wakes,
     /// Wakes are waiting for their batch to close: look again at this instant.
@@ -28,10 +33,17 @@ pub enum Next {
     Idle,
 }
 
-/// Your queued messages and the wake window.
+/// One thing of yours waiting in the FIFO.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Yours {
+    Message(MessageId),
+    Slash(SlashCommand),
+}
+
+/// Your queued messages and commands, and the wake window.
 #[derive(Clone, Debug, Default)]
 pub struct InputQueue {
-    users: VecDeque<MessageId>,
+    users: VecDeque<Yours>,
     /// When the first and the last wake signal not yet taken by a turn arrived.
     first_wake: Option<Instant>,
     last_wake: Option<Instant>,
@@ -47,9 +59,14 @@ impl InputQueue {
     /// Your message arrived (or "Ask again" on a notice): it gets its own turn. A message already
     /// waiting here isn't queued twice (startup recovery and its own signal both name it).
     pub fn push_user(&mut self, message: MessageId) {
-        if !self.users.contains(&message) {
-            self.users.push_back(message);
+        if !self.users.contains(&Yours::Message(message)) {
+            self.users.push_back(Yours::Message(message));
         }
+    }
+
+    /// A slash command you ran: it runs after everything of yours already waiting.
+    pub fn push_slash(&mut self, command: SlashCommand) {
+        self.users.push_back(Yours::Slash(command));
     }
 
     /// A wake signal arrived.
@@ -66,8 +83,10 @@ impl InputQueue {
 
     /// What runs next at `now`.
     pub fn next(&self, now: Instant) -> Next {
-        if let Some(&message) = self.users.front() {
-            return Next::User(message);
+        match self.users.front() {
+            Some(&Yours::Message(message)) => return Next::User(message),
+            Some(&Yours::Slash(command)) => return Next::Slash(command),
+            None => {}
         }
         let (Some(first), Some(last)) = (self.first_wake, self.last_wake) else {
             return Next::Idle;
@@ -83,9 +102,26 @@ impl InputQueue {
         }
     }
 
-    /// Takes the next message of yours for its turn.
+    /// Takes the next message of yours for its turn, if a message is next.
     pub fn take_user(&mut self) -> Option<MessageId> {
-        self.users.pop_front()
+        match self.users.front() {
+            Some(&Yours::Message(message)) => {
+                self.users.pop_front();
+                Some(message)
+            }
+            _ => None,
+        }
+    }
+
+    /// Takes the next slash command of yours, if a command is next.
+    pub fn take_slash(&mut self) -> Option<SlashCommand> {
+        match self.users.front() {
+            Some(&Yours::Slash(command)) => {
+                self.users.pop_front();
+                Some(command)
+            }
+            _ => None,
+        }
     }
 
     /// A turn took the pending wakes: the wake window starts over.
@@ -97,6 +133,42 @@ impl InputQueue {
 
     /// Your messages waiting for a turn, oldest first: shown as queued.
     pub fn queued(&self) -> Vec<MessageId> {
-        self.users.iter().copied().collect()
+        self.users
+            .iter()
+            .filter_map(|y| match y {
+                Yours::Message(message) => Some(*message),
+                Yours::Slash(_) => None,
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slash_commands_wait_their_turn_behind_your_messages() {
+        let now = Instant::now();
+        let (first, second) = (MessageId::new(1), MessageId::new(2));
+        let mut queue = InputQueue::new();
+        queue.push_user(first);
+        queue.push_slash(SlashCommand::Clear);
+        queue.push_user(second);
+        queue.note_wake(now);
+
+        // Only messages show as queued.
+        assert_eq!(queue.queued(), vec![first, second]);
+        assert_eq!(queue.next(now), Next::User(first));
+        // Taking the wrong kind takes nothing.
+        assert_eq!(queue.take_slash(), None);
+        assert_eq!(queue.take_user(), Some(first));
+        assert_eq!(queue.next(now), Next::Slash(SlashCommand::Clear));
+        assert_eq!(queue.take_user(), None);
+        assert_eq!(queue.take_slash(), Some(SlashCommand::Clear));
+        assert_eq!(queue.next(now), Next::User(second));
+        assert_eq!(queue.take_user(), Some(second));
+        // Wakes wait for everything of yours.
+        assert!(matches!(queue.next(now), Next::WaitUntil(_)));
     }
 }

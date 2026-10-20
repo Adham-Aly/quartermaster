@@ -222,6 +222,23 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "Slash commands (the Quartermaster's chat)",
+        &[
+            ("/", "at the start of your message: the command menu"),
+            (
+                "/clear",
+                "clear the Quartermaster's context and start a new session",
+            ),
+            (
+                "/compact",
+                "compact the Quartermaster's context to free up room",
+            ),
+            ("↑ ↓ · tab", "pick a command, or complete its name"),
+            ("⏎ · click", "run it"),
+            ("esc", "close the menu"),
+        ],
+    ),
+    (
         "Mouse",
         &[
             (

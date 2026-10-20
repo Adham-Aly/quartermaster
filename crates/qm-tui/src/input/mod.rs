@@ -15,6 +15,7 @@ pub(crate) mod menu;
 pub(crate) mod mouse;
 pub(crate) mod prefs;
 pub(crate) mod select;
+pub(crate) mod slash;
 
 use crate::app::App;
 use crate::hit::Pane;
