@@ -77,6 +77,9 @@ Map core `Tone`s with `theme::tone`.
 ## Text and terminal
 
 - Streaming text shows whole lines only (`widgets/stream.rs::committed`), so nothing reflows.
+- An agent thinking or busy shows the one busy indicator, `widgets/spinner.rs` (`⣾ thinking`, or
+  the glyph alone in the crew tree), never a widget's own. It redraws only while drawn: one cell,
+  8 steps a second, nothing when none is on screen.
 - Markdown in messages goes through `widgets/markdown.rs`.
 - `terminal.rs` enters raw mode, the alternate screen, mouse capture with motion (SGR), bracketed
   paste, and synchronized updates per frame; it restores the terminal on drop, panic and suspend.

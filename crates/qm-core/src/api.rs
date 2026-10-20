@@ -367,14 +367,30 @@ pub(crate) fn snapshot(data: &ConversationData, status: &SeatStatus, machine: &s
     let mut snapshot = Snapshot::default();
     machine.clone_into(&mut snapshot.machine);
     snapshot.turn_running = status.turn_running;
-    snapshot.crew = vec![CrewRow::new(
+    snapshot.thinking = thinking(data, status);
+    let mut root = CrewRow::new(
         AgentRef::Quartermaster,
         0,
         "Quartermaster",
         if status.turn_running { WORKING } else { READY },
-    )];
+    );
+    root.busy = status.turn_running;
+    snapshot.crew = vec![root];
     snapshot.conversation = chat_lines(data, status);
     snapshot
+}
+
+/// Whether the agent is in a turn and hasn't written anything in it yet (a reply, a question or
+/// a note; an acknowledgement beside your message doesn't count), so its conversation shows the
+/// busy indicator.
+pub(crate) fn thinking(data: &ConversationData, status: &SeatStatus) -> bool {
+    let Some(turn) = status.running_turn.filter(|_| status.turn_running) else {
+        return false;
+    };
+    !data
+        .rows
+        .iter()
+        .any(|row| row.source == MessageSource::Agent && row.turn == Some(turn))
 }
 
 /// The conversation's lines, as the Bridge's chat draws them.

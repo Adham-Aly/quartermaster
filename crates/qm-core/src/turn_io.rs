@@ -193,6 +193,8 @@ pub struct SeatStatus {
     pub turn_running: bool,
     /// The message whose turn is running, if you started it.
     pub running_message: Option<MessageId>,
+    /// The turn that is running, while one is.
+    pub running_turn: Option<TurnId>,
     /// Your messages waiting for a turn, oldest first: shown as queued.
     pub queued: Vec<MessageId>,
 }

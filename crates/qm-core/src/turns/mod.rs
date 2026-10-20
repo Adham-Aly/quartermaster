@@ -41,7 +41,7 @@ use qm_tools::handler::{Dispatcher, ToolHost};
 use qm_types::BoxFuture;
 use qm_types::clock::Clock;
 use qm_types::domain::Role;
-use qm_types::ids::{AgentId, MessageId, ModelId, SecondmateId};
+use qm_types::ids::{AgentId, MessageId, ModelId, SecondmateId, TurnId};
 use queue::{InputQueue, Next};
 use std::fmt;
 use std::sync::Arc;
@@ -150,6 +150,7 @@ pub struct TurnLoop {
     shutting_down: bool,
     turn_running: bool,
     running_message: Option<MessageId>,
+    running_turn: Option<TurnId>,
     /// Whose turns these are.
     who: LoopRole,
     /// Open the session only when the first turn starts (a secondmate stays idle until then).
@@ -207,6 +208,7 @@ impl TurnLoop {
             shutting_down: false,
             turn_running: false,
             running_message: None,
+            running_turn: None,
             who: LoopRole::Quartermaster,
             lazy_open: false,
         }
@@ -281,6 +283,7 @@ impl TurnLoop {
         let status = SeatStatus {
             turn_running: self.turn_running,
             running_message: self.running_message,
+            running_turn: self.running_turn,
             queued: self.queue.queued(),
         };
         self.inbox.status.send_if_modified(|current| {
@@ -436,7 +439,7 @@ impl TurnLoop {
     /// Records `seat.compacted`.
     async fn record_compacted(
         &self,
-        turn: Option<qm_types::ids::TurnId>,
+        turn: Option<TurnId>,
         automatic: bool,
         tokens_before: Option<u64>,
         tokens_after: Option<u64>,

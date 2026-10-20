@@ -2,7 +2,7 @@
 //! arriving, the status line, and whether you can still write to the worker.
 
 use super::recorder::Recorder;
-use crate::api::{chat_lines, load_conversation};
+use crate::api::{chat_lines, load_conversation, thinking};
 use crate::crew_view::minutes_label;
 use crate::crew_view::{SECONDMATE_IDLE, SECONDMATE_WORKING};
 use crate::secondmates::SecondmateService;
@@ -163,6 +163,7 @@ pub async fn load_secondmate(
         .map(|l| l.trim_start_matches('#').trim().to_owned())
         .unwrap_or_default();
     view.turn_running = status.turn_running;
+    view.thinking = thinking(&data, &status);
     view.open = true;
     view.placeholder = format!("message {id} directly…");
     // Read-only apart from the input: the Bridge's notice and question buttons answer the
