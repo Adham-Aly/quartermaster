@@ -66,8 +66,8 @@ Map core `Tone`s with `theme::tone`.
 - The prompt field (`widgets/input_box.rs`, layout in `input/field.rs`) is shared by the Bridge
   and every session. It soft-wraps, grows from 2 to 10 rows then scrolls, and over 30 wrapped
   rows shows the first 4, `...[truncated N lines]...`, the last 5 and 2 rows around the cursor;
-  the whole text is kept and sent. It has its own selection (`View::anchor` to the cursor, byte
-  offsets): a drag or `Shift`+movement selects, release copies, typing replaces, delete keys
+  the whole text is kept and sent. Its text, cursor and selection are one plain `Draft`
+  (`input/draft.rs`, byte offsets), apart from the per-window gesture state in `Pointer`: a drag or `Shift`+movement selects, release copies, typing replaces, delete keys
   remove it. `Ctrl`+`V` is left free for image paste; `⌘V` arrives as a bracketed paste.
 
 ## Text and terminal

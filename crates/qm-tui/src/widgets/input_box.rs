@@ -42,7 +42,7 @@ fn room(width: u16) -> usize {
 /// The box's height for your message in a box `width` wide: its shown rows (see
 /// `input::field`) and the border.
 pub(crate) fn height(app: &App, width: u16) -> u16 {
-    let rows = field::wrap(&app.input, room(width));
+    let rows = field::wrap(&app.draft.text, room(width));
     let cursor = field::row_of(&rows, app.cursor());
     cells(field::visible_rows(field::fold(rows.len(), cursor).len()) + 2)
 }
@@ -54,7 +54,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
         placeholder: placeholder(app),
         open: true,
         focused,
-        accent: focused || !app.input.is_empty(),
+        accent: focused || !app.draft.text.is_empty(),
     };
     draw_field(frame, area, app, &field, map);
 }
@@ -88,7 +88,7 @@ pub(crate) fn draw_field(
     } else {
         theme::dim()
     };
-    if !field.open || app.input.is_empty() {
+    if !field.open || app.draft.text.is_empty() {
         // An empty box shows only the placeholder; the terminal's own cursor sits at its start.
         let line = Line::from(vec![
             Span::styled(LEAD, lead_style),
@@ -109,7 +109,7 @@ pub(crate) fn draw_field(
         return;
     }
 
-    let input = &app.input;
+    let input = &app.draft.text;
     let at = app.cursor();
     let selection = app.selection();
     let rows = field::wrap(input, room);

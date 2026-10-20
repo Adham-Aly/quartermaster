@@ -1,11 +1,12 @@
 //! Editing your message: the cursor, words and lines.
 //!
 //! The cursor is a byte offset into the text, always on a char boundary. The functions here are
-//! pure, so they can be checked on multi-byte text without a terminal; `App` keeps the cursor in
-//! `view.cursor`, with `None` meaning the end.
+//! pure, so they can be checked on multi-byte text without a terminal; `App` keeps the text, the
+//! cursor and the selection together in `App::draft` (`input::draft`).
 
 use crate::app::App;
 use crate::hit::Pane;
+use crate::input::draft::Draft;
 use crate::input::field;
 use crate::text;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -99,40 +100,32 @@ pub(crate) fn line_down(s: &str, at: usize) -> usize {
 }
 
 impl App {
-    /// The cursor as a byte offset.
+    /// The cursor in your message, as a byte offset.
     pub(crate) fn cursor(&self) -> usize {
-        self.view
-            .cursor
-            .filter(|&at| at <= self.input.len() && self.input.is_char_boundary(at))
-            .unwrap_or(self.input.len())
+        self.draft.cursor()
     }
 
     /// The selected bytes of your message, start before end, when there are any.
     pub(crate) fn selection(&self) -> Option<(usize, usize)> {
-        let anchor = self
-            .view
-            .anchor
-            .filter(|&at| at <= self.input.len() && self.input.is_char_boundary(at))?;
-        let at = self.cursor();
-        (anchor != at).then(|| (anchor.min(at), anchor.max(at)))
+        self.draft.selection()
     }
 
     /// Moves the cursor to `at`, keeping the anchor where it is.
     fn move_cursor(&mut self, at: usize) {
-        let value = (at < self.input.len()).then_some(at);
-        self.change(|app| &mut app.view.cursor, value);
+        let value = (at < self.draft.text.len()).then_some(at);
+        self.change(|app| &mut app.draft.cursor, value);
     }
 
     /// Moves the cursor to `at` and drops the selection.
     pub(crate) fn set_cursor(&mut self, at: usize) {
-        self.change(|app| &mut app.view.anchor, None);
+        self.change(|app| &mut app.draft.anchor, None);
         self.move_cursor(at);
     }
 
     /// Moves the cursor to `at`, selecting from where the selection started (or from the cursor).
     pub(crate) fn select_to(&mut self, at: usize) {
-        if self.view.anchor.is_none() {
-            self.view.anchor = Some(self.cursor());
+        if self.draft.anchor.is_none() {
+            self.draft.anchor = Some(self.cursor());
         }
         self.move_cursor(at);
     }
@@ -140,35 +133,33 @@ impl App {
     /// Starts a selection at the cursor (a press in the field, before a drag).
     pub(crate) fn anchor_at_cursor(&mut self) {
         let at = self.cursor();
-        self.change(|app| &mut app.view.anchor, Some(at));
+        self.change(|app| &mut app.draft.anchor, Some(at));
     }
 
     /// Drops an empty selection.
     pub(crate) fn drop_empty_selection(&mut self) {
         if self.selection().is_none() {
-            self.change(|app| &mut app.view.anchor, None);
+            self.change(|app| &mut app.draft.anchor, None);
         }
     }
 
     /// Replaces your message with `text`, the cursor at its end and nothing selected.
     pub(crate) fn set_input(&mut self, text: String) {
-        self.input = text;
-        self.view.cursor = None;
-        self.view.anchor = None;
+        self.draft = Draft::new(text);
         self.redraw();
     }
 
-    /// Takes your message out of the field, leaving it empty.
+    /// Takes your message's text out of the field, leaving it empty.
     pub(crate) fn take_input(&mut self) -> String {
-        let text = std::mem::take(&mut self.input);
-        self.set_input(String::new());
+        let text = std::mem::take(&mut self.draft).text;
+        self.redraw();
         text
     }
 
     /// Inserts `s` at the cursor, in place of the selection if there is one, and moves past it.
     pub(crate) fn insert(&mut self, s: &str) {
         let (from, to) = self.selection().unwrap_or((self.cursor(), self.cursor()));
-        self.input.replace_range(from..to, s);
+        self.draft.text.replace_range(from..to, s);
         self.set_cursor(from + s.len());
         self.redraw();
     }
@@ -177,7 +168,7 @@ impl App {
     fn delete(&mut self, from: usize, to: usize) {
         let (from, to) = self.selection().unwrap_or((from, to));
         if from < to {
-            self.input.replace_range(from..to, "");
+            self.draft.text.replace_range(from..to, "");
             self.set_cursor(from);
             self.redraw();
         }
@@ -185,7 +176,7 @@ impl App {
 
     /// The cursor one row up or down in the field as last drawn (by line before the first frame).
     fn row_step(&self, up: bool) -> usize {
-        let s = &self.input;
+        let s = &self.draft.text;
         let at = self.cursor();
         let Some(room) = self.drawn.field.as_ref().map(|f| f.room) else {
             return if up { line_up(s, at) } else { line_down(s, at) };
@@ -208,7 +199,7 @@ impl App {
         };
         if !field_showing
             || self.focus != Pane::Input
-            || self.input.is_empty()
+            || self.draft.text.is_empty()
             || self.view.menu.is_some()
             || !matches!(
                 self.quit,
@@ -225,7 +216,7 @@ impl App {
     /// Sends your message, or in guidance mode answers the card with your words, or in location
     /// mode sends the folder for a project proposal.
     pub(crate) fn send_input(&mut self) {
-        if self.input.trim().is_empty() {
+        if self.draft.text.trim().is_empty() {
             return;
         }
         // In a worker's session: direct intervention, its own draft.
@@ -300,7 +291,7 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let command = key.modifiers.contains(KeyModifiers::SUPER);
-        let s = &self.input;
+        let s = &self.draft.text;
         let at = self.cursor();
         let selection = self.selection();
         // Where a movement key takes the cursor.

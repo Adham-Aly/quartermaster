@@ -5,6 +5,7 @@
 //! and the context menu, so a click and its keyboard twin always do the same thing.
 
 pub(crate) mod clipboard;
+pub(crate) mod draft;
 pub(crate) mod editor;
 pub(crate) mod field;
 pub(crate) mod focus;

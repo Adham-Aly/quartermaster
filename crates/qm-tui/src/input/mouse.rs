@@ -200,7 +200,7 @@ impl App {
 
     /// The byte of your message under `at`, when the last frame drew a field that takes text.
     fn field_offset_at(&self, at: Position) -> Option<usize> {
-        self.drawn.field.as_ref()?.offset_at(&self.input, at)
+        self.drawn.field.as_ref()?.offset_at(&self.draft.text, at)
     }
 
     /// A drag in the prompt field: the cursor follows the pointer, selecting from the press.
@@ -214,8 +214,8 @@ impl App {
     /// does, and keeps it so typing replaces it.
     fn finish_field_drag(&mut self, now: Instant) {
         self.drop_empty_selection();
-        if let Some((from, to)) = self.selection() {
-            let text = self.input[from..to].to_owned();
+        // Through the shared clipboard path: pbcopy, or OSC 52 over SSH.
+        if let Some(text) = self.draft.selected_text().map(str::to_owned) {
             self.copy(&text, now);
         }
     }

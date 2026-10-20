@@ -9,8 +9,9 @@
 //! - [`keys`]: its keys (Tab, ⏎, Esc, `i`, `e`, scrolling, `?`).
 //! - [`mouse`]: Back, Interrupt, Expand/Collapse, the wheel.
 //!
-//! Entering swaps the Bridge's draft out of `App::input` and this session's draft in; leaving
-//! swaps them back and tells the core (`Command::ViewSession { agent: None }`).
+//! Entering swaps the Bridge's draft (text, cursor and selection) out of `App::draft` and this
+//! session's draft in; leaving swaps them back and tells the core
+//! (`Command::ViewSession { agent: None }`).
 
 pub(crate) mod draw;
 pub(crate) mod keys;
@@ -20,6 +21,7 @@ pub(crate) use draw::draw;
 
 use crate::app::App;
 use crate::hit::Pane;
+use crate::input::draft::Draft;
 use crate::router::Screen;
 use qm_types::api::{AgentRef, Command, SessionView};
 use std::collections::{BTreeSet, HashMap};
@@ -52,13 +54,12 @@ pub(crate) struct SessionUi {
     pub(crate) scroll_from_bottom: usize,
     /// Lines whose detail is expanded, by ID.
     pub(crate) expanded: BTreeSet<u64>,
-    /// The Bridge's draft and cursor while a session is open.
-    pub(crate) bridge_draft: String,
-    pub(crate) bridge_cursor: Option<usize>,
+    /// The Bridge's draft while a session is open.
+    pub(crate) bridge_draft: Draft,
     /// Where focus was on the Bridge, restored on the way back.
     pub(crate) bridge_focus: Option<Pane>,
     /// Each session's unsent draft.
-    pub(crate) drafts: HashMap<AgentRef, String>,
+    pub(crate) drafts: HashMap<AgentRef, Draft>,
 }
 
 impl App {
@@ -97,11 +98,9 @@ impl App {
         ui.agent = Some(agent);
         ui.scroll_from_bottom = 0;
         ui.expanded.clear();
-        ui.bridge_draft = std::mem::take(&mut self.input);
-        ui.bridge_cursor = self.view.cursor.take();
+        ui.bridge_draft = std::mem::take(&mut self.draft);
         ui.bridge_focus = Some(bridge_focus);
-        self.input = ui.drafts.remove(&agent).unwrap_or_default();
-        self.view.anchor = None;
+        self.draft = ui.drafts.remove(&agent).unwrap_or_default();
         self.screen = Screen::Session(agent);
         self.focus = Pane::Input;
         self.command(Command::ViewSession { agent: Some(agent) });
@@ -113,15 +112,13 @@ impl App {
         let Screen::Session(agent) = self.screen else {
             return;
         };
-        let draft = std::mem::take(&mut self.input);
+        let draft = std::mem::take(&mut self.draft);
         let ui = self.view.session.get_or_insert_with(SessionUi::default);
         if !draft.is_empty() {
             ui.drafts.insert(agent, draft);
         }
         ui.agent = None;
-        self.input = std::mem::take(&mut ui.bridge_draft);
-        self.view.cursor = ui.bridge_cursor.take();
-        self.view.anchor = None;
+        self.draft = std::mem::take(&mut ui.bridge_draft);
         self.focus = ui.bridge_focus.take().unwrap_or(Pane::Crew);
         self.view.selection = None;
         self.pointer.selecting = false;

@@ -55,8 +55,9 @@ pub(crate) struct App {
     pub(crate) hover: Option<Hit>,
     /// The divider being dragged, if any.
     pub(crate) drag: Option<Divider>,
-    /// Your message being typed.
-    pub(crate) input: String,
+    /// Your message being typed: its text, cursor and selection (no gesture state; that is in
+    /// `pointer`).
+    pub(crate) draft: crate::input::draft::Draft,
     /// Width of the left column (projects and crew), in cells.
     pub(crate) left_width: u16,
     /// Width of the task pane, in cells.
@@ -100,7 +101,7 @@ impl App {
             focus: Pane::Input,
             hover: None,
             drag: None,
-            input: String::new(),
+            draft: crate::input::draft::Draft::default(),
             left_width: LEFT_DEFAULT,
             right_width: RIGHT_DEFAULT,
             scroll_from_bottom: 0,

@@ -448,7 +448,7 @@ fn input(
         placeholder,
         open,
         focused,
-        accent: open && (focused || !app.input.is_empty()),
+        accent: open && (focused || !app.draft.text.is_empty()),
     };
     input_box::draw_field(frame, area, app, &field, map);
 }

@@ -66,7 +66,7 @@ impl App {
             self.pointer.selecting = false;
             self.change(|app| &mut app.view.selection, None);
         } else if self.focus == Pane::Input && self.selection().is_some() {
-            self.change(|app| &mut app.view.anchor, None);
+            self.change(|app| &mut app.draft.anchor, None);
         } else if self.view.guidance_for.is_some() {
             self.change(|app| &mut app.view.guidance_for, None);
         } else if self.view.location_for.is_some() {
