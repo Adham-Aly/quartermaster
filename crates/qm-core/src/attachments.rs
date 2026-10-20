@@ -1,0 +1,519 @@
+//! Images you pasted into a chat with `Ctrl`+`V`, saved where agents can open them.
+//!
+//! # Where they go
+//!
+//! Your message brings its images ([`PastedImage`]) from the UI, each with its placeholder
+//! (`[Image #1]`) in your text. Before the message is stored, [`Attachments::stage`] writes them to
+//! a staging folder (`attachments/.staging-…/`). In the transaction that stores the message,
+//! [`Staged::attach`] renames that folder to `attachments/message-<id>/` and adds one line per image
+//! to the message's text:
+//!
+//! ```text
+//! [Image #1]: /Users/you/.quartermaster/attachments/message-42/image-1.png
+//! ```
+//!
+//! The path is then part of what you said: the chat shows it, the agent you wrote to reads it, a
+//! brief's copy of your words carries it, and orchestrators pass it on in briefs and messages.
+//! Agents never get image bytes from the app; a crewmate opens the file with its file reader. This
+//! is the same for the Quartermaster, a secondmate or a crewmate.
+//!
+//! # Cleanup policy
+//!
+//! [`Attachments::sweep`] runs at startup and then every [`SWEEP_EVERY`]. It removes:
+//!
+//! 1. **Used up.** A message's folder once the message is older than [`KEEP_FOR`] and no open work
+//!    mentions the folder: no open task's goal, words, instructions, constraints, later steps or
+//!    crewmate messages, and no open secondmate request. So an image lives at least two weeks, and
+//!    longer while a task that was given it is still open.
+//! 2. **Over the cap.** While what is left holds more than [`SIZE_CAP`], the oldest folders go
+//!    first, in use or not, except those from the last [`ALWAYS_KEEP`].
+//! 3. **Leftovers.** A staging folder, or a `message-<id>` folder whose message doesn't name it,
+//!    once it is [`LEFTOVER_AFTER`] old: what a crash between writing and storing leaves behind.
+//!
+//! Anything else in the folder is left alone.
+
+use qm_store::StoreError;
+use qm_store::db::Db;
+use qm_store::messages;
+use qm_types::api::{MAX_IMAGE_BYTES, PastedImage};
+use qm_types::clock::Clock;
+use qm_types::ids::MessageId;
+use rusqlite::Connection;
+use std::collections::BTreeSet;
+use std::fmt::{self, Write as _};
+use std::fs;
+use std::io::{self, Write as _};
+use std::os::unix::fs::OpenOptionsExt as _;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+/// Every image is kept at least this long after its message.
+pub const KEEP_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(14 * 24);
+/// The most the attachments folder should hold, in bytes.
+pub const SIZE_CAP: u64 = 1024 * 1024 * 1024;
+/// Images this recent are never removed for the size cap.
+pub const ALWAYS_KEEP: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
+/// When a staging or orphaned folder counts as left over.
+pub const LEFTOVER_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_hours(1);
+/// How often the sweep runs after the one at startup.
+pub const SWEEP_EVERY: Duration = Duration::from_hours(1);
+
+const STAGING_PREFIX: &str = ".staging-";
+const FOLDER_PREFIX: &str = "message-";
+
+/// Numbers staging folders apart within a run.
+static NEXT_STAGING: AtomicU64 = AtomicU64::new(0);
+
+/// A message's folder name: `message-<id>`.
+pub fn folder_name(message: MessageId) -> String {
+    format!("{FOLDER_PREFIX}{message}")
+}
+
+/// Where pasted images are saved, and their cleanup.
+#[derive(Clone)]
+pub struct Attachments {
+    root: PathBuf,
+    clock: Arc<dyn Clock>,
+}
+
+impl fmt::Debug for Attachments {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Attachments")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Attachments {
+    /// `root` is the data directory's `attachments` folder, created when first needed.
+    pub fn new(root: PathBuf, clock: Arc<dyn Clock>) -> Self {
+        Self { root, clock }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Writes the images whose placeholder is still in `text` to a fresh staging folder. An image
+    /// that can't be saved is noted, never fatal: your message still goes, saying so.
+    pub async fn stage(&self, text: &str, images: &[PastedImage]) -> Staged {
+        let mut numbers = BTreeSet::new();
+        let used: Vec<PastedImage> = images
+            .iter()
+            .filter(|image| text.contains(&image.placeholder()) && numbers.insert(image.number))
+            .cloned()
+            .collect();
+        if used.is_empty() {
+            return Staged::none(self.root.clone());
+        }
+        let name = format!(
+            "{STAGING_PREFIX}{}-{}",
+            self.clock.now().as_millisecond(),
+            NEXT_STAGING.fetch_add(1, Ordering::Relaxed)
+        );
+        let root = self.root.clone();
+        let numbers: Vec<u32> = used.iter().map(|image| image.number).collect();
+        match tokio::task::spawn_blocking(move || write_staged(root, &name, used)).await {
+            Ok(staged) => staged,
+            Err(e) => {
+                tracing::error!(error = %e, "saving your pasted images stopped");
+                Staged {
+                    root: self.root.clone(),
+                    dir: None,
+                    images: numbers
+                        .into_iter()
+                        .map(|n| (n, Err(String::from("the app stopped while saving it"))))
+                        .collect(),
+                }
+            }
+        }
+    }
+
+    /// Runs [`Attachments::sweep`] now and then every [`SWEEP_EVERY`], for as long as the runtime
+    /// runs.
+    pub fn spawn_sweeper(self, db: Db) {
+        tokio::spawn(async move {
+            loop {
+                self.sweep(&db).await;
+                self.clock.sleep(SWEEP_EVERY).await;
+            }
+        });
+    }
+
+    /// Applies the cleanup policy (in this module's docs) once.
+    pub async fn sweep(&self, db: &Db) {
+        let root = self.root.clone();
+        let mut folders = match tokio::task::spawn_blocking(move || list(&root)).await {
+            Ok(Ok(folders)) => folders,
+            Ok(Err(e)) if e.kind() == io::ErrorKind::NotFound => return,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "couldn't list the attachments folder");
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "listing the attachments folder stopped");
+                return;
+            }
+        };
+        let asked: Vec<(usize, MessageId, String)> = folders
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| f.message.map(|m| (i, m, format!("/{}/", folder_name(m)))))
+            .collect();
+        let facts = db
+            .call(move |conn| {
+                let mut out = Vec::with_capacity(asked.len());
+                for (i, message, needle) in asked {
+                    // The message must name the folder, or the folder is a leftover whose ID was
+                    // reused.
+                    let named = messages::text(conn, message)?.is_some_and(|t| t.contains(&needle));
+                    let sent = if named {
+                        qm_store::attachments::sent_at(conn, message)?
+                    } else {
+                        None
+                    };
+                    let in_use = qm_store::attachments::in_open_work(conn, &needle)?;
+                    out.push((i, sent, in_use));
+                }
+                Ok(out)
+            })
+            .await;
+        let facts = match facts {
+            Ok(facts) => facts,
+            Err(e) => {
+                tracing::warn!(error = %e, "couldn't read what the attachments belong to");
+                return;
+            }
+        };
+        for (i, sent, in_use) in facts {
+            folders[i].sent = sent;
+            folders[i].in_use = in_use;
+        }
+        let doomed: Vec<(PathBuf, u64)> = plan(&folders, self.clock.now())
+            .into_iter()
+            .map(|i| (folders[i].path.clone(), folders[i].bytes))
+            .collect();
+        if doomed.is_empty() {
+            return;
+        }
+        let removed = tokio::task::spawn_blocking(move || {
+            let mut count = 0_usize;
+            let mut bytes = 0_u64;
+            for (path, size) in doomed {
+                match fs::remove_dir_all(&path) {
+                    Ok(()) => {
+                        count += 1;
+                        bytes += size;
+                    }
+                    Err(e) => {
+                        tracing::warn!(path = %path.display(), error = %e, "couldn't remove an attachment folder");
+                    }
+                }
+            }
+            (count, bytes)
+        })
+        .await;
+        if let Ok((count, bytes)) = removed
+            && count > 0
+        {
+            tracing::info!(count, bytes, "removed attachment folders no longer needed");
+        }
+    }
+}
+
+/// Images written to a staging folder, waiting for their message's ID.
+#[derive(Debug)]
+pub struct Staged {
+    root: PathBuf,
+    /// The staging folder, until it is renamed (or removed when this is dropped).
+    dir: Option<PathBuf>,
+    /// One per image, by number: its file name, or why it couldn't be saved.
+    images: Vec<(u32, Result<String, String>)>,
+}
+
+impl Staged {
+    /// Nothing to attach.
+    pub fn none(root: PathBuf) -> Self {
+        Self {
+            root,
+            dir: None,
+            images: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.images.is_empty()
+    }
+
+    /// In the transaction that stored message `id` with `text`: moves the images to
+    /// `message-<id>/` and stores the text with one `[Image #N]: <path>` line per image. Returns
+    /// the text as stored, for the copies of your words made in the same transaction.
+    pub fn attach(
+        &mut self,
+        conn: &Connection,
+        id: MessageId,
+        text: &str,
+    ) -> Result<String, StoreError> {
+        if self.images.is_empty() {
+            return Ok(text.to_owned());
+        }
+        let folder = self.root.join(folder_name(id));
+        if let Some(dir) = self.dir.take()
+            && let Err(e) = move_to(&dir, &folder)
+        {
+            tracing::error!(error = %e, "couldn't move your pasted images into place");
+            self.dir = Some(dir);
+            let why = format!("couldn't be saved: {e}");
+            for (_, saved) in &mut self.images {
+                if saved.is_ok() {
+                    *saved = Err(why.clone());
+                }
+            }
+        }
+        let mut out = text.trim_end().to_owned();
+        out.push('\n');
+        for (number, saved) in &self.images {
+            let placeholder = qm_types::api::image_placeholder(*number);
+            match saved {
+                Ok(file) => {
+                    let _ = write!(out, "\n{placeholder}: {}", folder.join(file).display());
+                }
+                Err(why) => {
+                    let _ = write!(out, "\n{placeholder}: ({why})");
+                }
+            }
+        }
+        messages::set_text(conn, id, &out)?;
+        Ok(out)
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if let Some(dir) = self.dir.take() {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+}
+
+/// Renames the staging folder to the message's, replacing a leftover of the same name.
+fn move_to(dir: &Path, folder: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(folder) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    fs::rename(dir, folder)
+}
+
+/// Writes `images` into `root/name/`, each `image-N.<ext>`, private to you (0600).
+fn write_staged(root: PathBuf, name: &str, images: Vec<PastedImage>) -> Staged {
+    let dir = root.join(name);
+    let made = fs::create_dir_all(&dir);
+    let mut staged = Staged {
+        root,
+        dir: made.is_ok().then(|| dir.clone()),
+        images: Vec::with_capacity(images.len()),
+    };
+    for image in images {
+        let saved = match &made {
+            Err(e) => Err(format!("couldn't be saved: {e}")),
+            Ok(()) => save(&dir, &image),
+        };
+        staged.images.push((image.number, saved));
+    }
+    staged
+}
+
+fn save(dir: &Path, image: &PastedImage) -> Result<String, String> {
+    let bytes = image.bytes.as_slice();
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "not saved: larger than {} MB",
+            MAX_IMAGE_BYTES / (1024 * 1024)
+        ));
+    }
+    if qm_types::api::ImageFormat::sniff(bytes) != Some(image.format) {
+        return Err(String::from(
+            "not saved: not a PNG, JPEG, GIF or WebP image",
+        ));
+    }
+    let file = image.file_name();
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(dir.join(&file))
+        .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()));
+    match written {
+        Ok(()) => Ok(file),
+        Err(e) => Err(format!("couldn't be saved: {e}")),
+    }
+}
+
+/// A folder in `attachments/`, with what the sweep learns about it.
+#[derive(Clone, Debug)]
+struct Folder {
+    path: PathBuf,
+    /// The message it belongs to (`message-<id>`); `None` for a staging folder.
+    message: Option<MessageId>,
+    bytes: u64,
+    /// When it was last written, from the file system.
+    written: Option<jiff::Timestamp>,
+    /// When its message was sent, if the message exists and names the folder.
+    sent: Option<jiff::Timestamp>,
+    /// Whether open work mentions it.
+    in_use: bool,
+}
+
+/// The staging and message folders in `root`; anything else is skipped.
+fn list(root: &Path) -> io::Result<Vec<Folder>> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let message = if name.starts_with(STAGING_PREFIX) {
+            None
+        } else if let Some(id) = name.strip_prefix(FOLDER_PREFIX) {
+            match id.parse::<i64>() {
+                Ok(n) if n > 0 && id == n.to_string() => Some(MessageId::new(n)),
+                _ => continue,
+            }
+        } else {
+            continue;
+        };
+        let meta = entry.metadata()?;
+        if !meta.is_dir() {
+            continue;
+        }
+        let written = meta
+            .modified()
+            .ok()
+            .and_then(|t| jiff::Timestamp::try_from(t).ok());
+        out.push(Folder {
+            path: entry.path(),
+            message,
+            bytes: size_of(&entry.path()),
+            written,
+            sent: None,
+            in_use: false,
+        });
+    }
+    Ok(out)
+}
+
+/// The bytes the files directly in `dir` hold.
+fn size_of(dir: &Path) -> u64 {
+    fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .filter_map(Result::ok)
+            .filter_map(|e| e.metadata().ok())
+            .filter(fs::Metadata::is_file)
+            .map(|m| m.len())
+            .sum()
+    })
+}
+
+/// The folders the policy removes, by index.
+fn plan(folders: &[Folder], now: jiff::Timestamp) -> Vec<usize> {
+    let age = |at: Option<jiff::Timestamp>| at.map(|at| now.duration_since(at));
+    let left_over = |f: &Folder| age(f.written).is_none_or(|a| a >= LEFTOVER_AFTER);
+    let mut remove = Vec::new();
+    let mut kept: Vec<(usize, jiff::Timestamp)> = Vec::new();
+    for (i, f) in folders.iter().enumerate() {
+        match (f.message, f.sent) {
+            (None, _) | (Some(_), None) => {
+                if left_over(f) {
+                    remove.push(i);
+                }
+            }
+            (Some(_), Some(sent)) => {
+                if now.duration_since(sent) >= KEEP_FOR && !f.in_use {
+                    remove.push(i);
+                } else {
+                    kept.push((i, sent));
+                }
+            }
+        }
+    }
+    let mut total: u64 = kept.iter().map(|&(i, _)| folders[i].bytes).sum();
+    kept.sort_by_key(|&(_, sent)| sent);
+    for (i, sent) in kept {
+        if total <= SIZE_CAP || now.duration_since(sent) < ALWAYS_KEEP {
+            break;
+        }
+        remove.push(i);
+        total = total.saturating_sub(folders[i].bytes);
+    }
+    remove
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DAY: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
+
+    fn now() -> jiff::Timestamp {
+        "2026-10-20T12:00:00Z".parse().unwrap()
+    }
+
+    fn ago(by: jiff::SignedDuration) -> jiff::Timestamp {
+        now() - by
+    }
+
+    /// A message's folder sent `age` ago, `bytes` big.
+    fn folder(id: i64, age: jiff::SignedDuration, in_use: bool, bytes: u64) -> Folder {
+        Folder {
+            path: PathBuf::from(format!("/a/message-{id}")),
+            message: Some(MessageId::new(id)),
+            bytes,
+            written: Some(ago(age)),
+            sent: Some(ago(age)),
+            in_use,
+        }
+    }
+
+    #[test]
+    fn an_old_image_goes_once_no_open_work_mentions_it() {
+        let folders = [
+            folder(1, 15 * DAY, false, 10),
+            folder(2, 15 * DAY, true, 10),
+            folder(3, 3 * DAY, false, 10),
+        ];
+        assert_eq!(plan(&folders, now()), vec![0]);
+    }
+
+    #[test]
+    fn leftovers_go_after_an_hour() {
+        let mut staging = folder(0, jiff::SignedDuration::from_mins(90), false, 1);
+        staging.message = None;
+        let mut fresh = staging.clone();
+        fresh.written = Some(ago(jiff::SignedDuration::from_mins(5)));
+        // A folder whose message doesn't name it.
+        let mut orphan = folder(7, 2 * DAY, false, 1);
+        orphan.sent = None;
+        let folders = [staging, fresh, orphan];
+        assert_eq!(plan(&folders, now()), vec![0, 2]);
+    }
+
+    #[test]
+    fn over_the_cap_the_oldest_go_first_but_never_todays() {
+        let third = SIZE_CAP / 3 + 1;
+        let folders = [
+            folder(1, 5 * DAY, true, third),
+            folder(2, 3 * DAY, false, third),
+            folder(3, jiff::SignedDuration::from_hours(2), false, third),
+        ];
+        // Over the cap: the oldest goes, in use or not; then it fits.
+        assert_eq!(plan(&folders, now()), vec![0]);
+        let today = [
+            folder(1, jiff::SignedDuration::from_hours(3), false, SIZE_CAP),
+            folder(2, jiff::SignedDuration::from_hours(2), false, SIZE_CAP),
+        ];
+        assert_eq!(plan(&today, now()), Vec::<usize>::new());
+    }
+}

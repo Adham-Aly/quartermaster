@@ -10,6 +10,7 @@ pub mod recorder;
 pub mod view;
 
 use crate::api::{ApiPart, Handled};
+use crate::attachments::Attachments;
 use crate::reconcile::{self, Intervention, ReconcileService};
 use crate::secondmates::SecondmateService;
 use qm_store::db::Db;
@@ -26,6 +27,8 @@ pub struct SessionsPart {
     clock: Arc<dyn Clock>,
     reconcile: ReconcileService,
     recorder: Option<Recorder>,
+    /// Where the images pasted into your messages to a crewmate are saved.
+    attachments: Attachments,
     /// For a secondmate's session.
     secondmates: Option<SecondmateService>,
     /// The session you have open, if any.
@@ -46,12 +49,14 @@ impl SessionsPart {
         clock: Arc<dyn Clock>,
         reconcile: ReconcileService,
         recorder: Option<Recorder>,
+        attachments: Attachments,
     ) -> Self {
         Self {
             db,
             clock,
             reconcile,
             recorder,
+            attachments,
             secondmates: None,
             open: Mutex::new(None),
         }
@@ -87,8 +92,10 @@ impl ApiPart for SessionsPart {
             Command::Send {
                 to: to @ AgentRef::Crewmate { .. },
                 text,
+                images,
             } => Some(Box::pin(async move {
-                match reconcile::intervene(&self.reconcile, *to, text.clone()).await {
+                let staged = self.attachments.stage(text, images).await;
+                match reconcile::intervene(&self.reconcile, *to, text.clone(), staged).await {
                     Ok(()) | Err(Intervention::Closed { .. }) => Handled::Changed,
                     Err(Intervention::Blank) => Handled::Unchanged,
                     Err(Intervention::NotAvailable) => {

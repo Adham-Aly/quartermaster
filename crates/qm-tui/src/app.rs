@@ -58,6 +58,8 @@ pub(crate) struct App {
     /// Your message being typed: its text, cursor and selection (no gesture state; that is in
     /// `pointer`).
     pub(crate) draft: crate::input::draft::Draft,
+    /// A `Ctrl`+`V` waiting for the pasteboard.
+    pub(crate) pasting: Option<crate::input::clipboard_image::Pasting>,
     /// Width of the left column (projects and crew), in cells.
     pub(crate) left_width: u16,
     /// Width of the task pane, in cells.
@@ -102,6 +104,7 @@ impl App {
             hover: None,
             drag: None,
             draft: crate::input::draft::Draft::default(),
+            pasting: None,
             left_width: LEFT_DEFAULT,
             right_width: RIGHT_DEFAULT,
             scroll_from_bottom: 0,
@@ -281,6 +284,7 @@ impl App {
     pub(crate) fn tick(&mut self, now: Instant) {
         self.settings_tick(now);
         self.setup_tick(now);
+        self.paste_tick(now);
         if let Quit::Armed { until } = self.quit
             && now >= until
         {

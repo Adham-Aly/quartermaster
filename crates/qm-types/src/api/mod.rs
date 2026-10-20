@@ -22,6 +22,11 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use tokio::sync::mpsc;
 
+mod image;
+pub use image::{
+    ImageBytes, ImageFormat, MAX_IMAGE_BYTES, PastedImage, placeholder as image_placeholder,
+};
+
 /// An agent the UI can address: the Quartermaster, or a worker whose session you opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "agent", rename_all = "snake_case")]
@@ -44,9 +49,14 @@ pub enum Command {
     /// Your message. To the Quartermaster it starts (or queues for) a turn; to a worker it goes in
     /// unmarked, as direct intervention. The core neutralises the reserved `<qm:` prefix, so a
     /// marker can only come from the app.
+    ///
+    /// `images` are the images you pasted with `Ctrl`+`V` whose placeholders are still in `text`;
+    /// the core saves them under `attachments/message-<id>/` and adds their paths to the message.
     Send {
         to: AgentRef,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<PastedImage>,
     },
     /// `Esc` on a running turn: stop it and keep the session.
     Interrupt {

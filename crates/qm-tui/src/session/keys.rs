@@ -26,7 +26,6 @@ impl App {
         let Screen::Session(_) = self.screen else {
             return false;
         };
-        let _ = now;
         match key.code {
             KeyCode::Esc => {
                 if self.view.selection.is_some() {
@@ -52,7 +51,7 @@ impl App {
         if self.focus == Pane::Input {
             // A closed session takes no text.
             if self.session_open() {
-                self.on_editor_key(key);
+                self.on_editor_key(key, now);
             }
             return true;
         }
