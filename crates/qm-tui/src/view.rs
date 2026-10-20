@@ -48,9 +48,9 @@ pub(crate) struct View {
     pub(crate) selected_crew: Option<AgentRef>,
     /// The highlighted project row, by index into `Snapshot::projects`.
     pub(crate) selected_project: Option<usize>,
-    /// The mouse was used last: selected rows keep their selection but aren't filled, so a
-    /// click leaves no shading behind once the pointer moves on. A key that moves through a
-    /// list shows the fills again (like a browser's `:focus-visible`).
+    /// The mouse was used last: selected rows are marked with `▸` instead of filled, so a click
+    /// leaves no shading behind once the pointer moves on. A key that moves through a list
+    /// brings the fills back (like a browser's `:focus-visible`). See `widgets::selection`.
     pub(crate) pointer_picked: bool,
     /// Folded layout only: the task overlay is open.
     pub(crate) task_overlay: bool,
