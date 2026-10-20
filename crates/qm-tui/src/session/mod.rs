@@ -103,8 +103,8 @@ impl App {
         self.leave_session();
         self.close_popups();
         self.view.menu = None;
-        self.view.selection = None;
-        self.pointer.selecting = false;
+        self.term.selection = None;
+        self.term.pointer.selecting = false;
         self.view.task_overlay = false;
         let bridge_focus = self.focus;
         let ui = self.view.session.get_or_insert_with(SessionUi::default);
@@ -133,8 +133,8 @@ impl App {
         ui.agent = None;
         self.draft = std::mem::take(&mut ui.bridge_draft);
         self.focus = ui.bridge_focus.take().unwrap_or(Pane::Crew);
-        self.view.selection = None;
-        self.pointer.selecting = false;
+        self.term.selection = None;
+        self.term.pointer.selecting = false;
         self.screen = Screen::Bridge;
         self.command(Command::ViewSession { agent: None });
     }
@@ -182,6 +182,7 @@ impl App {
             return;
         };
         let inner = self
+            .term
             .drawn
             .hits
             .rect_of(Hit::Pane(Pane::Session))

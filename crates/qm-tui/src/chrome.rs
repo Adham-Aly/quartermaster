@@ -109,7 +109,7 @@ fn draw_menu_button(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hit
         .menu
         .as_ref()
         .is_some_and(|menu| menu.target == MenuTarget::Main);
-    let lit = open || app.hover == Some(Hit::MenuButton);
+    let lit = open || app.term.hover == Some(Hit::MenuButton);
     let badge = app.menu_badge();
     let style = theme::button(lit);
     let mut spans = vec![Span::raw(" "), Span::styled(format!(" {MENU} "), style)];
@@ -144,7 +144,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits
     let notice = app
         .quit_notice()
         .map(str::to_owned)
-        .or_else(|| app.view.flash.as_ref().map(|f| f.text.clone()));
+        .or_else(|| app.term.flash.as_ref().map(|f| f.text.clone()));
     if let Some(notice) = notice {
         left.push(Span::styled(notice, theme::accent()));
     } else if app.popup() == Some(Popup::Settings) {
@@ -219,7 +219,7 @@ fn status_counts(left: &mut Vec<Span<'static>>, area: Rect, app: &App, hits: &mu
         let label = counted(n, one, many);
         let hit = Hit::Status(item);
         let w = button::width_of(&label);
-        left.push(button::span(&label, app.hover == Some(hit)));
+        left.push(button::span(&label, app.term.hover == Some(hit)));
         hits.add(Rect::new(x, area.y, w, 1), hit);
         x += w;
     }
@@ -230,7 +230,7 @@ fn status_counts(left: &mut Vec<Span<'static>>, area: Rect, app: &App, hits: &mu
     if attention.running > 0 {
         let running = format!("{} running", attention.running);
         let hit = Hit::Status(StatusItem::Running);
-        let style = if app.hover == Some(hit) {
+        let style = if app.term.hover == Some(hit) {
             theme::dim().add_modifier(Modifier::UNDERLINED)
         } else {
             theme::dim()

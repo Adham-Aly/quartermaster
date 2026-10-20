@@ -52,6 +52,7 @@ pub mod sample;
 mod session;
 mod settings;
 mod setup;
+mod term;
 mod terminal;
 mod text;
 mod theme;

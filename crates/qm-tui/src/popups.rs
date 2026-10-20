@@ -191,7 +191,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
         };
         let popup = open.popup;
         let window = Window::new(popup.title()).badge(app.entry_badge(popup.entry()));
-        let inner = window::draw(frame, area, window, app.hover, map);
+        let inner = window::draw(frame, area, window, app.term.hover, map);
         // One cell of padding left and right, as in every box.
         let content = Rect::new(
             inner.x + 1,
@@ -245,8 +245,8 @@ impl App {
             self.close_settings_overlays();
         }
         self.view.popups.push(open);
-        self.pointer.selecting = false;
-        self.view.selection = None;
+        self.term.pointer.selecting = false;
+        self.term.selection = None;
         self.redraw();
     }
 

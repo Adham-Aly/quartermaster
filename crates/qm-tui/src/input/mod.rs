@@ -188,7 +188,7 @@ impl App {
             self.open_worker_session(agent);
             return;
         }
-        if self.has_task(agent) && self.drawn.folded {
+        if self.has_task(agent) && self.term.drawn.folded {
             self.change(|app| &mut app.view.task_overlay, true);
         }
     }

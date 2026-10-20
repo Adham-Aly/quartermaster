@@ -42,11 +42,9 @@ pub(crate) fn is_ssh(ssh_tty: Option<&str>, ssh_connection: Option<&str>) -> boo
     ssh_tty.is_some_and(|v| !v.is_empty()) || ssh_connection.is_some_and(|v| !v.is_empty())
 }
 
-/// Whether this process runs over SSH.
-pub(crate) fn over_ssh() -> bool {
-    let tty = std::env::var("SSH_TTY").ok();
-    let connection = std::env::var("SSH_CONNECTION").ok();
-    is_ssh(tty.as_deref(), connection.as_deref())
+/// Whether `term`'s window is over SSH.
+pub(crate) fn over_ssh(term: &crate::term::Term) -> bool {
+    term.ssh
 }
 
 /// Pipes `text` to `pbcopy` on `PATH`, with nothing reaching the screen.
@@ -86,8 +84,8 @@ impl App {
         if text.is_empty() {
             return;
         }
-        if over_ssh() || pbcopy(text).is_err() {
-            self.osc52 = Some(osc52(text));
+        if over_ssh(&self.term) || pbcopy(text).is_err() {
+            self.term.osc52 = Some(osc52(text));
         }
         self.flash(copied_notice(text), now);
     }

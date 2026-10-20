@@ -30,8 +30,9 @@ fn scrolled(current: usize, delta: isize, max: usize) -> usize {
 impl App {
     /// Help's keys: scrolling.
     pub(crate) fn on_help_key(&mut self, code: KeyCode) {
-        let max = self.drawn.scroll_max_of(Pane::Help);
+        let max = self.term.drawn.scroll_max_of(Pane::Help);
         let page = self
+            .term
             .drawn
             .scroll_areas
             .iter()
@@ -62,7 +63,7 @@ impl App {
             }
             return;
         }
-        if let Quit::Confirm { .. } = self.quit {
+        if let Quit::Confirm { .. } = self.term.quit {
             match key.code {
                 KeyCode::Enter => self.confirm_quit(),
                 KeyCode::Esc => self.cancel_quit(),
@@ -71,11 +72,11 @@ impl App {
             return;
         }
         // Any other key ends a pending first Ctrl+C.
-        if let Quit::Armed { .. } = self.quit {
-            self.change(|app| &mut app.quit, Quit::Idle);
+        if let Quit::Armed { .. } = self.term.quit {
+            self.change(|app| &mut app.term.quit, Quit::Idle);
         }
         if ctrl && matches!(key.code, KeyCode::Char('z' | 'Z')) {
-            self.suspend = true;
+            self.term.suspend = true;
             return;
         }
         // `Ctrl`+`O` opens the top bar's menu from anywhere, even while typing.
@@ -214,11 +215,11 @@ impl App {
 
     /// Scrolls a list pane so row `at` shows, using the last frame's box for its height.
     fn keep_row_visible(&mut self, pane: Pane, at: usize) {
-        let Some(area) = self.drawn.hits.rect_of(Hit::Pane(pane)) else {
+        let Some(area) = self.term.drawn.hits.rect_of(Hit::Pane(pane)) else {
             return;
         };
         let visible = usize::from(area.height.saturating_sub(2)).max(1);
-        let max = self.drawn.scroll_max_of(pane);
+        let max = self.term.drawn.scroll_max_of(pane);
         let scroll = match pane {
             Pane::Projects => &mut self.view.projects_scroll,
             Pane::Crew => &mut self.view.crew_scroll,
@@ -241,6 +242,7 @@ impl App {
     /// overlap.
     fn page(&self, pane: Pane) -> isize {
         let rows = self
+            .term
             .drawn
             .hits
             .rect_of(Hit::Pane(pane))
@@ -249,7 +251,7 @@ impl App {
     }
 
     fn on_conversation_key(&mut self, code: KeyCode, now: Instant) {
-        let max = self.drawn.conversation_scroll_max;
+        let max = self.term.drawn.conversation_scroll_max;
         let page = self.page(Pane::Conversation);
         // `scroll_from_bottom` counts up from the newest line, so "up" adds.
         let delta = match code {
@@ -277,7 +279,7 @@ impl App {
     }
 
     fn on_task_key(&mut self, code: KeyCode, now: Instant) {
-        let max = self.drawn.scroll_max_of(Pane::Task);
+        let max = self.term.drawn.scroll_max_of(Pane::Task);
         let page = self.page(Pane::Task);
         let delta = match code {
             KeyCode::Up | KeyCode::Char('k') => Some(-1),

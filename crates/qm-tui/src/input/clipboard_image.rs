@@ -118,7 +118,7 @@ impl App {
             self.flash("Images go with messages, not here", now);
             return;
         }
-        if super::clipboard::over_ssh() {
+        if super::clipboard::over_ssh(&self.term) {
             self.flash(
                 "Pasting images needs this Mac's own clipboard, not SSH",
                 now,

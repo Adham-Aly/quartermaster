@@ -179,7 +179,7 @@ impl App {
     fn row_step(&self, up: bool) -> usize {
         let s = &self.draft.text;
         let at = self.cursor();
-        let Some(room) = self.drawn.field.as_ref().map(|f| f.room) else {
+        let Some(room) = self.term.drawn.field.as_ref().map(|f| f.room) else {
             return if up { line_up(s, at) } else { line_down(s, at) };
         };
         let rows = field::wrap(s, room);
@@ -203,14 +203,14 @@ impl App {
             || self.draft.text.is_empty()
             || self.view.menu.is_some()
             || !matches!(
-                self.quit,
+                self.term.quit,
                 crate::app::Quit::Idle | crate::app::Quit::Armed { .. }
             )
         {
             return false;
         }
         self.set_input(String::new());
-        self.change(|app| &mut app.quit, crate::app::Quit::Idle);
+        self.change(|app| &mut app.term.quit, crate::app::Quit::Idle);
         true
     }
 
@@ -279,7 +279,7 @@ impl App {
         if let crate::router::Screen::Session(_) = self.screen {
             if self.session_open()
                 && self.view.menu.is_none()
-                && !matches!(self.quit, crate::app::Quit::Confirm { .. })
+                && !matches!(self.term.quit, crate::app::Quit::Confirm { .. })
             {
                 self.focus_pane(Pane::Input);
                 self.insert(&pasted.replace("\r\n", "\n").replace('\r', "\n"));
@@ -287,7 +287,7 @@ impl App {
             return;
         }
         if self.screen != crate::router::Screen::Bridge
-            || matches!(self.quit, crate::app::Quit::Confirm { .. })
+            || matches!(self.term.quit, crate::app::Quit::Confirm { .. })
             || self.view.menu.is_some()
         {
             return;

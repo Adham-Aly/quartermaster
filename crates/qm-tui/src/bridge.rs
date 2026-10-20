@@ -128,7 +128,7 @@ pub(crate) fn draw_body(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut 
     for (divider, gap) in dividers {
         let grip = Rect::new(gap.saturating_sub(1), body.y, 3, body.height);
         map.hits.add(grip, Hit::Divider(divider));
-        if app.drag == Some(divider) || app.hover == Some(Hit::Divider(divider)) {
+        if app.term.drag == Some(divider) || app.term.hover == Some(Hit::Divider(divider)) {
             draw_grip(frame, Rect::new(gap, body.y, 1, body.height));
         }
     }
@@ -166,7 +166,7 @@ pub(crate) fn pane_block(title: &str, style: Style) -> Block<'static> {
 /// A pane's border style: accent when focused, the text colour when hovered, dim otherwise.
 pub(crate) fn pane_style(app: &App, pane: Pane) -> Style {
     let focused = app.screen == Screen::Bridge && app.focus == pane;
-    theme::border(focused, app.hover == Some(Hit::Pane(pane)))
+    theme::border(focused, app.term.hover == Some(Hit::Pane(pane)))
 }
 
 /// Lines of dim text for an empty pane, wrapped to its width.

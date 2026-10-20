@@ -70,6 +70,7 @@ impl App {
     /// How far the diff can scroll, from the last frame.
     fn diff_scroll_max(&self) -> usize {
         let rows = self
+            .term
             .drawn
             .hits
             .rect_of(Hit::Diff(DiffHit::Body))
@@ -79,7 +80,8 @@ impl App {
     }
 
     fn diff_page(&self) -> usize {
-        self.drawn
+        self.term
+            .drawn
             .hits
             .rect_of(Hit::Diff(DiffHit::Body))
             .map_or(1, |r| usize::from(r.height.saturating_sub(3)).max(1))
@@ -193,7 +195,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
         title.push(Span::styled(note, theme::warn()));
     }
     frame.render_widget(Line::from(title), header);
-    let hovered = app.hover == Some(Hit::Diff(DiffHit::Back));
+    let hovered = app.term.hover == Some(Hit::Diff(DiffHit::Back));
     frame.render_widget(
         Paragraph::new(Span::styled(format!(" {BACK} "), theme::button(hovered))),
         back,

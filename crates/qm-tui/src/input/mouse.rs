@@ -54,7 +54,7 @@ impl App {
     /// Applies a mouse event.
     pub(crate) fn on_mouse(&mut self, mouse: MouseEvent, now: Instant) {
         let at = Position::new(mouse.column, mouse.row);
-        let hit = self.drawn.hits.at(mouse.column, mouse.row);
+        let hit = self.term.drawn.hits.at(mouse.column, mouse.row);
         match mouse.kind {
             MouseEventKind::Moved => self.hover_at(hit),
             MouseEventKind::Down(MouseButton::Left) => {
@@ -70,29 +70,29 @@ impl App {
                 self.settings_drop(hit);
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if let Some(divider) = self.drag {
+                if let Some(divider) = self.term.drag {
                     self.drag_to(divider, mouse.column);
-                } else if self.pointer.editing {
+                } else if self.term.pointer.editing {
                     self.field_drag_to(at);
-                } else if self.pointer.selecting
-                    && let Some(selection) = self.view.selection
+                } else if self.term.pointer.selecting
+                    && let Some(selection) = self.term.selection
                 {
                     let moved = Selection {
                         head: at,
                         ..selection
                     };
-                    self.change(|app| &mut app.view.selection, Some(moved));
+                    self.change(|app| &mut app.term.selection, Some(moved));
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                if self.drag.take().is_some() {
+                if self.term.drag.take().is_some() {
                     self.save_prefs();
                     self.redraw();
                 }
-                if std::mem::take(&mut self.pointer.selecting) {
+                if std::mem::take(&mut self.term.pointer.selecting) {
                     self.finish_selection(now);
                 }
-                if std::mem::take(&mut self.pointer.editing) {
+                if std::mem::take(&mut self.term.pointer.editing) {
                     self.finish_field_drag(now);
                 }
                 self.hover_at(hit);
@@ -112,11 +112,11 @@ impl App {
         if let Some(Hit::MenuItem(i)) = hit {
             self.set_menu_cursor(i);
         }
-        self.change(|app| &mut app.hover, hit);
+        self.change(|app| &mut app.term.hover, hit);
     }
 
     fn left_press(&mut self, hit: Option<Hit>, at: Position, now: Instant, shift: bool) {
-        if matches!(self.quit, Quit::Confirm { .. }) {
+        if matches!(self.term.quit, Quit::Confirm { .. }) {
             if let Some(hit) = hit {
                 self.click(hit);
             }
@@ -137,11 +137,11 @@ impl App {
             self.close_overlay();
         }
         // A click without a drag clears the selection; one on text may start a new one.
-        self.pointer.selecting = false;
-        self.change(|app| &mut app.view.selection, None);
+        self.term.pointer.selecting = false;
+        self.change(|app| &mut app.term.selection, None);
         // A press in the prompt field puts the cursor there (shift extends the selection to it),
         // and a drag from it selects.
-        self.pointer.editing = false;
+        self.term.pointer.editing = false;
         if hit == Some(Hit::Pane(Pane::Input))
             && let Some(offset) = self.field_offset_at(at)
         {
@@ -151,24 +151,24 @@ impl App {
                 self.set_cursor(offset);
                 self.anchor_at_cursor();
             }
-            self.pointer.editing = true;
+            self.term.pointer.editing = true;
         }
         if starts_selection(hit) {
-            let rows = select::rows_for(&self.drawn, at);
+            let rows = select::rows_for(&self.term.drawn, at);
             if select::on_text(&rows, at) {
-                self.pointer.selecting = true;
-                self.view.selection = Some(Selection {
+                self.term.pointer.selecting = true;
+                self.term.selection = Some(Selection {
                     anchor: at,
                     head: at,
                 });
             }
         }
         let Some(hit) = hit else {
-            self.pointer.last_click = None;
+            self.term.pointer.last_click = None;
             return;
         };
-        let double = is_double(self.pointer.last_click, hit, now);
-        self.pointer.last_click = if double { None } else { Some((hit, now)) };
+        let double = is_double(self.term.pointer.last_click, hit, now);
+        self.term.pointer.last_click = if double { None } else { Some((hit, now)) };
         self.left_click(hit, double, now);
     }
 
@@ -210,7 +210,11 @@ impl App {
 
     /// The byte of your message under `at`, when the last frame drew a field that takes text.
     fn field_offset_at(&self, at: Position) -> Option<usize> {
-        self.drawn.field.as_ref()?.offset_at(&self.draft.text, at)
+        self.term
+            .drawn
+            .field
+            .as_ref()?
+            .offset_at(&self.draft.text, at)
     }
 
     /// A drag in the prompt field: the cursor follows the pointer, selecting from the press.
@@ -232,21 +236,21 @@ impl App {
 
     /// The release of a drag-selection: copies what it covers, or clears a mere click.
     fn finish_selection(&mut self, now: Instant) {
-        let Some(selection) = self.view.selection else {
+        let Some(selection) = self.term.selection else {
             return;
         };
         if selection.anchor == selection.head {
-            self.change(|app| &mut app.view.selection, None);
+            self.change(|app| &mut app.term.selection, None);
             return;
         }
-        let rows = select::rows_for(&self.drawn, selection.anchor);
+        let rows = select::rows_for(&self.term.drawn, selection.anchor);
         let text = select::text(&rows, selection);
         self.copy(&text, now);
     }
 
     /// A right-click on a crew or project row selects it and opens its menu at the pointer.
     fn right_press(&mut self, hit: Option<Hit>, at: Position) {
-        if matches!(self.quit, Quit::Confirm { .. }) {
+        if matches!(self.term.quit, Quit::Confirm { .. }) {
             return;
         }
         let target = match hit {
@@ -263,23 +267,23 @@ impl App {
     /// The wheel scrolls the pane under the pointer, never the focused one, and clears the
     /// selection.
     fn wheel(&mut self, at: Position, up: bool) {
-        if self.view.menu.is_some() || matches!(self.quit, Quit::Confirm { .. }) {
+        if self.view.menu.is_some() || matches!(self.term.quit, Quit::Confirm { .. }) {
             return;
         }
         if self.screen == crate::router::Screen::Diff && self.view.popups.is_empty() {
-            self.pointer.selecting = false;
-            self.change(|app| &mut app.view.selection, None);
+            self.term.pointer.selecting = false;
+            self.change(|app| &mut app.term.selection, None);
             self.diff_wheel(up);
             return;
         }
-        let Some(pane) = self.drawn.scroll_pane_at(at.x, at.y) else {
+        let Some(pane) = self.term.drawn.scroll_pane_at(at.x, at.y) else {
             return;
         };
-        self.pointer.selecting = false;
-        self.change(|app| &mut app.view.selection, None);
+        self.term.pointer.selecting = false;
+        self.change(|app| &mut app.term.selection, None);
         if pane == Pane::Conversation {
             // Counted up from the newest line.
-            let max = self.drawn.conversation_scroll_max;
+            let max = self.term.drawn.conversation_scroll_max;
             let to = if up {
                 (self.scroll_from_bottom + WHEEL_LINES).min(max)
             } else {
@@ -292,7 +296,7 @@ impl App {
             self.session_wheel(up);
             return;
         }
-        let max = self.drawn.scroll_max_of(pane);
+        let max = self.term.drawn.scroll_max_of(pane);
         let slot: fn(&mut App) -> &mut usize = match pane {
             Pane::Projects => |app| &mut app.view.projects_scroll,
             Pane::Crew => |app| &mut app.view.crew_scroll,
