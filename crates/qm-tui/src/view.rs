@@ -23,13 +23,31 @@ pub(crate) enum MenuTarget {
     Model(crate::settings::BoardItem),
     AddToTier(crate::settings::BoardItem),
     Account(crate::settings::AccountTarget),
+    /// The top bar's menu: its entries are `popups::MenuEntry::ALL`.
+    Main,
 }
 
-/// An open context menu: its items, top-left corner and the item under the keyboard cursor.
+impl MenuTarget {
+    /// The row (or button) a menu on this target is anchored to, for `Anchor::Row`.
+    pub(crate) const fn row(self) -> crate::hit::Hit {
+        use crate::hit::Hit;
+        use crate::settings::SettingsHit;
+        match self {
+            Self::Crew(agent) => Hit::Crew(agent),
+            Self::Project(i) => Hit::Project(i),
+            Self::Model(item) | Self::AddToTier(item) => Hit::Settings(SettingsHit::Board(item)),
+            Self::Account(account) => Hit::Settings(SettingsHit::Account(account.index)),
+            Self::Main => Hit::MenuButton,
+        }
+    }
+}
+
+/// An open menu: what it is on, what it is placed against (never screen cells), its items and
+/// the item under the keyboard cursor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Menu {
     pub(crate) target: MenuTarget,
-    pub(crate) at: Position,
+    pub(crate) anchor: crate::popups::Anchor,
     pub(crate) items: Vec<&'static str>,
     pub(crate) cursor: usize,
 }
@@ -74,7 +92,7 @@ pub(crate) struct View {
     pub(crate) input_scroll: usize,
     /// The sample fixture is showing: core snapshots are ignored.
     pub(crate) sample: bool,
-    /// The Settings screen.
+    /// The Settings popup's state.
     pub(crate) settings: crate::settings::SettingsView,
     /// The worker-session screen: its scroll, expanded lines and drafts.
     pub(crate) session: Option<crate::session::SessionUi>,
@@ -83,8 +101,10 @@ pub(crate) struct View {
     pub(crate) tool_groups: std::collections::HashSet<crate::session::ToolGroupKey>,
     /// How far the Diff screen is scrolled down from its first line.
     pub(crate) diff_scroll: usize,
-    /// The screen `?` opened Help from: `Esc` on Help goes back there.
-    pub(crate) help_from: Option<crate::router::Screen>,
+    /// The popups open over the screen, top last: shareable state with no screen coordinates.
+    pub(crate) popups: Vec<crate::popups::OpenPopup>,
+    /// The menu entries showing a badge (a red dot): something there needs you.
+    pub(crate) badges: Vec<crate::popups::MenuEntry>,
     /// How far Help is scrolled down from its top.
     pub(crate) help_scroll: usize,
 }

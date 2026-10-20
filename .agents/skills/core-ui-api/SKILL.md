@@ -39,11 +39,12 @@ A refusal the user should see goes in the chat as an app note.
 
 ## 3. The UI: `crates/qm-tui/src/`
 
-- Send with `App::command(Command::…)` (`app.rs`), or `intend` on the Settings screens.
+- Send with `App::command(Command::…)` (`app.rs`), or `intend` in Settings.
 - `App::on_update` stores the snapshot; drawing reads it. UI-only state (focus, selection, scroll,
   overlays) lives in `view.rs`, written only by input code (`input/`), read by drawing.
-- A new full screen: a `Screen` variant in `router.rs`, its label (and its place in
-  `Screen::TABS` if it is a top-bar tab) and an arm in `draw`. Follow skill `tui-conventions`.
+- A new full screen: a `Screen` variant in `router.rs` and an arm in `draw`. A window over the
+  screen (like Settings and Help) is a `Popup` in `popups.rs`, usually with a menu entry; its notes
+  say how. Follow skill `tui-conventions`.
 - For layout work without a running core, `crates/qm-tui/src/sample.rs` holds fixed snapshots
   shown with `QM_DEV_SAMPLE` (skill `run-by-hand`); add a sample for a new screen.
 

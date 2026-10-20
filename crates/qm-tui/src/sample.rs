@@ -43,6 +43,10 @@ pub const SESSION: &str = "session";
 /// The value of [`ENV`] that shows the Bridge sample with the Quartermaster thinking.
 pub const THINKING: &str = "thinking";
 
+/// The value of [`ENV`] that shows the sample Bridge with a badge on the menu's Settings entry
+/// (and so on the menu button).
+pub const MENU_BADGE: &str = "menu-badge";
+
 /// Puts the sample worker session into `app`: T-0042's session open over the Bridge sample, the
 /// input focused and empty. Nothing waits for you.
 pub(crate) fn install_session(app: &mut App) {
@@ -139,6 +143,10 @@ pub(crate) fn install_from_env(app: &mut App) -> bool {
     }
     match std::env::var(ENV).as_deref() {
         Ok(BRIDGE) => install(app),
+        Ok(MENU_BADGE) => {
+            install(app);
+            app.view.badges.push(crate::popups::MenuEntry::Settings);
+        }
         Ok(CHAT) => install_chat(app),
         Ok(SESSION) => install_session(app),
         Ok(THINKING) => install_thinking(app),
@@ -545,7 +553,7 @@ pub(crate) fn install_settings_from_env(app: &mut App) -> bool {
             install(app);
             app.view.settings.model = settings_broken();
             app.view.settings.loaded = true;
-            app.screen = crate::router::Screen::Settings;
+            app.open_popup(crate::popups::Popup::Settings);
             return true;
         }
         _ => return false,
@@ -553,7 +561,7 @@ pub(crate) fn install_settings_from_env(app: &mut App) -> bool {
     install(app);
     app.view.settings.model = settings_with(login);
     app.view.settings.loaded = true;
-    app.screen = crate::router::Screen::Settings;
+    app.open_popup(crate::popups::Popup::Settings);
     true
 }
 
