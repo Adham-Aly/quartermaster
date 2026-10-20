@@ -6,7 +6,7 @@
 //! | `⏎` (Input) | send to the worker; `⇧⏎`, `⌥⏎`, `Ctrl`+`J` a new line |
 //! | `Esc` | close the menu → clear a selection → back to the Bridge; never interrupts here |
 //! | `i` (Session) | interrupt the worker's running turn |
-//! | `e` (Session) | expand or collapse the newest line with a detail in view |
+//! | `e` (Session) | expand or collapse the newest detail or tool-call run in view |
 //! | ↑ ↓ `j` `k`, `PgUp` `PgDn`, `g` `G` (Session) | scroll |
 //! | `?` (Session) | Help |
 //!
@@ -17,6 +17,7 @@ use crate::app::App;
 use crate::hit::{Hit, Pane};
 use crate::router::Screen;
 use crossterm::event::{KeyCode, KeyEvent};
+use qm_types::api::SessionLineKind;
 use std::time::Instant;
 
 impl App {
@@ -88,25 +89,27 @@ impl App {
         true
     }
 
-    /// `e`: toggles the newest line with a detail whose button is in view.
+    /// `e`: toggles the newest line with a detail, or run of tool calls, whose button is in view.
     fn expand_in_view(&mut self) {
         let Some(view) = self.session_view() else {
             return;
         };
-        let newest = view
-            .lines
-            .iter()
-            .rev()
-            .filter(|line| line.detail.is_some())
-            .map(|line| line.id)
-            .find(|&id| {
-                self.drawn
-                    .hits
-                    .rect_of(Hit::Session(SessionHit::Expand(id)))
-                    .is_some()
-            });
-        if let Some(id) = newest {
-            self.toggle_expanded(id);
+        let in_view = |hit| self.drawn.hits.rect_of(Hit::Session(hit)).is_some();
+        let newest = view.lines.iter().enumerate().rev().find_map(|(i, line)| {
+            let starts_run = line.kind == SessionLineKind::Tool
+                && (i == 0 || view.lines[i - 1].kind != SessionLineKind::Tool);
+            if starts_run && in_view(SessionHit::ToolGroup(line.id)) {
+                Some(SessionHit::ToolGroup(line.id))
+            } else if line.detail.is_some() && in_view(SessionHit::Expand(line.id)) {
+                Some(SessionHit::Expand(line.id))
+            } else {
+                None
+            }
+        });
+        match newest {
+            Some(SessionHit::ToolGroup(first)) => self.toggle_tool_group(first),
+            Some(SessionHit::Expand(id)) => self.toggle_expanded(id),
+            _ => {}
         }
     }
 }

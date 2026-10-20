@@ -7,10 +7,11 @@
 //! │ [from supervisor] Brief · T-0042 · fix(auth): token refresh race  Expand                │
 //! │                                                                                         │
 //! │ Reading AGENTS.md and CONTRIBUTING.md, then calling delivery_check before any edit.     │
-//! │   ▸ delivery_check  → push ok · PR ok · checks readable                    (dim)        │
+//! │   ▸ 3 tool calls                                                            (dim)       │
 //! │                                                                                         │
-//! │ you (direct)                                                                            │
-//! │ A unit test that reproduces the race is enough evidence here; skip the full e2e run.    │
+//! │ ╭─ you (direct) ──────────────────────────────────────────────────────────────────────╮ │
+//! │ │ A unit test that reproduces the race is enough evidence here.                       │ │
+//! │ ╰─────────────────────────────────────────────────────────────────────────────────────╯ │
 //! ╰─────────────────────────────────────────────────────────────────────────────────────────╯
 //! ╭─────────────────────────────────────────────────────────────────────────────────────────╮
 //! │ › message T-0042 directly…                                                              │
@@ -32,7 +33,7 @@ use crate::chrome::{MIN_HEIGHT, MIN_WIDTH};
 use crate::hit::{FrameMap, Hit, Pane, StatusItem};
 use crate::text::{cells, truncate, width, wrap, wrap_rows, wrap_styled};
 use crate::theme;
-use crate::widgets::conversation::{self, Row, RowText, draw_rows};
+use crate::widgets::conversation::{self, Row, RowText, draw_rows, fit_spans, prompt_box};
 use crate::widgets::{button, input_box, markdown, spinner, stream};
 use qm_types::api::{AgentRef, SessionLine, SessionLineKind, SessionView};
 use ratatui::Frame;
@@ -160,29 +161,9 @@ fn header(
     }
     let room = usize::from(back_x.saturating_sub(area.x + 2));
     frame.render_widget(
-        Line::from(fit(spans, room)),
+        Line::from(fit_spans(spans, room)),
         Rect::new(area.x, area.y, back_x.saturating_sub(area.x), 1),
     );
-}
-
-/// Spans cut to `max` cells in all, the last one shown ending in `…`.
-fn fit(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
-    let mut out = Vec::new();
-    let mut used = 0;
-    for span in spans {
-        let w = width(&span.content);
-        if used + w <= max {
-            used += w;
-            out.push(span);
-            continue;
-        }
-        let left = max.saturating_sub(used);
-        if left > 0 {
-            out.push(Span::styled(truncate(&span.content, left), span.style));
-        }
-        break;
-    }
-    out
 }
 
 /// The banner in the warn colour on the terminal's background (on the 16-colour bright-black fill
@@ -298,29 +279,44 @@ impl Rows {
 }
 
 /// Every line's rows: a blank row after a supervisor or app line, and before and after your
-/// message; while the worker's turn runs, the busy indicator last, until a line of its text
-/// shows in its place.
+/// message, which sits in a box. A run of tool calls is one line, `▸ 3 tool calls`, until you
+/// expand it. While the worker's turn runs, the busy indicator comes last, until a line of its
+/// text shows in its place.
 pub(crate) fn rows(lines: &[SessionLine], max: u16, app: &App) -> Vec<Row> {
     let mut out = Rows { rows: Vec::new() };
-    for line in lines {
+    let running = app.session_view().is_some_and(|v| v.turn_running);
+    let mut i = 0;
+    while i < lines.len() {
+        let line = &lines[i];
+        i += 1;
         match line.kind {
             SessionLineKind::Supervisor | SessionLineKind::App => {
                 marked(&mut out, line, max, app);
                 out.blank();
             }
             SessionLineKind::Tool => {
-                out.wrapped(&line.text, max, 4, "  ▸ ", theme::dim());
+                let run = lines[i - 1..]
+                    .iter()
+                    .take_while(|l| l.kind == SessionLineKind::Tool)
+                    .count();
+                let group = &lines[i - 1..i - 1 + run];
+                i += run - 1;
+                // Still counting while the turn runs and nothing has come after it.
+                let live = running && i == lines.len();
+                tool_group(&mut out, group, live, max, app);
             }
             SessionLineKind::You => {
                 out.blank();
-                out.rows.push(Row::text(
-                    Line::from(vec![
-                        Span::styled("you", theme::strong()),
-                        Span::styled(" (direct)", theme::dim()),
-                    ]),
-                    false,
-                ));
-                out.wrapped(&line.text, max, 0, "", theme::text());
+                let title = vec![
+                    Span::styled("you", theme::strong()),
+                    Span::styled(" (direct)", theme::dim()),
+                ];
+                if let Some(boxed) = prompt_box(title.clone(), None, &line.text, max) {
+                    out.rows.extend(boxed);
+                } else {
+                    out.rows.push(Row::text(Line::from(title), false));
+                    out.wrapped(&line.text, max, 0, "", theme::text());
+                }
                 out.blank();
             }
             // The worker's text, and any kind a later build adds.
@@ -335,14 +331,50 @@ pub(crate) fn rows(lines: &[SessionLine], max: u16, app: &App) -> Vec<Row> {
             }
         }
     }
-    let busy = app.session_view().is_some_and(|v| v.turn_running);
     let writing = lines
         .last()
         .is_some_and(|l| l.streaming && !stream::committed(&l.text, true).is_empty());
-    if busy && !writing {
+    if running && !writing {
         out.rows.push(Row::plain(spinner::line(app, "working")));
     }
     out.rows
+}
+
+/// A run of tool calls: `▸ 12 tool calls…` (dim, the text colour under the pointer), counting
+/// up while `live`; a click shows each call under `▾ 12 tool calls`, and another hides them.
+fn tool_group(out: &mut Rows, group: &[SessionLine], live: bool, max: u16, app: &App) {
+    let Some(first) = group.first() else {
+        return;
+    };
+    let hit = Hit::Session(SessionHit::ToolGroup(first.id));
+    let expanded = app.is_tool_group_expanded(first.id);
+    let n = group.len();
+    let label = format!(
+        "{} {n} tool call{}{}",
+        if expanded { "▾" } else { "▸" },
+        if n == 1 { "" } else { "s" },
+        if live { "…" } else { "" },
+    );
+    let label = truncate(&label, usize::from(max.saturating_sub(2)));
+    let style = if app.hover == Some(hit) {
+        theme::text()
+    } else {
+        theme::dim()
+    };
+    out.rows.push(Row {
+        line: Line::from(vec![Span::raw("  "), Span::styled(label.clone(), style)]),
+        hits: vec![(2, cells(width(&label)), hit)],
+        text: Some(RowText {
+            offset: 2,
+            text: label,
+            continues: false,
+        }),
+    });
+    if expanded {
+        for line in group {
+            out.wrapped(&line.text, max, 6, "    · ", theme::dim());
+        }
+    }
 }
 
 /// `[from supervisor] text  Expand`, and the detail under it when expanded.
@@ -539,7 +571,7 @@ fn status_line(
         }
     }
     let room = usize::from(right_x.saturating_sub(area.x + 2));
-    let left_line = Line::from(fit(left, room));
+    let left_line = Line::from(fit_spans(left, room));
     let left_width = cells(left_line.width());
     frame.render_widget(left_line, area);
     if area.x + left_width + 2 > right_x {
@@ -561,4 +593,91 @@ fn status_line(
 
 fn counted(n: u32, one: &str, many: &str) -> String {
     format!("⚑ {n} {}", if n == 1 { one } else { many })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sample;
+
+    fn texts(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .map(|r| r.line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    fn tool(id: u64, text: &str) -> SessionLine {
+        SessionLine::new(id, SessionLineKind::Tool, jiff::Timestamp::UNIX_EPOCH, text)
+    }
+
+    #[test]
+    fn a_run_of_tool_calls_is_one_line_that_counts_up_while_the_turn_runs() {
+        let mut app = App::new();
+        sample::install_session(&mut app);
+        let mut lines = app.session_view().unwrap().lines.clone();
+        lines.truncate(8);
+        lines.push(tool(9, "Read a"));
+        let shown = texts(&rows(&lines, 80, &app));
+        assert!(shown.contains(&"  ▸ 3 tool calls".to_owned()), "{shown:#?}");
+        assert!(shown.contains(&"  ▸ 1 tool call…".to_owned()), "{shown:#?}");
+        assert!(!shown.iter().any(|s| s.contains("Read AGENTS.md")));
+        lines.push(tool(10, "Edit b"));
+        let shown = texts(&rows(&lines, 80, &app));
+        assert!(
+            shown.contains(&"  ▸ 2 tool calls…".to_owned()),
+            "{shown:#?}"
+        );
+        // Once the turn ends, the count stops.
+        app.snapshot.session.as_mut().unwrap().turn_running = false;
+        let shown = texts(&rows(&lines, 80, &app));
+        assert!(shown.contains(&"  ▸ 2 tool calls".to_owned()), "{shown:#?}");
+    }
+
+    #[test]
+    fn a_tool_group_stays_expanded_by_its_key_as_calls_arrive() {
+        let mut app = App::new();
+        sample::install_session(&mut app);
+        let mut lines = app.session_view().unwrap().lines.clone();
+        lines.truncate(8);
+        lines.push(tool(9, "Read a"));
+        app.toggle_tool_group(9);
+        lines.push(tool(10, "Edit b"));
+        let shown = texts(&rows(&lines, 80, &app));
+        let at = shown.iter().position(|s| s == "  ▾ 2 tool calls…").unwrap();
+        assert_eq!(shown[at + 1], "    · Read a");
+        assert_eq!(shown[at + 2], "    · Edit b");
+        // The first run is still collapsed.
+        assert!(shown.contains(&"  ▸ 3 tool calls".to_owned()));
+        // The state outlives leaving and re-entering the session.
+        app.leave_session();
+        app.enter_session(AgentRef::Crewmate {
+            task: qm_types::ids::TaskId::new(42).unwrap(),
+        });
+        assert!(app.is_tool_group_expanded(9));
+        app.toggle_tool_group(9);
+        assert!(!app.is_tool_group_expanded(9));
+    }
+
+    #[test]
+    fn your_message_sits_in_a_box() {
+        let mut app = App::new();
+        sample::install_session(&mut app);
+        let lines = app.session_view().unwrap().lines.clone();
+        let shown = texts(&rows(&lines, 40, &app));
+        let at = shown
+            .iter()
+            .position(|s| s.starts_with("╭─ you (direct) "))
+            .unwrap();
+        assert_eq!(
+            shown[at..at + 4],
+            [
+                "╭─ you (direct) ───────────────────────╮",
+                "│ A unit test that reproduces the race │",
+                "│ is enough evidence here; skip the    │",
+                "│ full e2e run.                        │",
+            ]
+        );
+        assert_eq!(shown[at + 4], format!("╰{}╯", "─".repeat(38)));
+        assert!(shown.iter().all(|s| width(s) <= 40));
+    }
 }

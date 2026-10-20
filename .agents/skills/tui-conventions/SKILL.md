@@ -81,6 +81,11 @@ Map core `Tone`s with `theme::tone`.
   the glyph alone in the crew tree), never a widget's own. It redraws only while drawn: one cell,
   8 steps a second, nothing when none is on screen.
 - Markdown in messages goes through `widgets/markdown.rs`.
+- Your own prompts sit in a dim rounded box (`conversation::prompt_box`), the header in its top
+  border, on the Bridge and in sessions. A run of tool calls in a session is one dim line,
+  `▸ 12 tool calls…` (the `…` while it is the newest thing in a running turn); a click or `e`
+  shows each call under `▾`. Which runs are expanded is shared UI state (`View::tool_groups`),
+  keyed by agent and the run's first line ID, never by screen position.
 - `terminal.rs` enters raw mode, the alternate screen, mouse capture with motion (SGR), bracketed
   paste, and synchronized updates per frame; it restores the terminal on drop, panic and suspend.
 - `qm-tui` doesn't log and never blocks on the core.

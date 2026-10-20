@@ -113,6 +113,14 @@ pub fn session_view() -> SessionView {
             "Understood. I'll drive two refreshes through the token store concurrently and record \
              that before and after.",
         ),
+        line(9, SessionLineKind::Tool, 13, "Read src/auth/refresh.rs"),
+        line(10, SessionLineKind::Tool, 14, "Edit src/auth/refresh.rs"),
+        line(
+            11,
+            SessionLineKind::Tool,
+            14,
+            "Bash cargo test auth::refresh_race  → 1 failed (the race, reproduced)",
+        ),
     ];
     view.status = String::from("running 14m · job J3 idle");
     view.turn_running = true;

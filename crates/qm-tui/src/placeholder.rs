@@ -136,7 +136,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("tab · shift+tab", "session or your message"),
             ("⏎", "send to the worker directly"),
             ("i", "interrupt its running turn"),
-            ("e", "expand or collapse the newest detail in view"),
+            (
+                "e",
+                "expand or collapse the newest detail or tool calls in view",
+            ),
             ("↑ ↓ · pgup pgdn · g G", "scroll the session"),
             ("esc · ← Back", "back to the Bridge"),
         ],

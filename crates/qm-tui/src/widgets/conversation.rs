@@ -8,7 +8,7 @@ use super::{card, markdown, spinner, stream};
 use crate::app::App;
 use crate::bridge::{empty_lines, pane_block, pane_style};
 use crate::hit::{FrameMap, Hit, Pane, TextRow};
-use crate::text::{cells, width, wrap_rows};
+use crate::text::{cells, truncate, width, wrap_rows};
 use crate::theme;
 use qm_types::api::ChatLine;
 use qm_types::domain::{MessageKind, MessageSource};
@@ -206,8 +206,16 @@ fn is_markdown(chat: &ChatLine) -> bool {
         && matches!(chat.kind, MessageKind::Reply | MessageKind::Question)
 }
 
-/// One message: its header, its body, and its card.
+/// One message: its header, its body, and its card. Your own messages sit in a box.
 fn message_rows(chat: &ChatLine, max: u16, hover: Option<Hit>, voices: &Voices<'_>) -> Vec<Row> {
+    if chat.source == MessageSource::You
+        && let Some(mut out) = prompt_box(title(chat, voices), right(chat), &chat.text, max)
+    {
+        if let Some(card) = &chat.card {
+            out.extend(card::rows(card, chat.id, max, hover));
+        }
+        return out;
+    }
     let mut out = vec![Row::text(header(chat, max, voices), false)];
     let body_style = if chat.source == MessageSource::App {
         theme::dim()
@@ -235,10 +243,24 @@ fn message_rows(chat: &ChatLine, max: u16, hover: Option<Hit>, voices: &Voices<'
     out
 }
 
-/// `you 13:41 · context` on the left, `✓ acknowledgement` or `queued` at the right edge. Names
-/// are bold in the text colour; a
-/// supervisor's marked line keeps its violet, the app's words their dim.
+/// `you 13:41 · context` on the left, `✓ acknowledgement` or `queued` at the right edge.
 fn header(chat: &ChatLine, max: u16, voices: &Voices<'_>) -> Line<'static> {
+    let mut spans = title(chat, voices);
+    if let Some(right) = right(chat) {
+        let used: usize = spans.iter().map(|s| width(&s.content)).sum();
+        let pad = usize::from(max).saturating_sub(used + width(&right.content));
+        // Dropped when it doesn't fit with one space to spare.
+        if pad >= 1 {
+            spans.push(Span::raw(" ".repeat(pad)));
+            spans.push(right);
+        }
+    }
+    Line::from(spans)
+}
+
+/// `you 13:41 · context`. Names are bold in the text colour; a supervisor's marked line keeps
+/// its violet, the app's words their dim.
+fn title(chat: &ChatLine, voices: &Voices<'_>) -> Vec<Span<'static>> {
     let (name, name_style) = match chat.source {
         MessageSource::You => ("you", theme::text()),
         MessageSource::Agent => (voices.agent, theme::text()),
@@ -261,19 +283,150 @@ fn header(chat: &ChatLine, max: u16, voices: &Voices<'_>) -> Line<'static> {
     if let Some(context) = &chat.context {
         spans.push(Span::styled(format!(" · {context}"), theme::dim()));
     }
-    let right = match &chat.acknowledgement {
+    spans
+}
+
+/// `✓ acknowledgement` in the ok colour, or a dim `queued`.
+fn right(chat: &ChatLine) -> Option<Span<'static>> {
+    match &chat.acknowledgement {
         Some(ack) => Some(Span::styled(format!("✓ {ack}"), theme::ok())),
         None if chat.queued => Some(Span::styled("queued", theme::dim())),
         None => None,
-    };
+    }
+}
+
+/// The narrowest pane a prompt box is drawn in: below it, your message is drawn unboxed.
+const BOX_MIN: u16 = 12;
+
+/// Your prompt in a dim rounded box `max` cells wide, so it stands apart from the agent's text:
+/// `title` in the top border, `right` at its right end (dropped when it doesn't fit), the text
+/// wrapped one cell inside. `None` when the pane is too narrow for a box.
+///
+/// ```text
+/// ╭─ you 14:12 ─────────────────────────── ✓ Steered: T-0042 ─╮
+/// │ tell 42 a unit test that reproduces the race is enough    │
+/// ╰───────────────────────────────────────────────────────────╯
+/// ```
+pub(crate) fn prompt_box(
+    title: Vec<Span<'static>>,
+    right: Option<Span<'static>>,
+    text: &str,
+    max: u16,
+) -> Option<Vec<Row>> {
+    if max < BOX_MIN {
+        return None;
+    }
+    let border = theme::dim();
+    let total = usize::from(max);
+    // `╭─ ` and the space and `╮` after the title.
+    let room = total - 5;
+    let mut title = fit_spans(title, room);
+    let title_text: String = title.iter().map(|s| s.content.as_ref()).collect();
+    let mut used = width(&title_text);
+    let mut top = vec![Span::styled("╭─ ", border)];
+    top.append(&mut title);
+    top.push(Span::styled(" ", border));
+    used += 4;
+    // ` ✓ Steered ─╮` after the fill, with at least one `─` before it.
+    let right = right.filter(|r| used + 1 + width(&r.content) + 3 <= total);
+    let right_width = right.as_ref().map_or(0, |r| width(&r.content) + 3);
+    top.push(Span::styled(
+        "─".repeat(total - used - right_width - 1),
+        border,
+    ));
     if let Some(right) = right {
-        let used: usize = spans.iter().map(|s| width(&s.content)).sum();
-        let pad = usize::from(max).saturating_sub(used + width(&right.content));
-        // Dropped when it doesn't fit with one space to spare.
-        if pad >= 1 {
-            spans.push(Span::raw(" ".repeat(pad)));
-            spans.push(right);
+        top.push(Span::styled(" ", border));
+        top.push(right);
+        top.push(Span::styled(" ─", border));
+    }
+    top.push(Span::styled("╮", border));
+    let mut out = vec![Row {
+        line: Line::from(top),
+        text: Some(RowText {
+            offset: 3,
+            text: title_text,
+            continues: false,
+        }),
+        hits: Vec::new(),
+    }];
+    let inner = total - 4;
+    let body = text.strip_suffix('\n').unwrap_or(text);
+    if !body.is_empty() {
+        for (row, continues) in wrap_rows(body, inner) {
+            let pad = inner.saturating_sub(width(&row));
+            out.push(Row {
+                line: Line::from(vec![
+                    Span::styled("│ ", border),
+                    Span::styled(row.clone(), theme::text()),
+                    Span::raw(" ".repeat(pad)),
+                    Span::styled(" │", border),
+                ]),
+                text: Some(RowText {
+                    offset: 2,
+                    text: row,
+                    continues,
+                }),
+                hits: Vec::new(),
+            });
         }
     }
-    Line::from(spans)
+    out.push(Row::plain(Line::styled(
+        format!("╰{}╯", "─".repeat(total - 2)),
+        border,
+    )));
+    Some(out)
+}
+
+/// Spans cut to `max` cells in all, the last one shown ending in `…`.
+pub(crate) fn fit_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        let w = width(&span.content);
+        if used + w <= max {
+            used += w;
+            out.push(span);
+            continue;
+        }
+        let left = max.saturating_sub(used);
+        if left > 0 {
+            out.push(Span::styled(truncate(&span.content, left), span.style));
+        }
+        break;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texts(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .map(|r| r.line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_prompt_box_fills_the_width_and_drops_what_does_not_fit() {
+        let title = || vec![Span::raw("you 14:12")];
+        let ack = || Some(Span::raw("✓ Steered: T-0042"));
+        let rows = prompt_box(title(), ack(), "tell 42 to skip the e2e run", 40).unwrap();
+        assert_eq!(
+            texts(&rows),
+            [
+                "╭─ you 14:12 ────── ✓ Steered: T-0042 ─╮",
+                "│ tell 42 to skip the e2e run          │",
+                "╰──────────────────────────────────────╯",
+            ]
+        );
+        assert_eq!(rows[0].text.as_ref().unwrap().text, "you 14:12");
+        assert_eq!(rows[1].text.as_ref().unwrap().offset, 2);
+        // Too narrow for the acknowledgement: it is dropped, the box still closes.
+        let rows = prompt_box(title(), ack(), "hi", 24).unwrap();
+        assert_eq!(texts(&rows)[0], format!("╭─ you 14:12 {}╮", "─".repeat(10)));
+        assert!(texts(&rows).iter().all(|s| width(s) == 24));
+        // Too narrow for a box at all.
+        assert!(prompt_box(title(), None, "hi", BOX_MIN - 1).is_none());
+    }
 }

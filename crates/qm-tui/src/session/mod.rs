@@ -7,7 +7,7 @@
 //!
 //! - [`draw`]: the screen, cell for cell.
 //! - [`keys`]: its keys (Tab, ⏎, Esc, `i`, `e`, scrolling, `?`).
-//! - [`mouse`]: Back, Interrupt, Expand/Collapse, the wheel.
+//! - [`mouse`]: Back, Interrupt, Expand/Collapse, a tool-call run's line, the wheel.
 //!
 //! Entering swaps the Bridge's draft (text, cursor and selection) out of `App::draft` and this
 //! session's draft in; leaving swaps them back and tells the core
@@ -20,10 +20,12 @@ pub(crate) mod mouse;
 pub(crate) use draw::draw;
 
 use crate::app::App;
-use crate::hit::Pane;
+use crate::bridge::pane_block;
+use crate::hit::{Hit, Pane};
 use crate::input::draft::Draft;
 use crate::router::Screen;
 use qm_types::api::{AgentRef, Command, SessionView};
+use ratatui::style::Style;
 use std::collections::{BTreeSet, HashMap};
 
 /// The session screen has no status bar, so its status line starts with the
@@ -43,6 +45,16 @@ pub(crate) enum SessionHit {
     Interrupt,
     /// The `Expand`/`Collapse` button of the line with this ID.
     Expand(u64),
+    /// The `▸ 3 tool calls` line of the run of tool calls starting at the line with this ID.
+    ToolGroup(u64),
+}
+
+/// A run of tool calls in a session, named by its agent and its first call's line ID, never by
+/// where it is drawn: new calls joining the run keep its key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ToolGroupKey {
+    pub(crate) agent: AgentRef,
+    pub(crate) first: u64,
 }
 
 /// The session screen's own state, in `View::session`.
@@ -159,6 +171,65 @@ impl App {
         if self.session_view().is_some_and(|view| view.turn_running) {
             self.command(Command::Interrupt { agent });
         }
+    }
+
+    /// Shows or hides the calls of the tool-call run starting at line `first`, its
+    /// `▸ 3 tool calls` line staying where it is on screen. A view pinned to the newest line
+    /// stays pinned, scrolling only as far as keeps that line on screen.
+    pub(crate) fn toggle_tool_group(&mut self, first: u64) {
+        let Screen::Session(agent) = self.screen else {
+            return;
+        };
+        let inner = self
+            .drawn
+            .hits
+            .rect_of(Hit::Pane(Pane::Session))
+            .map(|area| pane_block("Session", Style::default()).inner(area));
+        let count = |app: &Self, width: u16| {
+            let lines = app.session_view().map_or(&[][..], |v| v.lines.as_slice());
+            draw::rows(lines, width, app)
+        };
+        let before = inner.map_or(0, |inner| count(self, inner.width).len());
+        let key = ToolGroupKey { agent, first };
+        let expanding = !self.view.tool_groups.remove(&key);
+        if expanding {
+            self.view.tool_groups.insert(key);
+        }
+        if let Some(inner) = inner {
+            let rows = count(self, inner.width);
+            let hit = Hit::Session(SessionHit::ToolGroup(first));
+            if let Some(at) = rows.iter().position(|r| r.hits.iter().any(|h| h.2 == hit)) {
+                let visible = usize::from(inner.height).max(1);
+                let scroll = self.session_scroll();
+                // Counted up from the newest row, so the rows shown or hidden under the line move
+                // the offset with them; a view following the newest line keeps following it.
+                let to = if expanding && scroll > 0 {
+                    scroll + rows.len().saturating_sub(before)
+                } else if expanding {
+                    0
+                } else {
+                    scroll.saturating_sub(before.saturating_sub(rows.len()))
+                };
+                // Never so low that the line drops off the top.
+                let below = rows.len() - 1 - at;
+                let to = to
+                    .max(below.saturating_sub(visible - 1))
+                    .min(rows.len().saturating_sub(visible));
+                let ui = self.view.session.get_or_insert_with(SessionUi::default);
+                ui.scroll_from_bottom = to;
+            }
+        }
+        self.redraw();
+    }
+
+    /// Whether the tool-call run starting at line `first` of the showing session is expanded.
+    pub(crate) fn is_tool_group_expanded(&self, first: u64) -> bool {
+        let Screen::Session(agent) = self.screen else {
+            return false;
+        };
+        self.view
+            .tool_groups
+            .contains(&ToolGroupKey { agent, first })
     }
 
     /// Whether line `id` is expanded.
