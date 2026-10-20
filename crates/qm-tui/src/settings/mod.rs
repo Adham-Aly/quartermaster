@@ -304,7 +304,9 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
     let content = if view.connecting {
         body
     } else {
-        draw_tabs(&mut p, body.x, body.y, view.tab);
+        // System holds the setup check's findings: its tab carries their dot.
+        let badged = (!app.snapshot.setup_issues.is_empty()).then_some(Tab::System);
+        draw_tabs(&mut p, body.x, body.y, view.tab, badged);
         Rect::new(
             body.x,
             body.y + 1,
@@ -407,8 +409,8 @@ fn draw_loading(p: &mut Painter<'_, '_>, area: Rect, tab: Tab) {
     p.text(inner.x + 1, inner.y, "Loading settings…", theme::dim());
 }
 
-/// The sub-tabs on row `y`, from column `left`.
-fn draw_tabs(p: &mut Painter<'_, '_>, left: u16, y: u16, current: Tab) {
+/// The sub-tabs on row `y`, from column `left`; `badged` shows a red dot after its label.
+fn draw_tabs(p: &mut Painter<'_, '_>, left: u16, y: u16, current: Tab, badged: Option<Tab>) {
     let mut x = left;
     for tab in Tab::ALL {
         let label = format!(" {} ", tab.label());
@@ -420,7 +422,16 @@ fn draw_tabs(p: &mut Painter<'_, '_>, left: u16, y: u16, current: Tab) {
         } else {
             theme::dim()
         };
-        let end = p.text(x, y, &label, style);
+        let mut end = p.text(x, y, &label, style);
+        if badged == Some(tab) {
+            end = p.text(
+                end,
+                y,
+                crate::widgets::dropdown::BADGE,
+                style.patch(theme::badge()),
+            );
+            end = p.text(end, y, " ", style);
+        }
         p.hit(Rect::new(x, y, end - x, 1), hit);
         x = end;
     }
