@@ -9,13 +9,20 @@ Always use a throwaway data directory; never the real `~/.quartermaster`:
 
 ```sh
 export QUARTERMASTER_HOME=$(mktemp -d)
-cargo run -p quartermaster  # or: cargo build -p quartermaster && target/debug/quartermaster
+cargo run -p quartermaster -- --foreground  # one process; or build and run target/debug/quartermaster
 ```
 
 On first run it creates the data directory (0700), opens the setup check if `claude` or `gh` is
 missing or logged out, then the Bridge. `Ctrl`+`C` twice quits (it asks first if agents work).
-A second instance on the same data directory says "already running" and exits 1. The terminal
+A second `--foreground` on the same data directory says "already running" and exits 1. The terminal
 must be at least 60×16.
+
+Without `--foreground`, `target/debug/quartermaster` attaches to a background server for that
+data directory (started on demand: a launchd one-shot job outside SSH, else a direct spawn;
+`QM_NO_LAUNCHD=1` forces the direct spawn). Closing the window only detaches. Manage it with
+`quartermaster server status|stop [--force]|restart`, and always `server stop` a throwaway one when
+done (keep the data directory path short: macOS limits socket paths to 104 bytes). Logs say
+`server listening`, `window attached`, `window detached`.
 
 Claude accounts come from the user's own `claude` login (found at startup, never copied), so a
 throwaway home still has Claude. Other accounts would need a login in Settings (`,`); never copy
