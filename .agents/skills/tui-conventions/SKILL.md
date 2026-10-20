@@ -25,7 +25,7 @@ directly in a widget. `Backend16` (`backend.rs`) sends 16-colour SGR codes (`30`
 | `error()` | `Red` | errors |
 | `blue()` | `LightBlue` | a supervisor's marker in a session |
 | `violet()` | `Magenta` | a supervisor's name |
-| `filled()` | bright white on bright black | rest buttons, the current tab, the selected row |
+| `filled()` | bright white on bright black | rest buttons, the current tab, the selected row (keyboard) |
 | `button(true)` | black on yellow | a hovered button |
 | `button_on_selection()` | black on bright white | a button on a selected row |
 | `cursor()` | black on yellow | the cursor's cell in the prompt field |
@@ -58,9 +58,13 @@ Map core `Tone`s with `theme::tone`.
   the screen it was opened from). Letters are commands in list panes; they don't jump to the input.
 - Mouse: widgets record clickable regions (`Hit`) and scroll areas in the `FrameMap` while
   drawing; input reads geometry only from the `FrameMap`, never recomputes it. Hover never moves
-  focus. The wheel scrolls the pane under the pointer (3 lines a notch). A double-click is a second
-  press on the same `Hit` within 400 ms. Right-click (or `Space`) opens a row's context menu with
-  its first item on the pointer's row. Record overlapping regions so the topmost is recorded last.
+  focus. A click leaves no shading once the pointer moves on: after a mouse press, a selected
+  row (projects, crew, Settings) trades its fill for an accent `▸` in its left padding
+  (`View::pointer_picked`, drawn only by `widgets/selection.rs`) until a list key (`Tab`,
+  arrows, Settings keys) brings the fill back. Focus borders always show, since letters act in
+  the focused pane. The wheel scrolls the pane under the pointer (3 lines a notch). A double-click is a second press on the same `Hit` within 400 ms. Right-click (or
+  `Space`) opens a row's context menu with its first item on the pointer's row. Record
+  overlapping regions so the topmost is recorded last.
 - Selection and copy: widgets push `TextRow`s for selectable text; a drag selects, release copies
   through `pbcopy` (OSC 52 over SSH or as a fallback) and flashes `Copied`.
 - The prompt field (`widgets/input_box.rs`, layout in `input/field.rs`) is shared by the Bridge

@@ -10,16 +10,17 @@
 use super::SettingsHit;
 use crate::hit::{Hit, Hits};
 use crate::text::{cells, width};
-use crate::theme;
-use crate::widgets::button;
+use crate::widgets::{button, selection};
 use ratatui::Frame;
-use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::layout::Rect;
+use ratatui::style::Style;
 
 pub(super) struct Painter<'f, 'a> {
     pub(super) frame: &'f mut Frame<'a>,
     hits: &'f mut Hits,
     hover: Option<Hit>,
+    /// Selected rows are filled, not only marked (see `View::pointer_picked`).
+    fill_selection: bool,
     /// Nothing is drawn or recorded outside this (screen coordinates).
     clip: Rect,
     /// How many page rows are scrolled off the top: page row `y` shows at `y - scroll`.
@@ -37,12 +38,14 @@ impl<'f, 'a> Painter<'f, 'a> {
         frame: &'f mut Frame<'a>,
         hits: &'f mut Hits,
         hover: Option<Hit>,
+        fill_selection: bool,
         clip: Rect,
     ) -> Self {
         Self {
             frame,
             hits,
             hover,
+            fill_selection,
             clip,
             scroll: 0,
             measuring: false,
@@ -170,9 +173,8 @@ impl<'f, 'a> Painter<'f, 'a> {
         }
     }
 
-    /// Paints page row `y` of `area` as the selected row: the fill's background under every cell
-    /// that has none of its own, with dim text brightened so it reads on the fill. A button on
-    /// the row would vanish into the fill (both bright black), so it turns black on bright white.
+    /// Paints page row `y` of `area`'s columns as the selected row: filled, or only marked after
+    /// a mouse press (`widgets::selection`).
     pub(super) fn select_row(&mut self, area: Rect, y: u16) {
         self.selected = Some(y);
         if self.measuring {
@@ -181,16 +183,7 @@ impl<'f, 'a> Painter<'f, 'a> {
         let Some(row) = self.row(y) else {
             return;
         };
-        let buf = self.frame.buffer_mut();
-        for x in area.x..area.right().min(self.clip.right()) {
-            if let Some(cell) = buf.cell_mut(Position::new(x, row)) {
-                if cell.bg == Color::Reset {
-                    let style = theme::on_selection(cell.style());
-                    cell.set_style(style);
-                } else if cell.bg == theme::DIM {
-                    cell.set_style(theme::button_on_selection());
-                }
-            }
-        }
+        let row = Rect::new(area.x, row, area.width, 1);
+        selection::paint(self.frame.buffer_mut(), row, self.clip, self.fill_selection);
     }
 }

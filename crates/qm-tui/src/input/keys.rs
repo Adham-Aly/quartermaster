@@ -111,8 +111,14 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Tab => return self.cycle_focus(true),
-            KeyCode::BackTab => return self.cycle_focus(false),
+            KeyCode::Tab => {
+                self.show_selection();
+                return self.cycle_focus(true);
+            }
+            KeyCode::BackTab => {
+                self.show_selection();
+                return self.cycle_focus(false);
+            }
             _ => {}
         }
         if self.focus == Pane::Input {
@@ -153,7 +159,13 @@ impl App {
         }
     }
 
+    /// The keyboard is moving through lists: selected rows show their fill again.
+    pub(crate) fn show_selection(&mut self) {
+        self.change(|app| &mut app.view.pointer_picked, false);
+    }
+
     fn on_projects_key(&mut self, code: KeyCode) {
+        self.show_selection();
         let rows = self.snapshot.projects.len();
         if code == KeyCode::Char(' ') {
             if let Some(i) = self.view.selected_project.filter(|&i| i < rows) {
@@ -168,6 +180,7 @@ impl App {
     }
 
     fn on_crew_key(&mut self, code: KeyCode, now: Instant) {
+        self.show_selection();
         let rows: Vec<_> = self.snapshot.crew.iter().map(|row| row.agent).collect();
         let current = self
             .view
