@@ -39,8 +39,6 @@ const AWAY_AFTER: Duration = Duration::from_secs(5);
 /// Something on the setup screen a click acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SetupHit {
-    /// The Bridge's one-line banner.
-    Banner,
     /// Button `action` of item `item` (indexes into `SetupView::items` and its actions).
     Action { item: usize, action: usize },
     /// The Copy button of a numbered step.
@@ -312,10 +310,9 @@ impl App {
         }
     }
 
-    /// A click on the setup screen or the banner.
+    /// A click on the setup screen.
     pub(crate) fn setup_click(&mut self, hit: SetupHit, now: Instant) {
         match hit {
-            SetupHit::Banner => self.show(Screen::Setup),
             SetupHit::Action { item, action } => {
                 if let Some(tool) = self.snapshot.setup.items.get(item).map(|i| i.tool) {
                     self.setup.selected = Some(tool);

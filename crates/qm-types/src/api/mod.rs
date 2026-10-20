@@ -569,6 +569,10 @@ pub struct SetupItem {
     /// Dim words after the buttons: "runs claude auth login in a pane".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// How to fix it, one plain line for Settings ▸ System: "Install it with Homebrew: press
+    /// Open, or run brew install gh."; `None` when the item is ok.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix: Option<String>,
 }
 
 impl SetupItem {
@@ -586,6 +590,7 @@ impl SetupItem {
             footnote: None,
             actions: Vec::new(),
             hint: None,
+            fix: None,
         }
     }
 }
