@@ -5,6 +5,12 @@
 //! a `Co-Authored-By` line naming a model. Checked on `pr_open`, on a 'done' report, and at
 //! settling."
 //!
+//! Commit names are checked only on the task's own commits (`git log --no-merges
+//! <merge-base>..HEAD` against the freshly fetched `origin/<default>`), so commits a rebase picked
+//! up from main never count. A pull request's title is checked again right before the app
+//! squash-merges it, since it becomes the commit's title, and the commit names again right before
+//! landing in place.
+//!
 //! Readings of the rule:
 //! - The scope. The rule writes `type(scope): summary`, so commit and PR names require a scope
 //!   (the stricter reading). Task titles may omit it ("plan: rate limiting").
@@ -29,6 +35,10 @@ pub enum Boundary {
     PrOpen,
     DoneReport,
     Settling,
+    /// Right before the app merges a pull request.
+    Merge,
+    /// Right before the app merges a branch into your checkout (build in place).
+    LandingInPlace,
 }
 
 impl Boundary {
@@ -37,6 +47,8 @@ impl Boundary {
             Self::PrOpen => "pr_open",
             Self::DoneReport => "a done report",
             Self::Settling => "settling",
+            Self::Merge => "the merge",
+            Self::LandingInPlace => "landing in place",
         }
     }
 }
@@ -226,4 +238,31 @@ pub fn check_display_name(name: &str) -> Result<(), Refusal> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_non_conventional_title_is_caught_at_the_merge() {
+        let refusal = check_pr_title("Fix the commit check", Boundary::Merge).expect_err("refused");
+        assert!(
+            refusal.reason.contains("Fix the commit check"),
+            "{}",
+            refusal.reason
+        );
+        assert!(
+            refusal.reason.contains("checked at the merge"),
+            "{}",
+            refusal.reason
+        );
+        assert!(
+            check_pr_title(
+                "fix(core): check only a task's own commits",
+                Boundary::Merge
+            )
+            .is_ok()
+        );
+    }
 }

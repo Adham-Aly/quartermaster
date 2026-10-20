@@ -3,8 +3,10 @@
 use super::facts::{self, Fact};
 use super::land_pr::moved;
 use super::{Landing, Origin, SettleError, SettlingService};
+use crate::delivery::models;
 use qm_git::{InPlaceMerge, InPlaceOutcome, Repo};
 use qm_policy::delivery::check_checkout_clean;
+use qm_policy::names::{Boundary, check_commits};
 use qm_store::held::MergePayload;
 use qm_types::domain::TaskStatus;
 use qm_types::ids::{CommitSha, TaskId};
@@ -42,6 +44,10 @@ pub async fn merge_in_place(
         .map_err(|e| SettleError::Failed(e.render()))?;
     if loaded.row.status != TaskStatus::Settling {
         let reason = format!("{task} is {}, not settling", loaded.row.status);
+        return refused(svc, task, head, reason, false, origin).await;
+    }
+    // The task's own commit names again, on exactly the approved head.
+    if let Err(reason) = check_names(svc, PathBuf::from(checkout), head, loaded.target()).await? {
         return refused(svc, task, head, reason, false, origin).await;
     }
     let git = svc.delivery().git();
@@ -111,6 +117,39 @@ pub async fn merge_in_place(
             refused(svc, task, head, reason, false, origin).await
         }
     }
+}
+
+/// The task's own commit names up to `head` (against `target`), checked as at settling; the
+/// reason when they fail or can't be read.
+async fn check_names(
+    svc: &SettlingService,
+    checkout: PathBuf,
+    head: &CommitSha,
+    target: String,
+) -> Result<Result<(), String>, SettleError> {
+    let models = svc
+        .delivery()
+        .read(|conn| models(conn))
+        .await
+        .map_err(|e| SettleError::Failed(e.render()))?;
+    let git = svc.delivery().git();
+    let head = head.clone();
+    let own = tokio::task::spawn_blocking(move || {
+        Repo::open(git, &checkout)?.own_commits(&head, &target)
+    })
+    .await
+    .map_err(|e| SettleError::Failed(e.to_string()))?;
+    Ok(match own {
+        Ok(own) => check_commits(
+            own.commits.iter().map(|(_, m)| m.as_str()),
+            &models,
+            Boundary::LandingInPlace,
+        )
+        .map_err(|r| r.reason),
+        Err(e) => Err(format!(
+            "the task's commit names couldn't be read from git ({e}), so they can't be checked"
+        )),
+    })
 }
 
 async fn refused(

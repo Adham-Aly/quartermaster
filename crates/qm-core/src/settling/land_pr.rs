@@ -1,6 +1,8 @@
 //! Merging a pull request at exactly the approved commit. Merging the wrong commit is the worst
 //! failure the product can have, so every fact is read again from GitHub right before the merge,
 //! the merge carries the SHA as its precondition, and nothing counts until GitHub says so twice.
+//! Every merge is a squash merge whose commit takes the pull request's title (checked again as a
+//! conventional commit name right before) and description.
 
 use super::facts::{self, Fact};
 use super::recover::{MergeWatch, RETRY_EVERY, watch_after};
@@ -10,12 +12,15 @@ use super::{
 };
 use crate::delivery::Loaded;
 use crate::delivery::checks::{Reading, local_checks_named, read_snapshot};
-use qm_github::{GithubClient, MergeResult, PrState, PullRequest, RepoRef};
-use qm_policy::merge_gate::{check_approval, check_mergeable};
+use qm_github::{GithubClient, MergeResult, PrState, PullRequest, RepoRef, SquashCommit};
+use qm_policy::merge_gate::{
+    check_approval, check_mergeable, check_squash_allowed, merge_refused_reason,
+};
+use qm_policy::names::{Boundary, check_pr_title};
 use qm_store::delivery::ChecksState;
 use qm_store::held::MergePayload;
 use qm_store::tasks as task_store;
-use qm_types::domain::{MergeMethod, TaskStatus};
+use qm_types::domain::TaskStatus;
 use qm_types::ids::{CommitSha, TaskId};
 use std::time::Duration;
 
@@ -39,7 +44,9 @@ struct PrMerge<'a> {
     pr: u64,
     head: &'a CommitSha,
     base: &'a str,
-    method: MergeMethod,
+    /// The squash commit's title and message, from the pull request as verified right before the
+    /// merge.
+    commit: SquashCommit,
 }
 
 /// Merges `payload` (a `MergePayload::PullRequest`) for `origin`. A refusal is already recorded
@@ -56,7 +63,8 @@ pub async fn land_pr(
         pr,
         head,
         base,
-        method,
+        // Every pull request is squash-merged, whatever method an older payload stored.
+        method: _,
     } = payload
     else {
         return Err(SettleError::Failed(
@@ -80,20 +88,23 @@ pub async fn land_pr(
         pr: *pr,
         head,
         base,
-        method: *method,
+        commit: SquashCommit {
+            title: String::new(),
+            message: String::new(),
+        },
     };
     // One settle of a task at a time.
     let _lock = svc.delivery().locks().lock(p.task).await;
 
-    match verify(svc, &p).await? {
-        Verified::Go => {}
+    let p = match verify(svc, &p).await? {
+        Verified::Go(commit) => PrMerge { commit, ..p },
         Verified::AlreadyMerged(merge_commit) => {
             return land(svc, &p, merge_commit).await;
         }
         Verified::No { reason, superseded } => {
             return refused(svc, p.task, p.head, reason, superseded, origin).await;
         }
-    }
+    };
 
     // The request is on record before GitHub hears of it.
     let at = svc.delivery().clock().now();
@@ -136,7 +147,7 @@ pub async fn land_pr(
 
     let github = svc.delivery().github().clone();
     // The merge carries the approved SHA as its precondition.
-    let first = github.merge_pr(&p.repo, p.pr, p.head, p.method).await;
+    let first = github.merge_pr(&p.repo, p.pr, p.head, &p.commit).await;
     match conclude(svc, &github, &p, first, true).await {
         Concluded::Merged(merge_commit) => land(svc, &p, merge_commit).await,
         Concluded::No { reason, superseded } => {
@@ -225,9 +236,13 @@ pub(crate) fn unreadable_required(
 }
 
 enum Verified {
-    Go,
+    /// Merge, with this squash commit.
+    Go(SquashCommit),
     AlreadyMerged(CommitSha),
-    No { reason: String, superseded: bool },
+    No {
+        reason: String,
+        superseded: bool,
+    },
 }
 
 fn no(reason: impl Into<String>) -> Verified {
@@ -310,6 +325,20 @@ async fn verify(svc: &SettlingService, p: &PrMerge<'_>) -> Result<Verified, Sett
             p.pr, p.repo
         )));
     }
+    // The title becomes the squash commit's title, so it's checked again now.
+    if let Err(r) = check_pr_title(&pull.title, Boundary::Merge) {
+        return Ok(no(r.reason));
+    }
+    // Every pull request is squash-merged, so the repository and its rulesets must allow it.
+    let rules = github.squash_rules(&p.repo, p.base).await;
+    if let Err(r) = check_squash_allowed(
+        &p.repo.to_string(),
+        p.base,
+        rules.repo_allows,
+        rules.ruleset_methods.as_deref(),
+    ) {
+        return Ok(no(r.reason));
+    }
     // The check runs and commit statuses fetched by that SHA pass, with every required check
     // present.
     let snapshot = match github.checks(&p.repo, p.head, p.base).await {
@@ -355,7 +384,10 @@ async fn verify(svc: &SettlingService, p: &PrMerge<'_>) -> Result<Verified, Sett
     if let Some(reason) = stale {
         return Ok(no(reason));
     }
-    Ok(Verified::Go)
+    Ok(Verified::Go(SquashCommit {
+        title: pull.title,
+        message: pull.body,
+    }))
 }
 
 /// The policy's own sentence for a moved head ("the branch moved from a1b2c3d to b2c3d4e since
@@ -427,7 +459,7 @@ async fn conclude(
             superseded: true,
         },
         MergeResult::NotMergeable { message } => Concluded::No {
-            reason: format!("GitHub won't merge PR #{}: {message}", p.pr),
+            reason: merge_refused_reason(p.pr, &message),
             superseded: false,
         },
         // An ambiguous answer is followed by a read-back, never a blind retry.
@@ -436,7 +468,7 @@ async fn conclude(
             ReadBack::Open if may_retry => {
                 svc.tasks().clock_arc().sleep(RETRY_AFTER).await;
                 // The same merge, the same SHA, once.
-                let again = github.merge_pr(&p.repo, p.pr, p.head, p.method).await;
+                let again = github.merge_pr(&p.repo, p.pr, p.head, &p.commit).await;
                 Box::pin(conclude(svc, github, p, again, false)).await
             }
             ReadBack::Merged(None) => Concluded::Unknown(still_reading(&format!(

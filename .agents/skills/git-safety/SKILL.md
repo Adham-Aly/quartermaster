@@ -61,6 +61,13 @@ crewmate's environment.
   checks". A 404 from branch protection means "unknown", not "none required".
 - A crash after asking GitHub to merge is recovered at startup from GitHub's state, never by
   offering the card again.
+- Every PR merge is a squash merge (`qm_github::squash_request`), whatever the project's
+  merge-method setting: the commit takes the PR's title, checked again as a commit name right
+  before, and its body. A repository or ruleset that doesn't allow squash stops it
+  (`check_squash_allowed`).
+- Commit names are checked only on the task's own commits: `Repo::own_commits` runs
+  `git log --no-merges <merge-base>..head` against a freshly fetched `origin/<branch>` (the local
+  branch only when that ref is missing), never from the stored `base_commit`.
 - After a merge the remote branch is deleted; side exits (stop, discard, retry) close the PR.
 - Kept refs (`refs/quartermaster/kept/T-n`) are saved before a worktree is removed
   (`qm-git` `retire.rs`), so a user's work is never lost; startup `reconcile` deletes nothing.

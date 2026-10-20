@@ -275,9 +275,10 @@ impl Repo {
         })
     }
 
-    /// Fetches one branch into its remote-tracking ref and returns the fetched commit. A failure
-    /// is a base-branch refusal ([`BaseRefusal::FetchFailed`]).
-    fn fetch_branch(&self, remote: &str, branch: &str) -> Result<CommitSha, GitError> {
+    /// Fetches one branch into its remote-tracking ref (`refs/remotes/<remote>/<branch>`) and
+    /// returns the fetched commit; nothing else changes. A failure is a base-branch refusal
+    /// ([`BaseRefusal::FetchFailed`]).
+    pub(crate) fn fetch_branch(&self, remote: &str, branch: &str) -> Result<CommitSha, GitError> {
         let tracking = format!("refs/remotes/{remote}/{branch}");
         let refspec = format!("+refs/heads/{branch}:{tracking}");
         let fetch_failed = |detail: String| BaseRefusal::FetchFailed {

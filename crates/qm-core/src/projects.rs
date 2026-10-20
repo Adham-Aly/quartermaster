@@ -56,7 +56,7 @@ pub const WORKSPACE_NAME: &str = "personal";
 /// The suggested location when no project has been linked on this Mac yet.
 pub const DEFAULT_LOCATION: &str = "~/Developer";
 /// The merge method a new project starts with; you change it with `configure_project`.
-pub const DEFAULT_MERGE_METHOD: MergeMethod = MergeMethod::Merge;
+pub const DEFAULT_MERGE_METHOD: MergeMethod = MergeMethod::Squash;
 /// The first commit of a created project or the workspace, so worktrees have a base.
 const FIRST_COMMIT: &str = "chore: start the repository";
 /// Who makes that commit when your git has no identity configured.

@@ -1,15 +1,27 @@
 //! Reading a task's work: its head, its commit messages and the files it changed.
 //!
-//! For the crewmate's done report (the head commit is recorded and every commit name checked
-//! against the naming rules) and for a review's brief (every changed file). Read-only: nothing
+//! For the commit-name check at `pr_open`, the done report, settling and landing in place (the
+//! task's own commits, [`Repo::own_commits`]) and for a review's brief (every changed file). Read-only: nothing
 //! here changes a repository.
 
 use std::path::{Path, PathBuf};
 
 use qm_types::ids::CommitSha;
 
-use crate::error::GitError;
-use crate::repo::{Repo, normalize_path, parse_sha};
+use crate::error::{BaseRefusal, GitError};
+use crate::repo::{ORIGIN, Repo, normalize_path, parse_sha};
+
+/// A task's own commits, as [`Repo::own_commits`] found them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnCommits {
+    /// The ref the merge-base was taken against: `origin/<branch>`, or the local branch when the
+    /// remote ref is missing.
+    pub against: String,
+    /// Where the task's commits start (exclusive).
+    pub merge_base: CommitSha,
+    /// The commits, oldest first, merges left out, each with its full message.
+    pub commits: Vec<(CommitSha, String)>,
+}
 
 /// Separates commits in `git log` output (ASCII record separator).
 const RECORD: char = '\u{1e}';
@@ -47,42 +59,60 @@ impl Repo {
         }
     }
 
-    /// Every commit in the worktree at `worktree` since `base` (reachable from its `HEAD` but not
-    /// from `base`), oldest first, each with its full message (subject and body, trailers included,
-    /// trailing whitespace trimmed). Merge commits are included. These are the names the done
-    /// report's commit check reads.
-    pub fn commit_messages(
-        &self,
-        worktree: &Path,
-        base: &CommitSha,
-    ) -> Result<Vec<(CommitSha, String)>, GitError> {
-        let worktree = normalize_path(worktree);
-        let range = format!("{}..HEAD", base.as_str());
-        let out = self.git().run(
-            &worktree,
-            [
-                "log",
-                "--reverse",
-                "--no-show-signature",
-                "--format=%H%x00%B%x1e",
-                range.as_str(),
-                "--",
-            ],
-        )?;
-        out.split(RECORD)
-            .map(|record| record.trim_start_matches('\n'))
-            .filter(|record| !record.trim().is_empty())
-            .map(|record| {
-                let (sha, message) =
-                    record
-                        .split_once('\0')
-                        .ok_or_else(|| GitError::UnexpectedOutput {
-                            command: "log".to_owned(),
-                            why: "a commit without a separator".to_owned(),
-                        })?;
-                Ok((parse_sha("log", sha)?, message.trim_end().to_owned()))
-            })
-            .collect()
+    /// The task's own commits up to `head`, the ones the commit-name check reads:
+    /// `git log --no-merges <merge-base>..head`, oldest first, each with its full message (subject
+    /// and body, trailers included, trailing whitespace trimmed).
+    ///
+    /// The merge-base is taken against `origin/<branch>`, fetched first, so a branch rebased onto
+    /// it doesn't count commits already there; only when that remote ref is missing is it taken
+    /// against the local `branch`. A fetch that fails is logged and the ref as it stands is used.
+    /// `branch` is the branch the task's work targets: the project's default unless the task was
+    /// started on another base branch.
+    pub fn own_commits(&self, head: &CommitSha, branch: &str) -> Result<OwnCommits, GitError> {
+        if !self.is_valid_branch_name(branch)? {
+            return Err(BaseRefusal::InvalidBranchName {
+                branch: branch.to_owned(),
+            }
+            .into());
+        }
+        if self.remotes()?.iter().any(|r| r == ORIGIN)
+            && let Err(e) = self.fetch_branch(ORIGIN, branch)
+        {
+            tracing::warn!("couldn't fetch {ORIGIN}/{branch} before reading a task's commits: {e}");
+        }
+        let remote = format!("{ORIGIN}/{branch}");
+        let (against, tip) = match self.resolve_commit(&format!("refs/remotes/{remote}"))? {
+            Some(tip) => (remote, tip),
+            None => match self.local_branch_commit(branch)? {
+                Some(tip) => (branch.to_owned(), tip),
+                None => {
+                    return Err(GitError::NoTargetBranch {
+                        branch: branch.to_owned(),
+                    });
+                }
+            },
+        };
+        let merge_base = self
+            .merge_base(head, &tip)?
+            .ok_or_else(|| GitError::NoMergeBase {
+                head: head.clone(),
+                against: against.clone(),
+            })?;
+        let range = format!("{}..{}", merge_base.as_str(), head.as_str());
+        let out = self.run([
+            "log",
+            "--no-merges",
+            "--reverse",
+            "--no-show-signature",
+            "--format=%H%x00%B%x1e",
+            range.as_str(),
+            "--",
+        ])?;
+        Ok(OwnCommits {
+            against,
+            merge_base,
+            commits: parse_messages(&out)?,
+        })
     }
 
     /// The files that differ between `base` and `head`, as paths relative to the repository's
@@ -114,4 +144,22 @@ impl Repo {
         files.dedup();
         Ok(files)
     }
+}
+
+/// Parses `git log --format=%H%x00%B%x1e` output into commits and their messages.
+fn parse_messages(out: &str) -> Result<Vec<(CommitSha, String)>, GitError> {
+    out.split(RECORD)
+        .map(|record| record.trim_start_matches('\n'))
+        .filter(|record| !record.trim().is_empty())
+        .map(|record| {
+            let (sha, message) =
+                record
+                    .split_once('\0')
+                    .ok_or_else(|| GitError::UnexpectedOutput {
+                        command: "log".to_owned(),
+                        why: "a commit without a separator".to_owned(),
+                    })?;
+            Ok((parse_sha("log", sha)?, message.trim_end().to_owned()))
+        })
+        .collect()
 }
