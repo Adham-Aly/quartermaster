@@ -20,6 +20,8 @@ pub(super) struct Painter<'f, 'a> {
     pub(super) frame: &'f mut Frame<'a>,
     hits: &'f mut Hits,
     hover: Option<Hit>,
+    /// Selected rows are filled (the mouse wasn't used last; see `View::pointer_picked`).
+    fill_selection: bool,
     /// Nothing is drawn or recorded outside this (screen coordinates).
     clip: Rect,
     /// How many page rows are scrolled off the top: page row `y` shows at `y - scroll`.
@@ -37,12 +39,14 @@ impl<'f, 'a> Painter<'f, 'a> {
         frame: &'f mut Frame<'a>,
         hits: &'f mut Hits,
         hover: Option<Hit>,
+        fill_selection: bool,
         clip: Rect,
     ) -> Self {
         Self {
             frame,
             hits,
             hover,
+            fill_selection,
             clip,
             scroll: 0,
             measuring: false,
@@ -175,7 +179,7 @@ impl<'f, 'a> Painter<'f, 'a> {
     /// the row would vanish into the fill (both bright black), so it turns black on bright white.
     pub(super) fn select_row(&mut self, area: Rect, y: u16) {
         self.selected = Some(y);
-        if self.measuring {
+        if self.measuring || !self.fill_selection {
             return;
         }
         let Some(row) = self.row(y) else {

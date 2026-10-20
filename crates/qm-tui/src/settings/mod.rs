@@ -293,7 +293,14 @@ pub(crate) struct SettingsView {
 /// the status bar's (`status_hints`). A tab taller than the body scrolls.
 pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut FrameMap) {
     let view = &app.view.settings;
-    let mut p = Painter::new(frame, &mut map.hits, app.hover, body);
+    let mut p = Painter::new(
+        frame,
+        &mut map.hits,
+        app.hover,
+        // A model held in a drag stays filled until it drops.
+        !app.view.pointer_picked || app.view.settings.drag.is_some(),
+        body,
+    );
     let content = if view.connecting || tabs_in_top_bar(app, body.width) {
         body
     } else {
@@ -390,7 +397,7 @@ pub(crate) fn tabs_in_top_bar(app: &App, screen_width: u16) -> bool {
 
 /// Draws the sub-tabs into the top bar `row` (see `tabs_in_top_bar`).
 pub(crate) fn draw_top_tabs(frame: &mut Frame<'_>, row: Rect, app: &App, hits: &mut Hits) {
-    let mut p = Painter::new(frame, hits, app.hover, row);
+    let mut p = Painter::new(frame, hits, app.hover, !app.view.pointer_picked, row);
     draw_tabs(&mut p, row.x, row.y, row.right(), app.view.settings.tab);
 }
 

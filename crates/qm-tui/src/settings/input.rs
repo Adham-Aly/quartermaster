@@ -118,6 +118,7 @@ impl App {
     /// apply: `esc` back to the Bridge, `?` help). `PgUp` and `PgDn` scroll a tab taller than
     /// the screen, and a selection the keys move is kept in view.
     pub(crate) fn on_settings_key(&mut self, key: KeyEvent, now: Instant) -> bool {
+        self.show_selection();
         let overlay = self.view.settings.field.is_some() || self.view.settings.picker.is_some();
         if !overlay && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
             let max = self.drawn.scroll_max_of(crate::hit::Pane::Settings);
