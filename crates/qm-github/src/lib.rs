@@ -34,6 +34,8 @@ pub use checks::{
 pub use client::GithubClient;
 pub use content::{GithubRead, GithubWrite};
 pub use error::{GithubError, RateState};
-pub use pulls::{MergeResult, PrState, PullRequest, RepoInfo};
+pub use pulls::{
+    MergeResult, PrState, PullRequest, RepoInfo, SquashCommit, SquashRules, squash_request,
+};
 pub use repo::{RepoRef, redact_url};
 pub use token::{GhCli, GhProgram, GithubToken, TokenSource, fixed_gh};

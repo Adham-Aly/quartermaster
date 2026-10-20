@@ -239,3 +239,30 @@ pub fn check_display_name(name: &str) -> Result<(), Refusal> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_non_conventional_title_is_caught_at_the_merge() {
+        let refusal = check_pr_title("Fix the commit check", Boundary::Merge).expect_err("refused");
+        assert!(
+            refusal.reason.contains("Fix the commit check"),
+            "{}",
+            refusal.reason
+        );
+        assert!(
+            refusal.reason.contains("checked at the merge"),
+            "{}",
+            refusal.reason
+        );
+        assert!(
+            check_pr_title(
+                "fix(core): check only a task's own commits",
+                Boundary::Merge
+            )
+            .is_ok()
+        );
+    }
+}

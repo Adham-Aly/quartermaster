@@ -2,7 +2,7 @@
 //!
 //! | Delivery mode | Settling means |
 //! |---|---|
-//! | Direct pull request | "Merging the PR on GitHub at exactly the approved head commit, with the project's merge method" |
+//! | Direct pull request | "Merging the PR on GitHub at exactly the approved head commit" (always a squash merge, its commit taking the PR's title and description) |
 //! | Branch only | "Pushing the branch to the remote and marking it delivered. The app never merges it; you do. Closing keeps the branch." |
 //! | Build in place | "Merging the branch into whatever branch your checkout has checked out, only if your working tree is clean, under the same autonomy gate as PRs." |
 //!
@@ -25,7 +25,6 @@ pub struct SettleFacts<'a> {
     pub kind: TaskKind,
     pub delivery: DeliveryMode,
     pub autonomy: Autonomy,
-    pub merge_method: MergeMethod,
     /// The project has a remote (the personal workspace doesn't).
     pub has_remote: bool,
     /// The head commit being settled.
@@ -39,7 +38,8 @@ pub struct SettleFacts<'a> {
 pub enum SettlePlan {
     /// Answer-only work: nothing lands; the answer is saved and the task closes.
     CloseAnswered,
-    /// Merge the pull request at exactly `head`, with the project's method.
+    /// Merge the pull request at exactly `head`. `method` is always [`MergeMethod::Squash`]: the
+    /// project's merge-method setting doesn't apply to pull requests.
     MergePr {
         head: CommitSha,
         method: MergeMethod,
@@ -97,7 +97,7 @@ pub fn plan(f: &SettleFacts<'_>) -> Result<SettlePlan, Refusal> {
             }
             SettlePlan::MergePr {
                 head,
-                method: f.merge_method,
+                method: MergeMethod::Squash,
             }
         }
         DeliveryMode::BranchOnly if f.has_remote => SettlePlan::PushBranch { head },

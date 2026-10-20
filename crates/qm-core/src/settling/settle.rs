@@ -297,7 +297,6 @@ pub(crate) async fn settle(
         kind: row.kind,
         delivery: row.delivery,
         autonomy: loaded.project.autonomy,
-        merge_method: loaded.project.merge_method,
         has_remote,
         head: &head,
         checkout_clean: local.clean,
