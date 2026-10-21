@@ -222,19 +222,17 @@ impl Session {
 
     async fn turn_body(&mut self, totals: &mut Totals) -> TurnEnd {
         let mut final_text = String::new();
-        if self.over_threshold() {
-            match self.compact().await {
-                Ok(()) | Err(CompactError::Nothing) => {}
-                Err(CompactError::Failed(reason)) => {
-                    tracing::warn!(%reason, "compaction before the turn failed; continuing");
-                }
-                Err(CompactError::Cancelled(cancel)) => return interrupted(cancel, final_text),
-            }
-        }
         loop {
             for input in std::mem::take(&mut self.steering) {
                 let message = user_message(&input).await;
                 self.record(message);
+            }
+            match self.compact_if_due().await {
+                Ok(()) | Err(CompactError::Nothing) => {}
+                Err(CompactError::Failed(reason)) => {
+                    tracing::warn!(%reason, "compaction before a model call failed; continuing");
+                }
+                Err(CompactError::Cancelled(cancel)) => return interrupted(cancel, final_text),
             }
             totals.calls += 1;
             let call = totals.calls;
@@ -866,6 +864,25 @@ impl Session {
         self.compact_keeping(KEEP_RECENT_TOKENS, true).await
     }
 
+    /// The automatic check, before each model call of a turn and between turns: a token count
+    /// against the threshold, with the repeat guard. It calls the model only when it compacts. The
+    /// autocompact window is read from the settings now, so a change applies at this check.
+    pub(crate) async fn compact_if_due(&mut self) -> Result<(), CompactError> {
+        let tokens = compaction::context_tokens(&self.context);
+        // Copied out first: the settings' read guard is not held across the compaction.
+        let setting = u32::from(self.shared.settings.borrow().compaction.autocompact_window);
+        let threshold = compaction::threshold(self.model.context_window, setting);
+        if !compaction::auto_compaction_due(tokens, threshold, self.compaction_guard) {
+            return Ok(());
+        }
+        let result = self.compact().await;
+        if let Err(CompactError::Failed(_)) = result {
+            // Not retried on every call: the context must grow past this size first.
+            self.compaction_guard = Some(tokens);
+        }
+        result
+    }
+
     /// A compaction you asked for (`SessionCommand::Compact`), as a turn of its own: `TurnStarted`,
     /// `Compacted` if anything was summarised, `TurnEnded` (rule 7 of the event order).
     pub(crate) async fn run_compaction(&mut self) {
@@ -950,6 +967,7 @@ impl Session {
             .iter()
             .map(compaction::estimate_tokens)
             .sum::<u64>();
+        self.compaction_guard = Some(tokens_after);
         let id = self.file.next_id();
         let at = self.shared.clock.now();
         if let Err(e) = self.file.write(&Entry::Compaction {

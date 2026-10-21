@@ -4,9 +4,10 @@
 //! - **Context tokens** are the last successful call's input + output + cache tokens, plus a
 //!   chars/4 estimate of every message after it; with no usable call yet, the estimate of
 //!   everything.
-//! - **When**: the context passes `context_window − 16,384` ([`RESERVE_TOKENS`]): at the start of
-//!   a turn, between turns, and once mid-turn on a context-overflow error (then the call is
-//!   repeated, not counted as a retry).
+//! - **When**: the context passes [`threshold`], the autocompact window or the model's window
+//!   (the smaller) less [`RESERVE_TOKENS`]: before each model call of a turn, between turns, and
+//!   once mid-turn on a context-overflow error (then the call is repeated, not counted as a retry).
+//!   The window is read from the settings at each check.
 //! - **The cut** keeps about the newest 20,000 estimated tokens ([`KEEP_RECENT_TOKENS`]), cutting
 //!   only before a user or assistant message, never before a tool result, so an assistant's tool
 //!   calls stay with their results. A cut inside a turn (before an assistant message) is a split
@@ -176,9 +177,24 @@ pub fn context_tokens(context: &Context) -> u64 {
     }
 }
 
-/// Whether the context is over the threshold for a model with this window.
-pub fn should_compact(tokens: u64, context_window: u32) -> bool {
-    tokens > u64::from(context_window).saturating_sub(RESERVE_TOKENS)
+/// The size above which the context compacts: the autocompact window or the model's window,
+/// whichever is smaller, less [`RESERVE_TOKENS`].
+pub fn threshold(model_window: u32, setting: u32) -> u64 {
+    u64::from(setting.min(model_window)).saturating_sub(RESERVE_TOKENS)
+}
+
+/// Whether the context is over the threshold.
+pub fn should_compact(tokens: u64, threshold: u64) -> bool {
+    tokens > threshold
+}
+
+/// Whether an automatic check compacts: the context is over the threshold, and the repeat guard
+/// allows it. `guard` is the size the context must grow past: the last compaction's `tokens_after`
+/// (or the size at a failed attempt), so a context that stays over the threshold isn't compacted
+/// on every call.
+pub fn auto_compaction_due(tokens: u64, threshold: u64, guard: Option<u64>) -> bool {
+    should_compact(tokens, threshold)
+        && guard.is_none_or(|base| tokens >= base + KEEP_RECENT_TOKENS)
 }
 
 /// Where to cut: the index of the first item to keep, keeping about `keep_tokens` of the newest
@@ -311,5 +327,61 @@ pub fn compacted(context: &Context, cut: usize, summary: String) -> Context {
     Context {
         summary: Some(summary),
         items: context.items[cut..].to_vec(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_threshold_is_the_smaller_window_less_the_reserve() {
+        // (model window, autocompact window) -> threshold
+        let cases = [
+            (1_000_000, 200_000, 183_616),
+            (1_000_000, 1_000_000, 983_616),
+            (1_000_000, 100_000, 83_616),
+            // The model's window is smaller: it caps the setting.
+            (128_000, 200_000, 111_616),
+            (200_000, 1_000_000, 183_616),
+            (65_000, 100_000, 48_616),
+            // A window under the reserve never compacts below zero.
+            (10_000, 100_000, 0),
+        ];
+        for (model_window, setting, expected) in cases {
+            assert_eq!(
+                threshold(model_window, setting),
+                expected,
+                "model window {model_window}, setting {setting}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_repeat_guard_waits_for_the_context_to_grow_by_keep_recent_tokens() {
+        let threshold = threshold(1_000_000, 200_000);
+        let over = threshold + 1;
+        // Nothing compacted yet: an over-threshold context compacts.
+        assert!(auto_compaction_due(over, threshold, None));
+        // A compaction that left the context at the threshold: over it again, but not grown by
+        // KEEP_RECENT_TOKENS, so no second compaction.
+        let base = threshold;
+        assert!(!auto_compaction_due(over, threshold, Some(base)));
+        let grown = base + KEEP_RECENT_TOKENS;
+        assert!(!auto_compaction_due(grown - 1, threshold, Some(base)));
+        assert!(auto_compaction_due(grown, threshold, Some(base)));
+        // Under the threshold, the guard doesn't matter.
+        assert!(!auto_compaction_due(threshold, threshold, None));
+    }
+
+    #[test]
+    fn the_context_compacts_only_above_the_threshold() {
+        let limit = threshold(1_000_000, 200_000);
+        assert!(!should_compact(limit - 1, limit));
+        assert!(
+            !should_compact(limit, limit),
+            "exactly at the threshold is not over"
+        );
+        assert!(should_compact(limit + 1, limit));
     }
 }
