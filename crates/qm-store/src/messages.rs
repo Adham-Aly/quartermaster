@@ -154,7 +154,7 @@ pub fn load_recent(
 ) -> Result<Vec<MessageRow>, StoreError> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {COLUMNS} FROM (
-             SELECT {COLUMNS} FROM messages
+             SELECT {COLUMNS}, seq FROM messages
              WHERE agent_id = ?1 AND kind <> 'acknowledgement'
              ORDER BY seq DESC LIMIT ?2
          ) ORDER BY seq"
@@ -376,4 +376,20 @@ pub fn has_turns(conn: &Connection, agent: AgentId) -> Result<bool, StoreError> 
         params![agent],
         |r| r.get(0),
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema;
+    use qm_types::ids::AgentId;
+
+    #[test]
+    fn the_newest_lines_query_runs_on_a_fresh_store() {
+        // Startup reads every agent's conversation, so the query must run before any line exists.
+        let mut conn = Connection::open_in_memory().expect("memory database");
+        schema::migrate(&mut conn).expect("the schema");
+        let rows = load_recent(&conn, AgentId::new(1), 5).expect("the query runs");
+        assert_eq!(rows.len(), 0);
+    }
 }
