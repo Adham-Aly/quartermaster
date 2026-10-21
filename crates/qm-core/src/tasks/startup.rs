@@ -98,8 +98,10 @@ async fn reserve_leftover_task_numbers(svc: &TaskService) -> Result<(), StartupE
     let checkouts = svc
         .db()
         .call(|conn| {
+            // A folder project has no task branches, and its folder may not be a repository.
             Ok(active_projects(conn)?
                 .into_iter()
+                .filter(|p| p.delivery != DeliveryMode::Folder)
                 .map(|p| p.path)
                 .collect::<Vec<_>>())
         })
