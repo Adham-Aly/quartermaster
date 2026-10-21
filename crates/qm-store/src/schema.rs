@@ -55,7 +55,7 @@ mod tests {
     }
 
     #[test]
-    fn creation_order_backfills_seq_from_ids_and_keeps_the_append_only_triggers() {
+    fn creation_order_backfills_seq_from_ids_and_refuses_event_updates() {
         let mut conn = before_creation_order();
         migrate(&mut conn).expect("the upgrade");
 
@@ -73,8 +73,49 @@ mod tests {
         );
 
         let update = conn.execute("UPDATE events SET summary = 'changed'", []);
-        assert!(update.is_err(), "events stay append-only after the upgrade");
+        assert!(update.is_err(), "events are never updated");
+        // Migration 0009 drops the delete guard: forgetting and the disk mirror remove events
+        // (plan 3.3), so the guard is the store's, not the schema's.
         let delete = conn.execute("DELETE FROM events", []);
-        assert!(delete.is_err(), "events stay append-only after the upgrade");
+        assert_eq!(delete.expect("a delete"), 2, "events can be forgotten");
+    }
+
+    #[test]
+    fn the_kept_mirror_needs_references_that_may_be_forgotten() {
+        let mut conn = Connection::open_in_memory().expect("memory database");
+        migrate(&mut conn).expect("the schema");
+
+        let nullable = |table: &str, column: &str| -> bool {
+            let not_null: i64 = conn
+                .query_row(
+                    "SELECT \"notnull\" FROM pragma_table_info(?1) WHERE name = ?2",
+                    [table, column],
+                    |r| r.get(0),
+                )
+                .expect("a column");
+            not_null == 0
+        };
+        assert!(nullable("standing_instructions", "message_id"));
+        assert!(nullable("standing_instructions", "turn_id"));
+        assert!(nullable("secondmate_requests", "turn_id"));
+
+        let task_refs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_foreign_key_list('tasks')
+                 WHERE \"from\" IN ('builds_on', 'parent_task_id', 'retry_of')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("foreign keys");
+        assert_eq!(task_refs, 0, "a task may name a task that is forgotten");
+
+        let watermarks: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'block_watermarks'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the table list");
+        assert_eq!(watermarks, 1);
     }
 }
