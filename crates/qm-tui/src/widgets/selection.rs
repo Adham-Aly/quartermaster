@@ -41,15 +41,15 @@ pub(crate) fn paint(buf: &mut Buffer, row: Rect, clip: Rect, filled: bool) {
 }
 
 /// The fill's background under every cell that has none of its own, with dim and default text
-/// brightened so it reads on the fill. A button on the row would vanish into the fill (both
-/// bright black), so it turns black on bright white.
+/// brightened so it reads on the fill. A button on the row would vanish into the fill (both the
+/// fill's colour), so it turns the fill inverted.
 fn fill(buf: &mut Buffer, row: Rect) {
     for x in row.x..row.right() {
         if let Some(cell) = buf.cell_mut(Position::new(x, row.y)) {
             if cell.bg == Color::Reset {
                 let style = theme::on_selection(cell.style());
                 cell.set_style(style);
-            } else if cell.bg == theme::DIM {
+            } else if cell.bg == theme::fill_background() {
                 cell.set_style(theme::button_on_selection());
             }
         }

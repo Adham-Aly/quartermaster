@@ -62,6 +62,8 @@ pub(crate) struct App {
     pub(crate) draft: crate::input::draft::Draft,
     /// A `Ctrl`+`V` waiting for the pasteboard.
     pub(crate) pasting: Option<crate::input::clipboard_image::Pasting>,
+    /// The colours this window is drawn with, fitted to its terminal (`theme::scoped` per frame).
+    pub(crate) palette: crate::theme::Palette,
     /// Width of the left column (projects and crew), in cells.
     pub(crate) left_width: u16,
     /// Width of the task pane, in cells.
@@ -113,6 +115,7 @@ impl App {
             drag: None,
             draft: crate::input::draft::Draft::default(),
             pasting: None,
+            palette: crate::theme::Palette::DEFAULT,
             left_width: LEFT_DEFAULT,
             right_width: RIGHT_DEFAULT,
             scroll_from_bottom: 0,
@@ -169,8 +172,13 @@ impl App {
         }
     }
 
-    /// Draws a frame and keeps its hit map for the input that follows.
+    /// Draws a frame in this window's palette and keeps its hit map for the input that follows.
     pub(crate) fn draw(&mut self, frame: &mut Frame<'_>) {
+        crate::theme::scoped(self.palette, || self.draw_frame(frame));
+    }
+
+    /// [`Self::draw`], with the palette in force.
+    fn draw_frame(&mut self, frame: &mut Frame<'_>) {
         let area = frame.area();
         self.size = (area.width, area.height);
         self.spinning.set(false);
@@ -427,6 +435,7 @@ pub(crate) fn run(client: &mut CoreClient) -> io::Result<()> {
     }
     let mut terminal = TerminalGuard::enter()?;
     let mut app = App::new();
+    app.palette = terminal.palette();
     crate::sample::install_from_env(&mut app);
     loop {
         loop {
@@ -455,6 +464,7 @@ pub(crate) fn run(client: &mut CoreClient) -> io::Result<()> {
         }
         if std::mem::take(&mut app.suspend) {
             terminal.suspend()?;
+            app.palette = terminal.palette();
             app.dirty = true;
         }
         app.tick(Instant::now());
