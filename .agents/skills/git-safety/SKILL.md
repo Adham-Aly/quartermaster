@@ -70,9 +70,9 @@ crewmate's environment.
   branch only when that ref is missing), never from the stored `base_commit`.
 - After a merge the remote branch is deleted; side exits (stop, discard, retry) close the PR.
 - A retired task's worktree and branch are removed (`qm-git` `retire.rs`), with their uncommitted
-  changes and unmerged commits; git collects the commits later. Startup `reconcile` deletes only
-  the `refs/quartermaster/kept/*` refs earlier versions wrote. A plain-folder task has no worktree,
-  branch or kept ref, and the app never runs git in its folder (`qm-git` `retire.rs`).
+  changes and unmerged commits; git collects the commits later. No kept refs are written; startup
+  `reconcile` deletes the `refs/quartermaster/kept/*` refs earlier versions wrote. A plain-folder
+  task has no worktree or branch, and the app never runs git in its folder (`qm-git` `retire.rs`).
 
 ## Tokens
 

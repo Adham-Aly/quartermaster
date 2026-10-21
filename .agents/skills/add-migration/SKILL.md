@@ -21,6 +21,10 @@ Progress is `PRAGMA user_version`, which counts entries in `MIGRATIONS`.
   wire names with a `CHECK` listing them; JSON columns with `CHECK (json_valid(x))`.
 - Nothing is deleted: retire rows with an `*_at` column. Append-only tables (`events`,
   `session_lines`) have a trigger refusing `UPDATE`; keep it that way.
+- Every new table has a `seq` column (`INTEGER NOT NULL`, drawn from `qm_store::seq`; ordering uses
+  it, never the id) and exactly one entry in `crates/qm-store/src/kept.rs`: KEPT with a predicate
+  for the rows that reach `state.db`, or VOLATILE if none do. A test fails for a table missing from
+  both or listed in both.
 - Let the schema hold the invariants it can (`CHECK`, `UNIQUE`, partial unique indexes, foreign
   keys) as a backstop to the code.
 
