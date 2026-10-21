@@ -31,6 +31,7 @@ pub(crate) fn draw(
 ) {
     let title = match app.view.selected_crew {
         Some(AgentRef::Crewmate { task }) => task.to_string(),
+        Some(AgentRef::Secondmate { id }) => id.to_string(),
         _ => String::from("Task"),
     };
     let style = pane_style(app, Pane::Task);
@@ -97,10 +98,16 @@ pub(crate) fn rows(app: &App, width: u16) -> Vec<Row> {
                 || String::from("The Quartermaster"),
                 |row| row.label.clone(),
             );
-        return empty_lines(&[&format!("{label} has no task of its own.")], width)
+        let mut rows: Vec<Row> = empty_lines(&[&format!("{label} has no task of its own.")], width)
             .into_iter()
             .map(Row::plain)
             .collect();
+        // A secondmate's session opens from here too, as a crewmate's does.
+        if matches!(agent, AgentRef::Secondmate { .. }) {
+            rows.push(Row::plain(Line::default()));
+            rows.push(buttons(false, app.term.hover));
+        }
+        return rows;
     };
     match app.snapshot.tasks.iter().find(|t| t.task == task) {
         Some(detail) => detail_rows(detail, width, app.term.hover),

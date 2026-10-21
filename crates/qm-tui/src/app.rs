@@ -174,13 +174,7 @@ impl App {
         self.term.size = (area.width, area.height);
         self.spinning.set(false);
         let mut map = FrameMap::default();
-        // A worker's session owns the whole frame (no top bar or status bar).
-        let body = if let Screen::Session(_) = self.screen {
-            Some(area)
-        } else {
-            chrome::draw(frame, self, &mut map.hits)
-        };
-        if let Some(body) = body {
+        if let Some(body) = chrome::draw(frame, self, &mut map.hits) {
             router::draw(frame, body, self, &mut map);
             crate::popups::draw(frame, body, self, &mut map);
         }
@@ -372,10 +366,6 @@ impl App {
     pub(crate) fn show(&mut self, screen: Screen) {
         if self.screen != screen {
             self.close_popups();
-        }
-        // Leaving a session puts the Bridge's draft back and sends `ViewSession { agent: None }`.
-        if matches!(self.screen, Screen::Session(_)) && self.screen != screen {
-            self.leave_session();
         }
         Self::set(&mut self.dirty, &mut self.screen, screen);
     }

@@ -59,6 +59,16 @@ pub(crate) struct Flash {
     pub(crate) until: Instant,
 }
 
+/// What the Bridge's middle panel shows: the Quartermaster's conversation, or a worker's
+/// session in its place, the left and right columns staying as they are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Middle {
+    #[default]
+    Quartermaster,
+    /// A crewmate's or secondmate's session, opened from the crew or the task pane.
+    Session(AgentRef),
+}
+
 /// The UI state, held in `App::view`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct View {
@@ -91,7 +101,10 @@ pub(crate) struct View {
     pub(crate) sample: bool,
     /// The Settings popup's state.
     pub(crate) settings: crate::settings::SettingsView,
-    /// The worker-session screen: its scroll, expanded lines and drafts.
+    /// What the middle panel shows. Shared state, not per window, so every window shows the
+    /// same session.
+    pub(crate) middle: Middle,
+    /// The sessions' scroll, expanded lines and drafts.
     pub(crate) session: Option<crate::session::SessionUi>,
     /// The sessions' expanded tool-call runs. Shared state, not per window: keyed by the run,
     /// never by screen position, and kept when you leave a session.

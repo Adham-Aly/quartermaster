@@ -8,7 +8,7 @@ use crate::hit::{Hit, Pane, StatusItem, TaskButton};
 use crate::input::select;
 use crate::view::{MenuTarget, Selection};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use qm_types::api::CardKind;
+use qm_types::api::{AgentRef, CardKind};
 use ratatui::layout::Position;
 use std::time::{Duration, Instant};
 
@@ -190,8 +190,10 @@ impl App {
             Hit::Crew(agent) => {
                 self.focus_pane(Pane::Crew);
                 // A single click selects (and opens the overlay when folded); a double-click
-                // opens, like `o`.
-                self.open_crew(agent, double, now);
+                // opens, like `o`. While a session shows, a click on the Quartermaster's row
+                // brings its conversation back.
+                let back = agent == AgentRef::Quartermaster && self.shown_session().is_some();
+                self.open_crew(agent, double || back, now);
             }
             Hit::CardButton { message, index } => self.press_card_button(message, index, now),
             Hit::TaskButton(TaskButton::OpenSession) => self.open_session(now),
