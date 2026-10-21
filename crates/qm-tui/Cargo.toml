@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 # The UI depends on the core's API messages only, never on qm-core itself.
 qm-types.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time", "io-util", "macros"] }
 crossterm.workspace = true
 ratatui.workspace = true
 jiff.workspace = true

@@ -32,6 +32,18 @@ pub enum Background {
     Unknown,
 }
 
+/// The colours a terminal reported for its text, background and 16 palette entries, as sRGB
+/// bytes; `None` where it didn't answer. The host fits each window's palette to them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Colors {
+    #[serde(default)]
+    pub fg: Option<[u8; 3]>,
+    #[serde(default)]
+    pub bg: Option<[u8; 3]>,
+    #[serde(default)]
+    pub ansi: Vec<Option<[u8; 3]>>,
+}
+
 /// The client's first frame: who it is and what its terminal can do.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -49,6 +61,8 @@ pub struct Hello {
     pub keyboard_enhanced: bool,
     #[serde(default)]
     pub term: String,
+    #[serde(default)]
+    pub colors: Colors,
 }
 
 impl Hello {
@@ -65,6 +79,7 @@ impl Hello {
             background: Background::Unknown,
             keyboard_enhanced: false,
             term: String::new(),
+            colors: Colors::default(),
         }
     }
 }
@@ -230,6 +245,8 @@ pub enum Frame {
     Input(InputEvent),
     /// Client → host: the window's new size.
     Resize { cols: u16, rows: u16 },
+    /// Client → host: the terminal's colours changed (it was resumed under a new theme).
+    Colors(Colors),
     /// Client → host: this window is leaving.
     Detach,
     /// Host → client: bytes to write to the terminal as they are.
@@ -259,6 +276,7 @@ const K_RESIZE: u8 = 5;
 const K_DETACH: u8 = 6;
 const K_OUTPUT: u8 = 7;
 const K_CONTROL: u8 = 8;
+const K_COLORS: u8 = 9;
 
 #[derive(Serialize, Deserialize)]
 struct Size {
@@ -293,6 +311,7 @@ impl Frame {
             Self::Detach => (K_DETACH, Vec::new()),
             Self::Output(bytes) => (K_OUTPUT, bytes.clone()),
             Self::Control(v) => (K_CONTROL, json(v)),
+            Self::Colors(v) => (K_COLORS, json(v)),
         }
     }
 
@@ -330,6 +349,7 @@ impl Frame {
             K_DETACH => Self::Detach,
             K_OUTPUT => Self::Output(payload.to_vec()),
             K_CONTROL => Self::Control(parse(payload)?),
+            K_COLORS => Self::Colors(parse(payload)?),
             other => return Err(WireError::UnknownKind(other)),
         })
     }
@@ -391,6 +411,11 @@ mod tests {
             Frame::Input(InputEvent::Paste("a\nb".to_owned())),
             Frame::Input(InputEvent::FocusLost),
             Frame::Resize { cols: 60, rows: 16 },
+            Frame::Colors(Colors {
+                fg: Some([1, 2, 3]),
+                bg: None,
+                ansi: vec![Some([9, 9, 9]), None],
+            }),
             Frame::Detach,
             Frame::Output(vec![0x1b, b'[', 0, 255]),
             Frame::Control(Control::Suspend),

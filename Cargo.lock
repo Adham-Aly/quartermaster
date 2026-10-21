@@ -2437,6 +2437,7 @@ dependencies = [
  "ratatui",
  "serde",
  "syntect",
+ "tokio",
  "toml",
  "unicode-width",
  "vt100",
