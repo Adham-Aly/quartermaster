@@ -36,7 +36,8 @@ use qm_types::clock::Clock;
 use qm_types::config::Config;
 use qm_types::data_dir::DataDir;
 use qm_types::domain::{
-    DeliveryMode, HeldKind, MergeMethod, MessageKind, MessageSource, ProjectAction, ProjectOrigin,
+    Autonomy, DeliveryMode, HeldKind, MergeMethod, MessageKind, MessageSource, ProjectAction,
+    ProjectOrigin,
 };
 use qm_types::error::Refusal;
 use qm_types::ids::{HeldActionId, ProjectId};
@@ -67,6 +68,8 @@ pub mod event_kind {
     pub const CONFIGURED: &str = "project.configured";
     pub const REMOVED: &str = "project.removed";
     pub const ADDED: &str = "project.added";
+    /// You turned a project's autonomy on or off (never an agent).
+    pub const AUTONOMY: &str = "project.autonomy";
 }
 
 /// Everything the registry needs.
@@ -1076,6 +1079,39 @@ impl ProjectService {
         Ok(Some(id))
     }
 
+    /// Your `SetProjectAutonomy`: the one way autonomy changes. No tool reaches this; it comes
+    /// only from the UI. Returns whether anything changed.
+    pub async fn set_autonomy(&self, name: &str, autonomy: Autonomy) -> Result<bool, StoreError> {
+        let name = name.to_owned();
+        let at = self.inner.clock.now();
+        self.inner
+            .db
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                let Some(project) = projects::active_by_name(&tx, &name)? else {
+                    return Ok(false);
+                };
+                let changed = projects::set_autonomy(&tx, project.id, autonomy)?;
+                if changed {
+                    events::insert(
+                        &tx,
+                        &NewEvent {
+                            kind: event_kind::AUTONOMY,
+                            agent: None,
+                            task: None,
+                            turn: None,
+                            summary: &format!("you turned autonomy {autonomy} for {name}"),
+                            payload: serde_json::json!({ "project": name, "autonomy": autonomy }),
+                            at,
+                        },
+                    )?;
+                }
+                tx.commit()?;
+                Ok(changed)
+            })
+            .await
+    }
+
     /// The projects pane's rows.
     async fn rows(&self) -> Result<Vec<qm_types::api::ProjectRow>, StoreError> {
         self.inner
@@ -1354,6 +1390,18 @@ impl ProjectsPart {
 
 impl ApiPart for ProjectsPart {
     fn handle<'a>(&'a self, command: &'a qm_types::api::Command) -> Option<BoxFuture<'a, Handled>> {
+        if let qm_types::api::Command::SetProjectAutonomy { project, autonomy } = command {
+            return Some(Box::pin(async move {
+                match self.projects.set_autonomy(project, *autonomy).await {
+                    Ok(true) => Handled::Changed,
+                    Ok(false) => Handled::Unchanged,
+                    Err(e) => {
+                        tracing::error!(error = %e, "couldn't change the project's autonomy");
+                        Handled::Changed
+                    }
+                }
+            }));
+        }
         let qm_types::api::Command::ChangeHeldLocation { held, location } = command else {
             return None;
         };
