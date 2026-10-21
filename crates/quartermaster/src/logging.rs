@@ -1,16 +1,22 @@
 //! Logging to `logs/` with secret redaction.
 //!
-//! One file per day, `logs/quartermaster-YYYY-MM-DD.log`, mode 0600, appended to. Every line goes
-//! through [`redact`] before it reaches the disk, as a backstop: code should never log a secret in
-//! the first place. The level comes from `QM_LOG` (an `EnvFilter` directive), `info` by default.
-//! Nothing is logged to the terminal, which belongs to the UI.
+//! One file per local day, `logs/quartermaster-YYYY-MM-DD.log`, mode 0600, appended to. A server
+//! that runs past local midnight moves on to the new day's file with the first line written after
+//! it, so no file holds more than one day. The day comes from the injected [`Clock`]. Every line
+//! goes through [`redact`] before it reaches the disk, as a backstop: code should never log a
+//! secret in the first place. The level comes from `QM_LOG` (an `EnvFilter` directive), `info` by
+//! default. Nothing is logged to the terminal, which belongs to the UI.
 
+use jiff::Timestamp;
+use jiff::civil::Date;
+use jiff::tz::TimeZone;
+use qm_types::clock::Clock;
 use std::borrow::Cow;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -53,38 +59,85 @@ const SECRET_KEYS: &[&str] = &[
 ];
 const SECRET_SCHEMES: &[&str] = &["bearer", "basic"];
 
-/// The path of today's log file.
-pub fn log_file(logs: &Path) -> PathBuf {
-    let date = jiff::Zoned::now().date();
+/// The path of the log file for `date`, a local calendar day.
+pub fn log_file(logs: &Path, date: Date) -> PathBuf {
     logs.join(format!("quartermaster-{date}.log"))
 }
 
-/// Installs the global subscriber, writing redacted lines to today's file in `logs`.
-pub fn init(logs: &Path) -> io::Result<()> {
-    let file = OpenOptions::new()
+/// The local calendar day `at` falls on.
+fn local_day(at: Timestamp) -> Date {
+    at.to_zoned(TimeZone::system()).date()
+}
+
+fn open_log(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .open(log_file(logs))?;
+        .open(path)
+}
+
+/// Installs the global subscriber, writing redacted lines to the day's file in `logs`. Lines
+/// written after local midnight go to the next day's file; see the module docs.
+pub fn init(logs: &Path, clock: Arc<dyn Clock>) -> io::Result<()> {
+    let log = DailyFile::open(logs.to_path_buf(), clock)?;
     let filter = EnvFilter::try_from_env(QM_LOG).unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(false)
-        .with_writer(RedactingFile(Arc::new(Mutex::new(file))))
+        .with_writer(RedactingFile(Arc::new(log)))
         .try_init()
         .map_err(io::Error::other)
 }
 
+/// The day's log file, reopened when the clock's local day moves on.
+#[derive(Debug)]
+struct DailyFile {
+    logs: PathBuf,
+    clock: Arc<dyn Clock>,
+    day: Mutex<Day>,
+}
+
+/// The file being written and the day it is for.
+#[derive(Debug)]
+struct Day {
+    date: Date,
+    file: File,
+}
+
+impl DailyFile {
+    fn open(logs: PathBuf, clock: Arc<dyn Clock>) -> io::Result<Self> {
+        let date = local_day(clock.now());
+        let file = open_log(&log_file(&logs, date))?;
+        Ok(Self {
+            logs,
+            clock,
+            day: Mutex::new(Day { date, file }),
+        })
+    }
+
+    /// Writes `bytes` to the file for today, opening it first if the day has changed.
+    fn write_bytes(&self, bytes: &[u8]) -> io::Result<()> {
+        let today = local_day(self.clock.now());
+        let mut day = self.day.lock().unwrap_or_else(PoisonError::into_inner);
+        if day.date != today {
+            day.file = open_log(&log_file(&self.logs, today))?;
+            day.date = today;
+        }
+        day.file.write_all(bytes)
+    }
+}
+
 /// A log file that redacts each event before writing it.
 #[derive(Clone, Debug)]
-struct RedactingFile(Arc<Mutex<File>>);
+struct RedactingFile(Arc<DailyFile>);
 
 impl<'a> MakeWriter<'a> for RedactingFile {
     type Writer = EventBuffer;
 
     fn make_writer(&'a self) -> EventBuffer {
         EventBuffer {
-            file: Arc::clone(&self.0),
+            log: Arc::clone(&self.0),
             buf: Vec::new(),
         }
     }
@@ -93,7 +146,7 @@ impl<'a> MakeWriter<'a> for RedactingFile {
 /// Collects one event, then redacts and writes it in one piece when dropped.
 #[derive(Debug)]
 struct EventBuffer {
-    file: Arc<Mutex<File>>,
+    log: Arc<DailyFile>,
     buf: Vec<u8>,
 }
 
@@ -109,11 +162,7 @@ impl Write for EventBuffer {
         }
         let text = String::from_utf8_lossy(&self.buf);
         let clean = redact(&text);
-        let mut file = self
-            .file
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        file.write_all(clean.as_bytes())?;
+        self.log.write_bytes(clean.as_bytes())?;
         self.buf.clear();
         Ok(())
     }
@@ -199,4 +248,64 @@ pub fn redact(text: &str) -> Cow<'_, str> {
 fn is_secret_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
     SECRET_KEYS.iter().any(|k| key.ends_with(k))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qm_types::clock::Sleep;
+    use std::time::Instant as StdInstant;
+
+    /// A clock whose wall time the test moves by hand.
+    #[derive(Debug)]
+    struct Stepped(Mutex<Timestamp>);
+
+    impl Stepped {
+        fn set(&self, at: Timestamp) {
+            *self.0.lock().unwrap_or_else(PoisonError::into_inner) = at;
+        }
+    }
+
+    impl Clock for Stepped {
+        fn now(&self) -> Timestamp {
+            *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+
+        fn instant(&self) -> StdInstant {
+            StdInstant::now()
+        }
+
+        fn sleep_until(&self, _deadline: StdInstant) -> Sleep {
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    /// The instant at `hour:minute` on `date`, in the system's local time zone.
+    fn local(date: Date, hour: i8, minute: i8) -> Timestamp {
+        date.at(hour, minute, 0, 0)
+            .to_zoned(TimeZone::system())
+            .expect("a local time that exists")
+            .timestamp()
+    }
+
+    #[test]
+    fn a_server_past_midnight_writes_the_next_days_file() {
+        let dir = std::env::temp_dir().join(format!("qm-logging-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let day = jiff::civil::date(2026, 10, 20);
+        let next = day.tomorrow().expect("a next day");
+        let clock = Arc::new(Stepped(Mutex::new(local(day, 23, 59))));
+        let log = DailyFile::open(dir.clone(), clock.clone()).expect("today's file");
+
+        log.write_bytes(b"late on the 20th\n").expect("a line");
+        clock.set(local(next, 0, 0));
+        log.write_bytes(b"just after midnight\n").expect("a line");
+        log.write_bytes(b"later the same day\n").expect("a line");
+
+        let on_the_20th = std::fs::read_to_string(log_file(&dir, day)).expect("the 20th's file");
+        let on_the_21st = std::fs::read_to_string(log_file(&dir, next)).expect("the 21st's file");
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+        assert_eq!(on_the_20th, "late on the 20th\n");
+        assert_eq!(on_the_21st, "just after midnight\nlater the same day\n");
+    }
 }
