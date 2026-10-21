@@ -22,7 +22,7 @@ use jiff::Timestamp;
 use qm_types::domain::{StartedBy, TurnStatus};
 use qm_types::ids::space;
 use qm_types::ids::{AgentId, EventId, MessageId, ModelId, TaskId, TurnId};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 /// The `events.kind` values written here; the same strings as `qm_core::turn_io::event_kind`.
 pub mod kind {
@@ -193,6 +193,9 @@ pub fn seat_agent(conn: &Connection) -> Result<Option<AgentId>, StoreError> {
         .optional()?)
 }
 
+/// The reason a wake turn gives when it found no wakes: it never reached the model.
+pub const NO_WAKES: &str = "no_wakes";
+
 /// Records a turn as running, and its `seat.turn_started` event, in one transaction.
 pub fn start_turn(conn: &mut Connection, turn: &NewTurn) -> Result<TurnId, StoreError> {
     let tx = conn.transaction()?;
@@ -221,7 +224,7 @@ pub fn start_turn(conn: &mut Connection, turn: &NewTurn) -> Result<TurnId, Store
         "started_by": started_by_column(turn.started_by),
         "message": message,
     });
-    insert_event(
+    let event = insert_event(
         &tx,
         kind::TURN_STARTED,
         turn.agent,
@@ -231,8 +234,53 @@ pub fn start_turn(conn: &mut Connection, turn: &NewTurn) -> Result<TurnId, Store
         &payload,
         turn.at,
     )?;
+    let event_seq: i64 = tx.query_row("SELECT seq FROM events WHERE id = ?1", [event], |r| {
+        r.get(0)
+    })?;
+    shift_watermark(&tx, turn.agent, id, (event, event_seq), turn.at)?;
     tx.commit()?;
     Ok(id)
+}
+
+/// Makes `turn` the agent's newest turn for the block's since-lines (`block_watermarks`). The turn
+/// it replaces moves to `prev_*`, so a `no_wakes` end can put it back ([`restore_watermark`]).
+fn shift_watermark(
+    tx: &Transaction<'_>,
+    agent: AgentId,
+    turn: TurnId,
+    (event, event_seq): (EventId, i64),
+    at: Timestamp,
+) -> Result<(), StoreError> {
+    // An UPDATE, not an upsert: with the dirty-mark triggers, SQLite 3.54 refuses an upsert's
+    // DO UPDATE on a mirrored table (a UNIQUE failure in the trigger's temp table).
+    let moved = tx.execute(
+        "UPDATE block_watermarks
+         SET prev_turn_id = turn_id, prev_event_id = event_id, prev_event_seq = event_seq,
+             turn_id = ?2, event_id = ?3, event_seq = ?4
+         WHERE agent_id = ?1",
+        params![agent, turn, event, event_seq],
+    )?;
+    if moved == 0 {
+        tx.execute(
+            "INSERT INTO block_watermarks
+                 (agent_id, turn_id, event_id, event_seq, prev_turn_id, prev_event_id, prev_event_seq, seq)
+             VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, ?5)",
+            params![agent, turn, event, event_seq, seq::next(at)],
+        )?;
+    }
+    Ok(())
+}
+
+/// A turn that ended `no_wakes` never reached the model, so it is no watermark: the turn before it
+/// is back in the row.
+fn restore_watermark(tx: &Transaction<'_>, agent: AgentId, turn: TurnId) -> Result<(), StoreError> {
+    tx.execute(
+        "UPDATE block_watermarks
+         SET turn_id = prev_turn_id, event_id = prev_event_id, event_seq = COALESCE(prev_event_seq, 0)
+         WHERE agent_id = ?1 AND turn_id = ?2",
+        params![agent, turn],
+    )?;
+    Ok(())
 }
 
 /// Marks a turn as having had the effective-action rule's one retry.
@@ -326,6 +374,9 @@ pub fn finish_turn(conn: &mut Connection, f: &FinishedTurn) -> Result<(), StoreE
             column: "turns.status",
             message: format!("turn {} is not running", f.turn),
         });
+    }
+    if f.reason.as_deref() == Some(NO_WAKES) {
+        restore_watermark(&tx, f.agent, f.turn)?;
     }
     for text in f.close_outs.iter().filter(|t| !t.trim().is_empty()) {
         insert_event(

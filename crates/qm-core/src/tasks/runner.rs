@@ -875,7 +875,7 @@ impl CrewRunner {
                 turn,
                 &TurnResult {
                     status: TurnStatus::Completed,
-                    reason: Some("no_wakes".to_owned()),
+                    reason: Some(qm_store::turns::NO_WAKES.to_owned()),
                     usage: TurnUsage::default(),
                     final_text: String::new(),
                     clear_report: false,

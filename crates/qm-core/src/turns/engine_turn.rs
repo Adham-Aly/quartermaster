@@ -329,7 +329,7 @@ impl TurnLoop {
         };
 
         if start == Start::Wakes && claimed.is_empty() {
-            self.commit_quiet(&cx, "no_wakes").await?;
+            self.commit_quiet(&cx, qm_store::turns::NO_WAKES).await?;
             return Ok(None);
         }
         Ok(Some((cx, claimed)))

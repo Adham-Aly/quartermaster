@@ -30,7 +30,7 @@ use qm_store::standing_instructions;
 use qm_types::BoxFuture;
 use qm_types::clock::Clock;
 use qm_types::domain::{ProjectOrigin, TaskKind, TaskStatus, Tier};
-use qm_types::ids::{AgentId, EventId, StandingInstructionId, TurnId};
+use qm_types::ids::{AgentId, StandingInstructionId, TurnId};
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -177,8 +177,8 @@ fn gather(conn: &mut Connection, agent: AgentId, turn: TurnId) -> Result<Gathere
     // One read transaction, so every section describes the same moment.
     let tx = conn.transaction()?;
     let watermark = context::watermark(&tx, agent, turn)?;
-    let after: Option<EventId> = watermark.map(|w| w.event);
-    let before: Option<EventId> = events::turn_started_id(&tx, turn)?;
+    let after = watermark.map_or(0, |w| w.seq);
+    let before = events::turn_started_seq(&tx, turn)?;
     let gathered = Gathered {
         watermark,
         projects: context::projects(&tx)?,
@@ -187,7 +187,7 @@ fn gather(conn: &mut Connection, agent: AgentId, turn: TurnId) -> Result<Gathere
         you: events::since(&tx, after, before, YOU, SINCE_LINES)?,
         activity: events::since(&tx, after, before, ACTIVITY, SINCE_LINES)?,
         model_changes: events::since(&tx, after, before, MODEL_CHANGES, SINCE_LINES)?,
-        outcomes: events::latest(&tx, OUTCOMES, RECENT_OUTCOMES)?,
+        outcomes: events::latest_of(&tx, OUTCOMES, agent, RECENT_OUTCOMES)?,
         standing: standing_instructions::active(&tx)?,
         tiers: context::tier_models(&tx)?,
     };
@@ -251,5 +251,175 @@ fn tier_models(t: &TierRow) -> TierModels {
         tier: t.tier,
         models: t.models.iter().map(|m| neutralise(m.as_str())).collect(),
         note: (t.tier == Tier::Premium).then(|| PREMIUM_NOTE.to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::turn_io::ContextSource;
+    use qm_store::turns::{self, FinishedTurn, NewTurn, TurnTotals};
+    use qm_types::clock::Sleep;
+    use qm_types::domain::{StartedBy, TurnStatus};
+    use std::time::Instant as StdInstant;
+
+    /// A clock that stands still, so a render of the same state is the same bytes.
+    #[derive(Debug)]
+    struct Still(Timestamp);
+
+    impl Clock for Still {
+        fn now(&self) -> Timestamp {
+            self.0
+        }
+
+        fn instant(&self) -> StdInstant {
+            StdInstant::now()
+        }
+
+        fn sleep_until(&self, _deadline: StdInstant) -> Sleep {
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    /// The rows every block needs: a project and the Quartermaster.
+    const SETUP: &str =
+        "INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, \
+             merge_method, created_at, seq) \
+         VALUES (1, 'p', '/p', 'created', 'main', 'direct_pr', 'merge', 1, 1);
+         INSERT INTO agents (id, role, home, status, created_at, seq) \
+         VALUES (1, 'quartermaster', '/home', 'idle', 1, 1);";
+
+    /// The creation order for an event or row made at `ms` milliseconds.
+    fn seq_at(ms: i64) -> i64 {
+        qm_store::seq::next(Timestamp::from_millisecond(ms).expect("a time"))
+    }
+
+    fn begin(conn: &mut Connection, agent: AgentId, second: i64) -> Result<TurnId, StoreError> {
+        let at = Timestamp::from_second(second).expect("a time");
+        turns::start_turn(
+            conn,
+            &NewTurn {
+                agent,
+                started_by: StartedBy::AppEvent,
+                model: None,
+                at,
+            },
+        )
+    }
+
+    fn end(
+        conn: &mut Connection,
+        agent: AgentId,
+        turn: TurnId,
+        second: i64,
+    ) -> Result<(), StoreError> {
+        turns::finish_turn(
+            conn,
+            &FinishedTurn {
+                turn,
+                agent,
+                status: TurnStatus::Completed,
+                reason: None,
+                detail: None,
+                actions: Vec::new(),
+                retried: false,
+                usage: TurnTotals::default(),
+                model: None,
+                close_outs: Vec::new(),
+                limit: None,
+                release_wakes: false,
+                at: Timestamp::from_second(second).expect("a time"),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn the_block_reads_the_same_across_a_restart_and_each_line_shows_once() {
+        let dir = std::env::temp_dir().join(format!("qm-block-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let path = dir.join("state.db");
+        let clock: Arc<dyn Clock> = Arc::new(Still(
+            Timestamp::from_second(1_800_000_000).expect("a time"),
+        ));
+        let agent = AgentId::new(1);
+
+        let db = Db::open(&path).expect("a database");
+        db.call(|conn| {
+            conn.execute_batch(SETUP)?;
+            // Two open tasks, the older one first: the block lists them in creation order.
+            for (id, title, ms) in [(1, "OLD-TASK-MARK", 10), (2, "NEW-TASK-MARK", 11)] {
+                conn.execute(
+                    "INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, \
+                         delivery_mode, branch, status, created_at, seq) \
+                     VALUES (?1, 1, 1, 'build', ?2, 'g', 'direct_pr', ?3, 'running', 1, ?4)",
+                    rusqlite::params![id, title, format!("qm/task-{id}"), seq_at(ms)],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("the rows");
+
+        // Turn A ends; a line arrives between turns; turn B starts and ends after it.
+        db.call(move |conn| {
+            let a = begin(conn, agent, 2)?;
+            end(conn, agent, a, 3)?;
+            conn.execute(
+                "INSERT INTO events (at, kind, summary, payload, seq) \
+                 VALUES (4000, 'you.notice', 'LINE-MARK', '{}', ?1)",
+                [seq_at(4000)],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("turn A and a line");
+        let turn_b = db
+            .call(move |conn| begin(conn, agent, 5))
+            .await
+            .expect("turn B");
+        let builder = ContextBuilder::new(db.clone(), Arc::clone(&clock));
+        let before = builder
+            .context_block(agent, turn_b)
+            .await
+            .expect("the block");
+        assert!(
+            before.contains("LINE-MARK"),
+            "a line since the last turn is shown"
+        );
+        let old = before.find("OLD-TASK-MARK").expect("the old task");
+        let new = before.find("NEW-TASK-MARK").expect("the new task");
+        assert!(old < new, "tasks read in creation order");
+        db.call(move |conn| end(conn, agent, turn_b, 6))
+            .await
+            .expect("turn B ends");
+        drop(builder);
+        drop(db);
+
+        // After a restart, the same turn renders the same bytes.
+        let db = Db::open(&path).expect("a restart");
+        let builder = ContextBuilder::new(db.clone(), Arc::clone(&clock));
+        let after = builder
+            .context_block(agent, turn_b)
+            .await
+            .expect("the block");
+        assert_eq!(
+            after, before,
+            "the block is byte-identical across a restart"
+        );
+
+        // The next turn's block starts after the line: it shows once.
+        let turn_c = db
+            .call(move |conn| begin(conn, agent, 7))
+            .await
+            .expect("turn C");
+        let next = builder
+            .context_block(agent, turn_c)
+            .await
+            .expect("the block");
+        assert!(!next.contains("LINE-MARK"), "a line is shown once");
+        drop(builder);
+        drop(db);
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 }
