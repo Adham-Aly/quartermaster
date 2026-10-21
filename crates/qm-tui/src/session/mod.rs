@@ -1,16 +1,20 @@
-//! A worker's session.
+//! A worker's session, in the Bridge's middle panel.
 //!
-//! The screen owns the whole frame: the header with `← Back`, the
-//! banner "Talking to this crewmate directly…", the session's lines, your input and the status
-//! line with `Interrupt`. Your message goes to the worker as direct intervention
+//! Opening one (a double-click or `⏎` on its crew row, the task pane's `Open session`, the crew
+//! menu) swaps the Quartermaster's conversation and input for the session's: its box, titled
+//! `T-0042 · {title}` with a `← Quartermaster` button, and your input to the worker. The projects,
+//! crew and task columns stay as they are. Your message goes to the worker as direct intervention
 //! (`Command::Send { to: agent }`); the core neutralises it and slips it into a running turn.
+//! `Esc`, `← Quartermaster` or the Quartermaster's crew row brings the conversation back.
 //!
-//! - [`draw`]: the screen, cell for cell.
-//! - [`keys`]: its keys (Tab, ⏎, Esc, `i`, `e`, scrolling, `?`).
-//! - [`mouse`]: Back, Interrupt, Expand/Collapse, a tool-call run's line, the wheel.
+//! Which session shows is `View::middle`, shared by every window.
 //!
-//! Entering swaps the Bridge's draft (text, cursor and selection) out of `App::draft` and this
-//! session's draft in; leaving swaps them back and tells the core
+//! - [`draw`]: the middle panel, cell for cell.
+//! - [`keys`]: the session box's keys (`i`, `e`, scrolling).
+//! - [`mouse`]: `← Quartermaster`, Interrupt, Expand/Collapse, a tool-call run's line, the wheel.
+//!
+//! Opening swaps the Quartermaster's draft (text, cursor and selection) out of `App::draft` and
+//! this session's draft in; going back swaps them back and tells the core
 //! (`Command::ViewSession { agent: None }`).
 
 pub(crate) mod draw;
@@ -20,28 +24,23 @@ pub(crate) mod mouse;
 pub(crate) use draw::draw;
 
 use crate::app::App;
-use crate::bridge::pane_block;
 use crate::hit::{Hit, Pane};
 use crate::input::draft::Draft;
 use crate::router::Screen;
+use crate::view::Middle;
 use qm_types::api::{AgentRef, Command, SessionView};
-use ratatui::style::Style;
 use std::collections::{BTreeSet, HashMap};
 
-/// The session screen has no status bar, so its status line starts with the
-/// Bridge's `⚑ 1 approval` buttons while something waits for you, and only then.
-pub(crate) const SESSION_SHOWS_ATTENTION: bool = true;
-
-/// The banner, shown for as long as you're in a worker's session.
+/// The banner, shown for as long as you're in a crewmate's session.
 pub(crate) const BANNER: &str =
     "Talking to this crewmate directly. You override its supervisor; it will reconcile.";
 
-/// Something on the session screen a click acts on.
+/// Something in a session a click acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SessionHit {
-    /// `← Back`.
+    /// `← Quartermaster` in the box's title: back to the Quartermaster's conversation.
     Back,
-    /// The status line's `Interrupt`.
+    /// `Interrupt` in the box's bottom border.
     Interrupt,
     /// The `Expand`/`Collapse` button of the line with this ID.
     Expand(u64),
@@ -57,29 +56,31 @@ pub(crate) struct ToolGroupKey {
     pub(crate) first: u64,
 }
 
-/// The session screen's own state, in `View::session`.
+/// The sessions' own state, in `View::session`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SessionUi {
-    /// The session showing, while the screen is open.
-    pub(crate) agent: Option<AgentRef>,
     /// How far the session is scrolled up from its newest line.
     pub(crate) scroll_from_bottom: usize,
     /// Lines whose detail is expanded, by ID.
     pub(crate) expanded: BTreeSet<u64>,
-    /// The Bridge's draft while a session is open.
+    /// The Quartermaster's draft while a session shows.
     pub(crate) bridge_draft: Draft,
-    /// Where focus was on the Bridge, restored on the way back.
-    pub(crate) bridge_focus: Option<Pane>,
     /// Each session's unsent draft.
     pub(crate) drafts: HashMap<AgentRef, Draft>,
 }
 
 impl App {
+    /// The worker whose session the middle panel shows, if one does.
+    pub(crate) fn shown_session(&self) -> Option<AgentRef> {
+        match self.view.middle {
+            Middle::Session(agent) => Some(agent),
+            Middle::Quartermaster => None,
+        }
+    }
+
     /// The session view the core sent for the session showing, if it has arrived.
     pub(crate) fn session_view(&self) -> Option<&SessionView> {
-        let Screen::Session(agent) = self.screen else {
-            return None;
-        };
+        let agent = self.shown_session()?;
         self.snapshot
             .session
             .as_ref()
@@ -91,38 +92,40 @@ impl App {
         match self.session_view() {
             Some(view) => view.open,
             // Until the core's view arrives, a crewmate's session takes text.
-            None => matches!(self.screen, Screen::Session(AgentRef::Crewmate { .. })),
+            None => matches!(self.shown_session(), Some(AgentRef::Crewmate { .. })),
         }
     }
 
-    /// Shows `agent`'s session: swaps the drafts, focuses the input and asks the core for it.
+    /// Shows `agent`'s session in the middle panel, on the Bridge: swaps the drafts, focuses the
+    /// input and asks the core for it.
     pub(crate) fn enter_session(&mut self, agent: AgentRef) {
-        if self.screen == Screen::Session(agent) {
+        self.show(Screen::Bridge);
+        self.close_popups();
+        self.view.menu = None;
+        self.view.task_overlay = false;
+        if self.shown_session() == Some(agent) {
+            self.focus_pane(Pane::Input);
             return;
         }
         self.leave_session();
-        self.close_popups();
-        self.view.menu = None;
         self.term.selection = None;
         self.term.pointer.selecting = false;
-        self.view.task_overlay = false;
-        let bridge_focus = self.focus;
         let ui = self.view.session.get_or_insert_with(SessionUi::default);
-        ui.agent = Some(agent);
         ui.scroll_from_bottom = 0;
         ui.expanded.clear();
         ui.bridge_draft = std::mem::take(&mut self.draft);
-        ui.bridge_focus = Some(bridge_focus);
         self.draft = ui.drafts.remove(&agent).unwrap_or_default();
-        self.screen = Screen::Session(agent);
+        self.view.middle = Middle::Session(agent);
         self.focus = Pane::Input;
+        self.redraw();
         self.command(Command::ViewSession { agent: Some(agent) });
     }
 
-    /// Leaves the session showing, if one is: keeps its draft, puts the Bridge's back and tells
-    /// the core. The caller picks the next screen.
+    /// Puts the Quartermaster's conversation back in the middle panel, if a session shows there:
+    /// keeps the session's draft, puts the Quartermaster's back and tells the core. Focus on the
+    /// session box moves to the conversation; anywhere else it stays.
     pub(crate) fn leave_session(&mut self) {
-        let Screen::Session(agent) = self.screen else {
+        let Some(agent) = self.shown_session() else {
             return;
         };
         let draft = std::mem::take(&mut self.draft);
@@ -130,12 +133,14 @@ impl App {
         if !draft.is_empty() {
             ui.drafts.insert(agent, draft);
         }
-        ui.agent = None;
         self.draft = std::mem::take(&mut ui.bridge_draft);
-        self.focus = ui.bridge_focus.take().unwrap_or(Pane::Crew);
+        if self.focus == Pane::Session {
+            self.focus = Pane::Conversation;
+        }
         self.term.selection = None;
         self.term.pointer.selecting = false;
-        self.screen = Screen::Bridge;
+        self.view.middle = Middle::Quartermaster;
+        self.redraw();
         self.command(Command::ViewSession { agent: None });
     }
 
@@ -166,7 +171,7 @@ impl App {
 
     /// `i` or the `Interrupt` button: stops the worker's running turn, keeping its session.
     pub(crate) fn interrupt_session(&mut self) {
-        let Screen::Session(agent) = self.screen else {
+        let Some(agent) = self.shown_session() else {
             return;
         };
         if self.session_view().is_some_and(|view| view.turn_running) {
@@ -178,15 +183,10 @@ impl App {
     /// `▸ 3 tool calls` line staying where it is on screen. A view pinned to the newest line
     /// stays pinned, scrolling only as far as keeps that line on screen.
     pub(crate) fn toggle_tool_group(&mut self, first: u64) {
-        let Screen::Session(agent) = self.screen else {
+        let Some(agent) = self.shown_session() else {
             return;
         };
-        let inner = self
-            .term
-            .drawn
-            .hits
-            .rect_of(Hit::Pane(Pane::Session))
-            .map(|area| pane_block("Session", Style::default()).inner(area));
+        let inner = self.term.drawn.session_rows;
         let count = |app: &Self, width: u16| {
             let lines = app.session_view().map_or(&[][..], |v| v.lines.as_slice());
             draw::rows(lines, width, app)
@@ -226,7 +226,7 @@ impl App {
 
     /// Whether the tool-call run starting at line `first` of the showing session is expanded.
     pub(crate) fn is_tool_group_expanded(&self, first: u64) -> bool {
-        let Screen::Session(agent) = self.screen else {
+        let Some(agent) = self.shown_session() else {
             return false;
         };
         self.view
@@ -240,5 +240,169 @@ impl App {
             .session
             .as_ref()
             .is_some_and(|ui| ui.expanded.contains(&id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::App;
+    use crate::hit::{Hit, Pane};
+    use crate::router::Screen;
+    use crate::sample;
+    use crate::view::Middle;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+    use qm_types::api::{AgentRef, Command};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::time::Instant;
+
+    fn t42() -> AgentRef {
+        AgentRef::Crewmate {
+            task: qm_types::ids::TaskId::new(42).unwrap(),
+        }
+    }
+
+    /// Draws a frame of `w`×`h` and returns its rows as text.
+    fn screen(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    fn key(app: &mut App, code: KeyCode) {
+        app.on_event(
+            Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+            Instant::now(),
+        );
+    }
+
+    fn click(app: &mut App, hit: Hit, times: usize) {
+        let area = app.term.drawn.hits.rect_of(hit).unwrap();
+        let (column, row) = (area.x, area.y);
+        for _ in 0..times {
+            for kind in [
+                MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                MouseEventKind::Up(crossterm::event::MouseButton::Left),
+            ] {
+                let mouse = MouseEvent {
+                    kind,
+                    column,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                };
+                app.on_event(Event::Mouse(mouse), Instant::now());
+            }
+        }
+    }
+
+    #[test]
+    fn a_session_takes_only_the_middle_panel() {
+        let mut app = App::new();
+        sample::install_session(&mut app);
+        assert_eq!(app.screen, Screen::Bridge);
+        assert_eq!(app.view.middle, Middle::Session(t42()));
+        let rows = screen(&mut app, 150, 45);
+        assert!(rows[0].contains("Menu"), "{}", rows[0]);
+        let title = &rows[1];
+        assert!(title.starts_with("╭─ Projects "), "{title}");
+        assert!(
+            title.contains("╭─ T-0042 · fix(auth): token refresh race "),
+            "{title}"
+        );
+        assert!(title.contains(" ← Quartermaster ─╮"), "{title}");
+        assert!(
+            title.ends_with("╭─ T-0042 ─────────────────────────╮"),
+            "{title}"
+        );
+        assert!(rows.iter().any(|r| r.contains("╭─ Crew ")));
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("╰─ running 14m · job J3 idle ─"))
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("› message T-0042 directly…"))
+        );
+        assert!(!rows.iter().any(|r| r.contains("╭─ Quartermaster ")));
+    }
+
+    #[test]
+    fn esc_brings_the_quartermaster_back_without_interrupting() {
+        let mut app = App::new();
+        sample::install_session(&mut app);
+        app.set_input("half a thought".to_owned());
+        app.take_commands();
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.view.middle, Middle::Quartermaster);
+        assert_eq!(app.take_commands(), [Command::ViewSession { agent: None }]);
+        // The Quartermaster's draft is back; the session's is kept for next time.
+        assert_eq!(app.draft.text, "yes, start the rate limiting build");
+        let rows = screen(&mut app, 150, 45);
+        assert!(rows[1].contains("╭─ Quartermaster "), "{}", rows[1]);
+        app.enter_session(t42());
+        assert_eq!(app.draft.text, "half a thought");
+    }
+
+    #[test]
+    fn the_title_button_and_the_quartermaster_row_both_go_back() {
+        let mut app = App::new();
+        sample::install_session(&mut app);
+        screen(&mut app, 150, 45);
+        click(&mut app, Hit::Session(super::SessionHit::Back), 1);
+        assert_eq!(app.view.middle, Middle::Quartermaster);
+
+        // A double-click on a crew row opens its session in the middle; one click on the
+        // Quartermaster's row brings the conversation back.
+        screen(&mut app, 150, 45);
+        click(&mut app, Hit::Crew(t42()), 2);
+        assert_eq!(app.view.middle, Middle::Session(t42()));
+        screen(&mut app, 150, 45);
+        click(&mut app, Hit::Crew(AgentRef::Quartermaster), 1);
+        assert_eq!(app.view.middle, Middle::Quartermaster);
+        assert_eq!(app.focus, Pane::Input);
+    }
+
+    #[test]
+    fn a_single_click_on_a_crewmate_only_previews_it() {
+        let mut app = App::new();
+        sample::install_session(&mut app);
+        app.leave_session();
+        screen(&mut app, 150, 45);
+        click(&mut app, Hit::Crew(t42()), 1);
+        assert_eq!(app.view.middle, Middle::Quartermaster);
+        assert_eq!(app.view.selected_crew, Some(t42()));
+        // `⏎` on the selected row opens it, as does the task pane's Open session.
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.view.middle, Middle::Session(t42()));
+        app.leave_session();
+        screen(&mut app, 150, 45);
+        click(
+            &mut app,
+            Hit::TaskButton(crate::hit::TaskButton::OpenSession),
+            1,
+        );
+        assert_eq!(app.view.middle, Middle::Session(t42()));
+    }
+
+    #[test]
+    fn tab_visits_the_session_box_in_the_conversations_place() {
+        let mut app = App::new();
+        sample::install_session(&mut app);
+        screen(&mut app, 150, 45);
+        assert_eq!(app.focus, Pane::Input);
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Pane::Task);
+        key(&mut app, KeyCode::BackTab);
+        key(&mut app, KeyCode::BackTab);
+        assert_eq!(app.focus, Pane::Session);
+        key(&mut app, KeyCode::BackTab);
+        assert_eq!(app.focus, Pane::Crew);
+        // The left and right columns' keys still work while a session shows.
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.view.middle, Middle::Session(t42()));
+        assert_ne!(app.view.selected_crew, Some(t42()));
     }
 }

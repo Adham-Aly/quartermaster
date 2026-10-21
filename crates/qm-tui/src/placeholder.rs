@@ -138,9 +138,12 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             (
                 "⏎ · o · double-click",
-                "open the selected crewmate's session",
+                "open the selected crewmate's session in the middle",
             ),
-            ("tab · shift+tab", "session or your message"),
+            (
+                "tab · shift+tab",
+                "the panes, the session in the conversation's place",
+            ),
             ("⏎", "send to the worker directly"),
             ("i", "interrupt its running turn"),
             (
@@ -148,7 +151,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "expand or collapse the newest detail or tool calls in view",
             ),
             ("↑ ↓ · pgup pgdn · g G", "scroll the session"),
-            ("esc · ← Back", "back to the Bridge"),
+            (
+                "esc · ← Quartermaster",
+                "back to the Quartermaster (or click its crew row)",
+            ),
         ],
     ),
     (

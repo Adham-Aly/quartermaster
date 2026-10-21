@@ -18,7 +18,8 @@ pub(crate) enum Pane {
     Conversation,
     Input,
     Task,
-    /// The worker-session screen's session box (its input is `Input`).
+    /// A worker's session box, in the middle panel in place of the conversation (its input is
+    /// `Input`).
     Session,
     /// The Settings popup's tab: it scrolls.
     Settings,
@@ -91,7 +92,7 @@ pub(crate) enum Hit {
     Settings(crate::settings::SettingsHit),
     /// Something on the setup check screen.
     Setup(crate::setup::SetupHit),
-    /// Something on the worker-session screen.
+    /// Something in a worker's session.
     Session(crate::session::SessionHit),
     /// Something on the Diff screen.
     Diff(crate::diff::DiffHit),
@@ -162,6 +163,8 @@ pub(crate) struct FrameMap {
     /// The Settings tab's selected row, as (rows down from the tab's top, rows the tab shows):
     /// what the keys keep in view.
     pub(crate) settings_selected: Option<(usize, usize)>,
+    /// Where a worker's session drew its scrolling rows, when one showed.
+    pub(crate) session_rows: Option<Rect>,
     /// The prompt field, when one that takes text was drawn.
     pub(crate) field: Option<crate::input::field::Drawn>,
 }

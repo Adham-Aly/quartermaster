@@ -23,8 +23,8 @@ pub(crate) const MIN_HEIGHT: u16 = 16;
 const BRIDGE_HINTS: &str = "click or tab · ⏎ send · ⌥⏎ newline · ? help";
 /// The status bar's hints on the Bridge while the slash-command menu shows.
 const SLASH_HINTS: &str = "↑↓ pick · tab complete · ⏎ run · esc close";
-/// The status bar's hints elsewhere.
-const OTHER_HINTS: &str = "esc back";
+/// The status bar's hints while a worker's session shows in the middle panel.
+const SESSION_HINTS: &str = "esc back to quartermaster · ⏎ send · ? help";
 /// The status bar's hints on Help, which scrolls.
 const HELP_HINTS: &str = "↑↓ pgup pgdn scroll · esc close";
 /// The status bar's right side under the projects hint.
@@ -181,10 +181,10 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits
         (Some(Popup::Update), _) => crate::update::hints(app),
         (Some(Popup::ProjectsHint), _) => PROJECTS_HINT_HINTS.to_owned(),
         (None, Screen::Bridge) if app.slash_menu().is_some() => SLASH_HINTS.to_owned(),
+        (None, Screen::Bridge) if app.shown_session().is_some() => SESSION_HINTS.to_owned(),
         (None, Screen::Bridge) => BRIDGE_HINTS.to_owned(),
         (None, Screen::Setup) => crate::setup::hints(app),
         (None, Screen::Diff) => crate::diff::HINTS.to_owned(),
-        (None, Screen::Session(_)) => OTHER_HINTS.to_owned(),
     };
     let hints = hints.as_str();
     let hints_width = cells(width(hints)) + 1;

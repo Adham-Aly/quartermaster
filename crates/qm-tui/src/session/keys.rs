@@ -1,71 +1,35 @@
-//! The session screen's keys.
+//! A worker's session's keys. The Bridge handles the rest as on the conversation: `Tab` moves
+//! focus through projects, crew, the session box, your input and the task pane; `⏎` in your
+//! input sends to the worker (`⇧⏎`, `⌥⏎`, `Ctrl`+`J` a new line).
 //!
 //! | Key | Does |
 //! |---|---|
-//! | `Tab` / `⇧Tab` | focus Session ↔ Input (Input on entry) |
-//! | `⏎` (Input) | send to the worker; `⇧⏎`, `⌥⏎`, `Ctrl`+`J` a new line |
-//! | `Esc` | close the menu → clear a selection → back to the Bridge; never interrupts here |
-//! | `i` (Session) | interrupt the worker's running turn |
-//! | `e` (Session) | expand or collapse the newest detail or tool-call run in view |
-//! | ↑ ↓ `j` `k`, `PgUp` `PgDn`, `g` `G` (Session) | scroll |
-//! | `?` · `,` (Session) | Help · Settings, as popups over the session |
+//! | `Esc` | close the menu → clear a selection → back to the Quartermaster; never interrupts |
+//! | `i` (session box) | interrupt the worker's running turn |
+//! | `e` (session box) | expand or collapse the newest detail or tool-call run in view |
+//! | ↑ ↓ `j` `k`, `PgUp` `PgDn`, `g` `G` (session box) | scroll |
+//! | `⏎` (session box) | focus your input |
 //!
-//! `Ctrl`+`C`, `Ctrl`+`Z` and an open menu are handled before this, as on every screen.
+//! `Ctrl`+`C`, `Ctrl`+`Z`, an open menu, `?` and `,` are handled before this, as everywhere.
 
 use super::SessionHit;
 use crate::app::App;
 use crate::hit::{Hit, Pane};
-use crate::router::Screen;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::KeyCode;
 use qm_types::api::SessionLineKind;
-use std::time::Instant;
 
 impl App {
-    /// A key on the session screen; returns whether it was this screen's (every key is, while
-    /// the screen shows).
-    pub(crate) fn on_session_key(&mut self, key: KeyEvent, now: Instant) -> bool {
-        let Screen::Session(_) = self.screen else {
-            return false;
-        };
-        match key.code {
-            KeyCode::Esc => {
-                if self.term.selection.is_some() {
-                    self.term.pointer.selecting = false;
-                    self.change(|app| &mut app.term.selection, None);
-                } else if self.selection().is_some() {
-                    self.change(|app| &mut app.draft.anchor, None);
-                } else {
-                    self.leave_session();
-                }
-                return true;
-            }
-            KeyCode::Tab => {
-                self.cycle_focus(true);
-                return true;
-            }
-            KeyCode::BackTab => {
-                self.cycle_focus(false);
-                return true;
-            }
-            _ => {}
-        }
-        if self.focus == Pane::Input {
-            // A closed session takes no text.
-            if self.session_open() {
-                self.on_editor_key(key, now);
-            }
-            return true;
-        }
+    /// A key on the focused session box.
+    pub(crate) fn on_session_key(&mut self, code: KeyCode) {
         let max = self.term.drawn.scroll_max_of(Pane::Session);
         let page = self
             .term
             .drawn
-            .hits
-            .rect_of(Hit::Pane(Pane::Session))
-            .map_or(1, |area| usize::from(area.height.saturating_sub(3)).max(1));
+            .session_rows
+            .map_or(1, |area| usize::from(area.height.saturating_sub(1)).max(1));
         let scroll = self.session_scroll();
         // Counted up from the newest line, so "up" adds.
-        let to = match key.code {
+        let to = match code {
             KeyCode::Up | KeyCode::Char('k') => Some((scroll + 1).min(max)),
             KeyCode::Down | KeyCode::Char('j') => Some(scroll.saturating_sub(1)),
             KeyCode::PageUp => Some((scroll + page).min(max)),
@@ -76,17 +40,14 @@ impl App {
         };
         if let Some(to) = to {
             self.set_session_scroll(to);
-            return true;
+            return;
         }
-        match key.code {
-            KeyCode::Char('?') => self.choose_entry(crate::popups::MenuEntry::Help),
-            KeyCode::Char(',') => self.choose_entry(crate::popups::MenuEntry::Settings),
+        match code {
             KeyCode::Char('i') => self.interrupt_session(),
             KeyCode::Char('e') => self.expand_in_view(),
             KeyCode::Enter => self.focus_pane(Pane::Input),
             _ => {}
         }
-        true
     }
 
     /// `e`: toggles the newest line with a detail, or run of tool calls, whose button is in view.

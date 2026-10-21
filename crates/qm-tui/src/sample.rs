@@ -47,12 +47,13 @@ pub const THINKING: &str = "thinking";
 /// (and so on the menu button).
 pub const MENU_BADGE: &str = "menu-badge";
 
-/// Puts the sample worker session into `app`: T-0042's session open over the Bridge sample, the
-/// input focused and empty. Nothing waits for you.
+/// Puts the sample worker session into `app`: T-0042's session in the Bridge sample's middle
+/// panel, the input focused and empty. Nothing waits for you.
 pub(crate) fn install_session(app: &mut App) {
     install(app);
     app.snapshot.attention = Attention::default();
     app.snapshot.session = Some(session_view());
+    app.select_crew(task(42));
     app.enter_session(task(42));
 }
 
@@ -163,10 +164,12 @@ fn secondmate_ref() -> AgentRef {
     }
 }
 
-/// Puts SM-02's session into `app`, over the Bridge sample, the input focused and empty.
+/// Puts SM-02's session into `app`, in the Bridge sample's middle panel, the input focused and
+/// empty.
 pub(crate) fn install_secondmate(app: &mut App) {
     install(app);
     app.snapshot.session = Some(secondmate_view());
+    app.select_crew(secondmate_ref());
     app.enter_session(secondmate_ref());
 }
 

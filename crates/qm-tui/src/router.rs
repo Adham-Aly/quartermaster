@@ -1,7 +1,8 @@
 //! The screen router: which screen is showing, and who draws it.
 //!
 //! A new screen is a [`Screen`] variant and a line in [`draw`]. Settings and Help aren't screens:
-//! they open as popups over the screen (`popups`).
+//! they open as popups over the screen (`popups`). A worker's session isn't one either: it takes
+//! the Bridge's middle panel (`view::Middle`).
 
 use crate::app::App;
 use crate::bridge;
@@ -16,9 +17,6 @@ pub(crate) enum Screen {
     Bridge,
     /// The setup check: it opens from Settings ▸ System, never by itself.
     Setup,
-    /// A worker's session: opened from the crew. It owns the whole frame, with no top bar or
-    /// status bar.
-    Session(qm_types::api::AgentRef),
     /// A held merge's diff: an approval card's Diff opens it.
     Diff,
 }
@@ -29,7 +27,6 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
     match app.screen {
         Screen::Bridge => bridge::draw_body(frame, body, app, map),
         Screen::Setup => crate::setup::draw(frame, body, app, map),
-        Screen::Session(agent) => crate::session::draw(frame, body, app, agent, map),
         Screen::Diff => crate::diff::draw(frame, body, app, map),
     }
 }

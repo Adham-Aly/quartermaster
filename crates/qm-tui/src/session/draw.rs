@@ -1,39 +1,41 @@
-//! Drawing a worker's session:
+//! Drawing a worker's session in the Bridge's middle panel, in place of the Quartermaster's
+//! conversation and input (the projects, crew and task columns stay):
 //!
 //! ```text
-//!  T-0042 · fix(auth): token refresh race · api-server · sonnet-5-5 · supervisor: Quartermaster  ← Back
-//!  Talking to this crewmate directly. You override its supervisor; it will reconcile.   (warn)
-//! ╭─ Session ──────────────────────────────────────────────────────────────────────────────╮
-//! │ [from supervisor] Brief · T-0042 · fix(auth): token refresh race  Expand                │
-//! │                                                                                         │
-//! │ Reading AGENTS.md and CONTRIBUTING.md, then calling delivery_check before any edit.     │
-//! │   ▸ 3 tool calls                                                            (dim)       │
-//! │                                                                                         │
-//! │ ╭─ you (direct) ──────────────────────────────────────────────────────────────────────╮ │
-//! │ │ A unit test that reproduces the race is enough evidence here.                       │ │
-//! │ ╰─────────────────────────────────────────────────────────────────────────────────────╯ │
-//! ╰─────────────────────────────────────────────────────────────────────────────────────────╯
-//! ╭─────────────────────────────────────────────────────────────────────────────────────────╮
-//! │ › message T-0042 directly…                                                              │
-//! ╰─────────────────────────────────────────────────────────────────────────────────────────╯
-//!  running 14m · job J3 idle                                       Interrupt  · esc back · ⏎ send
+//! ╭─ T-0042 · fix(auth): token refresh race ─────────────────────  ← Quartermaster ─╮
+//! │ api-server · sonnet-5-5 · supervisor: Quartermaster                     (dim)   │
+//! │ Talking to this crewmate directly. You override its supervisor; it will  (warn) │
+//! │ reconcile.                                                                      │
+//! │                                                                                 │
+//! │ [from supervisor] Brief · T-0042 · fix(auth): token refresh race  Expand        │
+//! │                                                                                 │
+//! │ Reading AGENTS.md and CONTRIBUTING.md, then calling delivery_check before any   │
+//! │ edit.                                                                           │
+//! │   ▸ 3 tool calls                                                    (dim)       │
+//! │ ╭─ you (direct) ──────────────────────────────────────────────────────────────╮ │
+//! │ │ A unit test that reproduces the race is enough evidence here.               │ │
+//! │ ╰─────────────────────────────────────────────────────────────────────────────╯ │
+//! ╰─ running 14m · job J3 idle ─────────────────────────────────────── Interrupt ───╯
+//! ╭─────────────────────────────────────────────────────────────────────────────────╮
+//! │ › message T-0042 directly…                                                      │
+//! ╰─────────────────────────────────────────────────────────────────────────────────╯
 //! ```
 //!
-//! No top bar and no Bridge status bar: the status line carries the Bridge's `⚑ 1 approval` buttons
-//! first while something waits for you; a click goes back to the card.
+//! The box's title names the agent and its task; `← Quartermaster` at its right goes back to the
+//! conversation, as `Esc` does. The note and the banner stay at the top while the lines scroll
+//! under them; the bottom border carries the session's status and, while a turn runs,
+//! `Interrupt`. The Bridge's top bar and status bar stay as they are.
 //!
-//! A secondmate's session has the same frame: the header reads `SM-02 · secondmate · {scope} ·
-//! {status}`, its charter's first line shows dim in the banner's row, and the box holds its
-//! conversation, drawn by the Bridge's chat widgets.
+//! A secondmate's session has the same frame: its charter's first line shows dim in the banner's
+//! row, and the box holds its conversation, drawn by the Bridge's chat widgets.
 
-use super::{BANNER, SESSION_SHOWS_ATTENTION, SessionHit};
+use super::{BANNER, SessionHit};
 use crate::app::App;
-use crate::bridge::pane_block;
-use crate::chrome::{MIN_HEIGHT, MIN_WIDTH};
-use crate::hit::{FrameMap, Hit, Pane, StatusItem};
+use crate::bridge::{pane_block, pane_style};
+use crate::hit::{FrameMap, Hit, Pane};
 use crate::text::{cells, truncate, width, wrap, wrap_rows, wrap_styled};
 use crate::theme;
-use crate::widgets::conversation::{self, Row, RowText, draw_rows, fit_spans, prompt_box};
+use crate::widgets::conversation::{self, Row, RowText, draw_rows, prompt_box};
 use crate::widgets::{button, input_box, markdown, spinner, stream};
 use qm_types::api::{AgentRef, SessionLine, SessionLineKind, SessionView};
 use ratatui::Frame;
@@ -42,14 +44,12 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-/// The `← Back` button's label.
-const BACK: &str = "← Back";
-/// The status line's `Interrupt` button.
+/// The title's way back to the Quartermaster's conversation.
+pub(crate) const BACK: &str = "← Quartermaster";
+/// The bottom border's `Interrupt` button.
 const INTERRUPT: &str = "Interrupt";
-/// The hints after it.
-const HINTS: &str = "esc back · ⏎ send";
 
-/// Draws the whole screen for `agent`'s session into `area`.
+/// Draws `agent`'s session into the middle column `area`: its box above your input.
 pub(crate) fn draw(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -57,56 +57,19 @@ pub(crate) fn draw(
     agent: AgentRef,
     map: &mut FrameMap,
 ) {
-    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
-        draw_too_small(frame, area);
-        return;
-    }
     let view = app.session_view();
-    header(
-        frame,
-        Rect::new(area.x, area.y, area.width, 1),
-        app,
-        agent,
-        view,
-        map,
-    );
-    let subtitle = view.map(|v| v.subtitle.as_str()).filter(|s| !s.is_empty());
-    banner(
-        frame,
-        Rect::new(area.x, area.y + 1, area.width, 1),
-        subtitle,
-    );
-    let status_row = area.bottom() - 1;
-    let top = area.y + 2;
-    let input_height = input_box::height(app, area.width).min((status_row - top) / 2);
-    let input_area = Rect::new(area.x, status_row - input_height, area.width, input_height);
-    let session_area = Rect::new(area.x, top, area.width, input_area.y - top);
-    session_pane(frame, session_area, app, view, map);
+    let input_height = input_box::height(app, area.width).min(area.height / 2);
+    let input_area = Rect {
+        y: area.bottom() - input_height,
+        height: input_height,
+        ..area
+    };
+    let session_area = Rect {
+        height: area.height - input_height,
+        ..area
+    };
+    session_pane(frame, session_area, app, agent, view, map);
     input(frame, input_area, app, agent, view, map);
-    status_line(
-        frame,
-        Rect::new(area.x, status_row, area.width, 1),
-        app,
-        view,
-        map,
-    );
-}
-
-fn draw_too_small(frame: &mut Frame<'_>, area: Rect) {
-    let message = format!(
-        "Quartermaster needs a terminal of at least {MIN_WIDTH}×{MIN_HEIGHT}; this one is {}×{}.",
-        area.width, area.height
-    );
-    let rows = wrap(&message, usize::from(area.width.saturating_sub(2)));
-    let height = cells(rows.len()).min(area.height);
-    let y = area.y + (area.height - height) / 2;
-    let lines: Vec<Line<'_>> = rows.into_iter().map(Line::from).collect();
-    frame.render_widget(
-        Paragraph::new(lines)
-            .alignment(Alignment::Center)
-            .style(theme::dim()),
-        Rect::new(area.x, y, area.width, height),
-    );
 }
 
 /// How the agent is named: `T-0042`, `SM-02`.
@@ -118,29 +81,9 @@ pub(crate) fn agent_label(agent: AgentRef) -> String {
     }
 }
 
-/// `T-0042` bold, ` · ` dim, the title, ` · ` dim, the note dim; `← Back` at the right.
-fn header(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    app: &App,
-    agent: AgentRef,
-    view: Option<&SessionView>,
-    map: &mut FrameMap,
-) {
-    let back_width = button::width_of(BACK);
-    let back_x = area.right().saturating_sub(back_width + 1);
-    let hit = Hit::Session(SessionHit::Back);
-    frame.render_widget(
-        Line::from(button::span(BACK, app.term.hover == Some(hit))),
-        Rect::new(back_x, area.y, back_width, 1),
-    );
-    map.hits.add(Rect::new(back_x, area.y, back_width, 1), hit);
-
-    let mut spans = vec![
-        Span::raw(" "),
-        Span::styled(agent_label(agent), theme::strong()),
-    ];
-    let title = view
+/// The box's title: `T-0042 · fix(auth): token refresh race`.
+fn title(app: &App, agent: AgentRef, view: Option<&SessionView>) -> String {
+    let words = view
         .map(|v| v.title.clone())
         .filter(|t| !t.is_empty())
         .or_else(|| {
@@ -151,51 +94,56 @@ fn header(
                 .find(|t| AgentRef::Crewmate { task: t.task } == agent)
                 .map(|t| t.title.clone())
         });
-    if let Some(title) = title {
-        spans.push(Span::styled(" · ", theme::dim()));
-        spans.push(Span::styled(title, theme::text()));
+    match words {
+        Some(words) => format!("{} · {words}", agent_label(agent)),
+        None => agent_label(agent),
     }
-    if let Some(note) = view.map(|v| v.note.as_str()).filter(|n| !n.is_empty()) {
-        spans.push(Span::styled(" · ", theme::dim()));
-        spans.push(Span::styled(note.to_owned(), theme::dim()));
-    }
-    let room = usize::from(back_x.saturating_sub(area.x + 2));
-    frame.render_widget(
-        Line::from(fit_spans(spans, room)),
-        Rect::new(area.x, area.y, back_x.saturating_sub(area.x), 1),
-    );
 }
 
-/// The banner in the warn colour on the terminal's background (on the 16-colour bright-black fill
-/// it can't be read in a light theme); for a secondmate, its charter's first line, dim.
-fn banner(frame: &mut Frame<'_>, area: Rect, subtitle: Option<&str>) {
-    if let Some(subtitle) = subtitle {
-        let text = truncate(&format!(" {subtitle}"), usize::from(area.width));
-        frame.render_widget(Paragraph::new(Line::styled(text, theme::dim())), area);
-        return;
-    }
-    let text = truncate(&format!(" {BANNER}"), usize::from(area.width));
-    frame.render_widget(Paragraph::new(Line::styled(text, theme::warn())), area);
-}
-
-/// The session's box: its lines, pinned to the newest once they overflow.
+/// The session's box: its title with `← Quartermaster`, the note and banner, its lines pinned to
+/// the newest once they overflow, and the status and `Interrupt` in its bottom border.
 fn session_pane(
     frame: &mut Frame<'_>,
     area: Rect,
     app: &App,
+    agent: AgentRef,
     view: Option<&SessionView>,
     map: &mut FrameMap,
 ) {
-    let focused = app.focus == Pane::Session;
-    let style = theme::border(focused, app.term.hover == Some(Hit::Pane(Pane::Session)));
-    let block = pane_block("Session", style);
+    let style = pane_style(app, Pane::Session);
+    // `← Quartermaster` sits in the top border, one `─` from the corner; the title gets what is
+    // left, with at least one `─` between them.
+    let back = Hit::Session(SessionHit::Back);
+    let back_width = button::width_of(BACK);
+    let back_x = area.right().saturating_sub(back_width + 2);
+    let room = usize::from(back_x.saturating_sub(area.x + 6));
+    let block = pane_block(&truncate(&title(app, agent, view), room), style);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     map.hits.add(area, Hit::Pane(Pane::Session));
     map.scroll_areas.push((area, Pane::Session));
+    if area.width > back_width + 8 && area.height > 1 {
+        let rect = Rect::new(back_x, area.y, back_width, 1);
+        frame.render_widget(
+            Line::from(button::span(BACK, app.term.hover == Some(back))),
+            rect,
+        );
+        map.hits.add(rect, back);
+    }
+    if area.height > 1 {
+        bottom_border(
+            frame,
+            Rect::new(area.x, area.bottom() - 1, area.width, 1),
+            app,
+            view,
+            map,
+        );
+    }
     if inner.height == 0 || inner.width == 0 {
         return;
     }
+    let rows_area = header(frame, inner, agent, view);
+    map.session_rows = Some(rows_area);
     let lines = view.map_or(&[][..], |v| v.lines.as_slice());
     let chats = view.map_or(&[][..], |v| v.conversation.as_slice());
     if lines.is_empty() && chats.is_empty() {
@@ -204,15 +152,15 @@ fn session_pane(
         } else {
             "Opening the session…"
         };
-        let y = inner.y + inner.height / 2;
+        let y = rows_area.y + rows_area.height / 2;
         frame.render_widget(
             Paragraph::new(Line::styled(text, theme::dim())).alignment(Alignment::Center),
-            Rect::new(inner.x, y, inner.width, 1),
+            Rect::new(rows_area.x, y, rows_area.width, 1),
         );
         return;
     }
     let rows = if chats.is_empty() {
-        rows(lines, inner.width, app)
+        rows(lines, rows_area.width, app)
     } else {
         // A secondmate's conversation, from its side: its own replies under its name, the
         // Quartermaster's messages under the Quartermaster's.
@@ -221,18 +169,105 @@ fn session_pane(
             agent: &name,
             supervisor: "quartermaster",
         };
-        let mut rows = conversation::rows(chats, inner.width, app.term.hover, &voices);
+        let mut rows = conversation::rows(chats, rows_area.width, app.term.hover, &voices);
         if view.is_some_and(|v| v.thinking) {
             rows.extend(conversation::thinking_rows(chats, app));
         }
         rows
     };
-    let visible = usize::from(inner.height);
+    let visible = usize::from(rows_area.height);
     let max = rows.len().saturating_sub(visible);
     let offset = app.session_scroll().min(max);
     let start = rows.len().saturating_sub(visible + offset);
     map.scroll_max.push((Pane::Session, max));
-    draw_rows(frame, inner, rows, start, map);
+    draw_rows(frame, rows_area, rows, start, map);
+}
+
+/// The rows above the lines: the note (dim), then the banner in the warn colour on the terminal's
+/// background (on the 16-colour bright-black fill it can't be read in a light theme) or, for a
+/// secondmate, its charter's first line (dim), then a blank row. They never take more than a
+/// third of the box: the note goes first, then the rest. Returns what is left for the lines.
+fn header(frame: &mut Frame<'_>, inner: Rect, agent: AgentRef, view: Option<&SessionView>) -> Rect {
+    let max = usize::from(inner.width);
+    let note = view
+        .map(|v| v.note.as_str())
+        .filter(|n| !n.is_empty())
+        .map(|note| Line::styled(truncate(note, max), theme::dim()));
+    let banner: Vec<Line<'static>> =
+        match view.map(|v| v.subtitle.as_str()).filter(|s| !s.is_empty()) {
+            Some(subtitle) => vec![Line::styled(truncate(subtitle, max), theme::dim())],
+            // The banner is a warning, so it wraps rather than losing its end.
+            None if matches!(agent, AgentRef::Crewmate { .. }) => wrap(BANNER, max)
+                .into_iter()
+                .map(|row| Line::styled(row, theme::warn()))
+                .collect(),
+            None => Vec::new(),
+        };
+    let fits = |n: usize| n > 0 && (cells(n) + 1) * 3 <= inner.height;
+    let texts: Vec<Line<'static>> = if fits(banner.len() + usize::from(note.is_some())) {
+        note.into_iter().chain(banner).collect()
+    } else if fits(banner.len()) {
+        banner
+    } else {
+        return inner;
+    };
+    let used = cells(texts.len()) + 1;
+    frame.render_widget(
+        Paragraph::new(texts),
+        Rect {
+            height: used - 1,
+            ..inner
+        },
+    );
+    Rect {
+        y: inner.y + used,
+        height: inner.height - used,
+        ..inner
+    }
+}
+
+/// `╰─ running 14m · job J3 idle ──── Interrupt ─╯`: the session's status, dim, and while a turn
+/// runs the `Interrupt` button, one `─` from the corner.
+fn bottom_border(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    view: Option<&SessionView>,
+    map: &mut FrameMap,
+) {
+    let style = pane_style(app, Pane::Session);
+    let running = view.is_some_and(|v| v.turn_running);
+    let mut right = area.right().saturating_sub(2);
+    if running {
+        let w = button::width_of(INTERRUPT);
+        if area.width > w + 8 {
+            let hit = Hit::Session(SessionHit::Interrupt);
+            right -= w;
+            let rect = Rect::new(right, area.y, w, 1);
+            frame.render_widget(
+                Line::from(button::span(INTERRUPT, app.term.hover == Some(hit))),
+                rect,
+            );
+            map.hits.add(rect, hit);
+        }
+    }
+    let Some(status) = view.map(|v| v.status.as_str()).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    // `╰─ ` before it, ` ─` after it at the least.
+    let room = usize::from(right.saturating_sub(area.x + 5));
+    if room < 4 {
+        return;
+    }
+    let text = truncate(status, room);
+    let spans = vec![
+        Span::styled(" ", style),
+        Span::styled(text, theme::dim()),
+        Span::styled(" ", style),
+    ];
+    let line = Line::from(spans);
+    let w = cells(line.width());
+    frame.render_widget(line, Rect::new(area.x + 2, area.y, w, 1));
 }
 
 /// The rows a session's lines take at `max` cells.
@@ -495,104 +530,6 @@ fn input(
         accent: open && (focused || !app.draft.text.is_empty()),
     };
     input_box::draw_field(frame, area, app, &field, map);
-}
-
-/// `⚑ 1 approval · running 14m · job J3 idle` on the left; `Interrupt · esc back · ⏎ send` on
-/// the right.
-fn status_line(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    app: &App,
-    view: Option<&SessionView>,
-    map: &mut FrameMap,
-) {
-    // The right side first: Interrupt while a turn runs, then the hints.
-    let running = view.is_some_and(|v| v.turn_running);
-    let hints = if running {
-        format!(" · {HINTS}")
-    } else {
-        HINTS.to_owned()
-    };
-    let button_width = if running {
-        button::width_of(INTERRUPT)
-    } else {
-        0
-    };
-    let right_width = button_width + cells(width(&hints));
-    let right_x = area.right().saturating_sub(right_width + 1);
-
-    let mut left: Vec<Span<'static>> = vec![Span::raw(" ")];
-    let notice = app
-        .quit_notice()
-        .map(str::to_owned)
-        .or_else(|| app.term.flash.as_ref().map(|f| f.text.clone()));
-    if let Some(notice) = notice {
-        left.push(Span::styled(notice, theme::accent()));
-    } else {
-        let attention = app.snapshot.attention;
-        if SESSION_SHOWS_ATTENTION && attention.approvals + attention.decisions > 0 {
-            // The Bridge status bar's buttons, one space apart: a click goes back to the Bridge
-            // and brings that card into view.
-            let mut x = area.x + 1;
-            for (n, one, many, item) in [
-                (
-                    attention.approvals,
-                    "approval",
-                    "approvals",
-                    StatusItem::Approvals,
-                ),
-                (
-                    attention.decisions,
-                    "decision",
-                    "decisions",
-                    StatusItem::Decisions,
-                ),
-            ] {
-                if n == 0 {
-                    continue;
-                }
-                if x > area.x + 1 {
-                    left.push(Span::raw(" "));
-                    x += 1;
-                }
-                let label = counted(n, one, many);
-                let hit = Hit::Status(item);
-                let w = button::width_of(&label);
-                left.push(button::span(&label, app.term.hover == Some(hit)));
-                if x + w < right_x {
-                    map.hits.add(Rect::new(x, area.y, w, 1), hit);
-                }
-                x += w;
-            }
-            left.push(Span::styled(" · ", theme::dim()));
-        }
-        if let Some(status) = view.map(|v| v.status.as_str()).filter(|s| !s.is_empty()) {
-            left.push(Span::styled(status.to_owned(), theme::dim()));
-        }
-    }
-    let room = usize::from(right_x.saturating_sub(area.x + 2));
-    let left_line = Line::from(fit_spans(left, room));
-    let left_width = cells(left_line.width());
-    frame.render_widget(left_line, area);
-    if area.x + left_width + 2 > right_x {
-        return;
-    }
-    let mut spans = Vec::new();
-    if running {
-        let hit = Hit::Session(SessionHit::Interrupt);
-        spans.push(button::span(INTERRUPT, app.term.hover == Some(hit)));
-        map.hits
-            .add(Rect::new(right_x, area.y, button_width, 1), hit);
-    }
-    spans.push(Span::styled(hints, theme::dim()));
-    frame.render_widget(
-        Line::from(spans),
-        Rect::new(right_x, area.y, right_width, 1),
-    );
-}
-
-fn counted(n: u32, one: &str, many: &str) -> String {
-    format!("⚑ {n} {}", if n == 1 { one } else { many })
 }
 
 #[cfg(test)]
