@@ -9,8 +9,10 @@ use qm_engine::supervisor::OsSupervisor;
 use qm_engine_claude::detect::{LoginState, detect, detect_at};
 use qm_engine_claude::{ClaudeConfig, ClaudeEngine};
 use qm_types::clock::SystemClock;
+use qm_types::config::Config;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::watch;
 
 pub(super) async fn run(flags: &Flags) -> Result<(), Failure> {
     let inherited = inherited_env();
@@ -46,6 +48,7 @@ pub(super) async fn run(flags: &Flags) -> Result<(), Failure> {
         supervisor: Arc::new(OsSupervisor::new(None)),
         clock: Arc::new(SystemClock),
         inherited_env: inherited,
+        settings: watch::channel(Config::default()).1,
     });
     engine.set_install(install);
     let report = qm_engine_claude::check::probe(&engine, vec![ping_tool()])
