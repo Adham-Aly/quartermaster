@@ -65,9 +65,10 @@ pub(crate) fn write_leave(w: &mut impl Write, enhanced: bool) -> io::Result<()> 
     w.flush()
 }
 
-/// The full-screen terminal, restored when dropped.
+/// The full-screen terminal, restored when dropped. It only holds the terminal's modes and
+/// writes bytes; what to draw is the host's business.
 pub(crate) struct TerminalGuard {
-    terminal: Terminal<Backend16<Stdout>>,
+    out: Stdout,
 }
 
 impl std::fmt::Debug for TerminalGuard {
@@ -80,9 +81,8 @@ impl TerminalGuard {
     /// Enters full-screen mode. On failure, whatever was already switched on is switched off.
     pub(crate) fn enter() -> io::Result<Self> {
         install_panic_hook();
-        let entered = switch_on().and_then(|()| Terminal::new(Backend16::new(io::stdout())));
-        match entered {
-            Ok(terminal) => Ok(Self { terminal }),
+        match switch_on() {
+            Ok(()) => Ok(Self { out: io::stdout() }),
             Err(err) => {
                 restore();
                 Err(err)
@@ -90,27 +90,24 @@ impl TerminalGuard {
         }
     }
 
-    /// Draws one frame inside a synchronized update (DEC mode 2026), so a terminal that supports
-    /// it shows the frame all at once.
-    pub(crate) fn draw(&mut self, render: impl FnOnce(&mut Frame<'_>)) -> io::Result<()> {
-        draw_synchronized(&mut self.terminal, render)
+    /// Whether the keyboard enhancement was pushed, so `⇧⏎` arrives as itself.
+    pub(crate) fn keyboard_enhanced() -> bool {
+        ENHANCED.load(Ordering::SeqCst)
     }
 
-    /// Writes raw bytes to the terminal between frames (an OSC 52 copy).
+    /// Writes bytes the host drew to the terminal, as they are.
     pub(crate) fn write_raw(&mut self, bytes: &[u8]) -> io::Result<()> {
-        let backend = self.terminal.backend_mut();
-        backend.write_all(bytes)?;
-        backend.flush()
+        self.out.write_all(bytes)?;
+        self.out.flush()
     }
 
     /// `Ctrl`+`Z`: leaves full-screen mode, stops the process with `SIGTSTP` as the shell
-    /// expects, and when the shell's `fg` continues it, enters again and clears the screen so the
-    /// next frame redraws everything.
-    pub(crate) fn suspend(&mut self) -> io::Result<()> {
+    /// expects, and when the shell's `fg` continues it, enters again. The caller then asks the
+    /// host for a full repaint.
+    pub(crate) fn suspend() -> io::Result<()> {
         restore();
         nix::sys::signal::raise(nix::sys::signal::Signal::SIGTSTP).map_err(io::Error::from)?;
-        switch_on()?;
-        self.terminal.clear()
+        switch_on()
     }
 }
 
@@ -120,8 +117,8 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// Draws one frame into `terminal` between `?2026h` and `?2026l` (see [`TerminalGuard::draw`]).
-fn draw_synchronized<W: Write>(
+/// Draws one frame into `terminal` between `?2026h` and `?2026l` (so a terminal that supports it shows the frame all at once).
+pub(crate) fn draw_synchronized<W: Write>(
     terminal: &mut Terminal<Backend16<W>>,
     render: impl FnOnce(&mut Frame<'_>),
 ) -> io::Result<()> {

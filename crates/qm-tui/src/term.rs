@@ -7,7 +7,6 @@ use crate::hit::{Divider, FrameMap, Hit};
 use crate::view::{Flash, Selection};
 
 /// Whether a terminal's background is light or dark, when known.
-#[expect(dead_code, reason = "the light-mode work will set and read these")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Background {
     #[default]
@@ -45,10 +44,6 @@ pub(crate) struct Term {
     /// The window is over SSH, so copies go by OSC 52 and the Mac's clipboard is out of reach.
     pub(crate) ssh: bool,
     /// The window's background, for choosing colours.
-    #[expect(
-        dead_code,
-        reason = "recorded for the light-mode work; nothing reads it yet"
-    )]
     pub(crate) background: Background,
 }
 

@@ -5,13 +5,23 @@
 //! keyboard complete, drawn in the terminal's own 16-colour palette.
 //!
 //! This crate depends on `qm-types` only. It talks to the core exclusively through `qm_types::api`:
-//! it sends `Command`s and renders the `Update`s it receives, so the in-process link could later be
-//! replaced by a socket without touching the UI.
+//! it sends `Command`s and renders the `Update`s it receives.
+//!
+//! # Host and client
+//!
+//! The UI is split in two, joined by a byte stream carrying `qm_types::wire` frames. The
+//! [`host`] owns the one `App` and draws it once per attached window (each window's state is a
+//! `Term`), at that window's size, into bytes. [`attach`] is the thin client: it owns the real
+//! terminal, forwards keys and the mouse as `wire::InputEvent`s, and prints the host's bytes.
+//! [`run`] joins one host and one client over a `tokio::io::duplex`; a server can later accept
+//! sockets instead.
 
 //!
 //! # Layout of the crate
 //!
-//! - [`run`] (here) is the one entry point; `app` holds the state and the event loop.
+//! - [`run`] (here) is the one entry point; `app` holds the state, `host` drives it for each window
+//!   and `attach` is the client; `convert` turns crossterm events into wire input and back.
+//! - `term` holds one window's state (size, hit map, hover, selection, quit progress).
 //! - `terminal` enters and leaves full-screen mode (raw mode, alternate screen, mouse capture
 //!   with motion, bracketed paste) and restores the terminal on drop and on panic. Every frame is
 //!   wrapped in a synchronized update (DEC mode 2026), so it appears all at once.
@@ -38,11 +48,14 @@
 //! returns when the core drops its end of the link.
 
 mod app;
+mod attach;
 mod backend;
 mod bridge;
 mod chrome;
+mod convert;
 mod diff;
 mod hit;
+pub mod host;
 mod input;
 mod placeholder;
 mod popups;
@@ -61,13 +74,28 @@ mod widgets;
 
 use qm_types::api::CoreClient;
 
+pub use attach::attach;
+
 /// Runs the terminal UI on the current thread until you quit or the core closes the link, then
 /// restores the terminal. The binary calls it with its end of `qm_types::api::link()` while the
 /// core runs on the Tokio runtime.
 ///
+/// The host and this terminal's client run here, joined by an in-process byte stream, so it
+/// looks and behaves as a UI that draws straight to the terminal.
+///
 /// The signature is the seam between `crates/quartermaster/src/main.rs` and this crate, so it stays
 /// as it is.
 pub fn run(client: CoreClient) -> std::io::Result<()> {
-    let mut client = client;
-    app::run(&mut client)
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let (near, far) = tokio::io::duplex(1 << 20);
+        let (windows_tx, windows) = tokio::sync::mpsc::unbounded_channel();
+        let _ = windows_tx.send(Box::new(near) as Box<dyn host::Conn>);
+        // No other window can arrive, so the host ends when this one leaves.
+        drop(windows_tx);
+        let (hosted, attached) = tokio::join!(host::run(client, windows), attach(far));
+        hosted.and(attached)
+    })
 }
