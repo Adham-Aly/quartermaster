@@ -8,40 +8,49 @@
 
 use std::path::{Component, Path, PathBuf};
 
-/// The app's own scratch root (attachments, drafts, evidence). No agent write goes here, even
-/// though the temporary folder is otherwise a write root.
+/// The app's own scratch root (attachments, drafts, evidence). Only an explicit write root inside it
+/// is writable (a crewmate's own evidence folder); no other write goes there, even though the
+/// temporary folder is otherwise a write root.
 const APP_SCRATCH: &str = "/tmp/quartermaster";
 
-/// The folders writes may go to, canonicalised, and the one folder they may not.
+/// The folders writes may go to, canonicalised: the explicit write roots, then the temporary
+/// folders, minus the app's scratch root.
 #[derive(Debug, Clone)]
 pub(super) struct WritePolicy {
     roots: Vec<PathBuf>,
+    temp: Vec<PathBuf>,
     denied: PathBuf,
 }
 
 impl WritePolicy {
     pub(super) fn new(write_roots: &[PathBuf]) -> Self {
-        let mut roots: Vec<PathBuf> = write_roots
-            .iter()
-            .cloned()
-            .chain([std::env::temp_dir(), PathBuf::from("/tmp")])
-            .map(|root| real_path(&normalize(&root)))
-            .collect();
-        roots.sort();
-        roots.dedup();
+        let canonical = |paths: &mut dyn Iterator<Item = PathBuf>| {
+            let mut out: Vec<PathBuf> = paths.map(|root| real_path(&normalize(&root))).collect();
+            out.sort();
+            out.dedup();
+            out
+        };
+        let roots = canonical(&mut write_roots.iter().cloned());
+        let temp = canonical(&mut [std::env::temp_dir(), PathBuf::from("/tmp")].into_iter());
         let denied = real_path(&normalize(Path::new(APP_SCRATCH)));
-        Self { roots, denied }
+        Self {
+            roots,
+            temp,
+            denied,
+        }
     }
 
     /// The real path to write for `path`, or the refusal.
     pub(super) fn check(&self, path: &Path) -> Result<PathBuf, String> {
         let target = real_path(&normalize(path));
-        if target.starts_with(&self.denied) {
+        if self.roots.iter().any(|root| target.starts_with(root)) {
+            Ok(target)
+        } else if target.starts_with(&self.denied) {
             Err(format!(
                 "refused: {} is inside the app's own scratch folder, which no agent writes to",
                 path.display()
             ))
-        } else if self.roots.iter().any(|root| target.starts_with(root)) {
+        } else if self.temp.iter().any(|root| target.starts_with(root)) {
             Ok(target)
         } else {
             Err(format!(
@@ -119,6 +128,18 @@ mod tests {
         let scratch = Path::new(APP_SCRATCH).join("1000/abc/evidence/run.log");
         assert!(policy.check(&scratch).is_err());
         assert!(policy.check(Path::new("/tmp/elsewhere/run.log")).is_ok());
+    }
+
+    #[test]
+    fn a_crewmates_own_evidence_folder_inside_the_scratch_root_is_writable() {
+        let evidence = Path::new(APP_SCRATCH).join("1000/abc/evidence/T-0042");
+        let policy = WritePolicy::new(std::slice::from_ref(&evidence));
+        assert!(policy.check(&evidence.join("run.log")).is_ok());
+        assert!(
+            policy
+                .check(&Path::new(APP_SCRATCH).join("1000/abc/attachments/x.png"))
+                .is_err()
+        );
     }
 
     #[test]

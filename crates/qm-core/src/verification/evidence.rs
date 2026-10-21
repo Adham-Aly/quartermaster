@@ -1,6 +1,6 @@
 //! The evidence folder.
 //!
-//! `tasks/T-0042/evidence/` is the crewmate's `QM_EVIDENCE_DIR`. [`manifest`] lists what is in it
+//! `<scratch>/evidence/T-0042/` is the crewmate's `QM_EVIDENCE_DIR` (temporary, outside the data directory). [`manifest`] lists what is in it
 //! (relative paths, sizes and times, at most [`MAX_ENTRIES`], symlinks not followed); every clear
 //! done report records it as a `task.evidence` event, and the review brief lists it so the
 //! reviewer can scrutinise it.

@@ -21,14 +21,14 @@
 //!
 //! [`Attachments::sweep`] runs at startup and then every [`SWEEP_EVERY`]. It removes:
 //!
-//! 1. **Used up.** A message's folder once the message is older than [`KEEP_FOR`] and no open work
-//!    mentions the folder: no open task's goal, words, instructions, constraints, later steps or
-//!    crewmate messages, and no open secondmate request. So an image lives at least two weeks, and
-//!    longer while a task that was given it is still open.
-//! 2. **Over the cap.** While what is left holds more than [`SIZE_CAP`], the oldest folders go
-//!    first, in use or not, except those from the last [`ALWAYS_KEEP`].
-//! 3. **Leftovers.** A staging folder, or a `message-<id>` folder whose message doesn't name it,
-//!    once it is [`LEFTOVER_AFTER`] old: what a crash between writing and storing leaves behind.
+//! 1. **Over the cap.** While what is left holds more than [`SIZE_CAP`], the oldest folders go
+//!    first, except those from the last [`ALWAYS_KEEP`] and those open work mentions: no open
+//!    task's goal, words, instructions, constraints, later steps or crewmate messages, and no open
+//!    secondmate request. Nothing is removed by age: the folder lives in `/tmp`, which the system's
+//!    own cleaner empties once it has gone untouched for days.
+//! 2. **Leftovers.** A staging folder, or a `message-<id>` folder whose message doesn't name it,
+//!    once its modification time is [`LEFTOVER_AFTER`] old: what a crash between writing and
+//!    storing leaves behind.
 //!
 //! Anything else in the folder is left alone. That includes `drafts/` (`DataDir::draft_images`):
 //! the images in your unsent drafts, which the UI host keeps for `ui.json` and removes itself once
@@ -51,8 +51,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-/// Every image is kept at least this long after its message.
-pub const KEEP_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(14 * 24);
 /// The most the attachments folder should hold, in bytes.
 pub const SIZE_CAP: u64 = 1024 * 1024 * 1024;
 /// Images this recent are never removed for the size cap.
@@ -313,7 +311,7 @@ fn move_to(dir: &Path, folder: &Path) -> io::Result<()> {
 /// Writes `images` into `root/name/`, each `image-N.<ext>`, private to you (0600).
 fn write_staged(root: PathBuf, name: &str, images: Vec<PastedImage>) -> Staged {
     let dir = root.join(name);
-    let made = fs::create_dir_all(&dir);
+    let made = qm_types::data_dir::private_folder(&root).and_then(|()| fs::create_dir_all(&dir));
     let mut staged = Staged {
         root,
         dir: made.is_ok().then(|| dir.clone()),
@@ -432,13 +430,7 @@ fn plan(folders: &[Folder], now: jiff::Timestamp) -> Vec<usize> {
                     remove.push(i);
                 }
             }
-            (Some(_), Some(sent)) => {
-                if now.duration_since(sent) >= KEEP_FOR && !f.in_use {
-                    remove.push(i);
-                } else {
-                    kept.push((i, sent));
-                }
-            }
+            (Some(_), Some(sent)) => kept.push((i, sent)),
         }
     }
     let mut total: u64 = kept.iter().map(|&(i, _)| folders[i].bytes).sum();
@@ -446,6 +438,10 @@ fn plan(folders: &[Folder], now: jiff::Timestamp) -> Vec<usize> {
     for (i, sent) in kept {
         if total <= SIZE_CAP || now.duration_since(sent) < ALWAYS_KEEP {
             break;
+        }
+        // Open work keeps its images, whatever the cap says.
+        if folders[i].in_use {
+            continue;
         }
         remove.push(i);
         total = total.saturating_sub(folders[i].bytes);
@@ -480,13 +476,13 @@ mod tests {
     }
 
     #[test]
-    fn an_old_image_goes_once_no_open_work_mentions_it() {
+    fn an_old_image_stays_while_the_folder_is_under_the_cap() {
         let folders = [
             folder(1, 15 * DAY, false, 10),
             folder(2, 15 * DAY, true, 10),
             folder(3, 3 * DAY, false, 10),
         ];
-        assert_eq!(plan(&folders, now()), vec![0]);
+        assert_eq!(plan(&folders, now()), Vec::<usize>::new());
     }
 
     #[test]
@@ -510,8 +506,8 @@ mod tests {
             folder(2, 3 * DAY, false, third),
             folder(3, jiff::SignedDuration::from_hours(2), false, third),
         ];
-        // Over the cap: the oldest goes, in use or not; then it fits.
-        assert_eq!(plan(&folders, now()), vec![0]);
+        // Over the cap: the oldest folder open work mentions is kept, so the next one goes.
+        assert_eq!(plan(&folders, now()), vec![1]);
         let today = [
             folder(1, jiff::SignedDuration::from_hours(3), false, SIZE_CAP),
             folder(2, jiff::SignedDuration::from_hours(2), false, SIZE_CAP),

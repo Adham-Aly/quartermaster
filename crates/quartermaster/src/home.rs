@@ -1,7 +1,9 @@
 //! Creating the data directory with safe permissions.
 //!
 //! Every folder the app creates is mode 0700 and the root is tightened to 0700 on every start, so
-//! nothing in it (transcripts, briefs, `auth.json`) is readable by other users on the Mac.
+//! nothing in it (briefs, `auth.json`) is readable by other users on the Mac. The scratch root
+//! (pasted images, evidence) is checked here too, but a bad one only logs: images then fail one by
+//! one with a plain error.
 
 use qm_types::data_dir::DataDir;
 use std::fs::{self, DirBuilder, Permissions};
@@ -27,7 +29,11 @@ pub fn prepare(dir: &DataDir) -> io::Result<()> {
     ] {
         create_private_dir(path)?;
     }
-    fs::set_permissions(dir.root(), Permissions::from_mode(DIR_MODE))
+    fs::set_permissions(dir.root(), Permissions::from_mode(DIR_MODE))?;
+    if let Err(e) = dir.ensure_scratch() {
+        tracing::warn!(error = %e, "the scratch folder isn't usable; pasted images and evidence will fail");
+    }
+    Ok(())
 }
 
 /// `mkdir -p` with mode 0700 for every folder it creates.
