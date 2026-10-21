@@ -70,7 +70,8 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
 - `logs/quartermaster-YYYY-MM-DD.log`: redacted; level from `QM_LOG` (default `info`). The
   terminal belongs to the UI, so nothing is logged there.
 - `seat/`, `secondmates/SM-n/`, `tasks/T-n/` (worktree, brief, session, jobs, evidence),
-  `workspace/` (personal project), `tui.toml` (column widths), `attachments/` (pasted images).
+  `workspace/` (personal project), `ui.json` (UI state, never logged; `tui.toml` is only read once for old widths), `attachments/`
+  (pasted images; `drafts/` holds unsent drafts' images).
 
 ## House rules
 

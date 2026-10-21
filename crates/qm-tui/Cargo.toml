@@ -14,10 +14,11 @@ crossterm.workspace = true
 ratatui.workspace = true
 jiff.workspace = true
 unicode-width.workspace = true
-# Suspending with Ctrl+Z (SIGTSTP), remembering column widths (tui.toml), and timed reads of the
+# Suspending with Ctrl+Z (SIGTSTP), reading the old column widths (tui.toml), and timed reads of the
 # terminal's colour answers (termios).
 nix = { workspace = true, features = ["signal", "term"] }
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 pulldown-cmark.workspace = true
 syntect.workspace = true

@@ -2436,6 +2436,7 @@ dependencies = [
  "qm-types",
  "ratatui",
  "serde",
+ "serde_json",
  "syntect",
  "tokio",
  "toml",

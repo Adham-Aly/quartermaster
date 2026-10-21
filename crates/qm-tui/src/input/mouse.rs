@@ -86,7 +86,6 @@ impl App {
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 if self.term.drag.take().is_some() {
-                    self.save_prefs();
                     self.redraw();
                 }
                 if std::mem::take(&mut self.term.pointer.selecting) {

@@ -9,9 +9,10 @@
 use qm_types::api::AgentRef;
 use qm_types::ids::MessageId;
 use ratatui::layout::{Position, Rect};
+use serde::{Deserialize, Serialize};
 
 /// A pane of the Bridge that can take focus.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Pane {
     Projects,
     Crew,

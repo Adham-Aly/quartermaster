@@ -30,7 +30,9 @@
 //! 3. **Leftovers.** A staging folder, or a `message-<id>` folder whose message doesn't name it,
 //!    once it is [`LEFTOVER_AFTER`] old: what a crash between writing and storing leaves behind.
 //!
-//! Anything else in the folder is left alone.
+//! Anything else in the folder is left alone. That includes `drafts/` (`DataDir::draft_images`):
+//! the images in your unsent drafts, which the UI host keeps for `ui.json` and removes itself once
+//! no saved draft references them. So a draft's image survives the sweep, and a restart.
 
 use qm_store::StoreError;
 use qm_store::db::Db;
@@ -515,5 +517,22 @@ mod tests {
             folder(2, jiff::SignedDuration::from_hours(2), false, SIZE_CAP),
         ];
         assert_eq!(plan(&today, now()), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn the_draft_images_folder_is_never_listed_for_removal() {
+        let root = std::env::temp_dir().join(format!(
+            "qm-attachments-list-{}-{}",
+            std::process::id(),
+            NEXT_STAGING.fetch_add(1, Ordering::Relaxed)
+        ));
+        let drafts = root.join(qm_types::data_dir::DRAFT_IMAGES);
+        fs::create_dir_all(&drafts).unwrap();
+        fs::write(drafts.join("0123456789abcdef-4.png"), b"x").unwrap();
+        fs::create_dir_all(root.join("message-5")).unwrap();
+        let listed = list(&root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].message, Some(MessageId::new(5)));
     }
 }

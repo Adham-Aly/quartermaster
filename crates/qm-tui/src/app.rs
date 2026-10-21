@@ -12,7 +12,6 @@ use qm_types::api::{Command, Snapshot, Update};
 use qm_types::ids::MessageId;
 use ratatui::Frame;
 use std::cell::Cell;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// How long the first `Ctrl`+`C` waits for the second.
@@ -76,8 +75,6 @@ pub(crate) struct App {
     dirty: bool,
     /// A card to scroll into view, a step per frame, until its buttons show.
     pub(crate) reveal: Option<MessageId>,
-    /// Where column widths are remembered (`<data dir>/tui.toml`); `None` remembers nothing.
-    pub(crate) prefs_path: Option<PathBuf>,
     /// The setup check screen: its terminal panes and what the keys act on.
     pub(crate) setup: crate::setup::SetupState,
     /// When the UI started: the busy indicator's steps count from here.
@@ -107,7 +104,6 @@ impl App {
             windows: 0,
             dirty: true,
             reveal: None,
-            prefs_path: None,
             setup: crate::setup::SetupState::default(),
             started: Instant::now(),
             spin: 0,

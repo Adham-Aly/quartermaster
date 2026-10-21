@@ -14,10 +14,11 @@
 use crate::app::{App, Quit};
 use crate::backend::Backend16;
 use crate::convert;
-use crate::input::prefs;
+use crate::persist::Persister;
 use crate::term::{Background, Term};
 use crate::terminal::draw_synchronized;
 use qm_types::api::{Command, CoreClient, Update};
+use qm_types::data_dir::DataDir;
 use qm_types::wire::{
     self, Control, ExitReason, Frame, Hello, Refuse, Welcome, read_frame, write_frame,
 };
@@ -192,7 +193,7 @@ pub struct Commands(mpsc::UnboundedReceiver<Ctl>);
 /// # Errors
 /// As [`run`].
 pub async fn serve(client: CoreClient, windows: Windows, control: Commands) -> io::Result<()> {
-    drive(client, windows, Some(control)).await
+    drive(client, windows, Some(control), DataDir::resolve().ok()).await
 }
 
 /// Runs the UI for the windows that arrive on `windows`, until the user quits, the core closes, or
@@ -202,25 +203,21 @@ pub async fn serve(client: CoreClient, windows: Windows, control: Commands) -> i
 /// A terminal that can't be set up for a window is turned away; this itself does not fail except
 /// on a broken runtime.
 pub async fn run(client: CoreClient, windows: Windows) -> io::Result<()> {
-    drive(client, windows, None).await
+    drive(client, windows, None, DataDir::resolve().ok()).await
 }
 
 async fn drive(
     mut client: CoreClient,
     mut windows: Windows,
     control: Option<Commands>,
+    data_dir: Option<DataDir>,
 ) -> io::Result<()> {
     if client.send(Command::Refresh).is_err() {
         return Ok(());
     }
-    let prefs_path = prefs::default_path();
     let mut app = App::new();
-    prefs_path
-        .as_deref()
-        .map(prefs::load)
-        .unwrap_or_default()
-        .apply(&mut app);
-    app.prefs_path.clone_from(&prefs_path);
+    // What you left (layout, popups, drafts) comes back; a sample fixture then replaces the picture.
+    let persist = data_dir.map(|dir| Persister::open(&dir, &mut app));
     crate::sample::install_from_env(&mut app);
     app.detachable = control.is_some();
     let mut control = control.map(|c| c.0);
@@ -233,6 +230,7 @@ async fn drive(
         greeting: 0,
         inbox: inbox_tx,
         crew: 0,
+        persist,
         pending_quit: None,
         exit_reason: ExitReason::Quit,
     };
@@ -284,9 +282,13 @@ async fn drive(
         }
         host.suspend_requests();
         host.detach_requests();
+        host.remember(Instant::now());
     }
     if let Some(reply) = host.pending_quit.take() {
         let _ = reply.1.send(QuitOutcome::Closing);
+    }
+    if let Some(persist) = &mut host.persist {
+        persist.flush(&host.app);
     }
     host.close().await;
     Ok(())
@@ -301,6 +303,8 @@ struct Host {
     inbox: mpsc::UnboundedSender<Msg>,
     /// Crewmates and helpers in the latest snapshot, beyond the Quartermaster.
     crew: u32,
+    /// Remembers the UI's state across restarts; `None` remembers nothing.
+    persist: Option<Persister>,
     /// A stop from the server waiting for the core's answer, and why the windows leave if it comes.
     pending_quit: Option<(ExitReason, oneshot::Sender<QuitOutcome>)>,
     /// Why the windows are told to leave when the host ends.
@@ -351,12 +355,29 @@ impl Host {
         }
     }
 
+    /// Has the persister notice what changed, and write it once things have been quiet.
+    fn remember(&mut self, now: Instant) {
+        if let Some(persist) = &mut self.persist {
+            persist.tick(&self.app, now);
+        }
+    }
+
+    /// Saves the state now: a window is leaving, so what it left must not depend on the timer.
+    fn save_now(&mut self) {
+        if let Some(persist) = &mut self.persist {
+            persist.save(&self.app);
+        }
+    }
+
     /// Windows that asked to leave are told to, and let go.
     fn detach_requests(&mut self) {
         let (leaving, staying): (Vec<_>, Vec<_>) = std::mem::take(&mut self.windows)
             .into_iter()
             .partition(|w| w.term.detach);
         self.windows = staying;
+        if !leaving.is_empty() {
+            self.save_now();
+        }
         for mut window in leaving {
             window.send(Frame::Control(Control::Exit {
                 reason: ExitReason::Detached,
@@ -404,7 +425,10 @@ impl Host {
             }
             Msg::TurnedAway => self.greeting = self.greeting.saturating_sub(1),
             Msg::Frame(id, frame) => self.on_frame(id, frame),
-            Msg::Gone(id) => self.windows.retain(|w| w.id != id),
+            Msg::Gone(id) => {
+                self.windows.retain(|w| w.id != id);
+                self.save_now();
+            }
         }
     }
 
@@ -489,6 +513,7 @@ impl Host {
             Frame::Detach => {
                 let window = self.windows.remove(at);
                 window.reader.abort();
+                self.save_now();
             }
             // Frames only the host sends, and a second hello.
             _ => {}
@@ -653,7 +678,7 @@ mod tests {
     async fn typing_in_one_window_shows_in_the_other() {
         let (client, mut core) = qm_types::api::link();
         let (tx, windows) = mpsc::unbounded_channel();
-        let host = tokio::spawn(run(client, windows));
+        let host = tokio::spawn(drive(client, windows, None, None));
         let mut a = window(&tx, 100, 30).await;
         let mut b = window(&tx, 80, 24).await;
         let first_a = drawn(&mut a).await;

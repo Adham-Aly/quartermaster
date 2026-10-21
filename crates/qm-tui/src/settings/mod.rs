@@ -36,12 +36,16 @@ use qm_types::ids::ModelId;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
 pub(crate) use input::menu_items;
 
+/// How many rows the Routing tab has: `SettingsView::routing_row` is below it.
+pub(crate) const ROUTING_ROWS: usize = 3;
+
 /// A Settings tab.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Tab {
     #[default]
     Accounts,
@@ -292,7 +296,7 @@ pub(crate) struct SettingsView {
     pub(crate) connecting: bool,
     pub(crate) account: Option<usize>,
     pub(crate) board: Option<BoardItem>,
-    /// Routing: 0 the pin, 1 the Quartermaster, 2 the autocompact window.
+    /// Routing: 0 the pin, 1 the Quartermaster, 2 the autocompact window (`ROUTING_ROWS` in all).
     pub(crate) routing_row: usize,
     /// Connect: a provider row, or `providers.len()` for the API-key row.
     pub(crate) provider: Option<usize>,
