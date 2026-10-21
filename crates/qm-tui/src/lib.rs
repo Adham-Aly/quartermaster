@@ -46,6 +46,9 @@
 //! or shows the quit dialog on `Update::ConfirmQuit` (`⏎` sends `Command::Quit`). A third press
 //! while waiting for the core leaves anyway, so a stuck core can never trap you. The UI also
 //! returns when the core drops its end of the link.
+//!
+//! Under a background server ([`host::serve`]) a second `Ctrl`+`C` only detaches that window; the
+//! server is stopped from the command line (`quartermaster server stop`), through [`host::Handle`].
 
 mod app;
 mod attach;

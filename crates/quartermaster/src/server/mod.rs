@@ -102,9 +102,9 @@ pub fn control(command: &Command) -> Result<(), Failure> {
     rt.block_on(async {
         match command {
             Command::ServerStatus => status(&dir).await,
-            Command::ServerStop { force } => stop(&dir, *force).await.map(drop),
+            Command::ServerStop { force } => stop(&dir, *force, false).await.map(drop),
             Command::ServerRestart { force } => {
-                if stop(&dir, *force).await? {
+                if stop(&dir, *force, true).await? {
                     let stream = spawn::connect_or_start(&dir).await?;
                     drop(stream);
                     println!("Started.");
@@ -164,10 +164,15 @@ fn print_status(s: &ServerStatus) {
 
 /// Stops the server, asking first when agents are working. `true` when it is stopped (or wasn't
 /// running).
-async fn stop(dir: &DataDir, force: bool) -> Result<bool, String> {
+async fn stop(dir: &DataDir, force: bool, restart: bool) -> Result<bool, String> {
     let mut force = force;
     loop {
-        match ask(dir, &Request::Stop { force }).await? {
+        let request = if restart {
+            Request::Restart { force }
+        } else {
+            Request::Stop { force }
+        };
+        match ask(dir, &request).await? {
             None => {
                 println!("The Quartermaster server isn't running.");
                 return Ok(true);
