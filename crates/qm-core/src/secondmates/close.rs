@@ -2,8 +2,8 @@
 //!
 //! The safer of the two behaviours: a secondmate with any open task is refused, never retired
 //! with work still running, so nothing it supervises is dropped silently. Retiring marks its
-//! `secondmates` and `agents` rows retired (nothing is deleted: its conversation, events, routed
-//! requests and its tasks' kept refs stay) and stops its loop, which closes its session. Rows are
+//! `secondmates` and `agents` rows retired (nothing is deleted: its conversation, events and
+//! routed requests stay) and stops its loop, which closes its session. Rows are
 //! never removed, so its ID is never handed out again.
 
 use super::{SecondmateService, event_kind, failed, refuse};
@@ -37,7 +37,7 @@ impl SecondmateService {
         Ok(Ack {
             note: format!(
                 "{id} is retired: its session is closed and it has left the workers list. Its \
-                 history and its tasks' kept work are kept."
+                 history is kept."
             ),
         })
     }

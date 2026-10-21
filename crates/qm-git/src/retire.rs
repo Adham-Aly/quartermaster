@@ -1,27 +1,15 @@
-//! Retiring a task's worktree, keeping its work.
+//! Retiring a task's worktree.
 //!
-//! When a task closes, by any exit (landed, failed, stopped, discarded), its worktree is retired
-//! the same way: unmerged work is saved to `refs/quartermaster/kept/T-0042`, then the worktree and
-//! the branch `qm/task-0042` are removed.
+//! When a task closes, by any exit (landed, failed, stopped, discarded), its worktree is removed
+//! (uncommitted changes with it) and so is the branch `qm/task-0042`, with its compare-and-swap on
+//! the tip read here. Unmerged commits are no longer saved anywhere: once the branch is gone they
+//! are unreachable and git garbage-collects them as it does any other unreachable object. The one
+//! exception is a delivered branch-only task, whose branch is the deliverable and is kept
+//! ([`RetireSpec::keep_branch`]).
 //!
-//! "Work" is everything the crewmate could have left behind, gathered before anything is removed:
-//!
-//! - the worktree's uncommitted changes, including new untracked files (ignored files are not
-//!   kept), saved as a snapshot commit on top of its `HEAD` without touching the worktree, its
-//!   index or any branch;
-//! - the worktree's `HEAD`, even if the crewmate switched away from its branch;
-//! - the tip of the task's branch;
-//! - whatever an earlier, interrupted retirement already saved to the kept ref.
-//!
-//! Anything already contained in the base (or in a ref the core says the work landed in) is not
-//! "unmerged" and needs no keeping. The rest goes to the kept ref; when there are several
-//! unrelated heads, a keep commit with each as a parent holds them all. The kept ref only ever
-//! moves forward to a commit containing its previous value; this module never deletes one.
-//!
-//! **Crash-safety.** Every step is idempotent and ordered so that nothing is removed until its
-//! work is reachable from the kept ref (or the base): save, verify, then remove the worktree,
-//! then delete the branch with a compare-and-swap on the exact commit verified. An interrupted
-//! retirement is finished by calling [`Repo::retire`] again.
+//! **Crash-safety.** Every step is idempotent: the worktree goes first, then the branch with a
+//! compare-and-swap on the tip it was read at. An interrupted retirement is finished by calling
+//! [`Repo::retire`] again.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -31,60 +19,28 @@ use qm_types::data_dir::TaskPaths;
 use qm_types::ids::{CommitSha, TaskId};
 
 use crate::error::GitError;
-use crate::repo::{Repo, WorktreeEntry, normalize_path, parse_sha};
-
-/// Name and address on the app's own snapshot and keep commits.
-const APP_IDENTITY: (&str, &str) = ("Quartermaster", "quartermaster@localhost");
-
-/// The temporary index used to snapshot uncommitted work, inside the task's folder (outside the
-/// worktree).
-const SNAPSHOT_INDEX: &str = ".kept-index";
+use crate::repo::{Repo, WorktreeEntry, normalize_path};
 
 /// Everything needed to retire a task's worktree.
 #[derive(Clone, Copy, Debug)]
 pub struct RetireSpec<'a> {
-    /// The task; names the branch and the kept ref.
+    /// The task; names the worktree folder and the branch.
     pub task: TaskId,
     /// The task's folders; the worktree is at `paths.worktree`.
     pub paths: &'a TaskPaths,
-    /// The commit the task started at (`tasks.base_commit`), if recorded: work it contains isn't
-    /// the task's.
-    pub base_commit: Option<&'a CommitSha>,
-    /// Revisions whose history counts as merged: the task's base ref (`origin/main`) and, for
-    /// work that landed, where it landed. Ones that don't resolve are ignored. A squash merge
-    /// leaves no ancestry, so its work is kept too, which is harmless.
-    pub merged_into: &'a [&'a str],
-    /// Leave the task's branch in place after saving the kept ref and removing the worktree:
-    /// delivered branch-only work, whose branch is the deliverable (closing keeps the branch).
-    /// Side exits pass `false` and the branch is deleted as usual.
+    /// Leave the task's branch in place after removing the worktree: delivered branch-only work,
+    /// whose branch is the deliverable (closing keeps the branch). Other exits delete it.
     pub keep_branch: bool,
 }
 
 impl<'a> RetireSpec<'a> {
-    /// A retirement of `task` with nothing counted as merged and the branch deleted; set the
-    /// other fields with the methods below or directly.
+    /// A retirement of `task` with the branch deleted; set [`RetireSpec::keep_branch`] to keep it.
     pub fn new(task: TaskId, paths: &'a TaskPaths) -> Self {
         Self {
             task,
             paths,
-            base_commit: None,
-            merged_into: &[],
             keep_branch: false,
         }
-    }
-
-    /// Sets [`RetireSpec::base_commit`].
-    #[must_use]
-    pub fn base_commit(mut self, base_commit: Option<&'a CommitSha>) -> Self {
-        self.base_commit = base_commit;
-        self
-    }
-
-    /// Sets [`RetireSpec::merged_into`].
-    #[must_use]
-    pub fn merged_into(mut self, merged_into: &'a [&'a str]) -> Self {
-        self.merged_into = merged_into;
-        self
     }
 
     /// Sets [`RetireSpec::keep_branch`].
@@ -98,23 +54,10 @@ impl<'a> RetireSpec<'a> {
 /// What retiring did. Everything in it is also true after a repeated call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Retirement {
-    /// The kept ref, if the task left unmerged work (now or in an earlier attempt).
-    pub kept: Option<KeptWork>,
     /// What happened to the worktree.
     pub worktree: WorktreeRemoval,
     /// What happened to the branch.
     pub branch: BranchRemoval,
-}
-
-/// Unmerged work saved under `refs/quartermaster/kept/T-0042`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KeptWork {
-    /// The full ref name.
-    pub git_ref: String,
-    /// The commit it points at.
-    pub commit: CommitSha,
-    /// Whether this retirement saved uncommitted changes from the worktree into it.
-    pub includes_uncommitted: bool,
 }
 
 /// What happened to the task's worktree.
@@ -129,7 +72,7 @@ pub enum WorktreeRemoval {
 /// What happened to the task's branch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BranchRemoval {
-    /// It was deleted now; it pointed at `commit`, which the kept ref or the base contains.
+    /// It was deleted now; it pointed at `commit`.
     Deleted { commit: CommitSha },
     /// It wasn't there.
     AlreadyGone,
@@ -141,16 +84,12 @@ pub enum BranchRemoval {
 }
 
 impl Repo {
-    /// Retires a task's worktree: saves unmerged work to its kept ref, then removes the worktree
-    /// and the branch. Safe to call again after an interruption, and on a task whose worktree was
-    /// never created.
+    /// Retires a task's worktree: removes it, then deletes the branch. Safe to call again after an
+    /// interruption, and on a task whose worktree was never created.
     ///
-    /// Nothing is removed unless saving succeeded: if the worktree is there but its state can't be
-    /// read, this fails and leaves everything in place.
-    ///
-    /// The core stops the task's crewmate (and its background jobs) first: a change written after
-    /// the snapshot would go with the worktree, and a commit made after the branch was read makes
-    /// the branch deletion's compare-and-swap fail (an error; calling again picks it up).
+    /// The core stops the task's crewmate (and its background jobs) first, so nothing writes to
+    /// the worktree while it goes. A commit made after the branch was read makes the branch
+    /// deletion's compare-and-swap fail (an error; calling again picks it up).
     pub fn retire(&self, spec: &RetireSpec<'_>) -> Result<Retirement, GitError> {
         let _guard = self.write_lock();
         let task = spec.task;
@@ -158,146 +97,17 @@ impl Repo {
         let worktrees = self.worktrees()?;
         let ours = worktrees.iter().find(|w| w.path == path && !w.is_main);
         let present = worktree_present(task, &path, ours.is_some())?;
+        let branch_tip = self.resolve_commit(&format!("refs/heads/{}", task.branch()))?;
 
-        // 1. Gather the work (including a snapshot of uncommitted changes).
-        let work = self.gather_work(spec, &path, present)?;
-        // 2. Save what isn't merged to the kept ref.
-        let merged = self.merged_commits(spec)?;
-        let kept_commit = self.save_kept(task, &work, &merged)?;
-        // 3. Verify every piece of work is reachable before removing anything.
-        self.verify_reachable(task, &work, merged, kept_commit.as_ref())?;
-        // 4. Remove the worktree, then 5. the branch (unless it's kept).
         let worktree = self.remove_task_worktree(ours, &path, present)?;
         let branch = if spec.keep_branch {
-            work.branch_tip
-                .clone()
-                .map_or(BranchRemoval::AlreadyGone, |commit| BranchRemoval::Kept {
-                    commit,
-                })
+            branch_tip.map_or(BranchRemoval::AlreadyGone, |commit| BranchRemoval::Kept {
+                commit,
+            })
         } else {
-            self.delete_task_branch(task, work.branch_tip.clone())?
+            self.delete_task_branch(task, branch_tip)?
         };
-
-        let kept = kept_commit.map(|commit| KeptWork {
-            git_ref: task.kept_ref(),
-            // A snapshot is a new commit, so it is never merged and always among the heads.
-            includes_uncommitted: work.snapshot.is_some(),
-            commit,
-        });
-        Ok(Retirement {
-            kept,
-            worktree,
-            branch,
-        })
-    }
-
-    /// Reads every piece of work the task could have left behind.
-    fn gather_work(
-        &self,
-        spec: &RetireSpec<'_>,
-        path: &Path,
-        present: bool,
-    ) -> Result<TaskWork, GitError> {
-        let (worktree_head, snapshot) = if present {
-            let head = self.worktree_head(path)?;
-            let snapshot = match &head {
-                Some(head) => self.snapshot_uncommitted(spec.task, spec.paths, path, head)?,
-                None => None,
-            };
-            (head, snapshot)
-        } else {
-            (None, None)
-        };
-        Ok(TaskWork {
-            worktree_head,
-            snapshot,
-            branch_tip: self.resolve_commit(&format!("refs/heads/{}", spec.task.branch()))?,
-            existing_kept: self.resolve_commit(&spec.task.kept_ref())?,
-        })
-    }
-
-    /// Points the kept ref at a commit containing all unmerged work (and whatever it held
-    /// before). Returns the kept ref's commit afterwards, if it exists.
-    fn save_kept(
-        &self,
-        task: TaskId,
-        work: &TaskWork,
-        merged: &[CommitSha],
-    ) -> Result<Option<CommitSha>, GitError> {
-        let mut heads: Vec<CommitSha> = Vec::new();
-        for candidate in [
-            work.snapshot.clone().or_else(|| work.worktree_head.clone()),
-            work.branch_tip.clone(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if heads.contains(&candidate) || self.is_contained(&candidate, merged)? {
-                continue;
-            }
-            heads.push(candidate);
-        }
-        // The kept ref only moves forward: whatever it held stays reachable from it.
-        if let Some(existing) = &work.existing_kept
-            && !heads.is_empty()
-            && !heads.contains(existing)
-        {
-            heads.push(existing.clone());
-        }
-        let heads = self.drop_contained_heads(&heads)?;
-        let target = match heads.as_slice() {
-            [] => None,
-            [only] => Some(only.clone()),
-            several => Some(self.keep_commit(task, several)?),
-        };
-        if let Some(target) = &target
-            && work.existing_kept.as_ref() != Some(target)
-        {
-            let kept_ref = task.kept_ref();
-            let old = work
-                .existing_kept
-                .as_ref()
-                .map_or_else(String::new, |c| c.as_str().to_owned());
-            let message = format!("quartermaster: keep unmerged work of {task}");
-            self.run([
-                "update-ref",
-                "-m",
-                message.as_str(),
-                kept_ref.as_str(),
-                target.as_str(),
-                old.as_str(),
-            ])?;
-            tracing::info!(%task, commit = %target.short(), "unmerged work kept");
-        }
-        Ok(target.or_else(|| work.existing_kept.clone()))
-    }
-
-    /// Fails, before anything is removed, unless every piece of work is reachable from the kept
-    /// ref or the merged commits.
-    fn verify_reachable(
-        &self,
-        task: TaskId,
-        work: &TaskWork,
-        mut safe_set: Vec<CommitSha>,
-        kept_commit: Option<&CommitSha>,
-    ) -> Result<(), GitError> {
-        safe_set.extend(kept_commit.cloned());
-        for piece in [&work.snapshot, &work.worktree_head, &work.branch_tip]
-            .into_iter()
-            .flatten()
-        {
-            if !self.is_contained(piece, &safe_set)? {
-                return Err(GitError::UnexpectedOutput {
-                    command: "update-ref".to_owned(),
-                    why: format!(
-                        "{} is not reachable from {} after saving; nothing was removed",
-                        piece.short(),
-                        task.kept_ref()
-                    ),
-                });
-            }
-        }
-        Ok(())
+        Ok(Retirement { worktree, branch })
     }
 
     /// Removes the task's worktree (and any empty leftover folder at its path).
@@ -346,123 +156,6 @@ impl Repo {
         Ok(BranchRemoval::Deleted { commit: tip })
     }
 
-    /// Saves the worktree's uncommitted changes (tracked and untracked, not ignored) as a commit
-    /// on top of `head`, using a temporary index so the worktree and its own index are untouched.
-    /// Returns `None` when there are no changes.
-    fn snapshot_uncommitted(
-        &self,
-        task: TaskId,
-        paths: &TaskPaths,
-        worktree: &Path,
-        head: &CommitSha,
-    ) -> Result<Option<CommitSha>, GitError> {
-        let index = normalize_path(&paths.root).join(SNAPSHOT_INDEX);
-        remove_if_present(&index)?;
-        let result = (|| {
-            let git = self.git();
-            git.invoke(worktree, ["read-tree", head.as_str()])
-                .env("GIT_INDEX_FILE", &index)
-                .text()?;
-            git.invoke(worktree, ["add", "--all", "--", "."])
-                .env("GIT_INDEX_FILE", &index)
-                .text()?;
-            let tree = git
-                .invoke(worktree, ["write-tree"])
-                .env("GIT_INDEX_FILE", &index)
-                .text()?;
-            let tree = tree.trim();
-            let head_tree = git.run(
-                worktree,
-                ["rev-parse", &format!("{}^{{tree}}", head.as_str())],
-            )?;
-            if tree == head_tree.trim() {
-                return Ok(None);
-            }
-            let message = format!(
-                "quartermaster: uncommitted work in {task} when it closed\n\nSaved by the app \
-                 before retiring the worktree; this commit was never on a branch."
-            );
-            let commit = self
-                .app_commit(worktree)
-                .args([
-                    "commit-tree",
-                    "--no-gpg-sign",
-                    tree,
-                    "-p",
-                    head.as_str(),
-                    "-m",
-                    &message,
-                ])
-                .text()?;
-            parse_sha("commit-tree", commit.trim()).map(Some)
-        })();
-        remove_if_present(&index)?;
-        result
-    }
-
-    /// A keep commit whose parents are every unrelated head, so the kept ref holds them all. Its
-    /// tree is the first head's (the most recent work).
-    fn keep_commit(&self, task: TaskId, heads: &[CommitSha]) -> Result<CommitSha, GitError> {
-        let tree = format!("{}^{{tree}}", heads[0].as_str());
-        let message = format!(
-            "quartermaster: kept work of {task}\n\nEach parent is a separate piece of unmerged \
-             work the task left behind."
-        );
-        let mut args: Vec<String> = vec!["commit-tree".into(), "--no-gpg-sign".into(), tree];
-        for head in heads {
-            args.push("-p".into());
-            args.push(head.as_str().to_owned());
-        }
-        args.push("-m".into());
-        args.push(message);
-        let commit = self.app_commit(self.root()).args(args).text()?;
-        parse_sha("commit-tree", commit.trim())
-    }
-
-    /// The commits whose history counts as merged.
-    fn merged_commits(&self, spec: &RetireSpec<'_>) -> Result<Vec<CommitSha>, GitError> {
-        let mut merged: Vec<CommitSha> = spec.base_commit.cloned().into_iter().collect();
-        for rev in spec.merged_into {
-            if rev.starts_with('-') {
-                continue;
-            }
-            if let Some(commit) = self.resolve_commit(rev)?
-                && !merged.contains(&commit)
-            {
-                merged.push(commit);
-            }
-        }
-        Ok(merged)
-    }
-
-    /// Whether `commit` is reachable from any of `from`.
-    fn is_contained(&self, commit: &CommitSha, from: &[CommitSha]) -> Result<bool, GitError> {
-        for other in from {
-            if self.is_ancestor(commit, other)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    /// Drops every head reachable from another one, keeping the order of the rest.
-    fn drop_contained_heads(&self, heads: &[CommitSha]) -> Result<Vec<CommitSha>, GitError> {
-        let mut kept = Vec::new();
-        for (i, head) in heads.iter().enumerate() {
-            let mut contained = false;
-            for (j, other) in heads.iter().enumerate() {
-                if i != j && self.is_ancestor(head, other)? {
-                    contained = true;
-                    break;
-                }
-            }
-            if !contained {
-                kept.push(head.clone());
-            }
-        }
-        Ok(kept)
-    }
-
     /// Removes our worktree: through git when its folder is there, else only git's record of it.
     fn remove_worktree(&self, entry: &WorktreeEntry, present: bool) -> Result<(), GitError> {
         if present {
@@ -490,8 +183,8 @@ impl Repo {
                     stderr: out.stderr,
                 });
             }
-            // Git refuses some worktrees (for example with submodules checked out). The work is
-            // already saved and the folder is the task's own, so remove it directly.
+            // Git refuses some worktrees (for example with submodules checked out). The folder is
+            // the task's own, so remove it directly.
             tracing::warn!(path = %entry.path.display(), stderr = %out.stderr, "git couldn't remove the worktree; removing its folder");
             fs::remove_dir_all(&entry.path)
                 .map_err(|e| GitError::io("remove the worktree", &entry.path, e))?;
@@ -523,58 +216,6 @@ impl Repo {
         }
         Ok(())
     }
-
-    /// A `commit-tree` invocation with the app's own identity.
-    fn app_commit(&self, dir: &Path) -> AppCommit<'_> {
-        AppCommit {
-            repo: self,
-            dir: dir.to_owned(),
-            args: Vec::new(),
-        }
-    }
-}
-
-/// Every piece of work a task could have left behind, read before anything is removed.
-#[derive(Debug)]
-struct TaskWork {
-    /// The worktree's `HEAD`, if the worktree is there.
-    worktree_head: Option<CommitSha>,
-    /// A commit of the worktree's uncommitted changes on top of its `HEAD`, if there were any.
-    snapshot: Option<CommitSha>,
-    /// The task branch's tip, if the branch exists.
-    branch_tip: Option<CommitSha>,
-    /// What the kept ref held before this retirement.
-    existing_kept: Option<CommitSha>,
-}
-
-/// Builder for a commit the app makes itself (snapshot or keep commit).
-struct AppCommit<'a> {
-    repo: &'a Repo,
-    dir: PathBuf,
-    args: Vec<String>,
-}
-
-impl AppCommit<'_> {
-    fn args<I, S>(mut self, args: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.args.extend(args.into_iter().map(Into::into));
-        self
-    }
-
-    fn text(self) -> Result<String, GitError> {
-        let (name, email) = APP_IDENTITY;
-        self.repo
-            .git()
-            .invoke(&self.dir, &self.args)
-            .env("GIT_AUTHOR_NAME", name)
-            .env("GIT_AUTHOR_EMAIL", email)
-            .env("GIT_COMMITTER_NAME", name)
-            .env("GIT_COMMITTER_EMAIL", email)
-            .text()
-    }
 }
 
 /// Whether the task's worktree is there with work that could be in it. An absent path or
@@ -602,12 +243,5 @@ fn is_absent_or_empty(path: &Path) -> Result<bool, GitError> {
             .next()
             .is_none()),
         Ok(_) => Ok(false),
-    }
-}
-
-fn remove_if_present(path: &Path) -> Result<(), GitError> {
-    match fs::remove_file(path) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(GitError::io("remove", path, e)),
-        _ => Ok(()),
     }
 }

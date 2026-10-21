@@ -210,7 +210,7 @@ fn capitalise(s: &str) -> String {
     }
 }
 
-/// One event per finding (kept refs alone are information).
+/// One event per finding (kept refs deleted at startup are information).
 fn findings(report: &ReconcileReport) -> Vec<(&'static str, Option<TaskId>, String)> {
     let mut out = Vec::new();
     for u in &report.unexpected_worktrees {
@@ -453,7 +453,7 @@ async fn not_resumed(svc: &TaskService, task: TaskId, branch: &str, branch_exist
     let at = svc.clock().now();
     let text = if branch_exists {
         format!(
-            "{task}'s worktree is missing (its branch {branch} is safe), so it wasn't resumed. stop_task keeps its work in a kept ref."
+            "{task}'s worktree is missing (its branch {branch} is safe), so it wasn't resumed. stop_task retires it."
         )
     } else {
         format!(

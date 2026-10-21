@@ -108,7 +108,7 @@ pub trait ToolHost: Send + Sync {
         Box::pin(async { Err(ToolFailure::not_available("message_task")) })
     }
 
-    /// Stops a direct report's task and retires it, keeping its work in a kept ref.
+    /// Stops a direct report's task and retires it; its uncommitted changes and unmerged commits go too.
     fn stop_task<'a>(
         &'a self,
         caller: &'a Caller,

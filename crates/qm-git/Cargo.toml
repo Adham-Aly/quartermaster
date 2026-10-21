@@ -1,6 +1,6 @@
 [package]
 name = "qm-git"
-description = "A typed wrapper over the real git: worktrees, base branches, kept refs, landing."
+description = "A typed wrapper over the real git: worktrees, base branches, landing."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

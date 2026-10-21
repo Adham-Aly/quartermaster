@@ -39,14 +39,15 @@ pub struct ReconcileReport {
     pub stale_registrations: Vec<StaleRegistration>,
     /// Task branches with no worktree and no task that should have one.
     pub orphan_branches: Vec<OrphanBranch>,
-    /// Every kept ref (saved unmerged work), for information.
-    pub kept_refs: Vec<KeptRef>,
+    /// Kept refs earlier versions saved closed tasks' unmerged work to; deleted now, their commits
+    /// left for git to garbage-collect.
+    pub removed_kept_refs: Vec<KeptRef>,
     /// Projects whose repository couldn't be read.
     pub unreadable_projects: Vec<UnreadableProject>,
 }
 
 impl ReconcileReport {
-    /// Whether anything needs your attention (kept refs alone don't).
+    /// Whether anything needs your attention (removed kept refs alone don't).
     pub fn needs_attention(&self) -> bool {
         !(self.unexpected_worktrees.is_empty()
             && self.missing_worktrees.is_empty()
@@ -115,11 +116,13 @@ pub struct OrphanBranch {
     pub commit: CommitSha,
 }
 
-/// A kept ref: unmerged work saved when a task closed.
+/// A kept ref an earlier version saved a closed task's unmerged work to, and startup deleted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeptRef {
     pub project: ProjectId,
-    pub task: TaskId,
+    /// The full ref name, `refs/quartermaster/kept/T-0042`.
+    pub git_ref: String,
+    /// The commit it pointed at.
     pub commit: CommitSha,
 }
 
@@ -132,16 +135,25 @@ pub struct UnreadableProject {
     pub reason: String,
 }
 
+/// The ref namespace earlier versions saved a closed task's unmerged work in. Nothing writes it
+/// now; startup deletes what is there.
+const LEGACY_KEPT_PREFIX: &str = "refs/quartermaster/kept";
+
 impl Repo {
-    /// Every kept ref in this repository with its task and commit, by task.
-    pub fn kept_refs(&self) -> Result<Vec<(TaskId, CommitSha)>, GitError> {
-        let mut kept: Vec<(TaskId, CommitSha)> = self
-            .refs_under(&[TaskId::KEPT_REF_PREFIX.trim_end_matches('/')])?
-            .into_iter()
-            .filter_map(|(name, commit)| Some((TaskId::from_kept_ref(&name).ok()?, commit)))
-            .collect();
-        kept.sort_by_key(|(task, _)| *task);
-        Ok(kept)
+    /// Every legacy kept ref in this repository, with the commit it points at, by name.
+    pub fn legacy_kept_refs(&self) -> Result<Vec<(String, CommitSha)>, GitError> {
+        let prefix = format!("{LEGACY_KEPT_PREFIX}/");
+        let mut refs = self.refs_under(&[LEGACY_KEPT_PREFIX])?;
+        refs.retain(|(name, _)| name.starts_with(&prefix));
+        refs.sort();
+        Ok(refs)
+    }
+
+    /// Deletes `git_ref` only while it still points at `commit` (compare-and-swap).
+    pub fn delete_ref(&self, git_ref: &str, commit: &CommitSha) -> Result<(), GitError> {
+        let _guard = self.write_lock();
+        self.run(["update-ref", "-d", git_ref, commit.as_str()])?;
+        Ok(())
     }
 
     /// Every task branch (`qm/task-*`) in this repository with its task and commit, by task.
@@ -227,7 +239,7 @@ fn reconcile_project(
     let repo = Repo::open(git.clone(), &project.checkout)?;
     let worktrees = repo.worktrees()?;
     let branches = repo.task_branches()?;
-    let kept = repo.kept_refs()?;
+    let legacy = repo.legacy_kept_refs()?;
     let id = project.project;
     let mut seen: BTreeSet<TaskId> = BTreeSet::new();
     let mut checked_out: BTreeSet<String> = BTreeSet::new();
@@ -304,13 +316,15 @@ fn reconcile_project(
         }
     }
 
-    report
-        .kept_refs
-        .extend(kept.into_iter().map(|(task, commit)| KeptRef {
+    for (git_ref, commit) in legacy {
+        repo.delete_ref(&git_ref, &commit)?;
+        tracing::info!(project = %id, %git_ref, commit = %commit.short(), "deleted a kept ref");
+        report.removed_kept_refs.push(KeptRef {
             project: id,
-            task,
+            git_ref,
             commit,
-        }));
+        });
+    }
     Ok(())
 }
 

@@ -150,8 +150,8 @@ pub struct MessageTaskArgs {
 }
 
 tool! {
-    /// Stops a direct report's work; unmerged work is saved to a kept ref first. A plain-folder
-    /// task's edits stay where they are.
+    /// Stops a direct report's work and retires it: its worktree and branch are removed. A
+    /// plain-folder task's edits stay where they are.
     StopTaskTool {
         name: "stop_task",
         class: Act,
@@ -170,8 +170,8 @@ pub struct StopTaskArgs {
 }
 
 tool! {
-    /// Closes a direct report's task and retires its worktree; unmerged work is saved to a kept ref
-    /// first. A plain-folder task keeps its files where they are.
+    /// Closes a direct report's task and retires its worktree and branch. A plain-folder task
+    /// keeps its files where they are.
     CloseTaskTool {
         name: "close_task",
         class: Act,
@@ -192,9 +192,6 @@ pub struct CloseTaskArgs {
 pub struct TaskUpdated {
     pub task: TaskId,
     pub status: TaskStatus,
-    /// Where unmerged work was saved, if any: `refs/quartermaster/kept/T-0042`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kept_ref: Option<String>,
 }
 
 tool! {
