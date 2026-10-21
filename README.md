@@ -17,6 +17,8 @@ crewmates, each in its own git worktree, and delivers the results through GitHub
 
 ## A task's life
 
+[Model routing](docs/routing.md): task kinds, model levels, effort and your choices.
+
 ![A task's life](assets/lifecycle.svg)
 
 ## Engines and accounts
