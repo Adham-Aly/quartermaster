@@ -88,7 +88,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
     if y >= area.bottom() {
         return;
     }
-    let hovered = app.hover == Some(Hit::UpdateButton);
+    let hovered = app.term.hover == Some(Hit::UpdateButton);
     frame.render_widget(
         Line::from(button::span(&pressable.label, hovered)),
         Rect::new(area.x, y, area.width, 1),
