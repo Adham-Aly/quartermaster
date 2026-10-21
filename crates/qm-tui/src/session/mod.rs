@@ -385,6 +385,21 @@ mod tests {
             1,
         );
         assert_eq!(app.view.middle, Middle::Session(t42()));
+
+        // A secondmate's preview has the button too.
+        let sm = AgentRef::Secondmate {
+            id: qm_types::ids::SecondmateId::new(2).unwrap(),
+        };
+        screen(&mut app, 150, 45);
+        click(&mut app, Hit::Crew(sm), 1);
+        assert_eq!(app.view.middle, Middle::Session(t42()));
+        screen(&mut app, 150, 45);
+        click(
+            &mut app,
+            Hit::TaskButton(crate::hit::TaskButton::OpenSession),
+            1,
+        );
+        assert_eq!(app.view.middle, Middle::Session(sm));
     }
 
     #[test]
