@@ -141,12 +141,6 @@ impl App {
         self.dirty = true;
     }
 
-    /// Takes the commands queued for the core, for tests.
-    #[cfg(test)]
-    pub(crate) fn take_commands(&mut self) -> Vec<Command> {
-        std::mem::take(&mut self.outbox)
-    }
-
     /// Shows `text` in the status bar for a couple of seconds.
     pub(crate) fn flash(&mut self, text: impl Into<String>, now: Instant) {
         self.term.flash = Some(Flash {
