@@ -361,7 +361,10 @@ pub(crate) fn rows(lines: &[SessionLine], max: u16, app: &App) -> Vec<Row> {
                 let committed = stream::committed(&line.text, line.streaming);
                 if !committed.is_empty() || !line.streaming {
                     let body = committed.strip_suffix('\n').unwrap_or(committed);
-                    out.wrapped(body, max, 0, "", theme::text());
+                    // Markdown, drawn as the Quartermaster's chat draws its replies.
+                    for (line, continues) in markdown::rows(body, usize::from(max)) {
+                        out.rows.push(Row::text(line, continues));
+                    }
                 }
             }
         }
@@ -616,5 +619,42 @@ mod tests {
         );
         assert_eq!(shown[at + 4], format!("╰{}╯", "─".repeat(38)));
         assert!(shown.iter().all(|s| width(s) <= 40));
+    }
+
+    #[test]
+    fn crewmate_and_secondmate_text_is_drawn_as_markdown() {
+        use ratatui::style::Modifier;
+        let styled = |rows: &[Row], word: &str, modifier: Modifier| {
+            rows.iter()
+                .flat_map(|r| &r.line.spans)
+                .any(|s| s.content.contains(word) && s.style.add_modifier.contains(modifier))
+        };
+        // A crewmate's own text.
+        let mut app = App::new();
+        sample::install_session(&mut app);
+        let lines = app.session_view().unwrap().lines.clone();
+        let rows = rows(&lines, 100, &app);
+        let shown = texts(&rows);
+        assert!(
+            shown.iter().all(|s| !s.contains("**") && !s.contains('`')),
+            "{shown:#?}"
+        );
+        assert!(styled(&rows, "AGENTS.md", Modifier::BOLD), "{shown:#?}");
+        assert!(
+            styled(&rows, "CONTRIBUTING.md", Modifier::ITALIC),
+            "{shown:#?}"
+        );
+        // A secondmate's replies.
+        let mut app = App::new();
+        sample::install_secondmate(&mut app);
+        let chats = app.session_view().unwrap().conversation.clone();
+        let voices = conversation::Voices {
+            agent: "SM-02",
+            supervisor: "supervisor",
+        };
+        let rows = conversation::rows(&chats, 100, None, &voices);
+        let shown = texts(&rows);
+        assert!(shown.iter().any(|s| s.contains("sm/web-app")), "{shown:#?}");
+        assert!(shown.iter().all(|s| !s.contains('`')), "{shown:#?}");
     }
 }

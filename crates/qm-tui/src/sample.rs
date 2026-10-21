@@ -83,7 +83,7 @@ pub fn session_view() -> SessionView {
             2,
             SessionLineKind::Agent,
             2,
-            "Reading AGENTS.md and CONTRIBUTING.md, then calling delivery_check before any edit.",
+            "Reading **AGENTS.md** and *CONTRIBUTING.md*, then calling `delivery_check` before any edit.",
         ),
         line(3, SessionLineKind::Tool, 3, "Read AGENTS.md"),
         line(
