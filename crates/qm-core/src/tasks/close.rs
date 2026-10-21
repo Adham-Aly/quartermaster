@@ -186,11 +186,7 @@ pub(crate) async fn retire(
                     at,
                 )?;
                 if let Exit::Failed { reason } = &recorded {
-                    let kept = if row.delivery == DeliveryMode::Folder {
-                        "Its files in the folder are left as they are.".to_owned()
-                    } else {
-                        format!("Its work, if any, is kept at {}.", task.kept_ref())
-                    };
+                    let kept = failure_kept_text(row.delivery, task);
                     let text = format!("{task} failed before it could finish: {reason}. {kept}");
                     let wake = new_wake(
                         supervisor,
@@ -368,6 +364,16 @@ pub(crate) async fn retire(
 
 /// Where the task's work landed, for the kept-ref decision: `[base_ref]`, plus what delivery
 /// recorded as where a landed task's work went.
+/// What a failed task's text says about its work: a folder task's files are left where they are, and
+/// any other task's unmerged work is saved to its kept ref.
+pub(crate) fn failure_kept_text(delivery: DeliveryMode, task: TaskId) -> String {
+    if delivery == DeliveryMode::Folder {
+        "Its files in the folder are left as they are.".to_owned()
+    } else {
+        format!("Its work, if any, is kept at {}.", task.kept_ref())
+    }
+}
+
 fn close_facts(row: &task_store::TaskRow) -> Vec<String> {
     row.base_ref.iter().cloned().collect()
 }
@@ -505,4 +511,26 @@ pub(crate) async fn close_task(
         status: TaskStatus::Closed,
         kept_ref: retired.kept.map(|k| k.git_ref),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_failure_says_its_files_are_left_and_names_no_kept_ref() {
+        let task = TaskId::new(7).expect("a task id");
+        let text = failure_kept_text(DeliveryMode::Folder, task);
+        assert_eq!(text, "Its files in the folder are left as they are.");
+    }
+
+    #[test]
+    fn a_branch_failure_names_the_kept_ref() {
+        let task = TaskId::new(7).expect("a task id");
+        let text = failure_kept_text(DeliveryMode::BranchOnly, task);
+        assert_eq!(
+            text,
+            format!("Its work, if any, is kept at {}.", task.kept_ref())
+        );
+    }
 }

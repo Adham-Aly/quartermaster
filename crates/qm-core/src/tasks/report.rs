@@ -294,6 +294,16 @@ pub(crate) async fn callers_task(
 
 /// Why a re-report can't be taken now: the task is settling and its approval is no longer pending,
 /// so a merge or push of the reported head is under way. `None` otherwise.
+/// Whether a report must have the task's own commits checked: a done report on code work in a git
+/// mode. A folder task has no commits; its edits in the folder are the delivery.
+pub(crate) fn needs_own_commits(
+    outcome: ReportOutcome,
+    kind: TaskKind,
+    delivery: DeliveryMode,
+) -> bool {
+    outcome == ReportOutcome::Done && kind.can_change_code() && delivery != DeliveryMode::Folder
+}
+
 fn settle_under_way(row: &TaskRow, pending_holds: usize) -> Option<String> {
     (row.status == TaskStatus::Settling && pending_holds == 0).then(|| {
         format!(
@@ -350,10 +360,7 @@ pub(crate) async fn record(
     // On done for code work in a git mode: the task's own commit names, and the head commit. A
     // folder task has no commits: its edits in the folder are the delivery.
     let mut head: Option<CommitSha> = None;
-    if args.outcome == ReportOutcome::Done
-        && row.kind.can_change_code()
-        && row.delivery != DeliveryMode::Folder
-    {
+    if needs_own_commits(args.outcome, row.kind, row.delivery) {
         let paths = svc.deps().data_dir.task(task);
         let project = svc
             .db()
@@ -551,4 +558,47 @@ pub(crate) async fn record(
     Ok(Ack {
         note: ack.to_owned(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_done_code_report_owes_commits_except_in_a_folder() {
+        assert!(needs_own_commits(
+            ReportOutcome::Done,
+            TaskKind::Build,
+            DeliveryMode::DirectPr
+        ));
+        assert!(needs_own_commits(
+            ReportOutcome::Done,
+            TaskKind::Fix,
+            DeliveryMode::BranchOnly
+        ));
+        assert!(!needs_own_commits(
+            ReportOutcome::Done,
+            TaskKind::Build,
+            DeliveryMode::Folder
+        ));
+    }
+
+    #[test]
+    fn a_report_owes_no_commits_unless_it_is_done_with_code() {
+        assert!(!needs_own_commits(
+            ReportOutcome::Blocked,
+            TaskKind::Build,
+            DeliveryMode::DirectPr
+        ));
+        assert!(!needs_own_commits(
+            ReportOutcome::NeedsDecision,
+            TaskKind::Build,
+            DeliveryMode::DirectPr
+        ));
+        assert!(!needs_own_commits(
+            ReportOutcome::Done,
+            TaskKind::Research,
+            DeliveryMode::DirectPr
+        ));
+    }
 }

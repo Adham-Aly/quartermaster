@@ -1642,4 +1642,33 @@ mod tests {
         .unwrap_err();
         assert!(refused.contains("task folders"), "{refused}");
     }
+
+    #[test]
+    fn the_personal_folder_does_not_move_while_a_personal_task_is_open() {
+        use qm_types::domain::TaskKind;
+        let conn = crate::test_store::store();
+        let folder = crate::test_store::project(
+            &conn,
+            "personal",
+            ProjectOrigin::Workspace,
+            DeliveryMode::Folder,
+        );
+        let open = crate::test_store::task(&conn, folder, TaskKind::Build, DeliveryMode::Folder);
+        let moved = PathBuf::from("/work/elsewhere");
+        let workspace_path = || {
+            projects::workspace(&conn)
+                .expect("the store")
+                .expect("the workspace")
+                .path
+        };
+
+        let refused = move_workspace(&conn, &moved).unwrap_err();
+        assert!(refused.contains("still open"), "{refused}");
+        assert!(refused.contains(&open.to_string()), "{refused}");
+        assert_eq!(workspace_path(), PathBuf::from("/work/personal"));
+
+        crate::test_store::close(&conn, open);
+        move_workspace(&conn, &moved).expect("no personal task is open");
+        assert_eq!(workspace_path(), moved);
+    }
 }

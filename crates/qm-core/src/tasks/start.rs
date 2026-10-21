@@ -48,7 +48,7 @@ use qm_types::domain::{
     VerificationLevel, VerificationSource,
 };
 use qm_types::error::Refusal;
-use qm_types::ids::{AgentId, MessageId, ModelId, PortBlock, SecondmateId, TaskId};
+use qm_types::ids::{AgentId, MessageId, ModelId, PortBlock, ProjectId, SecondmateId, TaskId};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -679,12 +679,12 @@ pub(crate) async fn start_as(
             let tx = conn.transaction()?;
             let mut notify = Notify::new();
             // Folder work shares one folder, so one code-writing task at a time may be open in it.
-            let open = task_store::open_in_project(&tx, validated.project.id)?;
-            let writer = open
-                .iter()
-                .find(|(_, kind)| kind.can_change_code())
-                .map(|(task, _)| *task);
-            if let Err(r) = check_folder_writer(validated.project.delivery, req.kind, writer) {
+            if let Err(r) = check_writer_slot(
+                &tx,
+                validated.project.id,
+                validated.project.delivery,
+                req.kind,
+            )? {
                 return Ok((Recorded::Refused(r), notify));
             }
             let new = NewTask {
@@ -1317,8 +1317,27 @@ async fn make_worktree(
     Ok(())
 }
 
+/// The code-writing task already open in a project, if any: a second one is refused while it runs.
+pub(crate) fn folder_writer(open: &[(TaskId, TaskKind)]) -> Option<TaskId> {
+    open.iter()
+        .find(|(_, kind)| kind.can_change_code())
+        .map(|(task, _)| *task)
+}
+
+/// Whether a new task of `kind` may start in `project` now, given the tasks open in it. The outer
+/// `Result` is the store's; the inner one is the refusal.
+pub(crate) fn check_writer_slot(
+    conn: &Connection,
+    project: ProjectId,
+    delivery: DeliveryMode,
+    kind: TaskKind,
+) -> Result<Result<(), Refusal>, StoreError> {
+    let open = task_store::open_in_project(conn, project)?;
+    Ok(check_folder_writer(delivery, kind, folder_writer(&open)))
+}
+
 /// A folder task's folder must still be there. Nothing is created or changed in it: it's yours.
-async fn check_folder(task: TaskId, folder: &Path) -> Result<(), PrepareError> {
+pub(crate) async fn check_folder(task: TaskId, folder: &Path) -> Result<(), PrepareError> {
     let dir = folder.to_path_buf();
     let there = tokio::task::spawn_blocking(move || dir.is_dir())
         .await
@@ -1427,4 +1446,100 @@ pub(crate) async fn start_retry(
         user_words: Some(user_words),
     };
     start_as(svc, &caller, req, how).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_store as fx;
+    use qm_types::data_dir::DataDir;
+    use qm_types::domain::ProjectOrigin;
+
+    fn id(n: u32) -> TaskId {
+        TaskId::new(n).expect("a task id")
+    }
+
+    #[test]
+    fn the_folder_writer_is_the_open_code_task_and_an_answer_task_never_counts() {
+        assert_eq!(
+            folder_writer(&[(id(1), TaskKind::Research), (id(2), TaskKind::Build)]),
+            Some(id(2))
+        );
+        assert_eq!(folder_writer(&[(id(1), TaskKind::Research)]), None);
+        assert_eq!(folder_writer(&[]), None);
+    }
+
+    #[test]
+    fn a_second_code_writer_in_a_folder_is_refused_until_the_first_closes() {
+        let conn = fx::store();
+        let folder = fx::project(
+            &conn,
+            "personal",
+            ProjectOrigin::Workspace,
+            DeliveryMode::Folder,
+        );
+        let first = fx::task(&conn, folder, TaskKind::Build, DeliveryMode::Folder);
+        let refused = check_writer_slot(&conn, folder, DeliveryMode::Folder, TaskKind::Fix)
+            .expect("the store answers")
+            .expect_err("a second code writer");
+        assert!(
+            refused.reason.contains(&first.to_string()),
+            "{}",
+            refused.reason
+        );
+
+        fx::close(&conn, first);
+        check_writer_slot(&conn, folder, DeliveryMode::Folder, TaskKind::Fix)
+            .expect("the store answers")
+            .expect("the first writer is closed");
+    }
+
+    #[test]
+    fn an_answer_task_runs_alongside_the_folder_writer() {
+        let conn = fx::store();
+        let folder = fx::project(
+            &conn,
+            "personal",
+            ProjectOrigin::Workspace,
+            DeliveryMode::Folder,
+        );
+        fx::task(&conn, folder, TaskKind::Build, DeliveryMode::Folder);
+        check_writer_slot(&conn, folder, DeliveryMode::Folder, TaskKind::Research)
+            .expect("the store answers")
+            .expect("an answer-only task reads the folder");
+    }
+
+    #[test]
+    fn a_branch_project_is_not_limited_to_one_writer() {
+        let conn = fx::store();
+        let app = fx::project(&conn, "app", ProjectOrigin::Linked, DeliveryMode::DirectPr);
+        fx::task(&conn, app, TaskKind::Build, DeliveryMode::DirectPr);
+        check_writer_slot(&conn, app, DeliveryMode::DirectPr, TaskKind::Build)
+            .expect("the store answers")
+            .expect("each branch task has its own worktree");
+    }
+
+    #[tokio::test]
+    async fn a_folder_task_starts_in_its_folder_and_nothing_is_created_there() {
+        let scratch = fx::Scratch::new("folder-start");
+        let folder = scratch.path().join("notes");
+        std::fs::create_dir_all(&folder).expect("the folder");
+        let paths = DataDir::new(scratch.path().join("data")).task(id(1));
+        check_folder(id(1), &folder)
+            .await
+            .expect("the folder is there");
+        assert!(!folder.join(".git").exists());
+        assert!(!paths.worktree.exists());
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_has_gone_stops_the_start() {
+        let scratch = fx::Scratch::new("folder-gone");
+        let folder = scratch.path().join("gone");
+        let Err(PrepareError::Failed(message)) = check_folder(id(1), &folder).await else {
+            panic!("a missing folder refuses the start");
+        };
+        assert!(message.contains("isn't there"), "{message}");
+        assert!(!folder.exists());
+    }
 }

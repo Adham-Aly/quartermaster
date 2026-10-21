@@ -20,7 +20,7 @@ use qm_git::{MissingWorktree, ReconcileProject, ReconcileReport, reconcile as gi
 use qm_store::StoreError;
 use qm_store::agents::{self, InterruptedCrewTurn};
 use qm_store::events::{self, NewEvent};
-use qm_store::tasks as task_store;
+use qm_store::tasks::{self as task_store, TaskRow};
 use qm_store::turns::{cut_short, mark_recovered};
 use qm_types::domain::{DeliveryMode, TaskStatus, TurnStatus, WakeKind};
 use qm_types::ids::{PortBlock, ProjectId, TaskId};
@@ -142,6 +142,18 @@ pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupErr
     })
 }
 
+/// The open tasks that have a worktree, by project. A folder task has none, so it never appears.
+pub(crate) fn tasks_with_worktrees(open: &[TaskRow]) -> BTreeMap<ProjectId, BTreeSet<TaskId>> {
+    let mut by_project: BTreeMap<ProjectId, BTreeSet<TaskId>> = BTreeMap::new();
+    for t in open
+        .iter()
+        .filter(|t| has_worktree(t.status) && t.delivery != DeliveryMode::Folder)
+    {
+        by_project.entry(t.project).or_default().insert(t.id);
+    }
+    by_project
+}
+
 /// Git's view of the task worktrees against the open tasks. A task still in phase C may not
 /// have its worktree yet: its runner makes it (or reuses what the interrupted attempt left), so
 /// it isn't reported missing. A closed task's branch is kept by design (closing keeps the branch,
@@ -152,13 +164,7 @@ async fn worktree_report(svc: &TaskService) -> Result<ReconcileReport, StartupEr
         .call(|conn| {
             let projects = active_projects(conn)?;
             let open = task_store::open(conn)?;
-            let mut by_project: BTreeMap<ProjectId, BTreeSet<TaskId>> = BTreeMap::new();
-            for t in open
-                .iter()
-                .filter(|t| has_worktree(t.status) && t.delivery != DeliveryMode::Folder)
-            {
-                by_project.entry(t.project).or_default().insert(t.id);
-            }
+            let mut by_project = tasks_with_worktrees(&open);
             let preparing: BTreeSet<TaskId> = open
                 .iter()
                 .filter(|t| t.status == TaskStatus::Preparing)
@@ -483,5 +489,41 @@ async fn not_resumed(svc: &TaskService, task: TaskId, branch: &str, branch_exist
         .await;
     if let Err(e) = result {
         tracing::warn!(%task, error = %e, "couldn't report a missing worktree");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_store as fx;
+    use qm_types::domain::{ProjectOrigin, TaskKind};
+
+    #[test]
+    fn only_a_branch_task_with_a_worktree_is_listed_for_reconcile() {
+        let conn = fx::store();
+        let folder = fx::project(
+            &conn,
+            "personal",
+            ProjectOrigin::Workspace,
+            DeliveryMode::Folder,
+        );
+        let app = fx::project(
+            &conn,
+            "app",
+            ProjectOrigin::Linked,
+            DeliveryMode::BranchOnly,
+        );
+        let folder_work = fx::task(&conn, folder, TaskKind::Build, DeliveryMode::Folder);
+        fx::set_status(&conn, folder_work, "running");
+        let branch_work = fx::task(&conn, app, TaskKind::Build, DeliveryMode::BranchOnly);
+        fx::set_status(&conn, branch_work, "running");
+        // Queued: its worktree doesn't exist yet, so it isn't listed.
+        fx::task(&conn, app, TaskKind::Build, DeliveryMode::BranchOnly);
+
+        let open = task_store::open(&conn).expect("the open tasks");
+        assert_eq!(
+            tasks_with_worktrees(&open),
+            BTreeMap::from([(app, BTreeSet::from([branch_work]))])
+        );
     }
 }
