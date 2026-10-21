@@ -11,6 +11,7 @@
 //! beside it ([`latest_acknowledgements`]), so a later one replaces an earlier one.
 
 use crate::StoreError;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{MessageKind, MessageSource};
@@ -60,8 +61,8 @@ pub fn insert(conn: &Connection, message: &NewMessage<'_>) -> Result<MessageId, 
         )
     };
     Ok(conn.query_row(
-        "INSERT INTO messages (agent_id, source, kind, text, options, replies_to, turn_id, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO messages (agent_id, source, kind, text, options, replies_to, turn_id, created_at, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          RETURNING id",
         params![
             message.agent,
@@ -71,7 +72,8 @@ pub fn insert(conn: &Connection, message: &NewMessage<'_>) -> Result<MessageId, 
             options,
             message.replies_to,
             message.turn,
-            to_millis(message.at)
+            to_millis(message.at),
+            seq::next(message.at),
         ],
         |r| r.get(0),
     )?)
@@ -150,8 +152,8 @@ pub fn load_recent(
         "SELECT {COLUMNS} FROM (
              SELECT {COLUMNS} FROM messages
              WHERE agent_id = ?1 AND kind <> 'acknowledgement'
-             ORDER BY id DESC LIMIT ?2
-         ) ORDER BY id"
+             ORDER BY seq DESC LIMIT ?2
+         ) ORDER BY seq"
     ))?;
     collect(
         &mut stmt,
@@ -186,7 +188,7 @@ pub fn waiting(conn: &Connection, agent: AgentId) -> Result<Vec<MessageId>, Stor
         "SELECT m.id FROM messages AS m
          WHERE m.agent_id = ?1 AND m.source = 'you' AND m.kind = 'message'
            AND NOT EXISTS (SELECT 1 FROM turns AS t WHERE t.message_id = m.id)
-         ORDER BY m.id",
+         ORDER BY m.seq",
     )?;
     Ok(stmt
         .query_map(params![agent], |r| r.get(0))?
@@ -264,7 +266,7 @@ pub fn latest_acknowledgements(
     let mut stmt = conn.prepare(&format!(
         "SELECT replies_to, text FROM messages
          WHERE kind = 'acknowledgement' AND replies_to IN ({placeholders})
-         ORDER BY id"
+         ORDER BY seq"
     ))?;
     let rows = stmt
         .query_map(params_from_iter(messages.iter()), |r| {
@@ -303,7 +305,7 @@ pub fn turn_origins(
     let mut stmt = conn.prepare(&format!(
         "SELECT t.id, t.started_by,
                 (SELECT json_extract(w.payload, '$.short') FROM wakes AS w
-                 WHERE w.delivered_turn_id = t.id ORDER BY w.id LIMIT 1)
+                 WHERE w.delivered_turn_id = t.id ORDER BY w.seq LIMIT 1)
          FROM turns AS t WHERE t.id IN ({placeholders})"
     ))?;
     let rows = stmt
@@ -331,8 +333,8 @@ pub fn turn_origins(
     Ok(out)
 }
 
-/// The last turn before the agent's latest `/clear` (`seat.cleared`), or 0: only turns after it
-/// count for a new session's summary.
+/// The `seq` of the last turn before the agent's latest `/clear` (`seat.cleared`), or 0: only
+/// turns after it count for a new session's summary.
 const CLEARED_AFTER: &str = "(SELECT COALESCE(MAX(json_extract(payload, '$.after_turn')), 0)
        FROM events WHERE kind = 'seat.cleared' AND agent_id = ?1)";
 
@@ -346,14 +348,14 @@ pub fn for_summary(
 ) -> Result<Vec<MessageRow>, StoreError> {
     let mut stmt = conn.prepare(&format!(
         "WITH recent AS (
-             SELECT id, message_id FROM turns WHERE agent_id = ?1 AND id > {CLEARED_AFTER}
-             ORDER BY id DESC LIMIT ?2
+             SELECT id, message_id FROM turns WHERE agent_id = ?1 AND seq > {CLEARED_AFTER}
+             ORDER BY seq DESC LIMIT ?2
          )
          SELECT {COLUMNS} FROM messages
          WHERE agent_id = ?1 AND kind <> 'app_note'
            AND (turn_id IN (SELECT id FROM recent)
                 OR id IN (SELECT message_id FROM recent WHERE message_id IS NOT NULL))
-         ORDER BY id"
+         ORDER BY seq"
     ))?;
     collect(
         &mut stmt,
@@ -365,7 +367,7 @@ pub fn for_summary(
 pub fn has_turns(conn: &Connection, agent: AgentId) -> Result<bool, StoreError> {
     Ok(conn.query_row(
         &format!(
-            "SELECT EXISTS (SELECT 1 FROM turns WHERE agent_id = ?1 AND id > {CLEARED_AFTER})"
+            "SELECT EXISTS (SELECT 1 FROM turns WHERE agent_id = ?1 AND seq > {CLEARED_AFTER})"
         ),
         params![agent],
         |r| r.get(0),

@@ -46,6 +46,7 @@ pub mod schedules;
 pub mod schema;
 pub mod seat;
 pub mod secondmates;
+pub mod seq;
 pub mod sessions;
 pub mod standing_instructions;
 pub mod tasks;

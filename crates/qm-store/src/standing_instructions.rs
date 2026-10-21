@@ -3,6 +3,7 @@
 //! row and records the turn that dropped it.
 
 use crate::StoreError;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::ids::{MessageId, StandingInstructionId, TurnId};
@@ -28,10 +29,10 @@ pub fn save(
     at: Timestamp,
 ) -> Result<StandingInstructionId, StoreError> {
     Ok(conn.query_row(
-        "INSERT INTO standing_instructions (text, message_id, turn_id, created_at)
-         VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO standing_instructions (text, message_id, turn_id, created_at, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          RETURNING id",
-        params![text, message, turn, to_millis(at)],
+        params![text, message, turn, to_millis(at), seq::next(at)],
         |r| r.get(0),
     )?)
 }
@@ -92,7 +93,7 @@ pub fn drop(
 /// Every standing instruction not dropped, oldest first.
 pub fn active(conn: &Connection) -> Result<Vec<(StandingInstructionId, String)>, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT id, text FROM standing_instructions WHERE dropped_at IS NULL ORDER BY id",
+        "SELECT id, text FROM standing_instructions WHERE dropped_at IS NULL ORDER BY seq",
     )?;
     Ok(stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?

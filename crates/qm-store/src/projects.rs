@@ -6,6 +6,7 @@
 //! projects not removed ([`active_by_name`]); the table's own unique index is a backstop.
 
 use crate::StoreError;
+use crate::seq;
 use crate::time::to_millis;
 use jiff::Timestamp;
 use qm_types::domain::{
@@ -118,7 +119,7 @@ fn path_text(path: &std::path::Path) -> Result<&str, StoreError> {
 pub fn active_by_name(conn: &Connection, name: &str) -> Result<Option<ProjectRow>, StoreError> {
     Ok(query(
         conn,
-        "WHERE removed_at IS NULL AND name = ?1 COLLATE NOCASE ORDER BY id LIMIT 1",
+        "WHERE removed_at IS NULL AND name = ?1 COLLATE NOCASE ORDER BY seq LIMIT 1",
         params![name],
     )?
     .pop())
@@ -131,7 +132,7 @@ pub fn active_by_path(
 ) -> Result<Option<ProjectRow>, StoreError> {
     Ok(query(
         conn,
-        "WHERE removed_at IS NULL AND path = ?1 ORDER BY id LIMIT 1",
+        "WHERE removed_at IS NULL AND path = ?1 ORDER BY seq LIMIT 1",
         params![path_text(path)?],
     )?
     .pop())
@@ -147,14 +148,14 @@ pub fn load(conn: &Connection, id: ProjectId) -> Result<Option<ProjectRow>, Stor
 pub fn active(conn: &Connection) -> Result<Vec<ProjectRow>, StoreError> {
     query(
         conn,
-        "WHERE removed_at IS NULL ORDER BY origin = 'workspace', id",
+        "WHERE removed_at IS NULL ORDER BY origin = 'workspace', seq",
         [],
     )
 }
 
 /// The built-in personal workspace, if it has been set up.
 pub fn workspace(conn: &Connection) -> Result<Option<ProjectRow>, StoreError> {
-    Ok(query(conn, "WHERE origin = 'workspace' ORDER BY id LIMIT 1", [])?.pop())
+    Ok(query(conn, "WHERE origin = 'workspace' ORDER BY seq LIMIT 1", [])?.pop())
 }
 
 /// The folder of the most recently linked project on this Mac, removed ones included: the
@@ -163,7 +164,7 @@ pub fn latest_linked_path(conn: &Connection) -> Result<Option<PathBuf>, StoreErr
     Ok(conn
         .query_row(
             "SELECT path FROM projects WHERE origin = 'linked'
-             ORDER BY created_at DESC, id DESC LIMIT 1",
+             ORDER BY created_at DESC, seq DESC LIMIT 1",
             [],
             |r| r.get::<_, String>(0),
         )
@@ -175,8 +176,8 @@ pub fn latest_linked_path(conn: &Connection) -> Result<Option<PathBuf>, StoreErr
 pub fn insert(conn: &Connection, project: &NewProject) -> Result<ProjectId, StoreError> {
     Ok(conn.query_row(
         "INSERT INTO projects (name, path, origin, default_branch, github_remote, delivery_mode,
-                               merge_method, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                               merge_method, created_at, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          RETURNING id",
         params![
             project.name,
@@ -187,6 +188,7 @@ pub fn insert(conn: &Connection, project: &NewProject) -> Result<ProjectId, Stor
             project.delivery,
             project.merge_method,
             to_millis(project.at),
+            seq::next(project.at),
         ],
         |r| r.get(0),
     )?)
@@ -273,8 +275,9 @@ pub fn mark_removed(conn: &Connection, id: ProjectId, at: Timestamp) -> Result<b
 
 /// The project's tasks that aren't closed, oldest first.
 pub fn open_tasks(conn: &Connection, id: ProjectId) -> Result<Vec<TaskId>, StoreError> {
-    let mut stmt = conn
-        .prepare("SELECT id FROM tasks WHERE project_id = ?1 AND status <> 'closed' ORDER BY id")?;
+    let mut stmt = conn.prepare(
+        "SELECT id FROM tasks WHERE project_id = ?1 AND status <> 'closed' ORDER BY seq",
+    )?;
     Ok(stmt
         .query_map(params![id], |r| r.get(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?)

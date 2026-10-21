@@ -315,11 +315,11 @@ fn last_report(
     let sql = if clear_only {
         "SELECT source, outcome, headings, answer, reproduced, diagnosis, review_verdict,
                 head_commit, final_text
-         FROM reports WHERE task_id = ?1 AND source = 'report_call' ORDER BY id DESC LIMIT 1"
+         FROM reports WHERE task_id = ?1 AND source = 'report_call' ORDER BY seq DESC LIMIT 1"
     } else {
         "SELECT source, outcome, headings, answer, reproduced, diagnosis, review_verdict,
                 head_commit, final_text
-         FROM reports WHERE task_id = ?1 ORDER BY id DESC LIMIT 1"
+         FROM reports WHERE task_id = ?1 ORDER BY seq DESC LIMIT 1"
     };
     let row = conn
         .query_row(sql, params![task], |r| {
@@ -488,7 +488,7 @@ pub fn crew_data(conn: &Connection) -> Result<CrewData, StoreError> {
                         WHERE a.task_id = t.id AND a.role = 'crewmate' AND u.status = 'running')
          FROM tasks AS t JOIN projects AS p ON p.id = t.project_id
          WHERE t.status NOT IN {HIDDEN}
-         ORDER BY t.created_at, t.id"
+         ORDER BY t.created_at, t.seq"
     ))?;
     let rows = stmt
         .query_map([], |r| {
@@ -567,7 +567,7 @@ struct TaskBase {
 
 fn pending_holds(conn: &Connection) -> Result<Vec<PendingHold>, StoreError> {
     let mut stmt = conn
-        .prepare("SELECT kind, task_id FROM held_actions WHERE status = 'pending' ORDER BY id")?;
+        .prepare("SELECT kind, task_id FROM held_actions WHERE status = 'pending' ORDER BY seq")?;
     let rows = stmt
         .query_map([], |r| {
             Ok(PendingHold {
@@ -584,10 +584,10 @@ fn secondmates(conn: &Connection) -> Result<Vec<SecondmateView>, StoreError> {
         "SELECT s.id, s.name,
                 (SELECT a.id FROM agents AS a
                  WHERE a.secondmate_id = s.id AND a.retired_at IS NULL
-                 ORDER BY a.id DESC LIMIT 1)
+                 ORDER BY a.seq DESC LIMIT 1)
          FROM secondmates AS s
          WHERE s.retired_at IS NULL
-         ORDER BY s.created_at, s.id",
+         ORDER BY s.created_at, s.seq",
     )?;
     let rows = stmt
         .query_map([], |r| {
@@ -631,7 +631,7 @@ fn crew_agent(conn: &Connection, task: TaskId) -> Result<Option<CrewAgent>, Stor
             "SELECT a.id, a.status, a.model, a.effort, c.label
              FROM agents AS a LEFT JOIN accounts AS c ON c.id = a.account_id
              WHERE a.task_id = ?1 AND a.role = 'crewmate'
-             ORDER BY a.id DESC LIMIT 1",
+             ORDER BY a.seq DESC LIMIT 1",
             params![task],
             |r| {
                 Ok(CrewAgent {
@@ -652,7 +652,7 @@ fn routing(conn: &Connection, task: TaskId) -> Result<Option<RoutingView>, Store
             "SELECT COALESCE(d.tier_used, d.tier_landed), d.model, d.effort, c.label, d.why
              FROM routing_decisions AS d LEFT JOIN accounts AS c ON c.id = d.account_id
              WHERE d.task_id = ?1
-             ORDER BY d.id DESC LIMIT 1",
+             ORDER BY d.seq DESC LIMIT 1",
             params![task],
             |r| {
                 Ok(RoutingView {
@@ -697,7 +697,7 @@ pub fn token_use(conn: &Connection, task: TaskId) -> Result<TokenUse, StoreError
 /// The task's latest tool calls, oldest first.
 fn activity(conn: &Connection, task: TaskId) -> Result<Vec<String>, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT summary FROM events WHERE task_id = ?1 AND kind = ?2 ORDER BY id DESC LIMIT ?3",
+        "SELECT summary FROM events WHERE task_id = ?1 AND kind = ?2 ORDER BY seq DESC LIMIT ?3",
     )?;
     let limit = i64::try_from(ACTIVITY_ROWS).unwrap_or(i64::MAX);
     let mut rows = stmt

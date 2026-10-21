@@ -169,7 +169,7 @@ pub fn open_review_of(
              WHERE builds_on = ?1 AND kind = 'review'
                AND status NOT IN ('closed', 'failed', 'stopped', 'discarded')
                AND (?2 IS NULL OR id <> ?2)
-             ORDER BY id DESC LIMIT 1",
+             ORDER BY seq DESC LIMIT 1",
             params![builder, except],
             |r| r.get(0),
         )
@@ -185,10 +185,10 @@ pub fn last_reviewer(
         .query_row(
             "SELECT t.id, t.status,
                     (SELECT a.id FROM agents AS a
-                     WHERE a.task_id = t.id AND a.role = 'crewmate' ORDER BY a.id DESC LIMIT 1)
+                     WHERE a.task_id = t.id AND a.role = 'crewmate' ORDER BY a.seq DESC LIMIT 1)
              FROM tasks AS t
              WHERE t.builds_on = ?1 AND t.kind = 'review'
-             ORDER BY t.id DESC LIMIT 1",
+             ORDER BY t.seq DESC LIMIT 1",
             params![builder],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -201,7 +201,7 @@ pub fn review_reports(conn: &Connection, builder: TaskId) -> Result<Vec<ReportRo
         "SELECT r.task_id FROM reports AS r JOIN tasks AS t ON t.id = r.task_id
          WHERE t.builds_on = ?1 AND t.kind = 'review' AND r.source = 'report_call'
            AND r.review_verdict IS NOT NULL
-         GROUP BY r.task_id ORDER BY MIN(r.id)",
+         GROUP BY r.task_id ORDER BY MIN(r.seq)",
     )?;
     let tasks = stmt
         .query_map(params![builder], |r| r.get::<_, TaskId>(0))?
@@ -214,7 +214,7 @@ pub fn review_reports(conn: &Connection, builder: TaskId) -> Result<Vec<ReportRo
                 .filter(|r| r.review_verdict.is_some()),
         );
     }
-    out.sort_by_key(|r| r.id);
+    out.sort_by_key(|r| r.seq);
     Ok(out)
 }
 
@@ -226,7 +226,7 @@ pub fn pending_held_of(
     kinds: &[&str],
 ) -> Result<Vec<HeldActionId>, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT id, kind FROM held_actions WHERE task_id = ?1 AND status = 'pending' ORDER BY id",
+        "SELECT id, kind FROM held_actions WHERE task_id = ?1 AND status = 'pending' ORDER BY seq",
     )?;
     let rows = stmt
         .query_map(params![task], |r| {
@@ -273,7 +273,7 @@ pub fn line_facts(conn: &Connection, task: TaskId) -> Result<Option<LineFacts>, 
         .query_row(
             "SELECT json_extract(payload, '$.reason') FROM held_actions
              WHERE task_id = ?1 AND kind = 'decision' AND status = 'pending'
-             ORDER BY id DESC LIMIT 1",
+             ORDER BY seq DESC LIMIT 1",
             params![task],
             |r| r.get::<_, Option<String>>(0),
         )

@@ -493,9 +493,7 @@ fn tasks(out: &mut String, facts: &ContextFacts) {
         return;
     }
     let _ = writeln!(out, "<tasks open=\"{open}\" shown=\"{}\">", shown.len());
-    // The caps keep the newest; the list reads in task order.
-    let mut shown = shown;
-    shown.sort_by_key(|t| t.task);
+    // The caps keep the newest; the list reads in creation order, as the facts were given.
     let rows: Vec<Vec<Cell>> = shown
         .iter()
         .map(|t| {
