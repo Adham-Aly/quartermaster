@@ -7,6 +7,7 @@
 //! and a cancelled one never fires.
 
 use crate::StoreError;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::ScheduleStatus;
@@ -95,8 +96,8 @@ fn row(raw: RawRow) -> Result<ScheduleRow, StoreError> {
 /// Writes a pending schedule and returns its ID.
 pub fn insert(conn: &Connection, new: &NewSchedule<'_>) -> Result<ScheduleId, StoreError> {
     Ok(conn.query_row(
-        "INSERT INTO schedules (owner_agent_id, due_at, tz, what, status, created_turn_id, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO schedules (owner_agent_id, due_at, tz, what, status, created_turn_id, created_at, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          RETURNING id",
         params![
             new.owner,
@@ -105,7 +106,8 @@ pub fn insert(conn: &Connection, new: &NewSchedule<'_>) -> Result<ScheduleId, St
             new.what,
             ScheduleStatus::Pending,
             new.turn,
-            to_millis(new.at)
+            to_millis(new.at),
+            seq::next(new.at),
         ],
         |r| r.get(0),
     )?)
@@ -126,7 +128,7 @@ pub fn get(conn: &Connection, id: ScheduleId) -> Result<Option<ScheduleRow>, Sto
 /// Every pending schedule, soonest first.
 pub fn pending(conn: &Connection) -> Result<Vec<ScheduleRow>, StoreError> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM schedules WHERE status = ?1 ORDER BY due_at, id"
+        "SELECT {COLUMNS} FROM schedules WHERE status = ?1 ORDER BY due_at, seq"
     ))?;
     let raws = stmt
         .query_map(params![ScheduleStatus::Pending], raw)?

@@ -10,6 +10,7 @@
 //! event and its wake commit together.
 
 use crate::StoreError;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{RequestStatus, TaskKind, TaskStatus};
@@ -57,15 +58,16 @@ pub fn insert(conn: &Connection, row: &NewChannelRow<'_>) -> Result<ParentRowId,
             source,
         })?;
     Ok(conn.query_row(
-        "INSERT INTO parent_channel (secondmate_id, correlation_id, facts, judgment, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO parent_channel (secondmate_id, correlation_id, facts, judgment, created_at, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          RETURNING id",
         params![
             row.secondmate,
             row.correlation,
             facts,
             judgment,
-            to_millis(row.at)
+            to_millis(row.at),
+            seq::next(row.at),
         ],
         |r| r.get(0),
     )?)
@@ -120,7 +122,7 @@ pub fn latest(conn: &Connection, corr: CorrelationId) -> Result<Option<ChannelRo
         .query_row(
             &format!(
                 "SELECT {ROW_COLUMNS} FROM parent_channel WHERE correlation_id = ?1
-                 ORDER BY id DESC LIMIT 1"
+                 ORDER BY seq DESC LIMIT 1"
             ),
             params![corr],
             raw_row,
@@ -138,7 +140,7 @@ pub fn recent_of(
     let raws = {
         let mut stmt = conn.prepare(&format!(
             "SELECT {ROW_COLUMNS} FROM parent_channel WHERE secondmate_id = ?1
-             ORDER BY id DESC LIMIT ?2"
+             ORDER BY seq DESC LIMIT ?2"
         ))?;
         stmt.query_map(
             params![secondmate, i64::try_from(limit).unwrap_or(i64::MAX)],
@@ -151,11 +153,15 @@ pub fn recent_of(
 
 /// The pump's watermark: the newest event any row was written for.
 pub fn watermark(conn: &Connection) -> Result<Option<EventId>, StoreError> {
-    Ok(conn.query_row(
-        "SELECT MAX(json_extract(facts, '$.source_event')) FROM parent_channel",
-        [],
-        |r| r.get(0),
-    )?)
+    Ok(conn
+        .query_row(
+            "SELECT json_extract(p.facts, '$.source_event') FROM parent_channel AS p
+             JOIN events AS e ON e.id = json_extract(p.facts, '$.source_event')
+             ORDER BY e.seq DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?)
 }
 
 /// Whether some row was already written for `event` (the pump's replay guard).
@@ -171,16 +177,22 @@ pub fn has_source_event(conn: &Connection, event: EventId) -> Result<bool, Store
 /// The oldest event of `kind`, if any (where the pump starts before it has written any row: the
 /// first routed request, since no task can belong to a request before it).
 pub fn first_event_of(conn: &Connection, kind: &str) -> Result<Option<EventId>, StoreError> {
-    Ok(conn.query_row(
-        "SELECT MIN(id) FROM events WHERE kind = ?1",
-        params![kind],
-        |r| r.get(0),
-    )?)
+    Ok(conn
+        .query_row(
+            "SELECT id FROM events WHERE kind = ?1 ORDER BY seq LIMIT 1",
+            params![kind],
+            |r| r.get(0),
+        )
+        .optional()?)
 }
 
 /// The newest event's ID, if any (where a first run starts, so history isn't replayed).
 pub fn newest_event(conn: &Connection) -> Result<Option<EventId>, StoreError> {
-    Ok(conn.query_row("SELECT MAX(id) FROM events", [], |r| r.get(0))?)
+    Ok(conn
+        .query_row("SELECT id FROM events ORDER BY seq DESC LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .optional()?)
 }
 
 /// A fact event on a task that belongs to a routed request.
@@ -273,8 +285,9 @@ pub fn events_after(
     let Some(newest) = newest_event(conn)? else {
         return Ok(EventScan::default());
     };
-    let after = after.map_or(0, EventId::get);
-    let mut values: Vec<rusqlite::types::Value> = vec![after.into(), newest.get().into()];
+    let after = after.map_or(Ok(0), |id| seq::of(conn, "events", id.get(), 0))?;
+    let newest_seq = seq::of(conn, "events", newest.get(), i64::MAX)?;
+    let mut values: Vec<rusqlite::types::Value> = vec![after.into(), newest_seq.into()];
     values.extend(
         kinds
             .iter()
@@ -283,8 +296,8 @@ pub fn events_after(
     let raws = {
         let mut stmt = conn.prepare(&format!(
             "{FACT_SELECT}
-             WHERE e.id > ?1 AND e.id <= ?2 AND {}
-             ORDER BY e.id LIMIT {}",
+             WHERE e.seq > ?1 AND e.seq <= ?2 AND {}
+             ORDER BY e.seq LIMIT {}",
             kinds_in(kinds, 3),
             i64::try_from(limit).unwrap_or(i64::MAX)
         ))?;
@@ -331,7 +344,7 @@ pub fn request(
              JOIN secondmates s ON s.id = r.secondmate_id
              JOIN agents a ON a.id = (SELECT id FROM agents
                                       WHERE secondmate_id = s.id AND role = 'secondmate'
-                                      ORDER BY id DESC LIMIT 1)
+                                      ORDER BY seq DESC LIMIT 1)
              WHERE r.id = ?1",
             params![corr],
             |r| {
@@ -404,7 +417,7 @@ pub fn snapshot_inputs(
     let tasks = {
         let mut stmt = conn.prepare(
             "SELECT id, kind, status, pr_number, json_extract(checks_state, '$.verdict')
-             FROM tasks WHERE secondmate_request_id = ?1 ORDER BY id",
+             FROM tasks WHERE secondmate_request_id = ?1 ORDER BY seq",
         )?;
         stmt.query_map(params![corr], |r| {
             Ok(SnapshotTask {
@@ -417,8 +430,10 @@ pub fn snapshot_inputs(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?
     };
-    let upto_id = upto.map_or(i64::MAX, EventId::get);
-    let mut values: Vec<rusqlite::types::Value> = vec![corr.get().into(), upto_id.into()];
+    let upto_seq = upto.map_or(Ok(i64::MAX), |id| {
+        seq::of(conn, "events", id.get(), i64::MAX)
+    })?;
+    let mut values: Vec<rusqlite::types::Value> = vec![corr.get().into(), upto_seq.into()];
     values.extend(
         kinds
             .iter()
@@ -427,8 +442,8 @@ pub fn snapshot_inputs(
     let raws = {
         let mut stmt = conn.prepare(&format!(
             "{FACT_SELECT}
-             WHERE r.id = ?1 AND e.id <= ?2 AND {}
-             ORDER BY e.id DESC LIMIT {SNAPSHOT_EVENTS}",
+             WHERE r.id = ?1 AND e.seq <= ?2 AND {}
+             ORDER BY e.seq DESC LIMIT {SNAPSHOT_EVENTS}",
             kinds_in(kinds, 3)
         ))?;
         stmt.query_map(params_from_iter(values.iter()), raw_fact)?

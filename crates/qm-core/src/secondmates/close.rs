@@ -144,18 +144,18 @@ mod tests {
             self.conn
                 .execute(
                     "INSERT INTO projects (name, path, origin, default_branch, delivery_mode,
-                         merge_method, created_at)
-                     VALUES ('p', '/tmp/p', 'linked', 'main', 'direct_pr', 'merge', 0)",
-                    [],
+                         merge_method, created_at, seq)
+                     VALUES ('p', '/tmp/p', 'linked', 'main', 'direct_pr', 'merge', 0, ?1)",
+                    params![qm_store::seq::next_millis(0)],
                 )
                 .expect("project");
             let project = self.conn.last_insert_rowid();
             self.conn
                 .execute(
                     "INSERT INTO tasks (project_id, supervisor_id, kind, title, goal,
-                         delivery_mode, branch, status, created_at)
-                     VALUES (?1, ?2, 'build', 't', 'g', 'direct_pr', 'qm/task-1', 'running', 0)",
-                    params![project, supervisor],
+                         delivery_mode, branch, status, created_at, seq)
+                     VALUES (?1, ?2, 'build', 't', 'g', 'direct_pr', 'qm/task-1', 'running', 0, ?3)",
+                    params![project, supervisor, qm_store::seq::next_millis(1)],
                 )
                 .expect("task");
         }

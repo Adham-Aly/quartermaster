@@ -15,6 +15,7 @@
 
 use crate::StoreError;
 use crate::events::TURN_STARTED;
+use crate::seq;
 use crate::time::from_millis;
 use jiff::Timestamp;
 use qm_types::domain::{
@@ -41,7 +42,7 @@ pub fn projects(conn: &Connection) -> Result<Vec<ProjectRow>, StoreError> {
     let mut stmt = conn.prepare(
         "SELECT name, path, origin, delivery_mode, autonomy, verification_level FROM projects
          WHERE removed_at IS NULL
-         ORDER BY origin = 'workspace', id",
+         ORDER BY origin = 'workspace', seq",
     )?;
     Ok(stmt
         .query_map([], |r| {
@@ -103,7 +104,7 @@ pub fn workers(conn: &Connection) -> Result<Vec<WorkerRow>, StoreError> {
          JOIN projects AS p ON p.id = t.project_id
          LEFT JOIN agents AS s ON s.id = a.supervisor_id AND s.role = 'secondmate'
          WHERE a.role = 'crewmate' AND a.retired_at IS NULL
-         ORDER BY t.id",
+         ORDER BY t.seq",
     )?;
     let raw = crew_stmt
         .query_map([], |r| {
@@ -141,7 +142,7 @@ pub fn workers(conn: &Connection) -> Result<Vec<WorkerRow>, StoreError> {
         "SELECT a.id, s.id, s.scope, a.status, s.standing_base_branch
          FROM agents AS a JOIN secondmates AS s ON s.id = a.secondmate_id
          WHERE a.role = 'secondmate' AND a.retired_at IS NULL AND s.retired_at IS NULL
-         ORDER BY s.id",
+         ORDER BY s.seq",
     )?;
     let secondmates = sm_stmt
         .query_map([], |r| {
@@ -210,7 +211,7 @@ pub fn open_tasks(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
          JOIN projects AS p ON p.id = t.project_id
          LEFT JOIN agents AS s ON s.id = t.supervisor_id AND s.role = 'secondmate'
          WHERE t.status <> 'closed'
-         ORDER BY t.id DESC",
+         ORDER BY t.seq DESC",
     )?;
     let mut rows = stmt
         .query_map([], |r| {
@@ -248,12 +249,13 @@ pub fn watermark(
     agent: AgentId,
     turn: TurnId,
 ) -> Result<Option<Watermark>, StoreError> {
+    let turn = seq::of(conn, "turns", turn.get(), i64::MIN)?;
     Ok(conn
         .query_row(
             "SELECT e.turn_id, e.id FROM events AS e JOIN turns AS t ON t.id = e.turn_id
-             WHERE e.kind = ?1 AND t.agent_id = ?2 AND t.id < ?3
+             WHERE e.kind = ?1 AND t.agent_id = ?2 AND t.seq < ?3
                AND coalesce(t.outcome_reason, '') <> 'no_wakes'
-             ORDER BY e.id DESC LIMIT 1",
+             ORDER BY e.seq DESC LIMIT 1",
             params![TURN_STARTED, agent, turn],
             |r| {
                 Ok(Watermark {

@@ -7,6 +7,7 @@
 //! without depending on `qm-routing` (the core serialises them).
 
 use crate::StoreError;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{Effort, Tier};
@@ -60,8 +61,8 @@ pub fn insert_decision(
     let c = d.choice.as_ref();
     let id = conn.query_row(
         "INSERT INTO routing_decisions (task_id, agent_id, facts, rule, decided_by, tier_landed,
-             tier_used, model, account_id, effort, skipped, fallbacks, why, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             tier_used, model, account_id, effort, skipped, fallbacks, why, created_at, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          RETURNING id",
         params![
             d.task,
@@ -78,6 +79,7 @@ pub fn insert_decision(
             json("routing_decisions.fallbacks", &d.fallbacks)?,
             d.why,
             to_millis(d.at),
+            seq::next(d.at),
         ],
         |r| r.get(0),
     )?;
@@ -105,7 +107,7 @@ pub fn decisions_for_task(
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, facts, rule, decided_by, tier_landed, tier_used, model, account_id,
                 effort, skipped, fallbacks, why, created_at
-         FROM routing_decisions WHERE task_id = ?1 ORDER BY id",
+         FROM routing_decisions WHERE task_id = ?1 ORDER BY seq",
     )?;
     let raw = stmt
         .query_map(params![task], |r| {

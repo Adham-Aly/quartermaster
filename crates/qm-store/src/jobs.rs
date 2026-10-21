@@ -10,6 +10,7 @@
 //! a row of its own (and its own wake: the wake's dedupe key names the row).
 
 use crate::StoreError;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::ids::{AgentId, TaskId};
@@ -51,8 +52,8 @@ pub fn insert_started(
         params![agent, label],
     )?;
     let id: i64 = conn.query_row(
-        "INSERT INTO jobs (agent_id, task_id, label, command, log_path, started_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO jobs (agent_id, task_id, label, command, log_path, started_at, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          RETURNING id",
         params![
             agent,
@@ -60,7 +61,8 @@ pub fn insert_started(
             label,
             command,
             log_path.map(|p| p.to_string_lossy().into_owned()),
-            to_millis(at)
+            to_millis(at),
+            seq::next(at),
         ],
         |r| r.get(0),
     )?;
@@ -165,7 +167,7 @@ pub fn finish(
 pub fn running_helpers(conn: &Connection, task: TaskId) -> Result<Vec<JobRow>, StoreError> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {COLUMNS} FROM jobs WHERE task_id = ?1 AND exited_at IS NULL \
-         AND substr(label, 1, length(?2)) = ?2 ORDER BY id"
+         AND substr(label, 1, length(?2)) = ?2 ORDER BY seq"
     ))?;
     stmt.query_map(params![task, qm_types::ids::HELPER_JOB_PREFIX], raw)?
         .collect::<rusqlite::Result<Vec<_>>>()?
@@ -177,7 +179,7 @@ pub fn running_helpers(conn: &Connection, task: TaskId) -> Result<Vec<JobRow>, S
 /// The jobs of `agent` still running.
 pub fn running(conn: &Connection, agent: AgentId) -> Result<Vec<JobRow>, StoreError> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM jobs WHERE agent_id = ?1 AND exited_at IS NULL ORDER BY id"
+        "SELECT {COLUMNS} FROM jobs WHERE agent_id = ?1 AND exited_at IS NULL ORDER BY seq"
     ))?;
     stmt.query_map(params![agent], raw)?
         .collect::<rusqlite::Result<Vec<_>>>()?
@@ -217,7 +219,7 @@ pub fn open_groups_of_task(
         "SELECT pgid, pid, started_at FROM processes
          WHERE ended_at IS NULL
            AND ((owner = 'setup' AND task_id = ?1) OR (owner = 'job' AND agent_id = ?2))
-         ORDER BY id",
+         ORDER BY seq",
     )?;
     let rows = stmt
         .query_map(params![task, agent], |r| {

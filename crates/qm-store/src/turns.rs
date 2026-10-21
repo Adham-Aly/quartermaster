@@ -14,6 +14,7 @@
 //! events module's insert), so a turn, its events and its wakes commit atomically.
 
 use crate::StoreError;
+use crate::seq;
 use crate::time::to_millis;
 use crate::wakes;
 use jiff::Timestamp;
@@ -161,8 +162,8 @@ fn insert_event(
     at: Timestamp,
 ) -> Result<EventId, StoreError> {
     Ok(conn.query_row(
-        "INSERT INTO events (at, kind, agent_id, task_id, turn_id, summary, payload)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO events (at, kind, agent_id, task_id, turn_id, summary, payload, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          RETURNING id",
         params![
             to_millis(at),
@@ -171,7 +172,8 @@ fn insert_event(
             task,
             turn,
             summary,
-            json("events.payload", payload)?
+            json("events.payload", payload)?,
+            seq::next(at),
         ],
         |r| r.get(0),
     )?)
@@ -193,15 +195,16 @@ pub fn start_turn(conn: &mut Connection, turn: &NewTurn) -> Result<TurnId, Store
     let tx = conn.transaction()?;
     let message = turn.started_by.message();
     let id: TurnId = tx.query_row(
-        "INSERT INTO turns (agent_id, started_by, message_id, model, started_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO turns (agent_id, started_by, message_id, model, started_at, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          RETURNING id",
         params![
             turn.agent,
             started_by_column(turn.started_by),
             message,
             turn.model,
-            to_millis(turn.at)
+            to_millis(turn.at),
+            seq::next(turn.at),
         ],
         |r| r.get(0),
     )?;
@@ -382,7 +385,8 @@ pub fn record_event(conn: &Connection, e: &SeatEvent) -> Result<EventId, StoreEr
     )
 }
 
-/// Records `seat.cleared` for `agent` (you ran `/clear`), with the last turn before it.
+/// Records `seat.cleared` for `agent` (you ran `/clear`), with the last turn before it. `after_turn`
+/// is that turn's `seq`; before the sequence existed it was the turn's ID, which is the same number.
 pub fn record_cleared(
     conn: &Connection,
     agent: AgentId,
@@ -390,7 +394,7 @@ pub fn record_cleared(
     at: Timestamp,
 ) -> Result<EventId, StoreError> {
     let after_turn: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(id), 0) FROM turns WHERE agent_id = ?1",
+        "SELECT COALESCE(MAX(seq), 0) FROM turns WHERE agent_id = ?1",
         params![agent],
         |r| r.get(0),
     )?;
@@ -450,7 +454,7 @@ pub fn cut_short(conn: &Connection, agent: AgentId) -> Result<Vec<CutShort>, Sto
     let mut stmt = conn.prepare(
         "SELECT id, message_id FROM turns
          WHERE agent_id = ?1 AND status = 'interrupted' AND outcome_reason IN (?2, ?3)
-         ORDER BY id",
+         ORDER BY seq",
     )?;
     let rows = stmt.query_map(params![agent, REASON_APP_STOPPED, REASON_APP_QUIT], |r| {
         let message: Option<MessageId> = r.get(1)?;
@@ -493,11 +497,12 @@ pub fn last_turn_started_event(
     agent: AgentId,
     before: TurnId,
 ) -> Result<Option<(TurnId, EventId)>, StoreError> {
+    let before = seq::of(conn, "turns", before.get(), i64::MIN)?;
     Ok(conn
         .query_row(
             "SELECT turn_id, id FROM events
-             WHERE kind = ?1 AND agent_id = ?2 AND turn_id < ?3
-             ORDER BY id DESC
+             WHERE kind = ?1 AND agent_id = ?2 AND turn_id IN (SELECT id FROM turns WHERE seq < ?3)
+             ORDER BY seq DESC
              LIMIT 1",
             params![kind::TURN_STARTED, agent, before],
             |r| Ok((r.get(0)?, r.get(1)?)),

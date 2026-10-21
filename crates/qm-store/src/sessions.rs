@@ -6,6 +6,7 @@
 //! line are built from.
 
 use crate::StoreError;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{AgentStatus, Role, TaskStatus};
@@ -109,8 +110,8 @@ fn capped(text: &str) -> String {
 /// Appends a line; returns its row ID.
 pub fn insert(conn: &Connection, line: &NewSessionLine) -> Result<i64, StoreError> {
     conn.execute(
-        "INSERT INTO session_lines (agent_id, task_id, turn_id, kind, text, detail, message_id, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO session_lines (agent_id, task_id, turn_id, kind, text, detail, message_id, created_at, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             line.agent,
             line.task,
@@ -120,6 +121,7 @@ pub fn insert(conn: &Connection, line: &NewSessionLine) -> Result<i64, StoreErro
             line.detail.as_deref().map(capped),
             line.message,
             to_millis(line.at),
+            seq::next(line.at),
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -156,8 +158,8 @@ pub fn recent(
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, task_id, turn_id, kind, text, detail, message_id, created_at
-         FROM (SELECT * FROM session_lines WHERE agent_id = ?1 ORDER BY id DESC LIMIT ?2)
-         ORDER BY id",
+         FROM (SELECT * FROM session_lines WHERE agent_id = ?1 ORDER BY seq DESC LIMIT ?2)
+         ORDER BY seq",
     )?;
     let raw = stmt
         .query_map(params![agent, limit], |r| {
@@ -220,7 +222,7 @@ pub fn header(conn: &Connection, task: TaskId) -> Result<Option<SessionHeader>, 
              JOIN projects AS p ON p.id = t.project_id
              JOIN agents AS s ON s.id = t.supervisor_id
              WHERE t.id = ?1
-             ORDER BY a.id DESC LIMIT 1",
+             ORDER BY a.seq DESC LIMIT 1",
             params![task],
             |r| {
                 Ok((
@@ -242,7 +244,7 @@ pub fn header(conn: &Connection, task: TaskId) -> Result<Option<SessionHeader>, 
         return Ok(None);
     };
     let mut stmt = conn
-        .prepare("SELECT label FROM jobs WHERE agent_id = ?1 AND exited_at IS NULL ORDER BY id")?;
+        .prepare("SELECT label FROM jobs WHERE agent_id = ?1 AND exited_at IS NULL ORDER BY seq")?;
     let jobs = stmt
         .query_map(params![agent], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;

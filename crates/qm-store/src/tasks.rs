@@ -8,6 +8,7 @@
 
 use crate::StoreError;
 use crate::events::{self, EventRow, NewEvent};
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{
@@ -278,9 +279,9 @@ pub fn insert(conn: &Connection, task: &NewTask) -> Result<TaskId, StoreError> {
              user_words_message_id, instructions, constraints, tests_required, builds_on,
              parent_task_id, retry_of, later_steps, secondmate_request_id, delivery_mode,
              verification_level, verification_source, base_branch, base_ref, base_commit, branch,
-             port_base, status, escalations, created_at)
+             port_base, status, escalations, created_at, seq)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20, ?21, ?22, ?23, ?24, 'queued', ?25, ?26)",
+                 ?19, ?20, ?21, ?22, ?23, ?24, 'queued', ?25, ?26, ?27)",
         params![
             id,
             task.project,
@@ -308,6 +309,7 @@ pub fn insert(conn: &Connection, task: &NewTask) -> Result<TaskId, StoreError> {
             task.port_base.map(i64::from),
             i64::from(task.escalations),
             to_millis(task.at),
+            seq::next(task.at),
         ],
     )?;
     Ok(id)
@@ -328,7 +330,7 @@ pub fn load(conn: &Connection, task: TaskId) -> Result<Option<TaskRow>, StoreErr
 /// Every task not closed, oldest first.
 pub fn open(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM tasks WHERE status <> 'closed' ORDER BY id"
+        "SELECT {COLUMNS} FROM tasks WHERE status <> 'closed' ORDER BY seq"
     ))?;
     collect(&mut stmt, [])
 }
@@ -336,14 +338,14 @@ pub fn open(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
 /// Every task in `status`, oldest first.
 pub fn with_status(conn: &Connection, status: TaskStatus) -> Result<Vec<TaskRow>, StoreError> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM tasks WHERE status = ?1 ORDER BY id"
+        "SELECT {COLUMNS} FROM tasks WHERE status = ?1 ORDER BY seq"
     ))?;
     collect(&mut stmt, params![status])
 }
 
 /// Every task, oldest first (for `find_tasks`, which filters in Rust).
 pub fn all(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
-    let mut stmt = conn.prepare(&format!("SELECT {COLUMNS} FROM tasks ORDER BY id"))?;
+    let mut stmt = conn.prepare(&format!("SELECT {COLUMNS} FROM tasks ORDER BY seq"))?;
     collect(&mut stmt, [])
 }
 
@@ -595,10 +597,10 @@ pub fn waiting_on_task(
 ) -> Result<Vec<(TaskId, Option<AgentId>)>, StoreError> {
     let mut stmt = conn.prepare(
         "SELECT t.id, (SELECT a.id FROM agents AS a WHERE a.task_id = t.id AND a.role = 'crewmate'
-                       ORDER BY a.id DESC LIMIT 1)
+                       ORDER BY a.seq DESC LIMIT 1)
          FROM tasks AS t
          WHERE t.status = 'waiting' AND json_extract(t.waiting_on, '$.task') = ?1
-         ORDER BY t.id",
+         ORDER BY t.seq",
     )?;
     Ok(stmt
         .query_map(params![task.to_string()], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -617,7 +619,7 @@ pub struct Blocker {
 pub fn blockers_of(conn: &Connection, task: TaskId) -> Result<Vec<Blocker>, StoreError> {
     let mut stmt = conn.prepare(
         "SELECT t.id, t.kind, t.status FROM task_links AS l JOIN tasks AS t ON t.id = l.blocker
-         WHERE l.blocked = ?1 ORDER BY t.id",
+         WHERE l.blocked = ?1 ORDER BY t.seq",
     )?;
     Ok(stmt
         .query_map(params![task], |r| {
@@ -637,9 +639,9 @@ pub fn blocked_by(
 ) -> Result<Vec<(TaskId, TaskStatus, Option<AgentId>)>, StoreError> {
     let mut stmt = conn.prepare(
         "SELECT t.id, t.status, (SELECT a.id FROM agents AS a WHERE a.task_id = t.id
-                                 AND a.role = 'crewmate' ORDER BY a.id DESC LIMIT 1)
+                                 AND a.role = 'crewmate' ORDER BY a.seq DESC LIMIT 1)
          FROM task_links AS l JOIN tasks AS t ON t.id = l.blocked
-         WHERE l.blocker = ?1 ORDER BY t.id",
+         WHERE l.blocker = ?1 ORDER BY t.seq",
     )?;
     Ok(stmt
         .query_map(params![blocker], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
@@ -669,9 +671,9 @@ pub fn insert_link(
     at: Timestamp,
 ) -> Result<bool, StoreError> {
     Ok(conn.execute(
-        "INSERT INTO task_links (blocker, blocked, created_at) VALUES (?1, ?2, ?3)
+        "INSERT INTO task_links (blocker, blocked, created_at, seq) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (blocker, blocked) DO NOTHING",
-        params![blocker, blocked, to_millis(at)],
+        params![blocker, blocked, to_millis(at), seq::next(at)],
     )? == 1)
 }
 
@@ -680,7 +682,7 @@ pub fn history(conn: &Connection, task: TaskId) -> Result<Vec<EventRow>, StoreEr
     let mut stmt = conn.prepare(
         "SELECT id, at, kind, agent_id, task_id, turn_id, summary, payload FROM events
          WHERE task_id = ?1 AND kind LIKE 'task.%'
-         ORDER BY id",
+         ORDER BY seq",
     )?;
     let rows = stmt
         .query_map(params![task], |r| {
@@ -721,7 +723,7 @@ pub fn last_event(
     let row = conn
         .query_row(
             "SELECT id, payload FROM events WHERE task_id = ?1 AND kind = ?2
-             ORDER BY id DESC LIMIT 1",
+             ORDER BY seq DESC LIMIT 1",
             params![task, kind],
             |r| Ok((r.get::<_, EventId>(0)?, r.get::<_, String>(1)?)),
         )

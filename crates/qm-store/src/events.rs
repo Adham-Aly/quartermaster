@@ -11,6 +11,7 @@
 //! it (`you.answered_notice`): [`notices`] folds them into each message's notice state.
 
 use crate::StoreError;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::ids::{AgentId, EventId, MessageId, TaskId, TurnId};
@@ -65,8 +66,8 @@ pub fn insert(conn: &Connection, event: &NewEvent<'_>) -> Result<EventId, StoreE
         source,
     })?;
     Ok(conn.query_row(
-        "INSERT INTO events (at, kind, agent_id, task_id, turn_id, summary, payload)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO events (at, kind, agent_id, task_id, turn_id, summary, payload, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          RETURNING id",
         params![
             to_millis(event.at),
@@ -75,7 +76,8 @@ pub fn insert(conn: &Connection, event: &NewEvent<'_>) -> Result<EventId, StoreE
             event.task,
             event.turn,
             event.summary,
-            payload
+            payload,
+            seq::next(event.at),
         ],
         |r| r.get(0),
     )?)
@@ -156,19 +158,21 @@ pub fn since(
     limit: usize,
 ) -> Result<EventPage, StoreError> {
     let (filter, patterns) = prefix_filter(prefixes, 3);
-    let after = after.map_or(0, EventId::get);
-    let before = before.map_or(i64::MAX, EventId::get);
+    let after = after.map_or(Ok(0), |id| seq::of(conn, "events", id.get(), 0))?;
+    let before = before.map_or(Ok(i64::MAX), |id| {
+        seq::of(conn, "events", id.get(), i64::MAX)
+    })?;
     let mut values: Vec<rusqlite::types::Value> = vec![after.into(), before.into()];
     values.extend(patterns.into_iter().map(rusqlite::types::Value::from));
 
     let total: i64 = conn.query_row(
-        &format!("SELECT count(*) FROM events WHERE id > ?1 AND id < ?2 AND {filter}"),
+        &format!("SELECT count(*) FROM events WHERE seq > ?1 AND seq < ?2 AND {filter}"),
         params_from_iter(values.iter()),
         |r| r.get(0),
     )?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM events WHERE id > ?1 AND id < ?2 AND {filter}
-         ORDER BY id DESC LIMIT {}",
+        "SELECT {COLUMNS} FROM events WHERE seq > ?1 AND seq < ?2 AND {filter}
+         ORDER BY seq DESC LIMIT {}",
         i64::try_from(limit).unwrap_or(i64::MAX)
     ))?;
     let rows = stmt
@@ -193,7 +197,7 @@ pub fn latest(conn: &Connection, prefix: &str, limit: usize) -> Result<Vec<Event
 pub fn turn_started_id(conn: &Connection, turn: TurnId) -> Result<Option<EventId>, StoreError> {
     Ok(conn
         .query_row(
-            "SELECT id FROM events WHERE kind = ?1 AND turn_id = ?2 ORDER BY id LIMIT 1",
+            "SELECT id FROM events WHERE kind = ?1 AND turn_id = ?2 ORDER BY seq LIMIT 1",
             params![TURN_STARTED, turn],
             |r| r.get(0),
         )
@@ -281,7 +285,7 @@ pub fn notices(
                 json_extract(payload, '$.reason'), json_extract(payload, '$.answer')
          FROM events
          WHERE kind IN (?1, ?2) AND json_extract(payload, '$.message') IN ({placeholders})
-         ORDER BY id"
+         ORDER BY seq"
     ))?;
     let rows = stmt
         .query_map(params_from_iter(values.iter()), |r| {
