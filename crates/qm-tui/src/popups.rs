@@ -110,9 +110,9 @@ pub(crate) struct OpenPopup {
 /// The widest the Settings popup gets, in cells.
 const SETTINGS_WIDTH: u16 = 124;
 /// The Settings popup's share of the body, as (numerator, denominator) of its width and height.
-const SETTINGS_SHARE: ((u16, u16), (u16, u16)) = ((3, 5), (7, 10));
+const SETTINGS_SHARE: ((u16, u16), (u16, u16)) = ((2, 5), (2, 5));
 /// The narrowest and shortest the Settings popup gets before the body itself is the limit.
-const SETTINGS_MIN: (u16, u16) = (72, 16);
+const SETTINGS_MIN: (u16, u16) = (60, 16);
 /// The widest the Help popup gets, in cells.
 const HELP_WIDTH: u16 = 104;
 /// The widest the projects hint gets, in cells.
