@@ -11,7 +11,8 @@ use crate::text::{cells, wrap};
 use crate::theme;
 use crate::widgets::button;
 use crossterm::event::KeyCode;
-use qm_types::api::UpdateView;
+use qm_types::api::{Styled, Tone, UpdatePhase, UpdateView};
+use qm_types::wire::ExitReason;
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
@@ -26,6 +27,31 @@ struct Row {
     style: ratatui::style::Style,
     /// It continues the row above after a wrap.
     continues: bool,
+}
+
+/// The restart button's label: under a background server an installed update is used by
+/// restarting the server, not by reopening the app.
+const RESTART: &str = "Restart server";
+
+/// Whether an update is installed and waits for the server to restart.
+pub(crate) fn restart_pending(app: &App) -> bool {
+    app.detachable && app.snapshot.update.phase == UpdatePhase::Installed
+}
+
+/// The core's view, worded for this UI: for a server, the installed line says to restart it.
+pub(crate) fn shown(app: &App) -> UpdateView {
+    let mut view = app.snapshot.update.clone();
+    if restart_pending(app)
+        && let Some(version) = &view.available
+    {
+        view.status.text =
+            format!("Quartermaster {version} installed — restart the server to use it.");
+        view.notice = Some(Styled::new(
+            format!("{version} installed · restart the server"),
+            Tone::Ok,
+        ));
+    }
+    view
 }
 
 /// The popup's text rows at `room` cells, before the button.
@@ -52,8 +78,13 @@ fn rows(view: &UpdateView, room: usize) -> Vec<Row> {
 
 /// The popup's height for an inside `room` cells wide: its rows, a blank row and the button,
 /// inside the border.
-pub(crate) fn height(view: &UpdateView, room: usize) -> u16 {
-    let button = if view.button.is_some() { 2 } else { 0 };
+pub(crate) fn height(app: &App, room: usize) -> u16 {
+    let view = &shown(app);
+    let button = if view.button.is_some() || restart_pending(app) {
+        2
+    } else {
+        0
+    };
     cells(rows(view, room).len() + button + 2)
 }
 
@@ -62,7 +93,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let view = &app.snapshot.update;
+    let view = &shown(app);
     let rows = rows(view, usize::from(area.width));
     let mut y = area.y;
     for row in &rows {
@@ -80,7 +111,11 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
         });
         y += 1;
     }
-    let Some(pressable) = &view.button else {
+    let label = if restart_pending(app) {
+        RESTART
+    } else if let Some(pressable) = &view.button {
+        &pressable.label
+    } else {
         return;
     };
     // A blank row, then the button.
@@ -90,18 +125,27 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
     }
     let hovered = app.term.hover == Some(Hit::UpdateButton);
     frame.render_widget(
-        Line::from(button::span(&pressable.label, hovered)),
+        Line::from(button::span(label, hovered)),
         Rect::new(area.x, y, area.width, 1),
     );
-    let width = button::width_of(&pressable.label).min(area.width);
+    let width = button::width_of(label).min(area.width);
     map.hits
         .add(Rect::new(area.x, y, width, 1), Hit::UpdateButton);
 }
 
 /// The status bar's keys while the popup is on top.
 pub(crate) fn hints(app: &App) -> String {
-    match &app.snapshot.update.button {
-        Some(pressable) => format!("⏎ {} · esc close", pressable.label.to_lowercase()),
+    let label = if restart_pending(app) {
+        Some(RESTART)
+    } else {
+        app.snapshot
+            .update
+            .button
+            .as_ref()
+            .map(|b| b.label.as_str())
+    };
+    match label {
+        Some(label) => format!("⏎ {} · esc close", label.to_lowercase()),
         None => "esc close".to_owned(),
     }
 }
@@ -109,7 +153,9 @@ pub(crate) fn hints(app: &App) -> String {
 impl App {
     /// The popup's button: sends the command the core named.
     pub(crate) fn press_update_button(&mut self) {
-        if let Some(pressable) = &self.snapshot.update.button {
+        if restart_pending(self) {
+            self.request_server_stop(ExitReason::Restarting);
+        } else if let Some(pressable) = &self.snapshot.update.button {
             let command = pressable.command.clone();
             self.command(command);
         }
