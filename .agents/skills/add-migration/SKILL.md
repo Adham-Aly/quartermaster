@@ -14,7 +14,7 @@ Progress is `PRAGMA user_version`, which counts entries in `MIGRATIONS`.
 - **Never edit, reorder or remove an applied migration**, and never insert one before the last:
   `user_version` counts positions, so users' databases would skip or repeat work. Only append.
 - File names are `NNNN_<what>.sql` in `crates/qm-store/migrations/`. Numbers so far: 0001, 0002,
-  0004, 0005, 0006 (0003 was never used); the next is **0007**.
+  0004, 0005, 0006, 0007 (0003 was never used); the next is **0008**.
 - Conventions every table follows (`0001_initial.sql`): `STRICT`; `INTEGER PRIMARY KEY` ids (display
   IDs such as `T-0042` are these ids); instants as `INTEGER` milliseconds since the epoch, UTC, in
   `*_at` columns (`qm_store::time`); booleans `INTEGER` with `CHECK (x IN (0, 1))`; enums as their

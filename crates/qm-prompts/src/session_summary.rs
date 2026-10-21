@@ -35,6 +35,8 @@ pub const REASON_RESUME_FAILED: &str = "the previous session couldn't be resumed
 pub const REASON_CLOSED: &str = "the previous session closed";
 /// The seat's model moved to another engine or account.
 pub const REASON_ENGINE_SWITCH: &str = "the Quartermaster moved to another engine";
+/// The seat's effort level changed and the previous session couldn't be carried over.
+pub const REASON_EFFORT_CHANGE: &str = "the Quartermaster's effort level changed";
 
 /// Who said a line, as the new session reads it (the Quartermaster is "you").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

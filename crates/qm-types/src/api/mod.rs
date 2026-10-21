@@ -154,26 +154,34 @@ pub enum Command {
         #[serde(default)]
         account: Option<AccountId>,
     },
-    /// Put a model in tier `to`: moved out of `from`, or added when `from` is `None`.
+    /// Put a tier entry (the model at `effort`; `None` is the tier default) in tier `to`: moved
+    /// out of `from`, or added when `from` is `None`. One model may sit in a tier more than once
+    /// at different efforts.
     PlaceModel {
         model: ModelId,
         #[serde(default)]
         from: Option<Tier>,
+        #[serde(default)]
+        effort: Option<Effort>,
         to: Tier,
     },
-    /// Take a model out of one tier.
+    /// Take one tier entry (the model at `effort` in `tier`) out.
     RemovePlacement {
         model: ModelId,
         tier: Tier,
+        #[serde(default)]
+        effort: Option<Effort>,
     },
     /// Take a model out of every tier.
     TakeOutOfUse {
         model: ModelId,
     },
-    /// Set a placement's effort; `None` is the tier default.
+    /// Change a tier entry's effort from `current` to `effort`; `None` is the tier default.
     SetPlacementEffort {
         model: ModelId,
         tier: Tier,
+        #[serde(default)]
+        current: Option<Effort>,
         #[serde(default)]
         effort: Option<Effort>,
     },
@@ -192,6 +200,12 @@ pub enum Command {
     /// What the Quartermaster runs on.
     SetQuartermasterModel {
         choice: QuartermasterChoice,
+    },
+    /// The Quartermaster's own effort level; `None` follows its model's tier. Saved to
+    /// `config.toml` and applied at its next idle moment. Secondmates follow it too.
+    SetQuartermasterEffort {
+        #[serde(default)]
+        effort: Option<Effort>,
     },
     /// Turn the bell and desktop notifications on or off; saved to `config.toml` and applied at
     /// once.
@@ -1025,6 +1039,10 @@ pub struct SettingsView {
     pub models: Vec<SettingsModel>,
     pub pin: PinSetting,
     pub quartermaster: QuartermasterChoice,
+    /// The Quartermaster's own effort level (`config.toml`'s `[quartermaster] effort`); `None`
+    /// follows its model's tier. Its model's supported levels still cap it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quartermaster_effort: Option<Effort>,
     /// What the Quartermaster runs on now, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quartermaster_now: Option<QuartermasterNow>,
@@ -1110,12 +1128,13 @@ impl SettingsAccount {
     }
 }
 
-/// One placement of a model in a tier, with its own effort.
+/// One tier entry: the model in a tier at an effort. A model may have several entries in one tier,
+/// each at a different effort.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ModelPlacement {
     pub tier: Tier,
-    /// Your effort for this placement; `None` follows the tier default.
+    /// The entry's effort; `None` follows the tier default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
 }
@@ -1169,9 +1188,22 @@ impl SettingsModel {
         self.placements.is_empty()
     }
 
-    /// Its placement in `tier`, if any.
-    pub fn placement(&self, tier: Tier) -> Option<ModelPlacement> {
-        self.placements.iter().copied().find(|p| p.tier == tier)
+    /// Whether the model has an entry in `tier`, at any effort.
+    pub fn in_tier(&self, tier: Tier) -> bool {
+        self.placements.iter().any(|p| p.tier == tier)
+    }
+
+    /// Its entries in `tier`, in the order they were made.
+    pub fn placements_in(&self, tier: Tier) -> impl Iterator<Item = ModelPlacement> + '_ {
+        self.placements
+            .iter()
+            .copied()
+            .filter(move |p| p.tier == tier)
+    }
+
+    /// Its entry in `tier` at `effort` (`None` is the tier default), if any.
+    pub fn placement(&self, tier: Tier, effort: Option<Effort>) -> Option<ModelPlacement> {
+        self.placements_in(tier).find(|p| p.effort == effort)
     }
 }
 

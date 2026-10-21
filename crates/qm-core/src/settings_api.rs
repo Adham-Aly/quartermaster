@@ -25,7 +25,7 @@
 //!      there is exactly one.
 //!   4. Otherwise a new account. An API key is a new account unless you started it with
 //!      Reconnect on the account (a key names no one, so nothing else can match it).
-//! - **Settings in `config.toml`.** The pin and the Quartermaster's model are saved through
+//! - **Settings in `config.toml`.** The pin and the Quartermaster's model and effort are saved through
 //!   `config_file::save` and published on the config channel, so routing and the seat see them at
 //!   once (the seat at its next idle moment).
 //! - **Accounts and the tier board.** Labels, pausing, disconnecting, the preferred account,
@@ -62,7 +62,7 @@ use qm_types::api::{
 use qm_types::clock::Clock;
 use qm_types::config::{AlwaysUse, Config, QuartermasterModel};
 use qm_types::data_dir::DataDir;
-use qm_types::domain::{AccountKind, EngineKind, Provider};
+use qm_types::domain::{AccountKind, Effort, EngineKind, Provider};
 use qm_types::ids::{AccountId, ModelId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -180,18 +180,27 @@ fn store_change(command: &Command) -> Option<(&'static str, StoreChange)> {
             "change the preferred account",
             Box::new(move |c, _| accounts::set_preferred(c, account)),
         ),
-        Command::PlaceModel { model, from, to } => {
-            let (model, from, to) = (model.clone(), *from, *to);
+        Command::PlaceModel {
+            model,
+            from,
+            effort,
+            to,
+        } => {
+            let (model, from, effort, to) = (model.clone(), *from, *effort, *to);
             (
                 "place the model in a tier",
-                Box::new(move |c, at| models::place_model(c, &model, from, to, at)),
+                Box::new(move |c, at| models::place_model(c, &model, from, effort, to, at)),
             )
         }
-        Command::RemovePlacement { model, tier } => {
-            let (model, tier) = (model.clone(), *tier);
+        Command::RemovePlacement {
+            model,
+            tier,
+            effort,
+        } => {
+            let (model, tier, effort) = (model.clone(), *tier, *effort);
             (
                 "take the model out of the tier",
-                Box::new(move |c, at| models::remove_placement(c, &model, tier, at)),
+                Box::new(move |c, at| models::remove_placement(c, &model, tier, effort, at)),
             )
         }
         Command::TakeOutOfUse { model } => {
@@ -204,12 +213,15 @@ fn store_change(command: &Command) -> Option<(&'static str, StoreChange)> {
         Command::SetPlacementEffort {
             model,
             tier,
+            current,
             effort,
         } => {
-            let (model, tier, effort) = (model.clone(), *tier, *effort);
+            let (model, tier, current, effort) = (model.clone(), *tier, *current, *effort);
             (
                 "change the placement's effort",
-                Box::new(move |c, _| models::set_placement_effort(c, &model, tier, effort)),
+                Box::new(move |c, _| {
+                    models::set_placement_effort(c, &model, tier, current, effort)
+                }),
             )
         }
         Command::ListModel { model } => {
@@ -273,6 +285,10 @@ impl ApiPart for SettingsPart {
             Command::SetQuartermasterModel { choice } => {
                 let choice = choice.clone();
                 Box::pin(async move { inner.set_quartermaster(choice).await })
+            }
+            Command::SetQuartermasterEffort { effort } => {
+                let effort = *effort;
+                Box::pin(async move { inner.set_quartermaster_effort(effort).await })
             }
             Command::SetNotifications { enabled } => {
                 let enabled = *enabled;
@@ -437,6 +453,18 @@ impl Inner {
             Err(e) => {
                 self.note(&format!("The Quartermaster's model couldn't be saved: {e}"))
                     .await
+            }
+        }
+    }
+
+    async fn set_quartermaster_effort(&self, effort: Option<Effort>) -> Handled {
+        match self.save_config(|c| c.quartermaster.effort = effort).await {
+            Ok(()) => Handled::Changed,
+            Err(e) => {
+                self.note(&format!(
+                    "The Quartermaster's effort couldn't be saved: {e}"
+                ))
+                .await
             }
         }
     }
@@ -964,6 +992,7 @@ impl Inner {
             QuartermasterModel::Model(m) => QuartermasterChoice::Model(m.clone()),
             QuartermasterModel::Auto => QuartermasterChoice::Auto,
         };
+        view.quartermaster_effort = config.quartermaster.effort;
         view.quartermaster_now =
             seat.and_then(|s| Some(QuartermasterNow::new(s.model?, s.effort?)));
         view.providers = SUBSCRIPTION_LOGINS

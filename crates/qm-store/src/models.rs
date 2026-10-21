@@ -352,7 +352,8 @@ pub fn mark_seen(conn: &Connection, account: AccountId, model: &ModelId) -> Resu
     Ok(())
 }
 
-/// One tier placement.
+/// One tier entry: a model at an effort in a tier. A model may sit in one tier more than once,
+/// at different efforts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlacementRow {
     pub canonical: ModelId,
@@ -414,9 +415,11 @@ pub fn seed_starter_placements(
     }
     let mut added = 0;
     for (tier, canonical) in placements {
+        // A model already in the tier, at any effort, is left as you set it.
         added += conn.execute(
-            "INSERT INTO placements (canonical, tier, created_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT (canonical, tier) DO NOTHING",
+            "INSERT INTO placements (canonical, tier, created_at)
+             SELECT ?1, ?2, ?3
+             WHERE NOT EXISTS (SELECT 1 FROM placements WHERE canonical = ?1 AND tier = ?2)",
             params![canonical, tier, to_millis(at)],
         )?;
     }
@@ -636,35 +639,83 @@ fn canonical_for(conn: &Connection, model: &ModelId) -> Result<ModelId, StoreErr
     Ok(canonical_of(conn, model)?.unwrap_or_else(|| model.clone()))
 }
 
-/// Puts a model in tier `to`: moved out of `from` (keeping that placement's effort), or added
-/// when `from` is `None`. A model already in `to` keeps that placement as it is. Clears the
-/// model's "new" mark, so the pool routes it. Call inside one transaction.
+/// How a refusal names a tier entry's effort: "High effort", or "the tier default".
+fn entry_effort(effort: Option<Effort>) -> String {
+    effort.map_or_else(
+        || "the tier default".to_owned(),
+        |e| format!("{} effort", e.label()),
+    )
+}
+
+/// Whether `tier` holds `canonical` at `effort` (`None` is the tier default).
+fn has_entry(
+    conn: &Connection,
+    canonical: &ModelId,
+    tier: Tier,
+    effort: Option<Effort>,
+) -> Result<bool, StoreError> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM placements
+                        WHERE canonical = ?1 AND tier = ?2 AND effort_override IS ?3)",
+        params![canonical, tier, effort],
+        |r| r.get(0),
+    )?)
+}
+
+/// Refuses an effort the model doesn't offer (a model that reports no levels takes any).
+fn check_offered(
+    name: &str,
+    efforts: &[Effort],
+    effort: Option<Effort>,
+) -> Result<(), ChangeError> {
+    match effort {
+        Some(e) if !efforts.is_empty() && !efforts.contains(&e) => Err(ChangeError::Refused(
+            format!("{name} doesn't offer {e} effort; nothing was changed."),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Puts a tier entry (a model at an effort; `None` is the tier default) in tier `to`: moved out
+/// of `from`, or added when `from` is `None`. The same model may sit in one tier more than once
+/// at different efforts; adding an entry the tier already holds is refused, and moving onto one
+/// just merges the two. Clears the model's "new" mark, so the pool routes it. Call inside one
+/// transaction.
 pub fn place_model(
     conn: &Connection,
     model: &ModelId,
     from: Option<Tier>,
+    effort: Option<Effort>,
     to: Tier,
     at: Timestamp,
 ) -> Result<(), ChangeError> {
-    let (canonical, _, _) = offered_model(conn, model)?;
-    let mut effort: Option<Effort> = None;
-    if let Some(from) = from.filter(|&f| f != to) {
-        effort = conn
-            .query_row(
-                "DELETE FROM placements WHERE canonical = ?1 AND tier = ?2
-                 RETURNING effort_override",
-                params![canonical, from],
-                |r| r.get::<_, Option<Effort>>(0),
-            )
-            .optional()?
-            .flatten();
+    let (canonical, name, efforts) = offered_model(conn, model)?;
+    match from {
+        Some(from) if from == to => return Ok(()),
+        Some(from) => {
+            conn.execute(
+                "DELETE FROM placements
+                 WHERE canonical = ?1 AND tier = ?2 AND effort_override IS ?3",
+                params![canonical, from, effort],
+            )?;
+        }
+        None => {
+            check_offered(&name, &efforts, effort)?;
+            if has_entry(conn, &canonical, to, effort)? {
+                return Err(ChangeError::Refused(format!(
+                    "{name} is already in the {to} tier at {}; nothing was changed.",
+                    entry_effort(effort)
+                )));
+            }
+        }
     }
-    conn.execute(
-        "INSERT INTO placements (canonical, tier, effort_override, created_at)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT (canonical, tier) DO NOTHING",
-        params![canonical, to, effort, to_millis(at)],
-    )?;
+    if !has_entry(conn, &canonical, to, effort)? {
+        conn.execute(
+            "INSERT INTO placements (canonical, tier, effort_override, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![canonical, to, effort, to_millis(at)],
+        )?;
+    }
     conn.execute(
         "UPDATE models SET is_new = 0 WHERE canonical = ?1",
         params![canonical],
@@ -672,22 +723,24 @@ pub fn place_model(
     Ok(())
 }
 
-/// Takes a model out of one tier. A model left in no tier is listed under NOT IN USE, where you
-/// put it down. Call inside one transaction.
+/// Takes one tier entry (the model at `effort` in `tier`) out. A model left in no tier is listed
+/// under NOT IN USE, where you put it down. Call inside one transaction.
 pub fn remove_placement(
     conn: &Connection,
     model: &ModelId,
     tier: Tier,
+    effort: Option<Effort>,
     at: Timestamp,
 ) -> Result<(), ChangeError> {
     let canonical = canonical_for(conn, model)?;
     let removed = conn.execute(
-        "DELETE FROM placements WHERE canonical = ?1 AND tier = ?2",
-        params![canonical, tier],
+        "DELETE FROM placements WHERE canonical = ?1 AND tier = ?2 AND effort_override IS ?3",
+        params![canonical, tier, effort],
     )?;
     if removed == 0 {
         return Err(ChangeError::Refused(format!(
-            "{canonical} isn't in the {tier} tier; nothing was changed."
+            "{canonical} isn't in the {tier} tier at {}; nothing was changed.",
+            entry_effort(effort)
         )));
     }
     let left: bool = conn.query_row(
@@ -717,32 +770,38 @@ pub fn take_out_of_use(
     Ok(())
 }
 
-/// Sets one placement's effort (`effort_override`); `None` goes back to the tier default. An
-/// effort the model doesn't offer is refused.
+/// Changes one tier entry's effort (`effort_override`) from `current` to `effort`; `None` is the
+/// tier default. An effort the model doesn't offer is refused, and so is one the tier already
+/// holds the model at.
 pub fn set_placement_effort(
     conn: &Connection,
     model: &ModelId,
     tier: Tier,
+    current: Option<Effort>,
     effort: Option<Effort>,
 ) -> Result<(), ChangeError> {
     let (canonical, name, efforts) = offered_model(conn, model)?;
-    if let Some(e) = effort
-        && !efforts.is_empty()
-        && !efforts.contains(&e)
-    {
+    check_offered(&name, &efforts, effort)?;
+    if !has_entry(conn, &canonical, tier, current)? {
         return Err(ChangeError::Refused(format!(
-            "{name} doesn't offer {e} effort; nothing was changed."
+            "{name} isn't in the {tier} tier at {}; nothing was changed.",
+            entry_effort(current)
         )));
     }
-    let changed = conn.execute(
-        "UPDATE placements SET effort_override = ?3 WHERE canonical = ?1 AND tier = ?2",
-        params![canonical, tier, effort],
+    if current == effort {
+        return Ok(());
+    }
+    if has_entry(conn, &canonical, tier, effort)? {
+        return Err(ChangeError::Refused(format!(
+            "{name} is already in the {tier} tier at {}; nothing was changed.",
+            entry_effort(effort)
+        )));
+    }
+    conn.execute(
+        "UPDATE placements SET effort_override = ?4
+         WHERE canonical = ?1 AND tier = ?2 AND effort_override IS ?3",
+        params![canonical, tier, current, effort],
     )?;
-    if changed == 0 {
-        return Err(ChangeError::Refused(format!(
-            "{name} isn't in the {tier} tier; nothing was changed."
-        )));
-    }
     Ok(())
 }
 
