@@ -93,3 +93,39 @@ pub fn descriptors(role: Role) -> Vec<ToolDescriptor> {
         .map(ToolDef::descriptor)
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::TOOLS;
+
+    /// Every key anywhere in `value`, lowercased.
+    fn keys(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (k, v) in map {
+                    out.push(k.to_lowercase());
+                    keys(v, out);
+                }
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|v| keys(v, out)),
+            _ => {}
+        }
+    }
+
+    /// Autonomy is the user's alone: no agent's tool (Quartermaster, secondmate or crewmate) is
+    /// named for it or has an argument that could set it.
+    #[test]
+    fn no_tool_can_change_autonomy() {
+        for tool in TOOLS {
+            assert!(!tool.name.contains("autonomy"), "{}", tool.name);
+            let mut found = Vec::new();
+            keys(&tool.input_schema(), &mut found);
+            assert!(
+                !found.iter().any(|k| k.contains("autonomy")),
+                "{} has an autonomy argument",
+                tool.name
+            );
+        }
+        assert!(TOOLS.iter().any(|t| t.name == "configure_project"));
+    }
+}

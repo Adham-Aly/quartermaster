@@ -1,5 +1,5 @@
-//! The Projects and System tabs. The plan names them without contents. Projects shows your projects
-//! and how they deliver, read-only; System shows this Mac, the notifications switch and the entry
+//! The Projects and System tabs. Projects shows your projects and how they deliver, with each
+//! one's autonomy switch (yours alone: no agent can change it); System shows this Mac, the notifications switch and the entry
 //! to the setup check, with what it found wrong and how to fix it.
 
 use super::paint::Painter;
@@ -22,33 +22,44 @@ pub(super) fn draw_projects(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
         p.text(x, inner.y, "No projects yet.", theme::dim());
     }
     let name_width = projects.iter().map(|r| width(&r.name)).max().unwrap_or(0) + 4;
+    let right = inner.right().saturating_sub(1);
+    let selected = app
+        .view
+        .settings
+        .project_row
+        .min(projects.len().saturating_sub(1));
     for (i, project) in projects.iter().enumerate() {
         let y = inner.y + cells(i);
+        let switch = if project.autonomy == Autonomy::On {
+            "● On"
+        } else {
+            "○ Off"
+        };
+        let left = p.button_left_of(right, y, switch, SettingsHit::ProjectAutonomy(i));
+        let label = p.text_left_of(left.saturating_sub(1), y, "autonomy", theme::text());
+        let room = usize::from(label.saturating_sub(x + 2));
         p.text(x, y, &truncate(&project.name, room), theme::strong());
         let delivery = match project.delivery {
             DeliveryMode::DirectPr => "pull requests",
             DeliveryMode::BranchOnly => "branches only",
             DeliveryMode::BuildInPlace => "builds in place",
         };
-        let autonomy = if project.autonomy == Autonomy::On {
-            "autonomy on"
-        } else {
-            "autonomy off"
-        };
-        let detail = format!("{delivery} · {autonomy}");
         p.text(
             x + cells(name_width),
             y,
-            &truncate(&detail, room.saturating_sub(name_width)),
+            &truncate(delivery, room.saturating_sub(name_width)),
             theme::dim(),
         );
+        if i == selected {
+            p.select_row(inner, y);
+        }
     }
     let y = inner.y + cells(projects.len().max(1)) + 1;
     p.text(
         x,
         y,
         &truncate(
-            "Ask the Quartermaster to add a project or change how it delivers.",
+            "Ask the Quartermaster to add a project or change how it delivers. Only you switch autonomy.",
             room,
         ),
         theme::dim(),
@@ -148,5 +159,84 @@ pub(super) fn draw_system(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
         for (text, style) in runs {
             at = p.text(at, row, &text, style);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hit::{Hit, Hits};
+    use crate::settings::Tab;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use qm_types::api::{Command, ProjectRow};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::time::Instant;
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.view.settings.loaded = true;
+        app.view.settings.tab = Tab::Projects;
+        app.snapshot.projects = vec![
+            ProjectRow::new("api-server", DeliveryMode::DirectPr, Autonomy::Off),
+            ProjectRow::new("web-app", DeliveryMode::DirectPr, Autonomy::On),
+        ];
+        app
+    }
+
+    fn sent(app: &mut App) -> Vec<(String, Autonomy)> {
+        app.take_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::SetProjectAutonomy { project, autonomy } => Some((project, autonomy)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.on_settings_key(KeyEvent::new(code, KeyModifiers::NONE), Instant::now());
+    }
+
+    #[test]
+    fn keys_select_a_project_and_switch_its_autonomy() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.view.settings.project_row, 1);
+        assert_eq!(
+            sent(&mut app),
+            [
+                ("api-server".to_owned(), Autonomy::On),
+                ("web-app".to_owned(), Autonomy::Off),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_project_row_draws_a_switch_that_a_click_flips() {
+        let mut app = app();
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        let mut hits = Hits::default();
+        let area = Rect::new(0, 0, 100, 20);
+        terminal
+            .draw(|frame| {
+                let mut p = Painter::new(frame, &mut hits, None, true, area);
+                draw_projects(&mut p, area, &app);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row = |y: u16| -> String { (0..100).map(|x| buffer[(x, y)].symbol()).collect() };
+        let off = hits
+            .rect_of(Hit::Settings(SettingsHit::ProjectAutonomy(0)))
+            .expect("a switch on the first row");
+        let on = hits
+            .rect_of(Hit::Settings(SettingsHit::ProjectAutonomy(1)))
+            .expect("a switch on the second row");
+        assert!(row(off.y).contains("autonomy  ○ Off "), "{}", row(off.y));
+        assert!(row(on.y).contains("autonomy  ● On "), "{}", row(on.y));
+        app.settings_click(SettingsHit::ProjectAutonomy(1), false, Instant::now());
+        assert_eq!(sent(&mut app), [("web-app".to_owned(), Autonomy::Off)]);
     }
 }

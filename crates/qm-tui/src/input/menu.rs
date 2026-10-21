@@ -9,7 +9,8 @@ use crate::hit::{Hit, Hits};
 use crate::popups::{self, Anchor, MenuEntry, Placement};
 use crate::view::{Menu, MenuTarget};
 use crate::widgets::dropdown::{self, Item};
-use qm_types::api::{AgentRef, Command};
+use qm_types::api::{AgentRef, Command, Snapshot};
+use qm_types::domain::Autonomy;
 use ratatui::Frame;
 use ratatui::layout::Position;
 use std::time::Instant;
@@ -20,9 +21,21 @@ const INTERRUPT: &str = "Interrupt";
 const COPY_TASK_ID: &str = "Copy task ID";
 const COPY_ID: &str = "Copy ID";
 const COPY_NAME: &str = "Copy name";
+const AUTONOMY_ON: &str = "Turn autonomy on";
+const AUTONOMY_OFF: &str = "Turn autonomy off";
 
-/// The items a menu on `target` offers, given whether the Quartermaster's turn is running.
-pub(crate) fn items(target: MenuTarget, turn_running: bool) -> Vec<&'static str> {
+/// The menu item that flips `autonomy`.
+fn autonomy_item(autonomy: Autonomy) -> &'static str {
+    match autonomy {
+        Autonomy::Off => AUTONOMY_ON,
+        Autonomy::On => AUTONOMY_OFF,
+    }
+}
+
+/// The items a menu on `target` offers, given the latest snapshot (whether the Quartermaster's
+/// turn is running, a project's autonomy).
+pub(crate) fn items(target: MenuTarget, snapshot: &Snapshot) -> Vec<&'static str> {
+    let turn_running = snapshot.turn_running;
     match target {
         MenuTarget::Crew(AgentRef::Crewmate { .. }) => {
             vec![OPEN_SESSION, SHOW_TASK, INTERRUPT, COPY_TASK_ID]
@@ -30,7 +43,10 @@ pub(crate) fn items(target: MenuTarget, turn_running: bool) -> Vec<&'static str>
         MenuTarget::Crew(AgentRef::Secondmate { .. }) => vec![OPEN_SESSION, COPY_ID],
         MenuTarget::Crew(AgentRef::Quartermaster) if turn_running => vec![INTERRUPT],
         MenuTarget::Crew(AgentRef::Quartermaster) => Vec::new(),
-        MenuTarget::Project(_) => vec![COPY_NAME],
+        MenuTarget::Project(i) => match snapshot.projects.get(i) {
+            Some(project) => vec![autonomy_item(project.autonomy), COPY_NAME],
+            None => Vec::new(),
+        },
         MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_) => {
             crate::settings::menu_items(target)
         }
@@ -81,7 +97,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, menu: &Menu, hits: &mut Hit
 impl App {
     /// Opens the menu on `target` against `anchor`, unless it would be empty.
     pub(crate) fn open_menu(&mut self, target: MenuTarget, anchor: Anchor) {
-        let items = items(target, self.snapshot.turn_running);
+        let items = items(target, &self.snapshot);
         if items.is_empty() {
             return;
         }
@@ -122,6 +138,14 @@ impl App {
         }
     }
 
+    /// Your autonomy switch for project row `i` (its menu here, or Settings): sent to the core,
+    /// which saves it; the next snapshot shows it on the card and in Settings.
+    pub(crate) fn set_project_autonomy(&mut self, i: usize, autonomy: Autonomy) {
+        if let Some(project) = self.snapshot.projects.get(i).map(|p| p.name.clone()) {
+            self.command(Command::SetProjectAutonomy { project, autonomy });
+        }
+    }
+
     /// Moves the menu's highlighted item (keys, and the pointer over an item).
     pub(crate) fn set_menu_cursor(&mut self, cursor: usize) {
         if let Some(menu) = &mut self.view.menu
@@ -152,6 +176,14 @@ impl App {
             (COPY_ID, MenuTarget::Crew(AgentRef::Secondmate { id })) => {
                 self.copy(&id.to_string(), now);
             }
+            (AUTONOMY_ON | AUTONOMY_OFF, MenuTarget::Project(i)) => {
+                let autonomy = if item == AUTONOMY_ON {
+                    Autonomy::On
+                } else {
+                    Autonomy::Off
+                };
+                self.set_project_autonomy(i, autonomy);
+            }
             (COPY_NAME, MenuTarget::Project(i)) => {
                 if let Some(name) = self.snapshot.projects.get(i).map(|p| p.name.clone()) {
                     self.copy(&name, now);
@@ -167,5 +199,64 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qm_types::api::ProjectRow;
+    use qm_types::domain::DeliveryMode;
+
+    fn app_with(autonomy: Autonomy) -> App {
+        let mut app = App::new();
+        app.snapshot.projects = vec![ProjectRow::new("web-app", DeliveryMode::DirectPr, autonomy)];
+        app
+    }
+
+    fn sent_autonomy(app: &mut App) -> Vec<(String, Autonomy)> {
+        app.take_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::SetProjectAutonomy { project, autonomy } => Some((project, autonomy)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_projects_menu_offers_the_autonomy_switch_that_flips_it() {
+        let app = app_with(Autonomy::Off);
+        assert_eq!(
+            items(MenuTarget::Project(0), &app.snapshot),
+            [AUTONOMY_ON, COPY_NAME]
+        );
+        let app = app_with(Autonomy::On);
+        assert_eq!(
+            items(MenuTarget::Project(0), &app.snapshot),
+            [AUTONOMY_OFF, COPY_NAME]
+        );
+        assert_eq!(
+            items(MenuTarget::Project(5), &app.snapshot),
+            [] as [&str; 0]
+        );
+    }
+
+    #[test]
+    fn choosing_the_switch_sends_the_users_autonomy_command() {
+        let mut app = app_with(Autonomy::Off);
+        app.open_menu_for_row(MenuTarget::Project(0));
+        app.choose_menu_item(0, Instant::now());
+        assert_eq!(
+            sent_autonomy(&mut app),
+            [("web-app".to_owned(), Autonomy::On)]
+        );
+        let mut app = app_with(Autonomy::On);
+        app.open_menu_for_row(MenuTarget::Project(0));
+        app.choose_menu_item(0, Instant::now());
+        assert_eq!(
+            sent_autonomy(&mut app),
+            [("web-app".to_owned(), Autonomy::Off)]
+        );
     }
 }

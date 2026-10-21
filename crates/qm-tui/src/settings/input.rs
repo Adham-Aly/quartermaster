@@ -17,7 +17,7 @@ use crate::router::Screen;
 use crate::view::MenuTarget;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use qm_types::api::{Command, SecretText};
-use qm_types::domain::{Effort, Provider as ProviderId, Tier};
+use qm_types::domain::{Autonomy, Effort, Provider as ProviderId, Tier};
 use qm_types::ids::{AccountId, ModelId};
 use ratatui::layout::{Position, Rect};
 use std::time::Instant;
@@ -142,8 +142,16 @@ impl App {
             self.settings_set(|s| &mut s.scroll, to);
             return true;
         }
-        let selection =
-            |s: &super::SettingsView| (s.tab, s.account, s.board, s.routing_row, s.provider);
+        let selection = |s: &super::SettingsView| {
+            (
+                s.tab,
+                s.account,
+                s.board,
+                s.routing_row,
+                s.project_row,
+                s.provider,
+            )
+        };
         let before = selection(&self.view.settings);
         let used = self.on_settings_key_here(key, now);
         let after = selection(&self.view.settings);
@@ -193,7 +201,7 @@ impl App {
             Tab::ModelLevels => self.on_levels_key(key.code),
             Tab::Routing => self.on_routing_key(key.code),
             Tab::System => self.on_system_key(key.code),
-            Tab::Projects => false,
+            Tab::Projects => self.on_settings_projects_key(key.code),
         }
     }
 
@@ -301,6 +309,35 @@ impl App {
                 tokens: u32::from(next),
             });
         }
+    }
+
+    fn on_settings_projects_key(&mut self, code: KeyCode) -> bool {
+        let count = self.snapshot.projects.len();
+        let row = self.view.settings.project_row.min(count.saturating_sub(1));
+        if let Some(at) = list_move(code, Some(row), count) {
+            self.settings_set(|s| &mut s.project_row, at);
+            return true;
+        }
+        match code {
+            KeyCode::Char('a' | ' ') | KeyCode::Enter if count > 0 => {
+                self.toggle_project_autonomy(row);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Flips project row `i`'s autonomy and selects its row.
+    fn toggle_project_autonomy(&mut self, i: usize) {
+        let Some(current) = self.snapshot.projects.get(i).map(|p| p.autonomy) else {
+            return;
+        };
+        self.settings_set(|s| &mut s.project_row, i);
+        let next = match current {
+            Autonomy::On => Autonomy::Off,
+            Autonomy::Off => Autonomy::On,
+        };
+        self.set_project_autonomy(i, next);
     }
 
     fn on_system_key(&mut self, code: KeyCode) -> bool {
@@ -504,6 +541,7 @@ impl App {
                 self.toggle_pin();
             }
             SettingsHit::NotificationsSwitch => self.toggle_notifications(),
+            SettingsHit::ProjectAutonomy(i) => self.toggle_project_autonomy(i),
             SettingsHit::SetupCheck => self.show(Screen::Setup),
             SettingsHit::PinModel => self.open_picker(PickFor::PinModel, hit),
             SettingsHit::PinFallback => self.open_picker(PickFor::PinFallback, hit),
