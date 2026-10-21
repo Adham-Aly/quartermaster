@@ -96,3 +96,51 @@ pub fn save(dir: &DataDir, config: &Config) -> Result<(), ConfigError> {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qm_types::config::AutocompactWindow;
+
+    #[test]
+    fn a_partial_file_fills_in_the_defaults() {
+        let loaded = parse("[compaction]\nautocompact_window = 300000\n").unwrap();
+        assert_eq!(
+            u32::from(loaded.config.compaction.autocompact_window),
+            300_000
+        );
+        assert_eq!(loaded.config.notifications, Config::default().notifications);
+        assert_eq!(loaded.unknown_keys, Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_out_of_range_window_loads_clamped_without_an_error() {
+        let loaded = parse("[compaction]\nautocompact_window = 9000000\n").unwrap();
+        assert_eq!(
+            loaded.config.compaction.autocompact_window,
+            AutocompactWindow::new(u32::MAX)
+        );
+        assert_eq!(loaded.unknown_keys, Vec::<String>::new());
+
+        let loaded = parse("[compaction]\nautocompact_window = 120000\n").unwrap();
+        assert_eq!(
+            loaded.config.compaction.autocompact_window,
+            AutocompactWindow::new(100_000)
+        );
+    }
+
+    #[test]
+    fn a_misspelt_window_key_is_reported_and_the_default_kept() {
+        let loaded = parse("[compaction]\nautocompact_windw = 300000\n").unwrap();
+        assert_eq!(
+            loaded.config.compaction.autocompact_window,
+            AutocompactWindow::default()
+        );
+        assert_eq!(loaded.unknown_keys, ["compaction.autocompact_windw"]);
+    }
+
+    #[test]
+    fn a_window_that_is_not_a_number_is_an_error() {
+        assert!(parse("[compaction]\nautocompact_window = \"big\"\n").is_err());
+    }
+}
