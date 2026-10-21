@@ -14,8 +14,9 @@ description: Add or change a user setting stored in config.toml - the schema in 
 - **The database**: anything about a particular account or model (placements, the tier entries:
   each a model at an effort; labels, pauses, the preferred account) is a row (skill
   `add-migration`).
-- **`tui.toml`**: UI-only state per Mac, written by `qm-tui` itself (column widths), because the UI
-  can't reach the core's config.
+- **`ui.json`**: UI-only state (layout, popups, drafts, scrolls), written by the UI host
+  (`qm-tui` `persist.rs`), because the UI can't reach the core's config. A new remembered UI field
+  is added there (read per field, so an old file still loads); `tui.toml` is only read once.
 
 ## Steps
 

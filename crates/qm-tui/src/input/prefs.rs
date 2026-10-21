@@ -1,24 +1,20 @@
-//! The Bridge's column widths, remembered per Mac in `<data dir>/tui.toml`.
+//! The Bridge's column widths as older versions remembered them, in `<data dir>/tui.toml`.
 //!
-//! Loading never fails: a missing or unreadable file, a bad value or an unknown key falls back to
-//! the default for that value, and values are clamped to their ranges. Saving is atomic (a
-//! temporary file, then a rename), and a failed save is the caller's to ignore: losing a
-//! remembered width must never interrupt you.
+//! Only read now, once, when there is no `ui.json` yet (`persist`): the first start after the
+//! update picks the widths up from here, and `ui.json` holds them from then on. Loading never
+//! fails: a missing or unreadable file, a bad value or an unknown key falls back to the default
+//! for that value, and values are clamped to their ranges.
 
-use crate::app::{App, LEFT_DEFAULT, LEFT_RANGE, RIGHT_DEFAULT, RIGHT_RANGE};
-use qm_types::data_dir::DataDir;
-use serde::{Deserialize, Serialize};
+use crate::app::{LEFT_DEFAULT, LEFT_RANGE, RIGHT_DEFAULT, RIGHT_RANGE};
+use serde::Deserialize;
 use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The file's name in the data directory.
 pub(crate) const FILE: &str = "tui.toml";
 
-const HEADER: &str = "# The Bridge's column widths on this Mac, written by Quartermaster.\n";
-
 /// The remembered layout.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Prefs {
     pub(crate) left_width: u16,
     pub(crate) right_width: u16,
@@ -58,32 +54,6 @@ impl Prefs {
             right_width: width(raw.right_width.as_ref(), RIGHT_DEFAULT, RIGHT_RANGE),
         }
     }
-
-    /// The file's text.
-    pub(crate) fn render(self) -> String {
-        let body = toml::to_string(&self).unwrap_or_default();
-        format!("{HEADER}{body}")
-    }
-
-    /// The widths `app` shows now.
-    pub(crate) fn of(app: &App) -> Self {
-        Self {
-            left_width: app.left_width,
-            right_width: app.right_width,
-        }
-    }
-
-    /// Puts the widths into `app`.
-    pub(crate) fn apply(self, app: &mut App) {
-        app.left_width = self.left_width;
-        app.right_width = self.right_width;
-        app.redraw();
-    }
-}
-
-/// `<data dir>/tui.toml`, or `None` when the data directory can't be located.
-pub(crate) fn default_path() -> Option<PathBuf> {
-    DataDir::resolve().ok().map(|dir| dir.root().join(FILE))
 }
 
 /// Loads the file at `path`; the defaults if it can't be read.
@@ -93,23 +63,15 @@ pub(crate) fn load(path: &Path) -> Prefs {
         .unwrap_or_default()
 }
 
-/// Writes `prefs` to `path` atomically: `tui.toml.tmp`, then a rename.
-pub(crate) fn save(path: &Path, prefs: Prefs) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    fs::write(&tmp, prefs.render())?;
-    fs::rename(&tmp, path)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl App {
-    /// Remembers the current widths, if this run remembers anything; a failure is ignored.
-    pub(crate) fn save_prefs(&self) {
-        if let Some(path) = &self.prefs_path {
-            let _ = save(path, Prefs::of(self));
-        }
+    #[test]
+    fn a_bad_value_spoils_only_itself_and_widths_are_clamped() {
+        let prefs = Prefs::parse("left_width = 500\nright_width = \"wide\"\n");
+        assert_eq!(prefs.left_width, LEFT_RANGE.1);
+        assert_eq!(prefs.right_width, RIGHT_DEFAULT);
+        assert_eq!(Prefs::parse("not toml {"), Prefs::default());
     }
 }

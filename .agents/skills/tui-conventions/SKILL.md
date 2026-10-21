@@ -54,8 +54,10 @@ Map core `Tone`s with `theme::tone`.
   Below 60×16 a too-small notice shows.
 - Bridge columns: left 31 (20–60), a one-cell gap, the middle (never under 36), a gap, the task
   column 36 (24–70; `LEFT_DEFAULT`, `RIGHT_DEFAULT` in `app.rs`). Below 120 body columns the layout **folds**: no task column; the task pane opens as
-  an overlay from the right edge with a ` ✕ `. Widths dragged on the dividers are saved to
-  `<data dir>/tui.toml` (silently ignored if unreadable).
+  an overlay from the right edge with a ` ✕ `. Widths dragged on the dividers are saved
+  with the rest of the shared UI state in `<data dir>/ui.json` (`persist.rs`: debounced 1 s, atomic,
+  0600, saved on detach and stop; loading never fails; never logged). New shared state worth
+  keeping across a server restart goes into `persist.rs` `State` and `Restored`.
 - Boxes: rounded borders, the title in the top border, one cell of padding inside, no gap rows
   between boxes, boxes at the frame's edges. Border dim; accent when focused; text colour when
   hovered. The input box is accent while focused or holding text.

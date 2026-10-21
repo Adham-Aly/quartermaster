@@ -92,6 +92,7 @@ impl SettingsView {
 
     /// Drops selections and gestures that point past what is there now.
     fn clamp(&mut self) {
+        self.routing_row = self.routing_row.min(super::ROUTING_ROWS - 1);
         let accounts = self.model.accounts.len();
         let models = self.model.models.len();
         let providers = self.model.providers.len();
