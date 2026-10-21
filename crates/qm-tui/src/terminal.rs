@@ -3,8 +3,10 @@
 //! [`TerminalGuard::enter`] puts the terminal in raw mode on the alternate screen with mouse
 //! capture (clicks, drags, the wheel, and motion tracking for hover, in SGR encoding) and
 //! bracketed paste, and, where the terminal supports it, asks for disambiguated keys so `⇧⏎`
-//! arrives as itself. Dropping the guard undoes all of it in reverse, and so does a panic: a hook
-//! restores the terminal before the panic message prints, so you never land in a broken shell.
+//! arrives as itself. It also asks the terminal for its colours (`theme::detect`), again on every
+//! resume, so a theme changed meanwhile is picked up. Dropping the guard undoes all of it in
+//! reverse, and so does a panic: a hook restores the terminal before the panic message prints, so
+//! you never land in a broken shell.
 //! [`TerminalGuard::suspend`] does the same for `Ctrl`+`Z`, and enters again when the shell's
 //! `fg` resumes the process.
 //!
@@ -12,6 +14,7 @@
 //! any `Write`.
 
 use crate::backend::Backend16;
+use crate::theme::{self, Palette};
 use crossterm::cursor::Show;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -68,6 +71,8 @@ pub(crate) fn write_leave(w: &mut impl Write, enhanced: bool) -> io::Result<()> 
 /// The full-screen terminal, restored when dropped.
 pub(crate) struct TerminalGuard {
     terminal: Terminal<Backend16<Stdout>>,
+    /// The palette fitted to this terminal's colours.
+    palette: Palette,
 }
 
 impl std::fmt::Debug for TerminalGuard {
@@ -80,14 +85,21 @@ impl TerminalGuard {
     /// Enters full-screen mode. On failure, whatever was already switched on is switched off.
     pub(crate) fn enter() -> io::Result<Self> {
         install_panic_hook();
-        let entered = switch_on().and_then(|()| Terminal::new(Backend16::new(io::stdout())));
+        let entered = switch_on().and_then(|palette| {
+            Terminal::new(Backend16::new(io::stdout())).map(|terminal| (terminal, palette))
+        });
         match entered {
-            Ok(terminal) => Ok(Self { terminal }),
+            Ok((terminal, palette)) => Ok(Self { terminal, palette }),
             Err(err) => {
                 restore();
                 Err(err)
             }
         }
+    }
+
+    /// The palette fitted to this terminal's colours when it was last entered.
+    pub(crate) const fn palette(&self) -> Palette {
+        self.palette
     }
 
     /// Draws one frame inside a synchronized update (DEC mode 2026), so a terminal that supports
@@ -109,7 +121,8 @@ impl TerminalGuard {
     pub(crate) fn suspend(&mut self) -> io::Result<()> {
         restore();
         nix::sys::signal::raise(nix::sys::signal::Signal::SIGTSTP).map_err(io::Error::from)?;
-        switch_on()?;
+        // The terminal's theme may have changed while the app was stopped.
+        self.palette = switch_on()?;
         self.terminal.clear()
     }
 }
@@ -131,13 +144,17 @@ fn draw_synchronized<W: Write>(
     drawn.and(ended)
 }
 
-/// Raw mode, then the enter sequences (with the keyboard enhancement when supported).
-fn switch_on() -> io::Result<()> {
+/// Raw mode, then the terminal's colours, then the enter sequences (with the keyboard
+/// enhancement when supported). Returns the palette fitted to the colours.
+fn switch_on() -> io::Result<Palette> {
     enable_raw_mode()?;
+    // Before anything else reads the terminal's input, which would swallow the answers.
+    let palette = theme::detect();
     // The query needs raw mode to read the terminal's answer.
     let enhanced = supports_keyboard_enhancement().unwrap_or(false);
     ENHANCED.store(enhanced, Ordering::SeqCst);
-    write_enter(&mut io::stdout(), enhanced)
+    write_enter(&mut io::stdout(), enhanced)?;
+    Ok(palette)
 }
 
 /// Leaves full-screen mode. Every step runs even if an earlier one fails, and errors are ignored:
