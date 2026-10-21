@@ -95,8 +95,10 @@ fn draw_top_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits) {
     }
 }
 
-/// The menu button at the top bar's left, ` ☰ Menu `, with a badge when an entry has one; lit
-/// while the pointer is over it or its menu is open. Returns the column after it.
+/// The menu button at the top bar's left, ` ☰ Menu `, lit while the pointer is over it or its
+/// menu is open. When an entry has a badge, its dot sits just outside the button, on the default
+/// background: red on the button's fill or accent can't be read in most themes. The dot is part
+/// of the button's click region. Returns the column after it.
 fn draw_menu_button(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits) -> u16 {
     let open = app
         .view
@@ -104,14 +106,14 @@ fn draw_menu_button(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hit
         .as_ref()
         .is_some_and(|menu| menu.target == MenuTarget::Main);
     let lit = open || app.term.hover == Some(Hit::MenuButton);
-    let badge = app.menu_badge();
-    let style = theme::button(lit);
-    let mut spans = vec![Span::raw(" "), Span::styled(format!(" {MENU} "), style)];
+    let mut spans = vec![
+        Span::raw(" "),
+        Span::styled(format!(" {MENU} "), theme::button(lit)),
+    ];
     let mut button_width = button::width_of(MENU);
-    if badge {
-        spans.push(Span::styled(dropdown::BADGE, style.patch(theme::badge())));
-        spans.push(Span::styled(" ", style));
-        button_width += 2;
+    if app.menu_badge() {
+        spans.push(Span::styled(dropdown::BADGE, theme::badge()));
+        button_width += 1;
     }
     frame.render_widget(Line::from(spans), area);
     let x = area.x + 1;

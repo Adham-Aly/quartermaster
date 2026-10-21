@@ -33,7 +33,7 @@ tmux's `window-style` and `pane-colours[n]`, which tmux reports as the terminal'
 | `warn()` | `Yellow` | decisions, notices, tier headings |
 | `ok()` | `Green` | running, ready, passed |
 | `error()` | `Red` | errors |
-| `badge()` | `Red` | the dot on a menu entry and the menu button: something there needs you |
+| `badge()` | `Red` | the dot on a menu entry, a popup's title and beside the menu button (never on a fill or the accent): something there needs you |
 | `blue()` | `LightBlue` | a supervisor's marker in a session |
 | `violet()` | `Magenta` | a supervisor's name |
 | `filled()` | bright white on bright black | rest buttons (the menu button too), the current Settings tab, the selected row (keyboard) |
