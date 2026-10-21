@@ -252,6 +252,7 @@ fn projects(out: &mut String, projects: &[ProjectFact]) {
         DeliveryMode::DirectPr,
         DeliveryMode::BranchOnly,
         DeliveryMode::BuildInPlace,
+        DeliveryMode::Folder,
     ]
     .iter()
     .map(|d| format!("delivery={d}").chars().count())

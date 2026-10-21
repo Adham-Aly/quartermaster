@@ -20,9 +20,9 @@ use qm_git::{MissingWorktree, ReconcileProject, ReconcileReport, reconcile as gi
 use qm_store::StoreError;
 use qm_store::agents::{self, InterruptedCrewTurn};
 use qm_store::events::{self, NewEvent};
-use qm_store::tasks as task_store;
+use qm_store::tasks::{self as task_store, TaskRow};
 use qm_store::turns::{cut_short, mark_recovered};
-use qm_types::domain::{TaskStatus, TurnStatus, WakeKind};
+use qm_types::domain::{DeliveryMode, TaskStatus, TurnStatus, WakeKind};
 use qm_types::ids::{PortBlock, ProjectId, TaskId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -142,6 +142,18 @@ pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupErr
     })
 }
 
+/// The open tasks that have a worktree, by project. A folder task has none, so it never appears.
+pub(crate) fn tasks_with_worktrees(open: &[TaskRow]) -> BTreeMap<ProjectId, BTreeSet<TaskId>> {
+    let mut by_project: BTreeMap<ProjectId, BTreeSet<TaskId>> = BTreeMap::new();
+    for t in open
+        .iter()
+        .filter(|t| has_worktree(t.status) && t.delivery != DeliveryMode::Folder)
+    {
+        by_project.entry(t.project).or_default().insert(t.id);
+    }
+    by_project
+}
+
 /// Git's view of the task worktrees against the open tasks. A task still in phase C may not
 /// have its worktree yet: its runner makes it (or reuses what the interrupted attempt left), so
 /// it isn't reported missing. A closed task's branch is kept by design (closing keeps the branch,
@@ -152,17 +164,16 @@ async fn worktree_report(svc: &TaskService) -> Result<ReconcileReport, StartupEr
         .call(|conn| {
             let projects = active_projects(conn)?;
             let open = task_store::open(conn)?;
-            let mut by_project: BTreeMap<ProjectId, BTreeSet<TaskId>> = BTreeMap::new();
-            for t in open.iter().filter(|t| has_worktree(t.status)) {
-                by_project.entry(t.project).or_default().insert(t.id);
-            }
+            let mut by_project = tasks_with_worktrees(&open);
             let preparing: BTreeSet<TaskId> = open
                 .iter()
                 .filter(|t| t.status == TaskStatus::Preparing)
                 .map(|t| t.id)
                 .collect();
+            // A folder project has no worktrees, and git never runs in it.
             let projects = projects
                 .into_iter()
+                .filter(|p| p.delivery != DeliveryMode::Folder)
                 .map(|p| ReconcileProject {
                     project: p.id,
                     checkout: p.path,

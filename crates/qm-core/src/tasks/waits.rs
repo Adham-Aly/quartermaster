@@ -331,7 +331,7 @@ pub(crate) async fn delivery_check(
     let needs_probe = match row.delivery {
         DeliveryMode::DirectPr => true,
         DeliveryMode::BranchOnly => project.github_remote.is_some(),
-        DeliveryMode::BuildInPlace => false,
+        DeliveryMode::BuildInPlace | DeliveryMode::Folder => false,
     };
     let probed = if needs_probe {
         Some(svc.deps().probe.probe(&project, &project.path).await)

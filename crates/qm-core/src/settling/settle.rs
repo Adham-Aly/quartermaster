@@ -25,12 +25,83 @@ use qm_store::StoreError;
 use qm_store::delivery as delivery_store;
 use qm_store::held::{HeldPayload, MergePayload, NewHeld, PushPayload};
 use qm_store::reports;
+use qm_store::reports::ReportRow;
 use qm_store::tasks as task_store;
+use qm_store::tasks::TaskRow;
 use qm_tools::defs::SettleOutcome;
 use qm_tools::handler::{Caller, ToolFailure};
-use qm_types::domain::{DeliveryMode, ReportOutcome, TaskOutcome, TaskStatus};
+use qm_types::domain::{Autonomy, DeliveryMode, ReportOutcome, TaskOutcome, TaskStatus};
 use qm_types::ids::{CommitSha, HeldActionId, ReportId, TaskId};
 use rusqlite::{Connection, OptionalExtension, params};
+
+/// Settles folder work: marks the task delivered at once, in one transaction, with the folder it
+/// is in. Nothing is held, merged, pushed or named: there is no branch or commit to check.
+async fn settle_folder(
+    svc: &SettlingService,
+    task: TaskId,
+    row: &TaskRow,
+    report: &ReportRow,
+    folder: String,
+    autonomy: Autonomy,
+) -> Result<SettleOutcome, ToolFailure> {
+    let port = svc.delivery().verification();
+    let gate = svc
+        .delivery()
+        .read(move |conn| port.gate(conn, task))
+        .await?;
+    check_mergeable(&gate, &ChecksVerdict::NoChecks, verified_named(report))?;
+    match plan(&SettleFacts {
+        kind: row.kind,
+        delivery: row.delivery,
+        autonomy,
+        has_remote: false,
+        head: None,
+        checkout_clean: None,
+    })? {
+        SettlePlan::MarkDone => {}
+        other => {
+            return Err(ToolFailure::Failed(format!(
+                "folder work should settle as done, not {other:?}"
+            )));
+        }
+    }
+    let at = svc.delivery().clock().now();
+    let parent = svc.delivery().parent();
+    let fact = Fact::DoneInFolder {
+        folder: folder.clone(),
+    };
+    let tasks = svc.tasks();
+    let refused = tasks
+        .write(move |tx, notify| {
+            let Some(now) = task_store::load(tx, task)? else {
+                return Ok(Some(format!("{task} doesn't exist any more")));
+            };
+            if now.status != TaskStatus::Reported {
+                return Ok(Some(format!(
+                    "{task} is {} now, not reported, so it can't be settled",
+                    now.status
+                )));
+            }
+            let to = match next_for(task, now.status, TaskEvent::SettleStarted) {
+                Ok(to) => to,
+                Err(r) => return Ok(Some(r.reason)),
+            };
+            task_store::set_status(tx, task, now.status, to, at)?;
+            if !facts::landed(tx, notify, &*parent, task, &fact, at)? {
+                return Err(StoreError::Invalid {
+                    column: "tasks.status",
+                    message: format!("{task} couldn't be recorded as delivered"),
+                });
+            }
+            Ok(None)
+        })
+        .await
+        .map_err(|e| failed(&e))?;
+    if let Some(reason) = refused {
+        return Err(refuse(reason));
+    }
+    Ok(SettleOutcome::Done { folder })
+}
 
 /// `settle_task`.
 #[allow(clippy::too_many_lines)]
@@ -117,6 +188,13 @@ pub(crate) async fn settle(
         return Err(refuse(format!(
             "{task} waits on {blocker}, which hasn't landed yet"
         )));
+    }
+
+    // Folder work has no branch, commits or checks: its changes are already in the folder. The
+    // verification gate and the report still apply; nothing is held, merged or pushed.
+    if row.delivery == DeliveryMode::Folder {
+        let folder = loaded.project.path.to_string_lossy().into_owned();
+        return settle_folder(svc, task, row, &report, folder, loaded.project.autonomy).await;
     }
 
     // 5. Names at settling on exactly the commits being settled (the task's own up to the reported
@@ -255,6 +333,12 @@ pub(crate) async fn settle(
             card.checks = Some((reading.passed, reading.total));
             (pull.head_sha, reading.verdict, Some(pr))
         }
+        DeliveryMode::Folder => {
+            // Folder work settled above, before any git read.
+            return Err(failed(&format!(
+                "{task} is folder work and has no git head"
+            )));
+        }
         DeliveryMode::BranchOnly | DeliveryMode::BuildInPlace => {
             // The local branch tip is the reported head.
             let Some(tip) = local.tip.clone() else {
@@ -298,7 +382,7 @@ pub(crate) async fn settle(
         delivery: row.delivery,
         autonomy: loaded.project.autonomy,
         has_remote,
-        head: &head,
+        head: Some(&head),
         checkout_clean: local.clean,
     })?;
     let target_branch = if in_place {
@@ -342,9 +426,10 @@ pub(crate) async fn settle(
             checkout: loaded.project.path.to_string_lossy().into_owned(),
             target_branch: target_branch.clone().unwrap_or_default(),
         })),
-        SettlePlan::MarkDeliveredLocal { .. } | SettlePlan::CloseAnswered | SettlePlan::Hold(_) => {
-            None
-        }
+        SettlePlan::MarkDeliveredLocal { .. }
+        | SettlePlan::CloseAnswered
+        | SettlePlan::MarkDone
+        | SettlePlan::Hold(_) => None,
     };
     let review_head = head.clone();
     card.review = svc
@@ -579,6 +664,7 @@ fn landing_outcome(task: TaskId, landing: Landing) -> Result<SettleOutcome, Tool
             branch,
             commit: head,
         }),
+        Landing::Landed(Fact::DoneInFolder { folder }) => Ok(SettleOutcome::Done { folder }),
         Landing::Landed(Fact::InPlace { branch, head, .. }) => Ok(SettleOutcome::Landed {
             branch,
             commit: head,

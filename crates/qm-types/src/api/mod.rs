@@ -221,6 +221,11 @@ pub enum Command {
         project: String,
         autonomy: Autonomy,
     },
+    /// Point the personal workspace at a folder you chose (absolute, or from `~`). It's checked
+    /// first, and refused while personal tasks are open. Saved to `config.toml`; no files move.
+    SetWorkspaceFolder {
+        folder: String,
+    },
     // ---- Worker sessions. ----
     /// Open a worker's session (the core then fills [`Snapshot::session`]), or close it with
     /// `None` (back to the Bridge).
@@ -1144,6 +1149,10 @@ pub struct SettingsView {
     /// The bell and desktop notifications are on (Settings ▸ System).
     #[serde(default)]
     pub notifications: bool,
+    /// The personal workspace's folder as Settings shows it (`~` for your home folder); empty
+    /// until the core has one to show.
+    #[serde(default)]
+    pub workspace_folder: String,
     /// Why the Settings screens can't show or change anything this run, in one plain sentence
     /// ("auth.json can't be read: …; nothing was changed"), when the core couldn't start its
     /// settings part. The screens show it instead of an empty or loading tab.

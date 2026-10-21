@@ -14,8 +14,8 @@ use qm_git::{Git, Repo};
 use qm_policy::repair::MAX_FAILED_REPAIRS;
 use qm_policy::verification;
 use qm_prompts::brief::{
-    BriefBuildsOn, BriefConstraint, BriefFacts, BriefSupervisor, BriefVerification, PromptEngine,
-    crewmate_prompt, render_brief,
+    BriefBuildsOn, BriefConstraint, BriefFacts, BriefSupervisor, BriefVerification, BriefWorkspace,
+    PromptEngine, crewmate_prompt, render_brief,
 };
 use qm_store::StoreError;
 use qm_store::crew_view::{self, BriefInputs, PriorTask, StoredReport};
@@ -121,11 +121,19 @@ pub fn brief_facts(
 ) -> Result<BriefFacts, BriefError> {
     let task = inputs.task;
     let not_ready = |missing| BriefError::NotReady { task, missing };
-    let start_ref = inputs.base_ref.clone().ok_or_else(|| not_ready("base"))?;
-    let start_commit = inputs
-        .base_commit
-        .clone()
-        .ok_or_else(|| not_ready("base commit"))?;
+    let workspace = if inputs.delivery == DeliveryMode::Folder {
+        BriefWorkspace::Folder {
+            path: inputs.folder.clone(),
+        }
+    } else {
+        BriefWorkspace::Branch {
+            start_ref: inputs.base_ref.clone().ok_or_else(|| not_ready("base"))?,
+            start_commit: inputs
+                .base_commit
+                .clone()
+                .ok_or_else(|| not_ready("base commit"))?,
+        }
+    };
     let ports = PortBlock {
         base: inputs.port_base.ok_or_else(|| not_ready("port block"))?,
     };
@@ -159,8 +167,7 @@ pub fn brief_facts(
         delivery: inputs.delivery,
         has_remote: inputs.has_remote,
         verification,
-        start_ref,
-        start_commit,
+        workspace,
         pr_target,
         ports,
         goal: inputs.goal.clone(),

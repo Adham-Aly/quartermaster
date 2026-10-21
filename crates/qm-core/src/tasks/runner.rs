@@ -16,7 +16,7 @@
 
 use super::input::{FirstBlock, assemble, render_wakes};
 use super::session::{RoutedSession, crewmate_spec};
-use super::start::{PrepareError, gather_for, prepare, routed_session};
+use super::start::{PrepareError, gather_for, prepare, routed_session, workplace};
 use super::{TaskService, new_wake};
 use crate::inbox::Inbox;
 use crate::skills::Gathered;
@@ -760,7 +760,10 @@ impl CrewRunner {
             return Err("the crewmate's session can't be described".to_owned());
         };
         let paths = self.svc.deps().data_dir.task(self.task);
-        let spec = crewmate_spec(agent, routed, &paths, *ports, gathered, resume);
+        let place = workplace(&self.svc, self.task)
+            .await
+            .map_err(|e| e.to_string())?;
+        let spec = crewmate_spec(agent, routed, &paths, &place, *ports, gathered, resume);
         let engine =
             self.svc.deps().engines.get(&routed.engine).ok_or_else(|| {
                 format!("the {} engine isn't available on this Mac", routed.engine)

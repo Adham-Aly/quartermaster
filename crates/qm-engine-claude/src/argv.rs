@@ -10,9 +10,9 @@ use serde_json::json;
 use std::path::PathBuf;
 
 /// The only built-in tools a crewmate is offered, as the `--tools` allow-list. The rule: every tool
-/// that acts only within the crewmate's own session or worktree, or reads the web, is granted;
-/// anything that reaches other sessions, schedules, notifies, publishes, triggers remotely or
-/// leaves the worktree is not (the `harness_tools!` list below).
+/// that acts only within the crewmate's own session or working folder, or reads the web, is
+/// granted; anything that reaches other sessions, schedules, notifies, publishes, triggers
+/// remotely or moves to another worktree is not (the `harness_tools!` list below).
 ///
 /// - the coding tools: `Bash`, `Read`, `Edit`, `Write`, `NotebookEdit`, `Glob`, `Grep`;
 /// - the web, up front: `WebFetch`, `WebSearch`;
@@ -64,7 +64,7 @@ pub fn crewmate_reported_builtins() -> Vec<&'static str> {
 /// messaging other sessions (`SendMessage`, `ListAgents`); scheduling (`CronCreate`, `CronDelete`,
 /// `CronList`, `ScheduleWakeup`); notifying (`PushNotification`); publishing (`DesignSync`,
 /// `ReportFindings`, the `Artifact` family); remote triggers and agent swarms (`RemoteTrigger`,
-/// `Workflow`); leaving the worktree (`EnterWorktree`, `ExitWorktree`); and `Monitor`, which wakes
+/// `Workflow`); moving to another worktree (`EnterWorktree`, `ExitWorktree`); and `Monitor`, which wakes
 /// the session by itself on a process's output, outside the app's wakes (background jobs already
 /// wake a crewmate through the app). Disallowed for every role, in case a `claude` offers one
 /// outside `--tools`.

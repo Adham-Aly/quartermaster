@@ -12,16 +12,25 @@ use qm_types::domain::{Autonomy, DeliveryMode};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
+const PERSONAL_FOLDER_LABEL: &str = "Personal folder";
+
 pub(super) fn draw_projects(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let projects = &app.snapshot.projects;
-    let rows = cells(projects.len().max(1)) + 2;
+    let rows = cells(projects.len().max(1)) + 4;
     let inner = section(area, rows);
     let x = inner.x + 1;
     let room = usize::from(inner.width.saturating_sub(2));
     if projects.is_empty() {
         p.text(x, inner.y, "No projects yet.", theme::dim());
     }
-    let name_width = projects.iter().map(|r| width(&r.name)).max().unwrap_or(0) + 4;
+    // Wide enough for the longest project name and for the "Personal folder" label below it.
+    let name_width = projects
+        .iter()
+        .map(|r| width(&r.name))
+        .max()
+        .unwrap_or(0)
+        .max(width(PERSONAL_FOLDER_LABEL))
+        + 4;
     let right = inner.right().saturating_sub(1);
     let selected = app
         .view
@@ -43,6 +52,7 @@ pub(super) fn draw_projects(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
             DeliveryMode::DirectPr => "pull requests",
             DeliveryMode::BranchOnly => "branches only",
             DeliveryMode::BuildInPlace => "builds in place",
+            DeliveryMode::Folder => "a plain folder",
         };
         p.text(
             x + cells(name_width),
@@ -54,7 +64,22 @@ pub(super) fn draw_projects(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
             p.select_row(inner, y);
         }
     }
-    let y = inner.y + cells(projects.len().max(1)) + 1;
+    // The personal folder: where personal tasks work, changed with f.
+    let folder_y = inner.y + cells(projects.len().max(1)) + 1;
+    let folder = &app.view.settings.model.workspace_folder;
+    p.text(x, folder_y, PERSONAL_FOLDER_LABEL, theme::strong());
+    let folder = if folder.is_empty() {
+        "—"
+    } else {
+        folder.as_str()
+    };
+    p.text(
+        x + cells(name_width),
+        folder_y,
+        &truncate(folder, room.saturating_sub(name_width)),
+        theme::dim(),
+    );
+    let y = folder_y + 2;
     p.text(
         x,
         y,

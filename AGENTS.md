@@ -1,8 +1,8 @@
 # Quartermaster
 
 A private, macOS-only Rust terminal app: one binary, `quartermaster`. You talk to one orchestrating
-agent, the Quartermaster. It hands project work to crewmates, each in its own git worktree, and
-brings the results back for you to approve and merge. Secondmates are standing orchestrators with
+agent, the Quartermaster. It hands project work to crewmates, each in its own working folder (a git
+worktree, or the plain personal folder), and brings the results back for you to approve and merge. Secondmates are standing orchestrators with
 a charter. Claude agents run on the user's installed `claude`; every other
 account runs on the app's own Rust provider engine.
 
@@ -70,7 +70,7 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
 - `logs/quartermaster-YYYY-MM-DD.log`: redacted; level from `QM_LOG` (default `info`). The
   terminal belongs to the UI, so nothing is logged there.
 - `seat/`, `secondmates/SM-n/`, `tasks/T-n/` (worktree, brief, session, jobs, evidence),
-  `workspace/` (personal project), `ui.json` (UI state, never logged; `tui.toml` is only read once for old widths), `attachments/`
+  `workspace/` (the personal workspace's default folder, plain files; `[workspace] folder` moves it), `ui.json` (UI state, never logged; `tui.toml` is only read once for old widths), `attachments/`
   (pasted images; `drafts/` holds unsent drafts' images).
 
 ## House rules

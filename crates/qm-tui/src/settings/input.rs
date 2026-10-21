@@ -322,6 +322,14 @@ impl App {
             KeyCode::Char('a' | ' ') | KeyCode::Enter if count > 0 => {
                 self.toggle_project_autonomy(row);
             }
+            KeyCode::Char('f') => {
+                let field = Field {
+                    purpose: FieldFor::WorkspaceFolder,
+                    text: self.view.settings.model.workspace_folder.clone(),
+                    base_url: None,
+                };
+                self.settings_set(|s| &mut s.field, Some(field));
+            }
             _ => return false,
         }
         true
@@ -885,6 +893,7 @@ impl App {
                     });
                 }
             }
+            FieldFor::WorkspaceFolder => self.intend(Command::SetWorkspaceFolder { folder: text }),
             FieldFor::BaseUrl => {
                 let field = Field {
                     purpose: FieldFor::ApiKey("custom"),

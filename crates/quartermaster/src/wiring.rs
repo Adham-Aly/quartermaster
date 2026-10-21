@@ -521,6 +521,7 @@ fn settings_parts(
             db: db.clone(),
             clock: Arc::clone(clock),
             data_dir: dir.clone(),
+            home: std::env::var_os("HOME").map(PathBuf::from),
             config: base.config,
             tokens,
             engines: base.engines,
