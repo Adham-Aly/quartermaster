@@ -40,6 +40,8 @@ pub(crate) struct Term {
     pub(crate) selection: Option<Selection>,
     /// The status bar's short notice ("Copied").
     pub(crate) flash: Option<Flash>,
+    /// The window asked to leave (the server keeps running).
+    pub(crate) detach: bool,
     /// `Ctrl`+`Z` was pressed: the loop suspends to the shell before the next frame.
     pub(crate) suspend: bool,
     /// The window is over SSH, so copies go by OSC 52 and the Mac's clipboard is out of reach.
@@ -66,6 +68,7 @@ impl Term {
             quit: Quit::Idle,
             selection: None,
             flash: None,
+            detach: false,
             suspend: false,
             ssh: crate::input::clipboard::is_ssh(tty.as_deref(), connection.as_deref()),
             background: Background::Unknown,

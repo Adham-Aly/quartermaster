@@ -1,15 +1,12 @@
 //! The socket: accepting connections, the peer check, the handshake and the control requests.
 
-use super::host::{Host, QuitOutcome};
-use qm_types::wire::{
-    self, Frame, Hello, Kind, PROTOCOL, Refuse, Request, Response, ServerStatus, Welcome,
-};
+use qm_tui::host::{Conn, Handle, QuitOutcome, Windows};
+use qm_types::wire::{self, ExitReason, Frame, PROTOCOL, Refuse, Request, Response, ServerStatus};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::net::unix::OwnedReadHalf;
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -17,42 +14,37 @@ use tokio::time::timeout;
 /// macOS refuses a socket path longer than this many bytes (including the terminator).
 const MAX_SOCKET_PATH: usize = 104;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
-/// Frames queued for one window before it counts as stalled and misses frames.
-const OUT_QUEUE: usize = 64;
 
 /// What the connection handlers share.
 pub struct Shared {
-    pub host: Host,
-    pub started: Instant,
-    pub started_unix: i64,
-    next_id: AtomicU64,
-    /// A stop was asked for over the socket, and why.
-    pub stop: mpsc::UnboundedSender<Stop>,
+    host: Handle,
+    windows: mpsc::UnboundedSender<Box<dyn Conn>>,
+    started: Instant,
+    started_unix: i64,
     uid: u32,
 }
 
-/// A stop asked for over the socket.
-pub enum Stop {
-    Stop,
-    Restart,
-}
-
 impl Shared {
+    /// `windows` is where the UI host receives new windows' streams.
     pub fn new(
-        host: Host,
+        host: Handle,
+        windows: mpsc::UnboundedSender<Box<dyn Conn>>,
         started_unix: i64,
-        stop: mpsc::UnboundedSender<Stop>,
         uid: u32,
     ) -> Arc<Shared> {
         Arc::new(Shared {
             host,
+            windows,
             started: Instant::now(),
             started_unix,
-            next_id: AtomicU64::new(1),
-            stop,
             uid,
         })
     }
+}
+
+/// The channel the host takes windows from, and the end the server sends them on.
+pub fn windows() -> (mpsc::UnboundedSender<Box<dyn Conn>>, Windows) {
+    mpsc::unbounded_channel()
 }
 
 /// Binds `path`, replacing a stale socket. Call only while holding `run.lock`: holding it proves
@@ -97,93 +89,29 @@ pub async fn connection(stream: UnixStream, shared: Arc<Shared>) {
         }
         Ok(Ok(None)) | Err(_) => return,
     };
-    match first.kind {
-        Kind::Hello => attach(first, rd, wr, shared).await,
-        Kind::Request => request(&first, wr, shared).await,
+    match first {
+        Frame::Hello(_) => attach(&first, rd, wr, &shared),
+        Frame::Request(request) => answer(request, wr, &shared).await,
         _ => refuse(&mut wr, "Expected a hello first.").await,
     }
 }
 
-async fn refuse(wr: &mut tokio::net::unix::OwnedWriteHalf, reason: &str) {
-    let frame = Frame::json(
-        Kind::Refuse,
-        &Refuse {
-            reason: reason.to_owned(),
-        },
-    );
-    let _ = wire::write_frame(wr, &frame).await;
+async fn refuse(wr: &mut OwnedWriteHalf, reason: &str) {
+    let _ = wire::write_frame(wr, &Frame::Refuse(Refuse::new(reason))).await;
 }
 
-async fn attach(
-    first: Frame,
-    mut rd: OwnedReadHalf,
-    mut wr: tokio::net::unix::OwnedWriteHalf,
-    shared: Arc<Shared>,
-) {
-    let Ok(hello) = first.parse::<Hello>() else {
-        refuse(&mut wr, "That hello wasn't readable.").await;
-        return;
-    };
-    if hello.protocol != PROTOCOL {
-        let reason = format!(
-            "This Quartermaster server speaks protocol {PROTOCOL} and your client speaks {}; \
-             run `quartermaster server restart` to use the version you installed.",
-            hello.protocol
-        );
-        refuse(&mut wr, &reason).await;
-        return;
+/// Hands a window to the UI host. The host reads the hello itself (and checks its protocol), so
+/// the frame already read here is put back in front of the stream.
+fn attach(hello: &Frame, rd: OwnedReadHalf, wr: OwnedWriteHalf, shared: &Shared) {
+    let Ok(bytes) = hello.encode() else { return };
+    let reader = tokio::io::AsyncReadExt::chain(std::io::Cursor::new(bytes), rd);
+    let conn: Box<dyn Conn> = Box::new(tokio::io::join(reader, wr));
+    if shared.windows.send(conn).is_ok() {
+        tracing::info!("window attached");
     }
-    let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
-    let welcome = Welcome {
-        client_id: id,
-        version: env!("CARGO_PKG_VERSION").to_owned(),
-        protocol: PROTOCOL,
-    };
-    if wire::write_frame(&mut wr, &Frame::json(Kind::Welcome, &welcome))
-        .await
-        .is_err()
-    {
-        return;
-    }
-    tracing::info!(client = id, size = ?hello.size, ssh = hello.ssh, "window attached");
-
-    let (out, mut out_rx) = mpsc::channel::<Frame>(OUT_QUEUE);
-    shared.host.attach(id, hello, out);
-    // The writer ends when the host lets go of the window's sender.
-    let writer = tokio::spawn(async move {
-        while let Some(frame) = out_rx.recv().await {
-            if wire::write_frame(&mut wr, &frame).await.is_err() {
-                break;
-            }
-        }
-    });
-    while let Ok(Some(f)) = wire::read_frame(&mut rd).await {
-        match f.kind {
-            Kind::Input => {
-                if let Ok(event) = f.parse() {
-                    shared.host.input(id, event);
-                }
-            }
-            Kind::Resize => {
-                if let Ok(size) = f.parse() {
-                    shared.host.resize(id, size);
-                }
-            }
-            Kind::Detach => break,
-            _ => {}
-        }
-    }
-    shared.host.detach(id);
-    tracing::info!(client = id, "window detached");
-    // Dropping the host's sender (above) ends the writer; don't wait for a stalled one.
-    let _ = timeout(Duration::from_secs(1), writer).await;
 }
 
-async fn request(first: &Frame, mut wr: tokio::net::unix::OwnedWriteHalf, shared: Arc<Shared>) {
-    let Ok(request) = first.parse::<Request>() else {
-        refuse(&mut wr, "That request wasn't readable.").await;
-        return;
-    };
+async fn answer(request: Request, mut wr: OwnedWriteHalf, shared: &Shared) {
     let response = match request {
         Request::Status => {
             let host = shared.host.status().await;
@@ -198,42 +126,39 @@ async fn request(first: &Frame, mut wr: tokio::net::unix::OwnedWriteHalf, shared
             })
         }
         Request::Stop { force } | Request::Restart { force } => {
-            match shared.host.quit(force).await {
+            let restart = matches!(request, Request::Restart { .. });
+            let reason = if restart {
+                ExitReason::Restarting
+            } else {
+                ExitReason::ServerStopped
+            };
+            match shared.host.quit(force, reason).await {
                 QuitOutcome::Working(working) => Response::Working { working },
                 QuitOutcome::Closing => {
-                    let stop = if matches!(request, Request::Restart { .. }) {
-                        Stop::Restart
-                    } else {
-                        Stop::Stop
-                    };
                     // Answer first: the server may be gone before a late write.
-                    let _ = wire::write_frame(
-                        &mut wr,
-                        &Frame::json(Kind::Response, &Response::Stopping),
-                    )
-                    .await;
-                    let _ = shared.stop.send(stop);
+                    let _ = wire::write_frame(&mut wr, &Frame::Response(Response::Stopping)).await;
                     return;
                 }
             }
         }
     };
-    let _ = wire::write_frame(&mut wr, &Frame::json(Kind::Response, &response)).await;
+    let _ = wire::write_frame(&mut wr, &Frame::Response(response)).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qm_types::wire::{Size, read_frame, write_frame};
+    use qm_types::wire::{Hello, read_frame, write_frame};
 
-    /// A server on a throwaway socket with the stub host and no core behind it.
+    /// A server on a throwaway socket with the real UI host and no core behind it.
     fn serve_on(name: &str) -> (std::path::PathBuf, qm_types::api::CoreServer) {
         let path = std::env::temp_dir().join(format!("qm-{name}-{}.sock", std::process::id()));
         let listener = bind(&path).unwrap();
         let (client, core_end) = qm_types::api::link();
-        let (host, _done) = super::super::host::spawn(client);
-        let (stop, _stop_rx) = mpsc::unbounded_channel();
-        let shared = Shared::new(host, 0, stop, nix::unistd::getuid().as_raw());
+        let (handle, commands) = qm_tui::host::control();
+        let (tx, windows) = windows();
+        tokio::spawn(qm_tui::host::serve(client, windows, commands));
+        let shared = Shared::new(handle, tx, 0, nix::unistd::getuid().as_raw());
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 tokio::spawn(connection(stream, shared.clone()));
@@ -248,18 +173,17 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         let mut s = UnixStream::connect(&path).await.unwrap();
-        let hello = Hello {
-            protocol: PROTOCOL,
-            size: Size { cols: 80, rows: 24 },
-            ..Hello::default()
-        };
-        write_frame(&mut s, &Frame::json(Kind::Hello, &hello))
+        write_frame(&mut s, &Frame::Hello(Hello::new("t", "t", 80, 24)))
             .await
             .unwrap();
-        let welcome = read_frame(&mut s).await.unwrap().unwrap();
-        assert_eq!(welcome.kind, Kind::Welcome);
-        let screen = read_frame(&mut s).await.unwrap().unwrap();
-        assert_eq!(screen.kind, Kind::Output);
+        assert!(matches!(
+            read_frame(&mut s).await.unwrap(),
+            Some(Frame::Welcome(_))
+        ));
+        assert!(matches!(
+            read_frame(&mut s).await.unwrap(),
+            Some(Frame::Output(_))
+        ));
         let _ = std::fs::remove_file(path);
     }
 
@@ -267,37 +191,33 @@ mod tests {
     async fn another_protocol_is_refused_with_a_sentence() {
         let (path, _core) = serve_on("proto");
         let mut s = UnixStream::connect(&path).await.unwrap();
-        let hello = Hello {
-            protocol: PROTOCOL + 1,
-            ..Hello::default()
+        let mut hello = Hello::new("t", "t", 80, 24);
+        hello.protocol = PROTOCOL + 1;
+        write_frame(&mut s, &Frame::Hello(hello)).await.unwrap();
+        let Some(Frame::Refuse(refusal)) = read_frame(&mut s).await.unwrap() else {
+            panic!("expected a refusal");
         };
-        write_frame(&mut s, &Frame::json(Kind::Hello, &hello))
-            .await
-            .unwrap();
-        let refusal = read_frame(&mut s).await.unwrap().unwrap();
-        assert_eq!(refusal.kind, Kind::Refuse);
-        assert!(
-            refusal
-                .parse::<Refuse>()
-                .unwrap()
-                .reason
-                .contains("server restart")
-        );
+        assert!(refusal.reason.contains("protocol"));
         let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
     async fn status_counts_windows() {
         let (path, _core) = serve_on("status");
-        let mut s = UnixStream::connect(&path).await.unwrap();
-        write_frame(&mut s, &Frame::json(Kind::Request, &Request::Status))
+        let mut window = UnixStream::connect(&path).await.unwrap();
+        write_frame(&mut window, &Frame::Hello(Hello::new("t", "t", 80, 24)))
             .await
             .unwrap();
-        let answer = read_frame(&mut s).await.unwrap().unwrap();
-        let Response::Status(status) = answer.parse().unwrap() else {
+        read_frame(&mut window).await.unwrap();
+        let mut s = UnixStream::connect(&path).await.unwrap();
+        write_frame(&mut s, &Frame::Request(Request::Status))
+            .await
+            .unwrap();
+        let Some(Frame::Response(Response::Status(status))) = read_frame(&mut s).await.unwrap()
+        else {
             panic!("expected a status");
         };
-        assert_eq!(status.windows, 0);
+        assert_eq!(status.windows, 1);
         assert_eq!(status.pid, std::process::id());
         let _ = std::fs::remove_file(path);
     }

@@ -67,6 +67,8 @@ pub(crate) struct App {
     outbox: Vec<Command>,
     /// Set when the UI should return.
     exit: bool,
+    /// This UI is one window of a background server: quitting from a window detaches it.
+    pub(crate) detachable: bool,
     /// Set when something changed and the screen needs a new frame.
     dirty: bool,
     /// A card to scroll into view, a step per frame, until its buttons show.
@@ -98,6 +100,7 @@ impl App {
             view: crate::view::View::default(),
             outbox: Vec::new(),
             exit: false,
+            detachable: false,
             dirty: true,
             reveal: None,
             prefs_path: None,
@@ -264,6 +267,7 @@ impl App {
     /// The short notice the status bar shows instead of its counts, if any.
     pub(crate) fn quit_notice(&self) -> Option<&'static str> {
         match self.term.quit {
+            Quit::Armed { .. } if self.detachable => Some("Press Ctrl+C again to detach"),
             Quit::Armed { .. } => Some("Press Ctrl+C again to quit"),
             Quit::Requested => Some("Quitting…"),
             Quit::Idle | Quit::Confirm { .. } => None,
@@ -343,6 +347,12 @@ impl App {
                 self.term.quit = Quit::Armed {
                     until: now + QUIT_WINDOW,
                 };
+                self.dirty = true;
+            }
+            // A window of a background server only leaves; stopping the server is its own command.
+            Quit::Armed { .. } if self.detachable => {
+                self.term.quit = Quit::Idle;
+                self.term.detach = true;
                 self.dirty = true;
             }
             Quit::Armed { .. } => {

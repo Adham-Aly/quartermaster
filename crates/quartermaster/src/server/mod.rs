@@ -14,22 +14,19 @@
 //! touching the core: the server keeps the UI's end of the core link for its whole life, so the
 //! crew keeps working with no window attached.
 //!
-//! - [`host`]: what the server hands every window to (a stub until the UI host lands).
 //! - [`serve`]: the socket, the peer check, the handshake and control requests.
 //! - [`spawn`]: finding the server and starting it (launchd one-shot, or a direct spawn).
 //! - [`attach`]: the client in the terminal.
 
 mod attach;
-mod host;
 mod serve;
 mod spawn;
 
 use crate::{Failure, fail, home, lock};
 use qm_types::data_dir::DataDir;
-use qm_types::wire::{self, ExitReason, Frame, Kind, Refuse, Request, Response, ServerStatus};
+use qm_types::wire::{self, ExitReason, Frame, Request, Response, ServerStatus};
 use std::io::{IsTerminal, Write};
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 /// What the command line asked for.
 #[derive(Debug, PartialEq, Eq)]
@@ -127,12 +124,12 @@ async fn ask(dir: &DataDir, request: &Request) -> Result<Option<Response>, Strin
     };
     let (mut rd, mut wr) = stream.into_split();
     let io = |e: wire::WireError| e.to_string();
-    wire::write_frame(&mut wr, &Frame::json(Kind::Request, request))
+    wire::write_frame(&mut wr, &Frame::Request(request.clone()))
         .await
         .map_err(io)?;
     match wire::read_frame(&mut rd).await.map_err(io)? {
-        Some(f) if f.kind == Kind::Response => Ok(Some(f.parse().map_err(io)?)),
-        Some(f) if f.kind == Kind::Refuse => Err(f.parse::<Refuse>().map_err(io)?.reason),
+        Some(Frame::Response(response)) => Ok(Some(response)),
+        Some(Frame::Refuse(refuse)) => Err(refuse.reason),
         _ => Err("the server closed the connection without answering".to_owned()),
     }
 }
@@ -273,21 +270,24 @@ async fn serve(dir: DataDir, booted: crate::Booted) -> Result<(), String> {
         crate::core_link::machine_name(),
         booted.dev_script,
     ));
-    let (host, mut host_done) = host::spawn(client);
+    let (handle, commands) = qm_tui::host::control();
+    let (windows_tx, windows) = serve::windows();
+    // The UI host holds the UI's end of the core link for the server's whole life, so windows
+    // coming and going never touch the crew. It ends when the core closes.
+    let mut host = tokio::spawn(qm_tui::host::serve(client, windows, commands));
 
     let listener = serve::bind(&dir.server_socket())?;
     let started_unix = jiff::Timestamp::now().as_second();
-    let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
     let shared = serve::Shared::new(
-        host.clone(),
+        handle.clone(),
+        windows_tx,
         started_unix,
-        stop_tx,
         nix::unistd::getuid().as_raw(),
     );
     tracing::info!(socket = %dir.server_socket().display(), "server listening");
 
     let mut connections = tokio::task::JoinSet::new();
-    let reason = loop {
+    loop {
         tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
@@ -295,37 +295,27 @@ async fn serve(dir: DataDir, booted: crate::Booted) -> Result<(), String> {
                 }
                 Err(e) => tracing::warn!("accept failed: {e}"),
             },
-            Some(stop) = stop_rx.recv() => {
-                break match stop {
-                    serve::Stop::Stop => ExitReason::ServerStopped,
-                    serve::Stop::Restart => ExitReason::Restarting,
-                };
-            }
             _ = hup.recv() => tracing::info!("ignoring SIGHUP"),
             _ = term.recv() => {
                 tracing::info!("SIGTERM: stopping");
-                host.quit(true).await;
-                break ExitReason::ServerStopped;
+                handle.quit(true, ExitReason::ServerStopped).await;
             }
             _ = int.recv() => {
                 tracing::info!("SIGINT: stopping");
-                host.quit(true).await;
-                break ExitReason::ServerStopped;
+                handle.quit(true, ExitReason::ServerStopped).await;
             }
-            _ = &mut host_done => {
-                tracing::warn!("the core stopped; stopping the server");
-                break ExitReason::ServerStopped;
+            // The core closed (a stop, or the core ended): the windows were told to leave.
+            done = &mut host => {
+                if let Ok(Err(e)) = done {
+                    tracing::warn!("the UI host failed: {e}");
+                }
+                break;
             }
         }
-    };
+    }
     drop(listener);
     let _ = std::fs::remove_file(dir.server_socket());
-    host.exit_all(reason);
-    // Windows get a moment to read the news and leave.
-    let _ = tokio::time::timeout(Duration::from_secs(2), async {
-        while connections.join_next().await.is_some() {}
-    })
-    .await;
+    connections.abort_all();
     let _ = tokio::time::timeout(Duration::from_secs(5), core).await;
     Ok(())
 }

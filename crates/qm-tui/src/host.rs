@@ -17,7 +17,7 @@ use crate::convert;
 use crate::input::prefs;
 use crate::term::{Background, Term};
 use crate::terminal::draw_synchronized;
-use qm_types::api::{Command, CoreClient};
+use qm_types::api::{Command, CoreClient, Update};
 use qm_types::wire::{
     self, Control, ExitReason, Frame, Hello, Refuse, Welcome, read_frame, write_frame,
 };
@@ -27,7 +27,7 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 /// How often the time-based parts are checked.
@@ -123,13 +123,93 @@ fn new_terminal(cols: u16, rows: u16, sink: Sink) -> io::Result<Terminal<Backend
     )
 }
 
+/// What a stop asked of the host found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum QuitOutcome {
+    /// Agents are working and the stop wasn't forced: nothing was stopped.
+    Working(u32),
+    /// The core is closing; the windows are told to leave and the host ends.
+    Closing,
+}
+
+/// How many windows are attached, and how many agents the crew holds beyond the Quartermaster.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Status {
+    pub windows: u32,
+    pub working: u32,
+}
+
+enum Ctl {
+    Status(oneshot::Sender<Status>),
+    Quit {
+        force: bool,
+        reason: ExitReason,
+        reply: oneshot::Sender<QuitOutcome>,
+    },
+}
+
+/// A server's handle on a running host.
+#[derive(Clone, Debug)]
+pub struct Handle(mpsc::UnboundedSender<Ctl>);
+
+impl Handle {
+    /// The host's counts; all zero when it has ended.
+    pub async fn status(&self) -> Status {
+        let (reply, rx) = oneshot::channel();
+        let _ = self.0.send(Ctl::Status(reply));
+        rx.await.unwrap_or(Status {
+            windows: 0,
+            working: 0,
+        })
+    }
+
+    /// Asks the core to quit. Without `force` it says how many agents are working instead, if any.
+    /// When the core closes, the windows are told to leave for `reason`.
+    pub async fn quit(&self, force: bool, reason: ExitReason) -> QuitOutcome {
+        let (reply, rx) = oneshot::channel();
+        let _ = self.0.send(Ctl::Quit {
+            force,
+            reason,
+            reply,
+        });
+        rx.await.unwrap_or(QuitOutcome::Closing)
+    }
+}
+
+/// A control handle and the end the host takes in [`serve`].
+pub fn control() -> (Handle, Commands) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    (Handle(tx), Commands(rx))
+}
+
+/// The host's end of [`control`].
+#[derive(Debug)]
+pub struct Commands(mpsc::UnboundedReceiver<Ctl>);
+
+/// Runs the UI for a background server: like [`run`], but a window that quits only detaches, and
+/// the host stays up with no window until the core closes (through [`Handle::quit`]).
+///
+/// # Errors
+/// As [`run`].
+pub async fn serve(client: CoreClient, windows: Windows, control: Commands) -> io::Result<()> {
+    drive(client, windows, Some(control)).await
+}
+
 /// Runs the UI for the windows that arrive on `windows`, until the user quits, the core closes, or
 /// no window is left and none can arrive.
 ///
 /// # Errors
 /// A terminal that can't be set up for a window is turned away; this itself does not fail except
 /// on a broken runtime.
-pub async fn run(mut client: CoreClient, mut windows: Windows) -> io::Result<()> {
+pub async fn run(client: CoreClient, windows: Windows) -> io::Result<()> {
+    drive(client, windows, None).await
+}
+
+async fn drive(
+    mut client: CoreClient,
+    mut windows: Windows,
+    control: Option<Commands>,
+) -> io::Result<()> {
     if client.send(Command::Refresh).is_err() {
         return Ok(());
     }
@@ -142,6 +222,8 @@ pub async fn run(mut client: CoreClient, mut windows: Windows) -> io::Result<()>
         .apply(&mut app);
     app.prefs_path.clone_from(&prefs_path);
     crate::sample::install_from_env(&mut app);
+    app.detachable = control.is_some();
+    let mut control = control.map(|c| c.0);
 
     let (inbox_tx, mut inbox) = mpsc::unbounded_channel::<Msg>();
     let mut host = Host {
@@ -150,6 +232,9 @@ pub async fn run(mut client: CoreClient, mut windows: Windows) -> io::Result<()>
         next_id: 1,
         greeting: 0,
         inbox: inbox_tx,
+        crew: 0,
+        pending_quit: None,
+        exit_reason: ExitReason::Quit,
     };
     let mut accepting = true;
     let mut tick = tokio::time::interval(TICK);
@@ -162,6 +247,7 @@ pub async fn run(mut client: CoreClient, mut windows: Windows) -> io::Result<()>
                 None => accepting = false,
             },
             Some(msg) = inbox.recv() => host.on_msg(msg),
+            Some(ctl) = recv_ctl(&mut control) => host.on_ctl(ctl, &mut client),
             update = client.recv() => match update {
                 Some(update) => host.on_update(update),
                 None => host.app.finish(),
@@ -187,7 +273,8 @@ pub async fn run(mut client: CoreClient, mut windows: Windows) -> io::Result<()>
                 host.app.finish();
             }
         }
-        if host.app.exiting() || (host.windows.is_empty() && host.greeting == 0 && !accepting) {
+        let alone = host.windows.is_empty() && host.greeting == 0 && !accepting;
+        if host.app.exiting() || alone {
             break;
         }
         host.tick(Instant::now());
@@ -195,6 +282,10 @@ pub async fn run(mut client: CoreClient, mut windows: Windows) -> io::Result<()>
             host.draw_all();
         }
         host.suspend_requests();
+        host.detach_requests();
+    }
+    if let Some(reply) = host.pending_quit.take() {
+        let _ = reply.1.send(QuitOutcome::Closing);
     }
     host.close().await;
     Ok(())
@@ -207,9 +298,68 @@ struct Host {
     /// Connections that haven't said hello yet; the host waits for them before it can end.
     greeting: usize,
     inbox: mpsc::UnboundedSender<Msg>,
+    /// Crewmates and helpers in the latest snapshot, beyond the Quartermaster.
+    crew: u32,
+    /// A stop from the server waiting for the core's answer, and why the windows leave if it comes.
+    pending_quit: Option<(ExitReason, oneshot::Sender<QuitOutcome>)>,
+    /// Why the windows are told to leave when the host ends.
+    exit_reason: ExitReason,
+}
+
+/// Waits for a control message; never, without a server.
+async fn recv_ctl(control: &mut Option<mpsc::UnboundedReceiver<Ctl>>) -> Option<Ctl> {
+    match control {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 impl Host {
+    fn on_ctl(&mut self, ctl: Ctl, client: &mut CoreClient) {
+        match ctl {
+            Ctl::Status(reply) => {
+                let _ = reply.send(Status {
+                    windows: u32::try_from(self.windows.len()).unwrap_or(u32::MAX),
+                    working: self.crew,
+                });
+            }
+            Ctl::Quit {
+                force,
+                reason,
+                reply,
+            } => {
+                let command = if force {
+                    Command::Quit
+                } else {
+                    Command::RequestQuit
+                };
+                if client.send(command).is_err() {
+                    let _ = reply.send(QuitOutcome::Closing);
+                } else {
+                    self.pending_quit = Some((reason, reply));
+                }
+            }
+        }
+    }
+
+    /// Windows that asked to leave are told to, and let go.
+    fn detach_requests(&mut self) {
+        let (leaving, staying): (Vec<_>, Vec<_>) = std::mem::take(&mut self.windows)
+            .into_iter()
+            .partition(|w| w.term.detach);
+        self.windows = staying;
+        for mut window in leaving {
+            window.send(Frame::Control(Control::Exit {
+                reason: ExitReason::Detached,
+            }));
+            window.reader.abort();
+            drop(window.out);
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(Duration::from_secs(2), window.writer).await;
+            });
+        }
+    }
+
     /// Reads a new connection's hello in the background; the host hears of it when it's good.
     fn greet(&mut self, stream: Box<dyn Conn>) {
         self.greeting += 1;
@@ -346,7 +496,27 @@ impl Host {
 
     /// Applies an update from the core. Window-state it sets on the app's own `Term` (a bell, the
     /// quit dialog) is moved to the windows it belongs to.
-    fn on_update(&mut self, update: qm_types::api::Update) {
+    fn on_update(&mut self, update: Update) {
+        match &update {
+            Update::Snapshot(snapshot) => {
+                self.crew = u32::try_from(snapshot.crew.iter().filter(|r| r.depth > 0).count())
+                    .unwrap_or(u32::MAX);
+            }
+            Update::ConfirmQuit { working } if self.pending_quit.is_some() => {
+                // The server's stop asked, not a window: answer it, and no window shows a dialog.
+                if let Some((_, reply)) = self.pending_quit.take() {
+                    let _ = reply.send(QuitOutcome::Working(*working));
+                }
+                return;
+            }
+            Update::Closing => {
+                if let Some((reason, reply)) = self.pending_quit.take() {
+                    self.exit_reason = reason;
+                    let _ = reply.send(QuitOutcome::Closing);
+                }
+            }
+            _ => {}
+        }
         self.app.on_update(update);
         let scratch = std::mem::replace(&mut self.app.term, Term::new());
         if scratch.bells > 0 {
@@ -421,7 +591,7 @@ impl Host {
     /// Tells every window to leave and waits for what's queued to be written.
     async fn close(mut self) {
         let exit = Frame::Control(Control::Exit {
-            reason: ExitReason::Quit,
+            reason: self.exit_reason,
         });
         for window in &mut self.windows {
             window.send(exit.clone());

@@ -97,6 +97,6 @@ pub fn run(client: CoreClient) -> std::io::Result<()> {
         // No other window can arrive, so the host ends when this one leaves.
         drop(windows_tx);
         let (hosted, attached) = tokio::join!(host::run(client, windows), attach(far));
-        hosted.and(attached)
+        hosted.and(attached.map(drop))
     })
 }

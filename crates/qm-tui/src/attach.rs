@@ -7,7 +7,9 @@
 use crate::convert;
 use crate::terminal::TerminalGuard;
 use crossterm::event::{self, Event};
-use qm_types::wire::{self, Background, Control, Frame, Hello, read_frame, write_frame};
+use qm_types::wire::{
+    self, Background, Control, ExitReason, Frame, Hello, read_frame, write_frame,
+};
 use std::io;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -53,15 +55,15 @@ fn hello(cols: u16, rows: u16, colors: wire::Colors) -> Hello {
     hello
 }
 
-/// Attaches this terminal to the host on `stream` and returns when the host says to leave, the
-/// stream closes, or the terminal fails; the terminal is restored either way.
+/// Attaches this terminal to the host on `stream` and returns when the host says to leave (with its
+/// reason), the stream closes (`None`), or the terminal fails; the terminal is restored either way.
 ///
 /// # Errors
 /// The terminal can't enter full-screen mode, the host refuses this window (the sentence it gives
 /// is the error), or the stream fails.
 pub async fn attach<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     stream: S,
-) -> io::Result<()> {
+) -> io::Result<Option<ExitReason>> {
     let mut guard = TerminalGuard::enter()?;
     let (mut read, mut write) = tokio::io::split(stream);
     let (cols, rows) = crossterm::terminal::size()?;
@@ -109,11 +111,12 @@ pub async fn attach<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                             .await
                             .map_err(|e| failed(&e))?;
                     }
-                    Some(Frame::Control(Control::Exit { .. })) | None => return Ok(()),
+                    Some(Frame::Control(Control::Exit { reason })) => return Ok(Some(reason)),
+                    None => return Ok(None),
                     Some(_) => {}
                 },
                 event = events.recv() => {
-                    let Some(event) = event else { return Ok(()) };
+                    let Some(event) = event else { return Ok(Some(ExitReason::Detached)) };
                     let frame = match event {
                         Event::Resize(cols, rows) => Frame::Resize { cols, rows },
                         other => match convert::to_wire(&other) {
