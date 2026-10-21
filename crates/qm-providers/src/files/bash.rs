@@ -23,9 +23,10 @@ pub(super) async fn run(tools: &FileTools, args: &BashArgs) -> FileToolOutcome {
             config.jobs_dir.display()
         ));
     }
-    let n = tools.jobs.allocate(&config.jobs_dir);
-    let Some(id) = JobId::new(n) else {
-        return FileToolOutcome::error("couldn't number the job");
+    let Some(id) = tools.jobs.allocate(&config.jobs_dir).and_then(JobId::new) else {
+        return FileToolOutcome::error(
+            "every job number, J1 to J999, is in use in this agent's jobs folder",
+        );
     };
     let log_path = config.jobs_dir.join(format!("{id}.log"));
     let log = match std::fs::File::create(&log_path) {

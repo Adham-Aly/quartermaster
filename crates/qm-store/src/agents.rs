@@ -8,12 +8,14 @@
 
 use crate::StoreError;
 use crate::events::{self, NewEvent};
+use crate::ids;
 use crate::reports::{self, NewReport};
 use crate::seq;
 use crate::time::to_millis;
 use crate::wakes;
 use jiff::Timestamp;
 use qm_types::domain::{AgentStatus, Effort, EngineKind, ReportSource, StartedBy, TurnStatus};
+use qm_types::ids::space;
 use qm_types::ids::{
     AccountId, AgentId, ModelId, ReportId, SecondmateId, SessionRef, TaskId, TurnId,
 };
@@ -55,8 +57,8 @@ pub struct CrewAgent {
 /// Records a crewmate as `starting`.
 pub fn insert_crewmate(conn: &Connection, c: &NewCrewmate<'_>) -> Result<AgentId, StoreError> {
     Ok(conn.query_row(
-        "INSERT INTO agents (role, supervisor_id, task_id, home, status, created_at, seq)
-         VALUES ('crewmate', ?1, ?2, ?3, 'starting', ?4, ?5)
+        "INSERT INTO agents (role, supervisor_id, task_id, home, status, created_at, seq, id)
+         VALUES ('crewmate', ?1, ?2, ?3, 'starting', ?4, ?5, ?6)
          RETURNING id",
         params![
             c.supervisor,
@@ -64,6 +66,7 @@ pub fn insert_crewmate(conn: &Connection, c: &NewCrewmate<'_>) -> Result<AgentId
             c.home.to_string_lossy(),
             to_millis(c.at),
             seq::next(c.at),
+            ids::fresh(conn, "agents", space::ROW)?,
         ],
         |r| r.get(0),
     )?)
@@ -195,10 +198,18 @@ pub fn start_crew_turn(
         StartedBy::AppEvent => ("app_event", None),
     };
     Ok(conn.query_row(
-        "INSERT INTO turns (agent_id, started_by, message_id, model, started_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO turns (agent_id, started_by, message_id, model, started_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          RETURNING id",
-        params![agent, by, message, model, to_millis(at), seq::next(at)],
+        params![
+            agent,
+            by,
+            message,
+            model,
+            to_millis(at),
+            seq::next(at),
+            ids::fresh(conn, "turns", space::TURN)?,
+        ],
         |r| r.get(0),
     )?)
 }

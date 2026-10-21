@@ -6,10 +6,12 @@
 //! `agents.rs`; this module touches only the Quartermaster's.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::to_millis;
 use jiff::Timestamp;
 use qm_types::domain::{AgentStatus, Effort, EngineKind};
+use qm_types::ids::space;
 use qm_types::ids::{AccountId, AgentId, ModelId, SessionRef};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::{Path, PathBuf};
@@ -62,13 +64,14 @@ pub fn ensure_quartermaster(
         return Ok(agent);
     }
     conn.execute(
-        "INSERT INTO agents (role, home, status, created_at, seq)
-         VALUES ('quartermaster', ?1, ?2, ?3, ?4)",
+        "INSERT INTO agents (role, home, status, created_at, seq, id)
+         VALUES ('quartermaster', ?1, ?2, ?3, ?4, ?5)",
         params![
             home.to_string_lossy(),
             AgentStatus::Idle,
             to_millis(at),
-            seq::next(at)
+            seq::next(at),
+            ids::fresh(conn, "agents", space::ROW)?,
         ],
     )?;
     read(conn)?.ok_or_else(|| StoreError::Invalid {

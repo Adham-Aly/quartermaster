@@ -156,6 +156,25 @@ impl Repo {
         Ok(())
     }
 
+    /// The task numbers this repository's task branches name: local `qm/task-*` branches and their
+    /// remote-tracking copies, whose work may come back under the same number.
+    pub fn task_numbers(&self) -> Result<Vec<TaskId>, GitError> {
+        let mut numbers: Vec<TaskId> = self
+            .refs_under(&["refs/heads/qm", "refs/remotes"])?
+            .into_iter()
+            .filter_map(|(name, _)| {
+                let branch = match name.strip_prefix("refs/remotes/") {
+                    Some(remote) => remote.split_once('/')?.1,
+                    None => name.strip_prefix("refs/heads/")?,
+                };
+                TaskId::from_branch(branch).ok()
+            })
+            .collect();
+        numbers.sort();
+        numbers.dedup();
+        Ok(numbers)
+    }
+
     /// Every task branch (`qm/task-*`) in this repository with its task and commit, by task.
     pub fn task_branches(&self) -> Result<Vec<(TaskId, CommitSha)>, GitError> {
         let prefix = format!("refs/heads/{}", TaskId::BRANCH_PREFIX);

@@ -9,11 +9,13 @@
 //! channel, which reads them through its own queries.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::data_dir::DataDir;
 use qm_types::domain::{Effort, EngineKind, RequestStatus, TaskKind};
+use qm_types::ids::space;
 use qm_types::ids::{
     AccountId, AgentId, CorrelationId, ModelId, ProjectId, SecondmateId, SessionRef, TaskId, TurnId,
 };
@@ -57,29 +59,31 @@ pub struct NewSecondmate<'a> {
 /// Writes the secondmate, its projects and its agent row (`idle`), in the caller's transaction.
 pub fn insert(conn: &Connection, new: &NewSecondmate<'_>) -> Result<SecondmateRecord, StoreError> {
     let id: SecondmateId = conn.query_row(
-        "INSERT INTO secondmates (name, scope, standing_base_branch, created_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO secondmates (name, scope, standing_base_branch, created_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          RETURNING id",
         params![
             new.name,
             new.scope,
             new.standing_branch,
             to_millis(new.at),
-            seq::next(new.at)
+            seq::next(new.at),
+            ids::fresh(conn, "secondmates", space::SECONDMATE)?,
         ],
         |r| r.get(0),
     )?;
     set_projects(conn, id, new.projects)?;
     let home = new.data_dir.secondmate(id).home;
     conn.execute(
-        "INSERT INTO agents (role, supervisor_id, secondmate_id, home, status, created_at, seq)
-         VALUES ('secondmate', ?1, ?2, ?3, 'idle', ?4, ?5)",
+        "INSERT INTO agents (role, supervisor_id, secondmate_id, home, status, created_at, seq, id)
+         VALUES ('secondmate', ?1, ?2, ?3, 'idle', ?4, ?5, ?6)",
         params![
             new.parent,
             id,
             home.to_string_lossy(),
             to_millis(new.at),
-            seq::next(new.at)
+            seq::next(new.at),
+            ids::fresh(conn, "agents", space::ROW)?,
         ],
     )?;
     load(conn, id)?.ok_or_else(|| StoreError::Invalid {
@@ -435,8 +439,8 @@ pub fn insert_request(
     Ok(conn.query_row(
         "INSERT INTO secondmate_requests
              (secondmate_id, turn_id, request, user_words, instructions, base_branch, overrides,
-              status, created_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8, ?9)
+              status, created_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8, ?9, ?10)
          RETURNING id",
         params![
             new.secondmate,
@@ -448,6 +452,7 @@ pub fn insert_request(
             overrides,
             to_millis(new.at),
             seq::next(new.at),
+            ids::fresh(conn, "secondmate_requests", space::CORRELATION)?,
         ],
         |r| r.get(0),
     )?)

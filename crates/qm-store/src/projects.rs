@@ -6,12 +6,14 @@
 //! projects not removed ([`active_by_name`]); the table's own unique index is a backstop.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::to_millis;
 use jiff::Timestamp;
 use qm_types::domain::{
     Autonomy, DeliveryMode, MergeMethod, ProjectOrigin, TaskStatus, VerificationLevel,
 };
+use qm_types::ids::space;
 use qm_types::ids::{ProjectId, TaskId};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::PathBuf;
@@ -176,8 +178,8 @@ pub fn latest_linked_path(conn: &Connection) -> Result<Option<PathBuf>, StoreErr
 pub fn insert(conn: &Connection, project: &NewProject) -> Result<ProjectId, StoreError> {
     Ok(conn.query_row(
         "INSERT INTO projects (name, path, origin, default_branch, github_remote, delivery_mode,
-                               merge_method, created_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                               merge_method, created_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          RETURNING id",
         params![
             project.name,
@@ -189,6 +191,7 @@ pub fn insert(conn: &Connection, project: &NewProject) -> Result<ProjectId, Stor
             project.merge_method,
             to_millis(project.at),
             seq::next(project.at),
+            ids::fresh(conn, "projects", space::ROW)?,
         ],
         |r| r.get(0),
     )?)

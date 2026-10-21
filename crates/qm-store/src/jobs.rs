@@ -10,9 +10,11 @@
 //! a row of its own (and its own wake: the wake's dedupe key names the row).
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, TaskId};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::{Path, PathBuf};
@@ -52,8 +54,8 @@ pub fn insert_started(
         params![agent, label],
     )?;
     let id: i64 = conn.query_row(
-        "INSERT INTO jobs (agent_id, task_id, label, command, log_path, started_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO jobs (agent_id, task_id, label, command, log_path, started_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          RETURNING id",
         params![
             agent,
@@ -63,6 +65,7 @@ pub fn insert_started(
             log_path.map(|p| p.to_string_lossy().into_owned()),
             to_millis(at),
             seq::next(at),
+            ids::fresh(conn, "jobs", space::JOB)?,
         ],
         |r| r.get(0),
     )?;

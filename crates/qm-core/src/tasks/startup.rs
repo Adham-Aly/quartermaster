@@ -16,6 +16,7 @@ use super::{TaskService, active_projects, load_project, new_wake};
 use crate::inbox::Inbox;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
+use qm_git::Git;
 use qm_git::{MissingWorktree, ReconcileProject, ReconcileReport, reconcile as git_reconcile};
 use qm_store::StoreError;
 use qm_store::agents::{self, InterruptedCrewTurn};
@@ -25,6 +26,7 @@ use qm_store::turns::{cut_short, mark_recovered};
 use qm_types::domain::{DeliveryMode, TaskStatus, TurnStatus, WakeKind};
 use qm_types::ids::{PortBlock, ProjectId, TaskId};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// `events.kind` of a task resumed (or not) after a restart.
@@ -50,6 +52,72 @@ pub enum StartupError {
     Git(String),
 }
 
+/// The task numbers that task branches in `checkouts` name (local and remote-tracking) and that
+/// folders in `tasks_dir` name. An earlier run left them behind, and the store can't see them, so
+/// a fresh number must not take one. Blocking.
+pub(crate) fn leftover_task_numbers(
+    git: &Git,
+    tasks_dir: &Path,
+    checkouts: &[PathBuf],
+) -> Vec<u32> {
+    let mut numbers = branch_task_numbers(git, checkouts);
+    if let Ok(entries) = std::fs::read_dir(tasks_dir) {
+        numbers.extend(
+            entries
+                .flatten()
+                .filter_map(|e| e.file_name().to_str()?.parse::<TaskId>().ok())
+                .map(TaskId::get),
+        );
+    }
+    numbers.sort_unstable();
+    numbers.dedup();
+    numbers
+}
+
+/// The task numbers that task branches in each of `checkouts` name. Blocking.
+pub(crate) fn branch_task_numbers(git: &Git, checkouts: &[PathBuf]) -> Vec<u32> {
+    checkouts
+        .iter()
+        .flat_map(|checkout| match qm_git::Repo::open(git.clone(), checkout) {
+            Ok(repo) => repo.task_numbers().unwrap_or_else(|e| {
+                tracing::warn!(checkout = %checkout.display(), error = %e, "couldn't list a project's task branches");
+                Vec::new()
+            }),
+            Err(e) => {
+                tracing::warn!(checkout = %checkout.display(), error = %e, "couldn't open a project's repository");
+                Vec::new()
+            }
+        })
+        .map(TaskId::get)
+        .collect()
+}
+
+/// Reserves the task numbers git and the `tasks/` folder already name (see
+/// [`leftover_task_numbers`]) on the database thread, where the store numbers tasks.
+async fn reserve_leftover_task_numbers(svc: &TaskService) -> Result<(), StartupError> {
+    let checkouts = svc
+        .db()
+        .call(|conn| {
+            Ok(active_projects(conn)?
+                .into_iter()
+                .map(|p| p.path)
+                .collect::<Vec<_>>())
+        })
+        .await?;
+    let (git, tasks_dir) = (svc.deps().git.clone(), svc.deps().data_dir.tasks_dir());
+    let leftovers =
+        tokio::task::spawn_blocking(move || leftover_task_numbers(&git, &tasks_dir, &checkouts))
+            .await
+            .unwrap_or_default();
+    svc.db()
+        .call(move |_| {
+            qm_store::ids::reserve("tasks", leftovers);
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 /// Step 4 (before the seat opens). Deletes nothing.
 pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupError> {
     let at = svc.clock().now();
@@ -61,6 +129,9 @@ pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupErr
             Ok(interrupted)
         })
         .await?;
+
+    // Before anything can be numbered: a new task never takes a number an earlier run left behind.
+    reserve_leftover_task_numbers(svc).await?;
 
     let report = worktree_report(svc).await?;
 

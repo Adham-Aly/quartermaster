@@ -33,10 +33,12 @@
 
 use crate::StoreError;
 use crate::accounts::ChangeError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{AccountKind, Effort, Provider, Tier};
+use qm_types::ids::space;
 use qm_types::ids::{AccountId, ModelId};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -193,13 +195,14 @@ fn announce(
         "known": facts.known,
     });
     conn.execute(
-        "INSERT INTO events (at, kind, summary, payload, seq) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO events (at, kind, summary, payload, seq, id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             to_millis(at),
             kind,
             summary,
             to_json("events.payload", &payload)?,
             seq::next(at),
+            ids::fresh(conn, "events", space::ROW)?,
         ],
     )?;
     Ok(())
@@ -268,8 +271,8 @@ pub fn record_model_list(
                 && !offered_elsewhere(conn, &facts.canonical, account)?;
             conn.execute(
                 "INSERT INTO models (account_id, model, canonical, family, display_name,
-                         capabilities, efforts, first_seen_at, is_new, seq)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                         capabilities, efforts, first_seen_at, is_new, seq, id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     account,
                     facts.model,
@@ -281,6 +284,7 @@ pub fn record_model_list(
                     at_ms,
                     is_new,
                     seq::next_millis(at_ms),
+                    ids::fresh(conn, "models", space::ROW)?,
                 ],
             )?;
             if is_new {
@@ -420,10 +424,16 @@ pub fn seed_starter_placements(
     for (tier, canonical) in placements {
         // A model already in the tier, at any effort, is left as you set it.
         added += conn.execute(
-            "INSERT INTO placements (canonical, tier, created_at, seq)
-             SELECT ?1, ?2, ?3, ?4
+            "INSERT INTO placements (canonical, tier, created_at, seq, id)
+             SELECT ?1, ?2, ?3, ?4, ?5
              WHERE NOT EXISTS (SELECT 1 FROM placements WHERE canonical = ?1 AND tier = ?2)",
-            params![canonical, tier, to_millis(at), seq::next(at)],
+            params![
+                canonical,
+                tier,
+                to_millis(at),
+                seq::next(at),
+                ids::fresh(conn, "placements", space::ROW)?
+            ],
         )?;
     }
     let payload = serde_json::json!({
@@ -435,13 +445,14 @@ pub fn seed_starter_placements(
             .collect::<Vec<_>>(),
     });
     conn.execute(
-        "INSERT INTO events (at, kind, summary, payload, seq) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO events (at, kind, summary, payload, seq, id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             to_millis(at),
             SEEDED,
             format!("Starter tiers set up for {provider}"),
             to_json("events.payload", &payload)?,
             seq::next(at),
+            ids::fresh(conn, "events", space::ROW)?,
         ],
     )?;
     Ok(added)
@@ -715,9 +726,16 @@ pub fn place_model(
     }
     if !has_entry(conn, &canonical, to, effort)? {
         conn.execute(
-            "INSERT INTO placements (canonical, tier, effort_override, created_at, seq)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![canonical, to, effort, to_millis(at), seq::next(at)],
+            "INSERT INTO placements (canonical, tier, effort_override, created_at, seq, id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                canonical,
+                to,
+                effort,
+                to_millis(at),
+                seq::next(at),
+                ids::fresh(conn, "placements", space::ROW)?
+            ],
         )?;
     }
     conn.execute(
@@ -823,13 +841,14 @@ fn record_listed(conn: &Connection, canonical: &ModelId, at: Timestamp) -> Resul
     }
     let payload = serde_json::json!({ "model": canonical });
     conn.execute(
-        "INSERT INTO events (at, kind, summary, payload, seq) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO events (at, kind, summary, payload, seq, id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             to_millis(at),
             LISTED,
             format!("{canonical} listed under not in use"),
             to_json("events.payload", &payload)?,
             seq::next(at),
+            ids::fresh(conn, "events", space::ROW)?,
         ],
     )?;
     Ok(())

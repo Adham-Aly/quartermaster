@@ -13,6 +13,7 @@ rusqlite = ["dep:rusqlite"]
 [dependencies]
 base64.workspace = true
 jiff.workspace = true
+rand.workspace = true
 rusqlite = { workspace = true, optional = true }
 schemars.workspace = true
 serde.workspace = true

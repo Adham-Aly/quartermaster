@@ -11,10 +11,12 @@
 //! beside it ([`latest_acknowledgements`]), so a later one replaces an earlier one.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{MessageKind, MessageSource};
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, MessageId, TurnId};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use std::collections::BTreeMap;
@@ -61,8 +63,9 @@ pub fn insert(conn: &Connection, message: &NewMessage<'_>) -> Result<MessageId, 
         )
     };
     Ok(conn.query_row(
-        "INSERT INTO messages (agent_id, source, kind, text, options, replies_to, turn_id, created_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "INSERT INTO messages (agent_id, source, kind, text, options, replies_to, turn_id, created_at, seq,
+                                id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          RETURNING id",
         params![
             message.agent,
@@ -74,6 +77,7 @@ pub fn insert(conn: &Connection, message: &NewMessage<'_>) -> Result<MessageId, 
             message.turn,
             to_millis(message.at),
             seq::next(message.at),
+            ids::fresh(conn, "messages", space::MESSAGE)?,
         ],
         |r| r.get(0),
     )?)
