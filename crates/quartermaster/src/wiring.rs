@@ -737,7 +737,7 @@ async fn engines(
                 supervisor: Arc::clone(&supervisor),
                 clock: Arc::clone(clock),
                 inherited_env: inherited.clone(),
-                settings,
+                settings: settings.clone(),
             })),
         );
     }
@@ -753,6 +753,7 @@ async fn engines(
                     models: provider_models(),
                     builtins: Some(Arc::new(FileToolsFactory)),
                     inherited_env: inherited,
+                    settings,
                     user_agent: format!("quartermaster/{}", env!("CARGO_PKG_VERSION")),
                 })),
             );

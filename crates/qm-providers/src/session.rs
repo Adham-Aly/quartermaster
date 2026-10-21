@@ -667,11 +667,15 @@ impl Session {
         }
     }
 
-    /// Whether the context is over the compaction threshold for the current model.
+    /// Whether the context is over the compaction threshold: the autocompact window as it is now
+    /// (read at each check), or the current model's window if that is smaller.
     pub(crate) fn over_threshold(&self) -> bool {
+        // Copied out first: the settings channel's read guard is not held across the check.
+        let setting = u32::from(self.shared.settings.borrow().compaction.autocompact_window);
+        let threshold = crate::compaction::threshold(self.model.context_window, setting);
         crate::compaction::should_compact(
             crate::compaction::context_tokens(&self.context),
-            self.model.context_window,
+            threshold,
         )
     }
 
