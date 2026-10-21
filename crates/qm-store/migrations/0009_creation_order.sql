@@ -116,7 +116,8 @@ CREATE UNIQUE INDEX session_lines_seq ON session_lines (seq);
 PRAGMA defer_foreign_keys = ON;
 
 -- A standing instruction and a secondmate request name the message and turn that made them. Those
--- turns are not kept, so the references are optional.
+-- turns are not kept, so the references are optional. A dropped instruction's turn is not enforced
+-- for the same reason as a wake's (below): its CHECK ties it to `dropped_at`.
 CREATE TABLE standing_instructions_new (
     id              INTEGER PRIMARY KEY,
     text            TEXT    NOT NULL,
@@ -124,7 +125,7 @@ CREATE TABLE standing_instructions_new (
     turn_id         INTEGER REFERENCES turns (id),
     created_at      INTEGER NOT NULL,
     dropped_at      INTEGER,
-    dropped_turn_id INTEGER REFERENCES turns (id),
+    dropped_turn_id INTEGER,
     seq             INTEGER NOT NULL DEFAULT 0,
     CHECK ((dropped_at IS NULL) = (dropped_turn_id IS NULL))
 ) STRICT;
@@ -263,11 +264,43 @@ DROP TRIGGER events_no_delete;
 -- a turn ID and an event seq (`seq` orders, the ID names the row). Rolled back when a turn ends
 -- with no wakes.
 CREATE TABLE block_watermarks (
-    agent_id      INTEGER PRIMARY KEY REFERENCES agents (id),
-    turn_id       INTEGER,
-    event_id      INTEGER,
-    event_seq     INTEGER NOT NULL DEFAULT 0,
+    agent_id       INTEGER PRIMARY KEY REFERENCES agents (id),
+    turn_id        INTEGER,
+    event_id       INTEGER,
+    event_seq      INTEGER NOT NULL DEFAULT 0,
     prev_turn_id   INTEGER,
     prev_event_id  INTEGER,
-    prev_event_seq INTEGER
+    prev_event_seq INTEGER,
+    seq            INTEGER NOT NULL DEFAULT 0
 ) STRICT, WITHOUT ROWID;
+CREATE UNIQUE INDEX block_watermarks_seq ON block_watermarks (seq);
+
+-- A consumed wake keeps the turn that delivered it: the wake's CHECK ties that turn to
+-- `delivered_at`, and a turn is memory only, so the reference is not enforced (plan 3.3). The
+-- turn is gone after a restart; nothing reads it once the wake is consumed.
+CREATE TABLE wakes_new (
+    id                INTEGER PRIMARY KEY,
+    target_agent_id   INTEGER NOT NULL REFERENCES agents (id),
+    kind              TEXT    NOT NULL,
+    payload           TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(payload)),
+    dedupe_key        TEXT    NOT NULL,
+    task_id           INTEGER REFERENCES tasks (id),
+    created_at        INTEGER NOT NULL,
+    delivered_turn_id INTEGER,
+    delivered_at      INTEGER,
+    consumed_at       INTEGER,
+    seq               INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (target_agent_id, dedupe_key),
+    CHECK ((delivered_turn_id IS NULL) = (delivered_at IS NULL)),
+    CHECK (consumed_at IS NULL OR delivered_at IS NOT NULL)
+) STRICT;
+INSERT INTO wakes_new (id, target_agent_id, kind, payload, dedupe_key, task_id, created_at,
+                       delivered_turn_id, delivered_at, consumed_at, seq)
+    SELECT id, target_agent_id, kind, payload, dedupe_key, task_id, created_at, delivered_turn_id,
+           delivered_at, consumed_at, seq
+    FROM wakes;
+DROP TABLE wakes;
+ALTER TABLE wakes_new RENAME TO wakes;
+CREATE INDEX wakes_pending ON wakes (target_agent_id, id) WHERE consumed_at IS NULL;
+CREATE INDEX wakes_delivered ON wakes (delivered_turn_id) WHERE consumed_at IS NULL;
+CREATE UNIQUE INDEX wakes_seq ON wakes (seq);
