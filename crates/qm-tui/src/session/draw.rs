@@ -131,7 +131,7 @@ fn header(
     let back_x = area.right().saturating_sub(back_width + 1);
     let hit = Hit::Session(SessionHit::Back);
     frame.render_widget(
-        Line::from(button::span(BACK, app.hover == Some(hit))),
+        Line::from(button::span(BACK, app.term.hover == Some(hit))),
         Rect::new(back_x, area.y, back_width, 1),
     );
     map.hits.add(Rect::new(back_x, area.y, back_width, 1), hit);
@@ -187,7 +187,7 @@ fn session_pane(
     map: &mut FrameMap,
 ) {
     let focused = app.focus == Pane::Session;
-    let style = theme::border(focused, app.hover == Some(Hit::Pane(Pane::Session)));
+    let style = theme::border(focused, app.term.hover == Some(Hit::Pane(Pane::Session)));
     let block = pane_block("Session", style);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -221,7 +221,7 @@ fn session_pane(
             agent: &name,
             supervisor: "quartermaster",
         };
-        let mut rows = conversation::rows(chats, inner.width, app.hover, &voices);
+        let mut rows = conversation::rows(chats, inner.width, app.term.hover, &voices);
         if view.is_some_and(|v| v.thinking) {
             rows.extend(conversation::thinking_rows(chats, app));
         }
@@ -356,7 +356,7 @@ fn tool_group(out: &mut Rows, group: &[SessionLine], live: bool, max: u16, app: 
         if live { "…" } else { "" },
     );
     let label = truncate(&label, usize::from(max.saturating_sub(2)));
-    let style = if app.hover == Some(hit) {
+    let style = if app.term.hover == Some(hit) {
         theme::text()
     } else {
         theme::dim()
@@ -406,7 +406,7 @@ fn marked(out: &mut Rows, line: &SessionLine, max: u16, app: &App) {
             let w = button::width_of(button.0);
             if used + 2 + w <= max {
                 spans.push(Span::raw("  "));
-                spans.push(button::span(button.0, app.hover == Some(button.1)));
+                spans.push(button::span(button.0, app.term.hover == Some(button.1)));
                 hits.push((used + 2, w, button.1));
             } else {
                 out.rows.push(Row {
@@ -419,7 +419,7 @@ fn marked(out: &mut Rows, line: &SessionLine, max: u16, app: &App) {
                     hits: Vec::new(),
                 });
                 out.rows.push(Row {
-                    line: Line::from(button::span(button.0, app.hover == Some(button.1))),
+                    line: Line::from(button::span(button.0, app.term.hover == Some(button.1))),
                     text: None,
                     hits: vec![(0, w, button.1)],
                 });
@@ -525,7 +525,7 @@ fn status_line(
     let notice = app
         .quit_notice()
         .map(str::to_owned)
-        .or_else(|| app.view.flash.as_ref().map(|f| f.text.clone()));
+        .or_else(|| app.term.flash.as_ref().map(|f| f.text.clone()));
     if let Some(notice) = notice {
         left.push(Span::styled(notice, theme::accent()));
     } else {
@@ -558,7 +558,7 @@ fn status_line(
                 let label = counted(n, one, many);
                 let hit = Hit::Status(item);
                 let w = button::width_of(&label);
-                left.push(button::span(&label, app.hover == Some(hit)));
+                left.push(button::span(&label, app.term.hover == Some(hit)));
                 if x + w < right_x {
                     map.hits.add(Rect::new(x, area.y, w, 1), hit);
                 }
@@ -580,7 +580,7 @@ fn status_line(
     let mut spans = Vec::new();
     if running {
         let hit = Hit::Session(SessionHit::Interrupt);
-        spans.push(button::span(INTERRUPT, app.hover == Some(hit)));
+        spans.push(button::span(INTERRUPT, app.term.hover == Some(hit)));
         map.hits
             .add(Rect::new(right_x, area.y, button_width, 1), hit);
     }

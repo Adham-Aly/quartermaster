@@ -222,8 +222,8 @@ impl App {
         let (rows, cols) = self.setup.runs.last().map_or_else(
             || {
                 (
-                    self.size.1.saturating_sub(6),
-                    (self.size.0 / 2).saturating_sub(4),
+                    self.term.size.1.saturating_sub(6),
+                    (self.term.size.0 / 2).saturating_sub(4),
                 )
             },
             |r| r.pane.size(),
@@ -476,6 +476,7 @@ impl App {
         let mut dirty = false;
         for (index, run) in self.setup.runs.iter_mut().enumerate() {
             if let Some(area) = self
+                .term
                 .drawn
                 .hits
                 .rect_of(Hit::Setup(SetupHit::Pane { run: index }))
@@ -563,7 +564,7 @@ pub(crate) fn hints(app: &App) -> String {
 }
 
 fn hover_of(app: &App) -> Option<SetupHit> {
-    match app.hover {
+    match app.term.hover {
         Some(Hit::Setup(hit)) => Some(hit),
         _ => None,
     }
@@ -675,7 +676,7 @@ fn draw_run(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize, map: &mu
             let at = Rect::new(area.right() - w - 2, area.y, w, 1);
             let hit = SetupHit::Cancel { run: index };
             frame.render_widget(
-                crate::widgets::button::span(label, app.hover == Some(Hit::Setup(hit))),
+                crate::widgets::button::span(label, app.term.hover == Some(Hit::Setup(hit))),
                 at,
             );
             map.hits.add(at, Hit::Setup(hit));

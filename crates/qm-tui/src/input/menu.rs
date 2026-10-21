@@ -103,7 +103,7 @@ impl App {
     /// The anchor for a menu on `target` opened at the pointer `at` (a right-click): its first
     /// item on the pointer's row, as far into the target's row as the pointer was.
     pub(crate) fn anchor_at(&self, target: MenuTarget, at: Position) -> Anchor {
-        let row = self.drawn.hits.rect_of(target.row());
+        let row = self.term.drawn.hits.rect_of(target.row());
         row.map_or(Anchor::Row { dx: 0, dy: 0 }, |row| Anchor::Row {
             dx: at.x.saturating_sub(row.x),
             dy: at.y.saturating_sub(row.y),
