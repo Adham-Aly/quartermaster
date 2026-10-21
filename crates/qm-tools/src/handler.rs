@@ -243,6 +243,16 @@ pub trait ToolHost: Send + Sync {
         Box::pin(async { Err(ToolFailure::not_available("configure_secondmate")) })
     }
 
+    /// `close_secondmate`: retires one of your secondmates once it has no open tasks.
+    fn close_secondmate<'a>(
+        &'a self,
+        caller: &'a Caller,
+        secondmate: SecondmateId,
+    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
+        let _ = (caller, secondmate);
+        Box::pin(async { Err(ToolFailure::not_available("close_secondmate")) })
+    }
+
     /// `parent_report`: a secondmate's judgment on one of its requests; the app adds its own facts
     /// snapshot and wakes the Quartermaster.
     fn parent_report<'a>(

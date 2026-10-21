@@ -97,6 +97,24 @@ pub struct ConfigureSecondmateArgs {
 }
 
 tool! {
+    /// Retires one of the Quartermaster's own secondmates once it has no open tasks; its history
+    /// and its tasks' kept work stay, and its ID is never reused.
+    CloseSecondmateTool {
+        name: "close_secondmate",
+        class: Act,
+        roles: [Quartermaster],
+        args: CloseSecondmateArgs,
+        output: Ack,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CloseSecondmateArgs {
+    pub secondmate: SecondmateId,
+}
+
+tool! {
     /// A secondmate's judgment on the parent channel; the app writes the facts and wakes the
     /// Quartermaster.
     ParentReportTool {

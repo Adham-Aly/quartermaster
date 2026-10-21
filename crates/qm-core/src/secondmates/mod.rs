@@ -7,6 +7,7 @@
 //!
 //! - [`charter`]: proposing a secondmate (always a held action) and changing its charter (the
 //!   standing branch only on your turns), and the performer that creates it on your yes.
+//! - [`close`]: retiring a secondmate that has no open tasks, and stopping its loop.
 //! - [`route`]: routing a request into its scope, with the app's marker and a fresh correlation
 //!   ID.
 //! - [`scope`]: the scope as code and the requests a secondmate may serve.
@@ -18,6 +19,7 @@
 
 pub mod api;
 pub mod charter;
+pub mod close;
 pub mod context;
 pub mod route;
 pub mod scope;
@@ -65,6 +67,8 @@ pub mod event_kind {
     pub const CHARTER_CHANGED: &str = "secondmate.charter_changed";
     /// A request was routed into its scope.
     pub const ROUTED: &str = "secondmate.routed";
+    /// It was retired with `close_secondmate`.
+    pub const RETIRED: &str = "secondmate.retired";
 }
 
 /// What the secondmates need.
@@ -279,6 +283,16 @@ impl SecondmateService {
                 }
             }
         }
+    }
+
+    /// Stops secondmate `id`'s loop for good (it was retired): no more wakes, then `Shutdown`.
+    /// The loop finishes on its own; nothing waits for it.
+    pub(crate) fn stop_loop(&self, id: SecondmateId) {
+        let Some(l) = self.loops().remove(&id) else {
+            return;
+        };
+        self.inner.deps.inbox.unregister(l.agent);
+        let _ = l.inbox.send(SeatInput::Shutdown);
     }
 
     /// Whether secondmate `id`'s loop runs, so a message to it can be delivered.
