@@ -2461,6 +2461,7 @@ dependencies = [
 name = "quartermaster"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "jiff",
  "nix 0.31.3",
  "qm-auth",

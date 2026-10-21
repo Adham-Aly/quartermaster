@@ -124,6 +124,54 @@ impl Refuse {
 pub enum ExitReason {
     /// The UI finished: the user quit, or the core closed.
     Quit,
+    /// Only this window leaves; the server keeps running.
+    Detached,
+    /// The server is stopping.
+    ServerStopped,
+    /// The server is restarting; the window should wait for it and attach again.
+    Restarting,
+}
+
+/// A request from the command line.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "request")]
+pub enum Request {
+    Status,
+    /// Stop the server. Without `force`, a server with agents working answers
+    /// [`Response::Working`] and keeps running.
+    Stop {
+        force: bool,
+    },
+    /// Stop and let the caller start it again.
+    Restart {
+        force: bool,
+    },
+}
+
+/// The answer to a [`Request`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "response")]
+pub enum Response {
+    Status(ServerStatus),
+    /// The server is stopping.
+    Stopping,
+    /// Nothing was stopped: this many agents are working and `force` wasn't set.
+    Working {
+        working: u32,
+    },
+}
+
+/// What `server status` shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerStatus {
+    pub pid: u32,
+    pub version: String,
+    pub protocol: u32,
+    pub started_unix: i64,
+    pub uptime_secs: u64,
+    pub windows: u32,
+    pub working: u32,
 }
 
 /// A host instruction to the client that isn't bytes to print.
@@ -253,6 +301,10 @@ pub enum Frame {
     Output(Vec<u8>),
     /// Host → client: an instruction.
     Control(Control),
+    /// Command line → server.
+    Request(Request),
+    /// Server → command line.
+    Response(Response),
 }
 
 /// The wire's failures.
@@ -277,6 +329,8 @@ const K_DETACH: u8 = 6;
 const K_OUTPUT: u8 = 7;
 const K_CONTROL: u8 = 8;
 const K_COLORS: u8 = 9;
+const K_REQUEST: u8 = 10;
+const K_RESPONSE: u8 = 11;
 
 #[derive(Serialize, Deserialize)]
 struct Size {
@@ -312,6 +366,8 @@ impl Frame {
             Self::Output(bytes) => (K_OUTPUT, bytes.clone()),
             Self::Control(v) => (K_CONTROL, json(v)),
             Self::Colors(v) => (K_COLORS, json(v)),
+            Self::Request(v) => (K_REQUEST, json(v)),
+            Self::Response(v) => (K_RESPONSE, json(v)),
         }
     }
 
@@ -350,6 +406,8 @@ impl Frame {
             K_OUTPUT => Self::Output(payload.to_vec()),
             K_CONTROL => Self::Control(parse(payload)?),
             K_COLORS => Self::Colors(parse(payload)?),
+            K_REQUEST => Self::Request(parse(payload)?),
+            K_RESPONSE => Self::Response(parse(payload)?),
             other => return Err(WireError::UnknownKind(other)),
         })
     }
@@ -417,6 +475,8 @@ mod tests {
                 ansi: vec![Some([9, 9, 9]), None],
             }),
             Frame::Detach,
+            Frame::Request(Request::Stop { force: true }),
+            Frame::Response(Response::Working { working: 2 }),
             Frame::Output(vec![0x1b, b'[', 0, 255]),
             Frame::Control(Control::Suspend),
             Frame::Control(Control::Exit {
