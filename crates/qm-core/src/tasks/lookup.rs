@@ -126,9 +126,9 @@ pub(crate) async fn task_detail(
         text: report_line(r),
     }));
     history.sort_by_key(|h| h.at);
-    let answer_path = svc.deps().data_dir.task(task).answer;
+    // An answer-only task's answer is its newest report's; the database keeps it, so no file does.
     let answer = if row.kind.is_answer_only() {
-        tokio::fs::read_to_string(&answer_path).await.ok()
+        reports.iter().rev().find_map(|r| r.answer.clone())
     } else {
         None
     };

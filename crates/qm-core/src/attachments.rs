@@ -131,19 +131,26 @@ impl Attachments {
         }
     }
 
-    /// Runs [`Attachments::sweep`] now and then every [`SWEEP_EVERY`], for as long as the runtime
-    /// runs.
+    /// Runs the startup pass, then [`Attachments::sweep`] every [`SWEEP_EVERY`], for as long as the
+    /// runtime runs.
     pub fn spawn_sweeper(self, db: Db) {
         tokio::spawn(async move {
+            self.sweep_folders(&db, true).await;
             loop {
-                self.sweep(&db).await;
                 self.clock.sleep(SWEEP_EVERY).await;
+                self.sweep(&db).await;
             }
         });
     }
 
     /// Applies the cleanup policy (in this module's docs) once.
     pub async fn sweep(&self, db: &Db) {
+        self.sweep_folders(db, false).await;
+    }
+
+    /// Applies the cleanup at a start, when nothing is staged: every folder open work doesn't
+    /// reference goes, whatever its age.
+    async fn sweep_folders(&self, db: &Db, startup: bool) {
         let root = self.root.clone();
         let mut folders = match tokio::task::spawn_blocking(move || list(&root)).await {
             Ok(Ok(folders)) => folders,
@@ -191,7 +198,12 @@ impl Attachments {
             folders[i].sent = sent;
             folders[i].in_use = in_use;
         }
-        let doomed: Vec<(PathBuf, u64)> = plan(&folders, self.clock.now())
+        let chosen = if startup {
+            unreferenced(&folders)
+        } else {
+            plan(&folders, self.clock.now())
+        };
+        let doomed: Vec<(PathBuf, u64)> = chosen
             .into_iter()
             .map(|i| (folders[i].path.clone(), folders[i].bytes))
             .collect();
@@ -415,6 +427,11 @@ fn size_of(dir: &Path) -> u64 {
             .map(|m| m.len())
             .sum()
     })
+}
+
+/// The folders no open work references, by index: all of them, at a start.
+fn unreferenced(folders: &[Folder]) -> Vec<usize> {
+    (0..folders.len()).filter(|&i| !folders[i].in_use).collect()
 }
 
 /// The folders the policy removes, by index.

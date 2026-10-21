@@ -672,7 +672,6 @@ pub(crate) async fn start_as(
         }
     };
     let hook = Arc::clone(&svc.deps().start_hook);
-    let title = req.title.clone();
     let recorded = svc
         .db()
         .call(move |conn| {
@@ -837,7 +836,7 @@ pub(crate) async fn start_as(
             } else {
                 svc.schedule_reroute();
             }
-            tracing::info!(%task, title, "task started");
+            tracing::info!(%task, "task started");
             Ok(TaskStarted {
                 task,
                 branch: task.branch(),

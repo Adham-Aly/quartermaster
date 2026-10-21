@@ -335,6 +335,19 @@ pub(crate) async fn retire(
     })
     .await
     .map_err(|e| CloseError::Failed(e.to_string()))?;
+    // The task's folder and its evidence go with the close: its outcome and answer are in the store.
+    // A failure is logged; the startup sweep removes what it leaves.
+    let paths = svc.deps().data_dir.task(task);
+    let removed = tokio::task::spawn_blocking(move || {
+        qm_types::data_dir::remove_path(&paths.root)?;
+        qm_types::data_dir::remove_path(&paths.evidence)
+    })
+    .await;
+    match removed {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!(%task, error = %e, "couldn't remove a closed task's files"),
+        Err(e) => tracing::warn!(%task, error = %e, "removing a closed task's files stopped"),
+    }
     // Closed tasks beyond the newest few hundred leave memory (Q8). A failure here doesn't undo the
     // close; the next close tries again.
     let forgot = svc
