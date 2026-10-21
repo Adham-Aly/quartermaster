@@ -109,6 +109,10 @@ pub(crate) struct OpenPopup {
 
 /// The widest the Settings popup gets, in cells.
 const SETTINGS_WIDTH: u16 = 124;
+/// The Settings popup's share of the body, as (numerator, denominator) of its width and height.
+const SETTINGS_SHARE: ((u16, u16), (u16, u16)) = ((3, 5), (7, 10));
+/// The narrowest and shortest the Settings popup gets before the body itself is the limit.
+const SETTINGS_MIN: (u16, u16) = (72, 16);
 /// The widest the Help popup gets, in cells.
 const HELP_WIDTH: u16 = 104;
 /// The widest the projects hint gets, in cells.
@@ -191,7 +195,14 @@ impl MenuEntry {
 /// bar) to show in.
 fn size(popup: Popup, body: Rect, app: &App) -> (u16, u16) {
     match popup {
-        Popup::Settings => (SETTINGS_WIDTH, body.height),
+        Popup::Settings => {
+            // A share of the body, centred; never so small its rows stop fitting (the window
+            // clamps it to the body in small terminals, and the tab scrolls).
+            let ((wn, wd), (hn, hd)) = SETTINGS_SHARE;
+            let width = (body.width * wn / wd).clamp(SETTINGS_MIN.0, SETTINGS_WIDTH);
+            let height = (body.height * hn / hd).max(SETTINGS_MIN.1);
+            (width, height)
+        }
         Popup::Help => {
             // As tall as its lines at the width it gets (border and padding included).
             let width = window::centered(body, HELP_WIDTH, body.height).width;
