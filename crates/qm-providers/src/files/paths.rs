@@ -8,10 +8,15 @@
 
 use std::path::{Component, Path, PathBuf};
 
-/// The folders writes may go to, canonicalised.
+/// The app's own scratch root (attachments, drafts, evidence). No agent write goes here, even
+/// though the temporary folder is otherwise a write root.
+const APP_SCRATCH: &str = "/tmp/quartermaster";
+
+/// The folders writes may go to, canonicalised, and the one folder they may not.
 #[derive(Debug, Clone)]
 pub(super) struct WritePolicy {
     roots: Vec<PathBuf>,
+    denied: PathBuf,
 }
 
 impl WritePolicy {
@@ -24,13 +29,19 @@ impl WritePolicy {
             .collect();
         roots.sort();
         roots.dedup();
-        Self { roots }
+        let denied = real_path(&normalize(Path::new(APP_SCRATCH)));
+        Self { roots, denied }
     }
 
     /// The real path to write for `path`, or the refusal.
     pub(super) fn check(&self, path: &Path) -> Result<PathBuf, String> {
         let target = real_path(&normalize(path));
-        if self.roots.iter().any(|root| target.starts_with(root)) {
+        if target.starts_with(&self.denied) {
+            Err(format!(
+                "refused: {} is inside the app's own scratch folder, which no agent writes to",
+                path.display()
+            ))
+        } else if self.roots.iter().any(|root| target.starts_with(root)) {
             Ok(target)
         } else {
             Err(format!(
@@ -96,4 +107,29 @@ pub(super) fn display(cwd: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_apps_scratch_folder_refuses_writes_even_inside_the_temporary_folder() {
+        let policy = WritePolicy::new(&[]);
+        let scratch = Path::new(APP_SCRATCH).join("1000/abc/evidence/run.log");
+        assert!(policy.check(&scratch).is_err());
+        assert!(policy.check(Path::new("/tmp/elsewhere/run.log")).is_ok());
+    }
+
+    #[test]
+    fn a_dot_dot_into_the_scratch_folder_is_still_refused() {
+        let policy = WritePolicy::new(&[]);
+        let sneaky = Path::new("/tmp/notes/../quartermaster/1000/run.log");
+        assert!(policy.check(sneaky).is_err());
+        let out = Path::new("/tmp/quartermaster/1000/../../notes/run.log");
+        assert!(
+            policy.check(out).is_ok(),
+            "a path that leaves the scratch folder is an ordinary /tmp write"
+        );
+    }
 }
