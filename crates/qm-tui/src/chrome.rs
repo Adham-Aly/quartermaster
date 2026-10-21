@@ -80,6 +80,7 @@ fn draw_too_small(frame: &mut Frame<'_>, area: Rect) {
 
 fn draw_top_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits) {
     let x = draw_menu_button(frame, area, app, hits);
+    let x = draw_update_notice(frame, area, x, app, hits);
 
     // This Mac and one badge per account, right-aligned, never over the tabs.
     let snapshot = &app.snapshot;
@@ -127,6 +128,35 @@ fn draw_menu_button(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hit
     x + button_width
 }
 
+/// The update notice right of the menu button ("update 0.2.0 available"), when the core has one;
+/// underlined under the pointer, and a click opens the Update popup. Left out when it would leave
+/// the top bar no room. Returns the column after it.
+fn draw_update_notice(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    x: u16,
+    app: &App,
+    hits: &mut Hits,
+) -> u16 {
+    let Some(notice) = &app.snapshot.update.notice else {
+        return x;
+    };
+    let start = x + 2;
+    let notice_width = cells(width(&notice.text));
+    // Room for the notice, and the menu button's half of the bar stays under half the width.
+    if start + notice_width > area.x + area.width / 2 {
+        return x;
+    }
+    let mut style = theme::tone(notice.tone);
+    if app.hover == Some(Hit::UpdateNotice) {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    let rect = Rect::new(start, area.y, notice_width, 1);
+    frame.render_widget(Span::styled(notice.text.clone(), style), rect);
+    hits.add(rect, Hit::UpdateNotice);
+    start + notice_width
+}
+
 /// The one-line setup banner: what the setup check found missing.
 fn draw_banner(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let issues = app.snapshot.setup_issues.join(" · ");
@@ -170,6 +200,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits
     let hints: String = match (app.popup(), app.screen) {
         (Some(Popup::Settings), _) => crate::settings::status_hints(app).1.to_owned(),
         (Some(Popup::Help), _) => HELP_HINTS.to_owned(),
+        (Some(Popup::Update), _) => crate::update::hints(app),
         (None, Screen::Bridge) if app.slash_menu().is_some() => SLASH_HINTS.to_owned(),
         (None, Screen::Bridge) => BRIDGE_HINTS.to_owned(),
         (None, Screen::Setup) => crate::setup::hints(app),

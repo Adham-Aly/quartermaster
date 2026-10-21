@@ -17,6 +17,8 @@
 //! - [`client`]: [`GithubClient`] (octocrab per token, the rate limit).
 //! - [`pulls`], [`checks`], [`logs`], [`content`]: the calls.
 //! - [`fence`]: the crewmate fence's constants and their check.
+//! - [`releases`]: a public repository's newest release, read without a login (the app's update
+//!   check).
 
 pub mod checks;
 pub mod client;
@@ -25,6 +27,7 @@ mod error;
 pub mod fence;
 pub mod logs;
 pub mod pulls;
+pub mod releases;
 pub mod repo;
 pub mod token;
 
@@ -37,5 +40,6 @@ pub use error::{GithubError, RateState};
 pub use pulls::{
     MergeResult, PrState, PullRequest, RepoInfo, SquashCommit, SquashRules, squash_request,
 };
+pub use releases::{Release, latest_release};
 pub use repo::{RepoRef, redact_url};
 pub use token::{GhCli, GhProgram, GithubToken, TokenSource, fixed_gh};

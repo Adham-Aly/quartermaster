@@ -84,7 +84,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("tab · shift+tab", "next or previous pane"),
             (
                 "ctrl+o",
-                "the menu: settings, model levels, routing, help (even while typing)",
+                "the menu: settings, model levels, routing, update, help (even while typing)",
             ),
             (
                 "esc",

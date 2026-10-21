@@ -6,8 +6,9 @@ curl -fsSL https://github.com/Adham-Aly/quartermaster/releases/latest/download/q
 
 > [!IMPORTANT]
 > **This one command is how you install Quartermaster** (Apple silicon or Intel). Paste it into
-> Terminal, then run `quartermaster`. Run it again to update. Don't download the files on the
-> Releases page: in a browser they install nothing.
+> Terminal, then run `quartermaster`. It tells you when a new version is out (**☰ Menu ▸ Update**
+> installs it), or run the command again to update. Don't download the files on the Releases
+> page: in a browser they install nothing.
 
 A macOS terminal app where you talk to one agent, the Quartermaster. It hands project work to
 crewmates, each in its own git worktree, and delivers the results through GitHub once you approve.

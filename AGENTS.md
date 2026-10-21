@@ -46,7 +46,7 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
 |---|---|
 | `quartermaster` | data directory, run lock, logging, config, store, engines, core, then the UI; `dev` commands |
 | `qm-types` | IDs, domain enums, `Clock`, data-dir paths, config schema, `Refusal`, the core ⇄ UI API |
-| `qm-core` | tasks, agents, turns, wake inbox, scheduler, watchdogs, settling, secondmates; `config_file` |
+| `qm-core` | tasks, agents, turns, wake inbox, scheduler, watchdogs, settling, secondmates; `config_file`; `updates` |
 | `qm-store` | SQLite schema, migrations, queries, the database thread |
 | `qm-engine` | the `Engine` trait and event order, process supervision, the scripted engine (dev runs) |
 | `qm-engine-claude` | the Claude engine: drives `claude` over stream-json, our tools as an MCP server |
@@ -54,7 +54,7 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
 | `qm-tools` | the tool registry, argument types, descriptions and handlers |
 | `qm-policy`, `qm-routing` | enforced rules and model routing, as plain functions |
 | `qm-prompts` | prompts (sources in `prompts/`), briefs, charters, the context block |
-| `qm-git`, `qm-github` | worktrees, kept refs, landing, guarded network git · PRs, checks, the push fence |
+| `qm-git`, `qm-github` | worktrees, kept refs, landing, guarded network git · PRs, checks, the push fence, releases |
 | `qm-auth` | credentials and logins for non-Claude accounts |
 
 ## Data directory and runtime

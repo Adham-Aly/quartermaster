@@ -55,6 +55,10 @@ pub(crate) enum TaskButton {
 pub(crate) enum Hit {
     /// The top bar's menu button.
     MenuButton,
+    /// The update notice beside the menu button: opens the Update popup.
+    UpdateNotice,
+    /// The Update popup's button.
+    UpdateButton,
     /// A popup window, its close button, or outside it.
     Popup(crate::widgets::popup::PopupHit),
     /// A pane: a click focuses it.

@@ -42,5 +42,6 @@ pub mod tasks;
 pub mod tool_host;
 pub mod turn_io;
 pub mod turns;
+pub mod updates;
 pub mod verification;
 pub mod watchdogs;
