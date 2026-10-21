@@ -2450,6 +2450,7 @@ version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "jiff",
+ "rand 0.9.5",
  "rusqlite",
  "schemars",
  "serde",

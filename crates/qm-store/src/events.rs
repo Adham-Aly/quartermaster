@@ -11,9 +11,11 @@
 //! it (`you.answered_notice`): [`notices`] folds them into each message's notice state.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, EventId, MessageId, TaskId, TurnId};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use std::collections::BTreeMap;
@@ -66,8 +68,8 @@ pub fn insert(conn: &Connection, event: &NewEvent<'_>) -> Result<EventId, StoreE
         source,
     })?;
     Ok(conn.query_row(
-        "INSERT INTO events (at, kind, agent_id, task_id, turn_id, summary, payload, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO events (at, kind, agent_id, task_id, turn_id, summary, payload, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          RETURNING id",
         params![
             to_millis(event.at),
@@ -78,6 +80,7 @@ pub fn insert(conn: &Connection, event: &NewEvent<'_>) -> Result<EventId, StoreE
             event.summary,
             payload,
             seq::next(event.at),
+            ids::fresh(conn, "events", space::ROW)?,
         ],
         |r| r.get(0),
     )?)

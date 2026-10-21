@@ -14,12 +14,14 @@
 //! is read), so a new kind of held action is one variant in each enum and no migration.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::api::HeldAnswer;
 pub use qm_types::api::HeldChoice;
 use qm_types::domain::{GithubWriteAction, HeldKind, HeldStatus, MergeMethod, ProjectAction};
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, CommitSha, HeldActionId, TaskId};
 pub use qm_types::rules::HoldReason;
 use rusqlite::{Connection, params};
@@ -192,8 +194,8 @@ fn from_json<T: for<'de> Deserialize<'de>>(column: &'static str, s: &str) -> Res
 /// Writes a pending held action.
 pub fn insert_held(conn: &Connection, held: &NewHeld) -> Result<HeldActionId, StoreError> {
     let id = conn.query_row(
-        "INSERT INTO held_actions (kind, payload, choices, title, task_id, asked_by, created_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO held_actions (kind, payload, choices, title, task_id, asked_by, created_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          RETURNING id",
         params![
             held.payload.kind(),
@@ -204,6 +206,7 @@ pub fn insert_held(conn: &Connection, held: &NewHeld) -> Result<HeldActionId, St
             held.asked_by,
             to_millis(held.at),
             seq::next(held.at),
+            ids::fresh(conn, "held_actions", space::ROW)?,
         ],
         |r| r.get(0),
     )?;

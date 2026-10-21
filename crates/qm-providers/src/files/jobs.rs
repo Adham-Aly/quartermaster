@@ -1,5 +1,5 @@
-//! Every `bash` command is a job: numbered `J<n>` per agent, logged to `jobs/J<n>.log`, run in its
-//! own process group.
+//! Every `bash` command is a job: numbered `J<n>` at random per agent, logged to `jobs/J<n>.log`,
+//! run in its own process group.
 //!
 //! A job starts in the foreground: `bash` waits for it. One that outlives that wait becomes a
 //! background job, whose exit is reported once as [`JobEvent::Finished`]. A job that finishes in
@@ -10,8 +10,8 @@ use super::{FileToolOutcome, FileToolsConfig, elide_middle, lock, tail_lines};
 use crate::files::JobEvent;
 use qm_engine::supervisor::{Child, ChildOutput, ExitCause, StopPolicy, StopStage, stop};
 use qm_types::clock::Clock;
-use qm_types::ids::{JobId, JobLabel};
-use std::collections::BTreeMap;
+use qm_types::ids::{JobId, JobLabel, RandomIds, free_number, space};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -29,8 +29,10 @@ const PIPE_GRACE: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub(super) struct JobTable {
     events: mpsc::UnboundedSender<JobEvent>,
-    /// The highest job number handed out.
-    highest: Mutex<u32>,
+    /// Where job numbers are drawn from.
+    numbers: Mutex<RandomIds>,
+    /// The numbers handed out this session.
+    handed_out: Mutex<BTreeSet<u32>>,
     jobs: Mutex<BTreeMap<u32, Arc<Job>>>,
 }
 
@@ -86,30 +88,36 @@ impl JobTable {
     pub(super) fn new(events: mpsc::UnboundedSender<JobEvent>) -> Self {
         Self {
             events,
-            highest: Mutex::new(0),
+            numbers: Mutex::new(RandomIds::new()),
+            handed_out: Mutex::new(BTreeSet::new()),
             jobs: Mutex::new(BTreeMap::new()),
         }
     }
 
-    /// The next job number: one more than the highest seen in this session or among the
-    /// `J<n>.log` files already in `jobs_dir`, so labels stay unique per agent across restarts.
-    pub(super) fn allocate(&self, jobs_dir: &Path) -> u32 {
-        let on_disk = std::fs::read_dir(jobs_dir).map_or(0, |dir| {
-            dir.flatten()
-                .filter_map(|e| {
-                    let name = e.file_name();
-                    let name = name.to_str()?;
-                    name.strip_prefix('J')?
-                        .strip_suffix(".log")?
-                        .parse::<u32>()
-                        .ok()
-                })
-                .max()
-                .unwrap_or(0)
-        });
-        let mut highest = lock(&self.highest);
-        *highest = (*highest).max(on_disk) + 1;
-        *highest
+    /// A job number at random that nothing here holds: no `J<n>.log` in `jobs_dir` and no number
+    /// handed out this session, so labels stay unique per agent across restarts. `None` when
+    /// every number is taken.
+    pub(super) fn allocate(&self, jobs_dir: &Path) -> Option<u32> {
+        let mut taken: BTreeSet<u32> = std::fs::read_dir(jobs_dir).map_or_else(
+            |_| BTreeSet::new(),
+            |dir| {
+                dir.flatten()
+                    .filter_map(|e| {
+                        let name = e.file_name();
+                        let name = name.to_str()?;
+                        name.strip_prefix('J')?
+                            .strip_suffix(".log")?
+                            .parse::<u32>()
+                            .ok()
+                    })
+                    .collect()
+            },
+        );
+        let mut handed_out = lock(&self.handed_out);
+        taken.extend(handed_out.iter().copied());
+        let n = free_number(&mut *lock(&self.numbers), &space::JOB, &taken)?;
+        handed_out.insert(n);
+        Some(n)
     }
 
     /// Registers a freshly spawned job and starts watching it.
@@ -388,5 +396,59 @@ fn status_line(label: &JobLabel, exit: Option<Ended>) -> String {
         Some(Ended::Code(code)) => format!("{label} exited with code {code}"),
         Some(Ended::Stopped) => format!("{label} was stopped"),
         Some(Ended::Signal) => format!("{label} was killed by a signal"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JobTable;
+    use std::path::{Path, PathBuf};
+    use tokio::sync::mpsc;
+
+    /// A folder under the system temp directory, removed on drop.
+    struct Folder(PathBuf);
+
+    impl Folder {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("qm-jobs-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("scratch folder");
+            Self(path)
+        }
+
+        /// Writes a `J<n>.log` for each of `numbers`.
+        fn logs(&self, numbers: impl Iterator<Item = u32>) {
+            for n in numbers {
+                std::fs::write(self.0.join(format!("J{n}.log")), "").expect("log");
+            }
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn table() -> JobTable {
+        JobTable::new(mpsc::unbounded_channel().0)
+    }
+
+    #[test]
+    fn the_only_free_number_is_the_one_handed_out_and_then_none_is_left() {
+        let folder = Folder::new("one-free");
+        folder.logs((1..=999).filter(|n| *n != 42));
+        let jobs = table();
+        assert_eq!(jobs.allocate(&folder.0), Some(42));
+        // Handed out this session, so it isn't free again even before its log exists.
+        assert_eq!(jobs.allocate(&folder.0), None);
+    }
+
+    #[test]
+    fn a_number_is_drawn_from_the_job_space_in_a_fresh_folder() {
+        let folder = Folder::new("fresh");
+        let jobs = table();
+        let n = jobs.allocate(Path::new(&folder.0)).expect("a number");
+        assert!((1..=999).contains(&n));
     }
 }

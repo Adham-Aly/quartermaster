@@ -15,10 +15,12 @@
 //! the engine layer; `qm_core::processes` converts.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::ProcessOwnerKind;
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, TaskId};
 use rusqlite::{Connection, params};
 
@@ -69,13 +71,14 @@ pub enum ProcessEnd {
 /// found by the leftover check.
 pub fn insert_started(conn: &Connection, process: &NewProcess) -> Result<(), StoreError> {
     conn.execute(
-        "INSERT INTO processes (pgid, pid, program, owner, agent_id, job_id, task_id, label, started_at, seq)
+        "INSERT INTO processes (pgid, pid, program, owner, agent_id, job_id, task_id, label, started_at, seq,
+                                id)
          VALUES (?1, ?2, ?3, ?4,
                  CASE WHEN ?4 = 'job' THEN ?5 ELSE (SELECT id FROM agents WHERE id = ?5) END,
                  CASE WHEN ?4 = 'job'
                       THEN (SELECT id FROM jobs WHERE agent_id = ?5 AND label = ?7)
                  END,
-                 (SELECT id FROM tasks WHERE id = ?6), ?7, ?8, ?9)",
+                 (SELECT id FROM tasks WHERE id = ?6), ?7, ?8, ?9, ?10)",
         params![
             process.pgid,
             process.pid,
@@ -86,6 +89,7 @@ pub fn insert_started(conn: &Connection, process: &NewProcess) -> Result<(), Sto
             process.label,
             to_millis(process.started_at),
             seq::next(process.started_at),
+            ids::fresh(conn, "processes", space::ROW)?,
         ],
     )?;
     Ok(())

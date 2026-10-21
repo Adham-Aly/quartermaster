@@ -14,11 +14,13 @@
 //! events module's insert), so a turn, its events and its wakes commit atomically.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::to_millis;
 use crate::wakes;
 use jiff::Timestamp;
 use qm_types::domain::{StartedBy, TurnStatus};
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, EventId, MessageId, ModelId, TaskId, TurnId};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -162,8 +164,8 @@ fn insert_event(
     at: Timestamp,
 ) -> Result<EventId, StoreError> {
     Ok(conn.query_row(
-        "INSERT INTO events (at, kind, agent_id, task_id, turn_id, summary, payload, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO events (at, kind, agent_id, task_id, turn_id, summary, payload, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          RETURNING id",
         params![
             to_millis(at),
@@ -174,6 +176,7 @@ fn insert_event(
             summary,
             json("events.payload", payload)?,
             seq::next(at),
+            ids::fresh(conn, "events", space::ROW)?,
         ],
         |r| r.get(0),
     )?)
@@ -195,8 +198,8 @@ pub fn start_turn(conn: &mut Connection, turn: &NewTurn) -> Result<TurnId, Store
     let tx = conn.transaction()?;
     let message = turn.started_by.message();
     let id: TurnId = tx.query_row(
-        "INSERT INTO turns (agent_id, started_by, message_id, model, started_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO turns (agent_id, started_by, message_id, model, started_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          RETURNING id",
         params![
             turn.agent,
@@ -205,6 +208,7 @@ pub fn start_turn(conn: &mut Connection, turn: &NewTurn) -> Result<TurnId, Store
             turn.model,
             to_millis(turn.at),
             seq::next(turn.at),
+            ids::fresh(&tx, "turns", space::TURN)?,
         ],
         |r| r.get(0),
     )?;

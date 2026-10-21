@@ -10,10 +10,12 @@
 //! event and its wake commit together.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{RequestStatus, TaskKind, TaskStatus};
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, CorrelationId, EventId, SecondmateId, TaskId};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
@@ -58,8 +60,8 @@ pub fn insert(conn: &Connection, row: &NewChannelRow<'_>) -> Result<ParentRowId,
             source,
         })?;
     Ok(conn.query_row(
-        "INSERT INTO parent_channel (secondmate_id, correlation_id, facts, judgment, created_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO parent_channel (secondmate_id, correlation_id, facts, judgment, created_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          RETURNING id",
         params![
             row.secondmate,
@@ -68,6 +70,7 @@ pub fn insert(conn: &Connection, row: &NewChannelRow<'_>) -> Result<ParentRowId,
             judgment,
             to_millis(row.at),
             seq::next(row.at),
+            ids::fresh(conn, "parent_channel", space::ROW)?,
         ],
         |r| r.get(0),
     )?)

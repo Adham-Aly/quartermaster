@@ -6,10 +6,12 @@
 //! line are built from.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{AgentStatus, Role, TaskStatus};
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, MessageId, ModelId, SecondmateId, TaskId, TurnId};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -110,8 +112,9 @@ fn capped(text: &str) -> String {
 /// Appends a line; returns its row ID.
 pub fn insert(conn: &Connection, line: &NewSessionLine) -> Result<i64, StoreError> {
     conn.execute(
-        "INSERT INTO session_lines (agent_id, task_id, turn_id, kind, text, detail, message_id, created_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO session_lines (agent_id, task_id, turn_id, kind, text, detail, message_id, created_at, seq,
+                                    id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             line.agent,
             line.task,
@@ -122,6 +125,7 @@ pub fn insert(conn: &Connection, line: &NewSessionLine) -> Result<i64, StoreErro
             line.message,
             to_millis(line.at),
             seq::next(line.at),
+            ids::fresh(conn, "session_lines", space::ROW)?,
         ],
     )?;
     Ok(conn.last_insert_rowid())

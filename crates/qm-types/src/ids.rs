@@ -492,3 +492,82 @@ impl PortBlock {
         self.base..=self.base.saturating_add(Self::SIZE - 1)
     }
 }
+
+/// The numbers a fresh ID is drawn from. Display IDs are drawn from these ranges (zero-padded in
+/// their display form); row IDs are database keys with no display form.
+pub mod space {
+    use std::ops::RangeInclusive;
+
+    /// Tasks: `T-` 1–9999.
+    pub const TASK: RangeInclusive<u32> = 1..=9_999;
+    /// Secondmates: `SM-` 1–99.
+    pub const SECONDMATE: RangeInclusive<u32> = 1..=99;
+    /// Requests routed to a secondmate: `C-` 1–9999.
+    pub const CORRELATION: RangeInclusive<u32> = 1..=9_999;
+    /// Background jobs: `J` 1–999.
+    pub const JOB: RangeInclusive<u32> = 1..=999;
+    /// Standing instructions: `SI-` 1–999.
+    pub const STANDING_INSTRUCTION: RangeInclusive<u32> = 1..=999;
+    /// Schedules: `SC-` 1–999.
+    pub const SCHEDULE: RangeInclusive<u32> = 1..=999;
+    /// Turns and messages: up to 999,999.
+    pub const TURN: RangeInclusive<u32> = 1..=999_999;
+    /// Turns and messages: up to 999,999.
+    pub const MESSAGE: RangeInclusive<u32> = 1..=999_999;
+    /// Every other row: up to 99,999,999.
+    pub const ROW: RangeInclusive<u32> = 1..=99_999_999;
+}
+
+/// Where a fresh number comes from. The app draws at random ([`RandomIds`]); tests script them.
+pub trait IdSource: Send {
+    /// A number from `min` to `max`, inclusive. It ignores what is in use: the caller checks the
+    /// number and asks again when it is taken.
+    fn number(&mut self, min: u32, max: u32) -> u32;
+}
+
+/// The app's source: uniform random numbers from the operating system's generator.
+#[derive(Debug)]
+pub struct RandomIds(rand::rngs::StdRng);
+
+impl RandomIds {
+    /// A source seeded from the operating system.
+    pub fn new() -> Self {
+        use rand::SeedableRng;
+        Self(rand::rngs::StdRng::from_os_rng())
+    }
+}
+
+impl Default for RandomIds {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IdSource for RandomIds {
+    fn number(&mut self, min: u32, max: u32) -> u32 {
+        use rand::Rng;
+        self.0.random_range(min..=max)
+    }
+}
+
+/// Draws this many times before listing the free numbers.
+const FREE_DRAWS: u32 = 32;
+
+/// A number from `space` that isn't in `taken`: a few random draws, then one picked at random
+/// from the free numbers. `None` when every number in `space` is taken.
+pub fn free_number(
+    source: &mut dyn IdSource,
+    space: &std::ops::RangeInclusive<u32>,
+    taken: &std::collections::BTreeSet<u32>,
+) -> Option<u32> {
+    for _ in 0..FREE_DRAWS {
+        let n = source.number(*space.start(), *space.end());
+        if !taken.contains(&n) {
+            return Some(n);
+        }
+    }
+    let free: Vec<u32> = space.clone().filter(|n| !taken.contains(n)).collect();
+    let last = u32::try_from(free.len().checked_sub(1)?).ok()?;
+    free.get(usize::try_from(source.number(0, last)).ok()?)
+        .copied()
+}

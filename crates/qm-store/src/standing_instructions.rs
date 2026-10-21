@@ -3,9 +3,11 @@
 //! row and records the turn that dropped it.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
+use qm_types::ids::space;
 use qm_types::ids::{MessageId, StandingInstructionId, TurnId};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -29,10 +31,17 @@ pub fn save(
     at: Timestamp,
 ) -> Result<StandingInstructionId, StoreError> {
     Ok(conn.query_row(
-        "INSERT INTO standing_instructions (text, message_id, turn_id, created_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO standing_instructions (text, message_id, turn_id, created_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          RETURNING id",
-        params![text, message, turn, to_millis(at), seq::next(at)],
+        params![
+            text,
+            message,
+            turn,
+            to_millis(at),
+            seq::next(at),
+            ids::fresh(conn, "standing_instructions", space::STANDING_INSTRUCTION)?,
+        ],
         |r| r.get(0),
     )?)
 }

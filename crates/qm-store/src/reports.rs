@@ -5,10 +5,12 @@
 //! which wakes nobody.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{ReportOutcome, ReportSource, ReviewVerdict, RiskLevel};
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, CommitSha, ReportId, TaskId};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -97,8 +99,8 @@ pub fn insert(conn: &Connection, r: &NewReport<'_>) -> Result<ReportId, StoreErr
     Ok(conn.query_row(
         "INSERT INTO reports (task_id, agent_id, source, outcome, headings, answer, reproduced,
              diagnosis, review_verdict, review_findings, review_risk, review_risk_reason, blockers,
-             head_commit, final_text, created_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+             head_commit, final_text, created_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
          RETURNING id",
         params![
             r.task,
@@ -118,7 +120,7 @@ pub fn insert(conn: &Connection, r: &NewReport<'_>) -> Result<ReportId, StoreErr
             r.final_text,
             to_millis(r.at),
             seq::next(r.at),
-            seq::next(r.at),
+            ids::fresh(conn, "reports", space::ROW)?,
         ],
         |row| row.get(0),
     )?)

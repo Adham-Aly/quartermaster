@@ -80,7 +80,8 @@ fn concluded(
 ) -> Result<bool, StoreError> {
     Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM events
-             WHERE task_id = ?1 AND id > ?2
+             WHERE task_id = ?1
+               AND seq > COALESCE((SELECT seq FROM events WHERE id = ?2), 0)
                AND (kind IN (?3, ?4, ?5)
                     OR (kind = ?6 AND json_extract(payload, '$.head') = ?7)))",
         params![

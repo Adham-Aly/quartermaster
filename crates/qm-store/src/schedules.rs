@@ -7,10 +7,12 @@
 //! and a cancelled one never fires.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::ScheduleStatus;
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, ScheduleId, TurnId};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
@@ -96,8 +98,9 @@ fn row(raw: RawRow) -> Result<ScheduleRow, StoreError> {
 /// Writes a pending schedule and returns its ID.
 pub fn insert(conn: &Connection, new: &NewSchedule<'_>) -> Result<ScheduleId, StoreError> {
     Ok(conn.query_row(
-        "INSERT INTO schedules (owner_agent_id, due_at, tz, what, status, created_turn_id, created_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO schedules (owner_agent_id, due_at, tz, what, status, created_turn_id, created_at, seq,
+                                id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          RETURNING id",
         params![
             new.owner,
@@ -108,6 +111,7 @@ pub fn insert(conn: &Connection, new: &NewSchedule<'_>) -> Result<ScheduleId, St
             new.turn,
             to_millis(new.at),
             seq::next(new.at),
+            ids::fresh(conn, "schedules", space::SCHEDULE)?,
         ],
         |r| r.get(0),
     )?)

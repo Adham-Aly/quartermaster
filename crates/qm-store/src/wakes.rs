@@ -10,10 +10,12 @@
 //!   [`release_unconsumed`] puts its wakes back in the inbox.
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::WakeKind;
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, TaskId, TurnId, WakeId};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -51,8 +53,8 @@ pub fn insert_wake(conn: &Connection, wake: &NewWake) -> Result<Option<WakeId>, 
     })?;
     let id = conn
         .query_row(
-            "INSERT INTO wakes (target_agent_id, kind, payload, dedupe_key, task_id, created_at, seq)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO wakes (target_agent_id, kind, payload, dedupe_key, task_id, created_at, seq, id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT (target_agent_id, dedupe_key) DO NOTHING
              RETURNING id",
             params![
@@ -63,6 +65,7 @@ pub fn insert_wake(conn: &Connection, wake: &NewWake) -> Result<Option<WakeId>, 
                 wake.task,
                 to_millis(wake.at),
                 seq::next(wake.at),
+                ids::fresh(conn, "wakes", space::ROW)?,
             ],
             |r| r.get(0),
         )

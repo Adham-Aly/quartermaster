@@ -895,9 +895,20 @@ impl ProjectService {
     /// Writes the project's row and its `project.added` event.
     async fn register(&self, new: NewProject) -> Result<ProjectId, StoreError> {
         let summary = format!("project {} added ({})", new.name, new.origin);
+        // The task numbers its branches already name are reserved before any task can take one.
+        let (git, checkout) = (
+            Git::with_program(self.git_program()),
+            vec![new.path.clone()],
+        );
+        let leftovers = tokio::task::spawn_blocking(move || {
+            crate::tasks::startup::branch_task_numbers(&git, &checkout)
+        })
+        .await
+        .unwrap_or_default();
         self.inner
             .db
             .call(move |conn| {
+                qm_store::ids::reserve("tasks", leftovers);
                 let tx = conn.transaction()?;
                 let id = projects::insert(&tx, &new)?;
                 events::insert(

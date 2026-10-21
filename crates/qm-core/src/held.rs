@@ -47,6 +47,7 @@ use qm_store::db::Db;
 use qm_store::events::{self, NewEvent};
 use qm_store::held::{HeldPayload, HeldRow, NewHeld, insert_held, load_held};
 use qm_store::messages::{self, MessageRow};
+use qm_store::seq;
 use qm_store::time::to_millis;
 use qm_store::wakes::{NewWake, insert_wake};
 use qm_types::BoxFuture;
@@ -332,7 +333,7 @@ impl HeldService {
             .query_row(
                 "SELECT id, source, kind FROM messages
                  WHERE agent_id = ?1 AND kind <> 'acknowledgement'
-                 ORDER BY id DESC LIMIT 1",
+                 ORDER BY seq DESC LIMIT 1",
                 params![seat_agent],
                 |r| {
                     Ok((
@@ -417,7 +418,7 @@ impl HeldService {
     /// The pending held actions of `kind`, oldest first.
     pub fn pending(conn: &Connection, kind: HeldKind) -> Result<Vec<HeldRow>, StoreError> {
         let mut stmt = conn.prepare(
-            "SELECT id FROM held_actions WHERE status = 'pending' AND kind = ?1 ORDER BY id",
+            "SELECT id FROM held_actions WHERE status = 'pending' AND kind = ?1 ORDER BY seq",
         )?;
         let ids = stmt
             .query_map(params![kind], |r| r.get::<_, HeldActionId>(0))?
@@ -954,7 +955,7 @@ fn held_event(
             .query_row(
                 "SELECT payload FROM events
                  WHERE task_id = ?1 AND kind = ?2 AND json_extract(payload, '$.held') = ?3
-                 ORDER BY id DESC LIMIT 1",
+                 ORDER BY seq DESC LIMIT 1",
                 params![task, kind, held],
                 |r| r.get(0),
             )
@@ -1014,6 +1015,7 @@ fn held_facts(conn: &Connection, lines: &HashSet<MessageId>) -> Result<HeldFacts
         cards.push((message, row, facts));
     }
     // A pending card keeps its line in the snapshot even when the line is older than those shown.
+    // Oldest first, by creation: message IDs are random, so the map's order says nothing.
     let mut older = Vec::new();
     for (message, held) in older_pending {
         let row = load_held(conn, held)?;
@@ -1023,9 +1025,12 @@ fn held_facts(conn: &Connection, lines: &HashSet<MessageId>) -> Result<HeldFacts
         if let Some(line) = messages::get(conn, message)? {
             let facts = card_facts(conn, &row)?;
             cards.push((message, row, facts));
-            older.push(line);
+            let seq = seq::of(conn, "messages", message.get(), 0)?;
+            older.push((seq, line));
         }
     }
+    older.sort_by_key(|(seq, _)| *seq);
+    let older = older.into_iter().map(|(_, line)| line).collect();
     Ok(HeldFacts { cards, older })
 }
 
@@ -1079,16 +1084,17 @@ impl ApiPart for HeldPart {
                 .map(|(message, row, card_facts)| (*message, self.held.card(row, card_facts)))
                 .collect();
             if !facts.older.is_empty() {
+                // Older than every line shown, so they go in front, in creation order.
                 let shown: HashSet<MessageId> =
                     snapshot.conversation.iter().map(|l| l.id).collect();
-                for row in facts.older {
-                    if !shown.contains(&row.id) {
-                        snapshot.conversation.push(ChatLine::new(
-                            row.id, row.source, row.kind, row.at, row.text,
-                        ));
-                    }
-                }
-                snapshot.conversation.sort_by_key(|l| l.id);
+                let mut conversation: Vec<ChatLine> = facts
+                    .older
+                    .into_iter()
+                    .filter(|row| !shown.contains(&row.id))
+                    .map(|row| ChatLine::new(row.id, row.source, row.kind, row.at, row.text))
+                    .collect();
+                conversation.append(&mut snapshot.conversation);
+                snapshot.conversation = conversation;
             }
             for line in &mut snapshot.conversation {
                 if let Some(card) = cards.get(&line.id) {

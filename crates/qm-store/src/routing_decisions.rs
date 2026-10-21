@@ -7,10 +7,12 @@
 //! without depending on `qm-routing` (the core serialises them).
 
 use crate::StoreError;
+use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{Effort, Tier};
+use qm_types::ids::space;
 use qm_types::ids::{AccountId, AgentId, ModelId, RoutingDecisionId, TaskId};
 use rusqlite::{Connection, params};
 
@@ -61,8 +63,8 @@ pub fn insert_decision(
     let c = d.choice.as_ref();
     let id = conn.query_row(
         "INSERT INTO routing_decisions (task_id, agent_id, facts, rule, decided_by, tier_landed,
-             tier_used, model, account_id, effort, skipped, fallbacks, why, created_at, seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             tier_used, model, account_id, effort, skipped, fallbacks, why, created_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          RETURNING id",
         params![
             d.task,
@@ -80,6 +82,7 @@ pub fn insert_decision(
             d.why,
             to_millis(d.at),
             seq::next(d.at),
+            ids::fresh(conn, "routing_decisions", space::ROW)?,
         ],
         |r| r.get(0),
     )?;

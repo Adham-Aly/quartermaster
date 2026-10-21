@@ -4,7 +4,7 @@
 //! with work still running, so nothing it supervises is dropped silently. Retiring marks its
 //! `secondmates` and `agents` rows retired (nothing is deleted: its conversation, events and
 //! routed requests stay) and stops its loop, which closes its session. Rows are
-//! never removed, so its ID is never handed out again.
+//! kept, so its ID stays taken and is not handed out again.
 
 use super::{SecondmateService, event_kind, failed, refuse};
 use qm_policy::scope::check_own_secondmate;
@@ -215,10 +215,11 @@ mod tests {
             )
             .expect("events");
         assert_eq!(events, 1);
-        // A second close is refused, and the ID is never reused, even for the same name.
+        // A second close is refused, and the retired row keeps its number, so a new secondmate
+        // with the same name gets another one.
         assert!(refusal(f.close(f.qm, id)).contains("no active secondmate"));
         let (next, _) = f.secondmate("Web");
-        assert!(next > id);
+        assert_ne!(next, id);
     }
 
     #[test]
