@@ -188,6 +188,15 @@ pub fn should_compact(tokens: u64, threshold: u64) -> bool {
     tokens > threshold
 }
 
+/// Whether an automatic check compacts: the context is over the threshold, and the repeat guard
+/// allows it. `guard` is the size the context must grow past: the last compaction's `tokens_after`
+/// (or the size at a failed attempt), so a context that stays over the threshold isn't compacted
+/// on every call.
+pub fn auto_compaction_due(tokens: u64, threshold: u64, guard: Option<u64>) -> bool {
+    should_compact(tokens, threshold)
+        && guard.is_none_or(|base| tokens >= base + KEEP_RECENT_TOKENS)
+}
+
 /// Where to cut: the index of the first item to keep, keeping about `keep_tokens` of the newest
 /// ones and cutting only before a user or assistant message. `None` when nothing would be
 /// summarised (the cut would keep everything).
@@ -346,6 +355,23 @@ mod tests {
                 "model window {model_window}, setting {setting}"
             );
         }
+    }
+
+    #[test]
+    fn the_repeat_guard_waits_for_the_context_to_grow_by_keep_recent_tokens() {
+        let threshold = threshold(1_000_000, 200_000);
+        let over = threshold + 1;
+        // Nothing compacted yet: an over-threshold context compacts.
+        assert!(auto_compaction_due(over, threshold, None));
+        // A compaction that left the context at the threshold: over it again, but not grown by
+        // KEEP_RECENT_TOKENS, so no second compaction.
+        let base = threshold;
+        assert!(!auto_compaction_due(over, threshold, Some(base)));
+        let grown = base + KEEP_RECENT_TOKENS;
+        assert!(!auto_compaction_due(grown - 1, threshold, Some(base)));
+        assert!(auto_compaction_due(grown, threshold, Some(base)));
+        // Under the threshold, the guard doesn't matter.
+        assert!(!auto_compaction_due(threshold, threshold, None));
     }
 
     #[test]

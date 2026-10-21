@@ -78,6 +78,10 @@ pub(crate) struct Session {
     job_notices: Option<mpsc::UnboundedReceiver<JobNotice>>,
     jobs: Jobs,
     pub(crate) context: Context,
+    /// The size the automatic compaction's repeat guard waits to grow past: the last compaction's
+    /// `tokens_after`, or the size at a failed automatic attempt (see
+    /// [`crate::compaction::auto_compaction_due`]).
+    pub(crate) compaction_guard: Option<u64>,
     pub(crate) file: SessionFile,
     /// Turns and compactions that wait for the running turn to end, in order.
     queued_turns: VecDeque<Queued>,
@@ -289,6 +293,7 @@ impl Session {
             job_notices,
             jobs: Jobs::default(),
             context,
+            compaction_guard: None,
             file,
             queued_turns: VecDeque::new(),
             steering: Vec::new(),
@@ -439,8 +444,8 @@ impl Session {
     /// is over the threshold, then steering left over becomes the next turn.
     async fn after_turn(&mut self) {
         self.apply_pending_model();
-        if !self.close_requested && self.over_threshold() {
-            match self.compact().await {
+        if !self.close_requested {
+            match self.compact_if_due().await {
                 Ok(()) | Err(CompactError::Nothing | CompactError::Cancelled(_)) => {}
                 Err(CompactError::Failed(reason)) => {
                     tracing::warn!(%reason, "compaction between turns failed; continuing");
@@ -665,18 +670,6 @@ impl Session {
                 Ok(None)
             }
         }
-    }
-
-    /// Whether the context is over the compaction threshold: the autocompact window as it is now
-    /// (read at each check), or the current model's window if that is smaller.
-    pub(crate) fn over_threshold(&self) -> bool {
-        // Copied out first: the settings channel's read guard is not held across the check.
-        let setting = u32::from(self.shared.settings.borrow().compaction.autocompact_window);
-        let threshold = crate::compaction::threshold(self.model.context_window, setting);
-        crate::compaction::should_compact(
-            crate::compaction::context_tokens(&self.context),
-            threshold,
-        )
     }
 
     /// Appends a message to the context and the file.
