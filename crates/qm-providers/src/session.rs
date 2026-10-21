@@ -21,7 +21,7 @@ use crate::engine::{Shared, adapter_capability, api_for};
 use crate::limits::Limits;
 use crate::model::ModelProfile;
 use crate::retry::RetryPolicy;
-use crate::session_file::{self, Entry, SessionFile, SessionFileError};
+use crate::session_store::{self, Entry, SessionStore, SessionStoreError};
 use crate::transcript::Message;
 use qm_engine::{
     ACTIVITY_EVERY, ActivityGate, CloseReason, EngineEvent, EngineSide, FailureKind, InitReport,
@@ -82,7 +82,7 @@ pub(crate) struct Session {
     /// `tokens_after`, or the size at a failed automatic attempt (see
     /// [`crate::compaction::auto_compaction_due`]).
     pub(crate) compaction_guard: Option<u64>,
-    pub(crate) file: SessionFile,
+    pub(crate) history: SessionStore,
     /// Turns and compactions that wait for the running turn to end, in order.
     queued_turns: VecDeque<Queued>,
     pub(crate) steering: Vec<TurnInput>,
@@ -237,31 +237,26 @@ impl Session {
     ) -> Result<Self, CloseReason> {
         let now = shared.clock.now();
         let model = shared.models.profile(spec.account.provider, &spec.model);
-        let (session_id, file, context) = if let Some(reference) = &spec.resume {
-            let loaded = SessionFile::resume(&spec.session_dir, reference.as_str()).map_err(
-                |e: SessionFileError| CloseReason::ResumeFailed {
-                    message: e.to_string(),
-                },
-            )?;
-            // The core passes the model to use; a model change in the file is history.
-            let (context, _model) = session_file::rebuild_context(&loaded.entries);
-            (reference.as_str().to_owned(), loaded.file, context)
+        let (session_id, history, context) = if let Some(reference) = &spec.resume {
+            let loaded =
+                SessionStore::resume(reference.as_str()).map_err(|e: SessionStoreError| {
+                    CloseReason::ResumeFailed {
+                        message: e.to_string(),
+                    }
+                })?;
+            // The core passes the model to use; a model change in the history is history.
+            let (context, _model) = session_store::rebuild_context(&loaded.entries);
+            (reference.as_str().to_owned(), loaded.store, context)
         } else {
             let id = uuid::Uuid::now_v7().hyphenated().to_string();
-            let file = SessionFile::create(
-                &spec.session_dir,
+            let history = SessionStore::create(
                 &id,
                 now,
                 spec.account.provider,
                 spec.model.clone(),
                 spec.effort,
-            )
-            .map_err(|e| CloseReason::Crashed {
-                exit_code: None,
-                signal: None,
-                stderr_tail: e.to_string(),
-            })?;
-            (id, file, Context::default())
+            );
+            (id, history, Context::default())
         };
         let system_prompt = match &spec.prompt {
             SystemPrompt::Replace { text } | SystemPrompt::AppendToClaudeCode { text } => {
@@ -294,7 +289,7 @@ impl Session {
             jobs: Jobs::default(),
             context,
             compaction_guard: None,
-            file,
+            history,
             queued_turns: VecDeque::new(),
             steering: Vec::new(),
             pending_results: HashMap::new(),
@@ -472,14 +467,14 @@ impl Session {
         if let Some(tools) = &self.builtins {
             tools.model_changed(&model);
         }
-        let id = self.file.next_id();
+        let id = self.history.next_id();
         let at = self.shared.clock.now();
-        if let Err(e) = self.file.write(&Entry::ModelChange { id, at, model }) {
+        if let Err(e) = self.history.write(&Entry::ModelChange { id, at, model }) {
             tracing::warn!(error = %e, "couldn't record a model change");
         }
     }
 
-    /// Closes the session: jobs stopped and reported, the file synced, `SessionClosed`.
+    /// Closes the session: jobs stopped and reported, then `SessionClosed`.
     async fn close(&mut self) {
         if let Some(tools) = self.builtins.clone() {
             tools.shutdown().await;
@@ -495,9 +490,6 @@ impl Session {
         let leftover: Vec<JobLabel> = self.jobs.running.iter().cloned().collect();
         for job in leftover {
             self.finish_job(job, None, String::new()).await;
-        }
-        if let Err(e) = self.file.sync() {
-            tracing::warn!(error = %e, "couldn't sync the session file on close");
         }
         self.emit(EngineEvent::SessionClosed {
             reason: CloseReason::Requested,
@@ -672,14 +664,14 @@ impl Session {
         }
     }
 
-    /// Appends a message to the context and the file.
+    /// Appends a message to the context and the history.
     pub(crate) fn record(&mut self, message: Message) {
         let at = self.shared.clock.now();
-        let id = match self.file.append_message(at, &message) {
+        let id = match self.history.append_message(at, &message) {
             Ok(id) => id,
             Err(e) => {
-                tracing::warn!(error = %e, "couldn't write to the session file");
-                self.file.next_id()
+                tracing::warn!(error = %e, "couldn't record a message in the session history");
+                self.history.next_id()
             }
         };
         self.context.push(id, message);
