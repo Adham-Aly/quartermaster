@@ -29,6 +29,7 @@ use crate::input::draft::Draft;
 use crate::router::Screen;
 use crate::view::Middle;
 use qm_types::api::{AgentRef, Command, SessionView};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 
 /// The banner, shown for as long as you're in a crewmate's session.
@@ -50,7 +51,7 @@ pub(crate) enum SessionHit {
 
 /// A run of tool calls in a session, named by its agent and its first call's line ID, never by
 /// where it is drawn: new calls joining the run keep its key.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct ToolGroupKey {
     pub(crate) agent: AgentRef,
     pub(crate) first: u64,

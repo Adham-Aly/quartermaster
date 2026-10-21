@@ -126,6 +126,17 @@ impl DataDir {
         self.root.join("attachments")
     }
 
+    /// The images in unsent drafts, kept for `ui.json`: `attachments/drafts/<token>.<ext>`, written
+    /// and removed by the UI host, and left alone by the cleanup in `qm_core::attachments`.
+    pub fn draft_images(&self) -> PathBuf {
+        self.attachments().join(DRAFT_IMAGES)
+    }
+
+    /// The UI's remembered state: layout, popups, drafts (`qm-tui` writes it).
+    pub fn ui_state(&self) -> PathBuf {
+        self.root.join("ui.json")
+    }
+
     pub fn tasks_dir(&self) -> PathBuf {
         self.root.join("tasks")
     }
@@ -135,6 +146,9 @@ impl DataDir {
         TaskPaths::at(self.tasks_dir().join(id.to_string()))
     }
 }
+
+/// The folder of draft images inside `attachments/`.
+pub const DRAFT_IMAGES: &str = "drafts";
 
 /// An orchestrator's folders: the Quartermaster's or a secondmate's.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -21,6 +21,7 @@
 //!
 //! - [`run`] (here) is the one entry point; `app` holds the state, `host` drives it for each window
 //!   and `attach` is the client; `convert` turns crossterm events into wire input and back.
+//! - `persist` saves the shared UI state to `ui.json` (debounced, atomic) and loads it at start.
 //! - `term` holds one window's state (size, hit map, hover, selection, quit progress).
 //! - `terminal` enters and leaves full-screen mode (raw mode, alternate screen, mouse capture
 //!   with motion, bracketed paste) and restores the terminal on drop and on panic. Every frame is
@@ -34,7 +35,7 @@
 //!   and dropdown list any screen can use.
 //! - `hit` is the per-frame hit map that drives clicks, drags, the wheel and hover alike.
 //! - `input` turns keys and the mouse into changes: focus and the key map, clicks, double-clicks,
-//!   the wheel, hover, divider drags and remembered column widths (`tui.toml`), context menus,
+//!   the wheel, hover, divider drags and column widths, context menus,
 //!   the app's own selection and copy (`pbcopy`, or OSC 52 over SSH), and editing your message.
 //! - `theme` holds the 16-colour styles; `text` measures and wraps in terminal cells.
 //!
@@ -60,6 +61,7 @@ mod diff;
 mod hit;
 pub mod host;
 mod input;
+mod persist;
 mod placeholder;
 mod popups;
 mod router;

@@ -9,9 +9,10 @@ use crate::bridge;
 use crate::hit::FrameMap;
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use serde::{Deserialize, Serialize};
 
 /// A full screen of the UI.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Screen {
     /// The main layout.
     Bridge,
