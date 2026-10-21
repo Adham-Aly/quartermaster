@@ -134,12 +134,15 @@ pub(crate) enum SettingsHit {
     Effort(BoardItem),
     Zone(Zone),
     Find,
-    /// Routing: the pin's switch, its model and fallback, the Quartermaster's model and effort.
+    /// Routing: the pin's switch, its model and fallback, the Quartermaster's model and effort,
+    /// and the autocompact window's two arrows (the one at an end is drawn dim and not a target).
     PinSwitch,
     PinModel,
     PinFallback,
     QuartermasterModel,
     QuartermasterEffort,
+    AutocompactDown,
+    AutocompactUp,
     /// System: the notifications switch and the setup check's "Open".
     NotificationsSwitch,
     SetupCheck,
@@ -289,7 +292,7 @@ pub(crate) struct SettingsView {
     pub(crate) connecting: bool,
     pub(crate) account: Option<usize>,
     pub(crate) board: Option<BoardItem>,
-    /// Routing: 0 the pin, 1 the Quartermaster.
+    /// Routing: 0 the pin, 1 the Quartermaster, 2 the autocompact window.
     pub(crate) routing_row: usize,
     /// Connect: a provider row, or `providers.len()` for the API-key row.
     pub(crate) provider: Option<usize>,
@@ -476,7 +479,7 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
         ),
         Tab::Routing => (
             "click to change",
-            "space pin · c model · f fallback · q quartermaster · e effort · esc close",
+            "space pin · c model · f fallback · q quartermaster · e effort · −/+ window · esc",
         ),
         Tab::System => (
             "click to change",

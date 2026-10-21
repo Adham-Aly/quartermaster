@@ -72,6 +72,8 @@ agents keep running, and any number of windows can attach. `quartermaster server
 One server runs per data directory. For a throwaway one:
 `QUARTERMASTER_HOME=$(mktemp -d) quartermaster --foreground`.
 
+**Settings ▸ Routing ▸ Autocompact** sets the conversation size at which every agent compacts (100k–1M, default 200k), on Claude and other models alike. For Quartermaster's Claude agents it replaces Claude Code's `/autocompact`; your own `claude` is unchanged.
+
 ## Code
 
 ![Crate map](assets/crates.svg)

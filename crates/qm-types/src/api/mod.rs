@@ -210,6 +210,11 @@ pub enum Command {
     SetNotifications {
         enabled: bool,
     },
+    /// Set the autocompact window, in tokens, for every agent; the core clamps and rounds it to a
+    /// step. Saved to `config.toml`; each agent applies it at its next idle moment.
+    SetAutocompactWindow {
+        tokens: u32,
+    },
     // ---- Worker sessions. ----
     /// Open a worker's session (the core then fills [`Snapshot::session`]), or close it with
     /// `None` (back to the Bridge).
@@ -1143,6 +1148,10 @@ pub struct SettingsView {
     /// still cap it.
     #[serde(default)]
     pub tier_efforts: crate::config::TierEfforts,
+    /// How many tokens of conversation every agent keeps before it compacts it (Settings ▸
+    /// Routing ▸ Autocompact).
+    #[serde(default)]
+    pub autocompact_window: crate::config::AutocompactWindow,
 }
 
 /// Whether an account is in use.

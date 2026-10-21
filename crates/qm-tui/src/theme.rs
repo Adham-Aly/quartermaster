@@ -74,6 +74,12 @@ pub(crate) fn dim() -> Style {
     Style::new().fg(palette().dim)
 }
 
+/// Dimmed text that still reads as dimmed on a selected row: the fill turns the dim colour into
+/// plain text, so the faint attribute carries the dimming there.
+pub(crate) fn faded() -> Style {
+    dim().add_modifier(Modifier::DIM)
+}
+
 /// Accent text.
 pub(crate) fn accent() -> Style {
     Style::new().fg(palette().accent)
