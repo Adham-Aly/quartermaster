@@ -22,6 +22,7 @@ use qm_engine::{
 use qm_engine_claude::{ClaudeConfig, ClaudeEngine};
 use qm_providers::{FileToolsFactory, ProviderEngine, ProviderEngineConfig};
 use qm_types::clock::{Clock, SystemClock};
+use qm_types::config::Config;
 use qm_types::domain::{Effort, Provider, Role};
 use qm_types::ids::{AccountId, AgentId, ModelId};
 use serde_json::Value;
@@ -31,7 +32,7 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// The orchestrator prompt of the prototype.
 pub(super) const PROMPT: &str =
@@ -183,6 +184,7 @@ pub(super) async fn run(startup: &Startup, flags: &Flags) -> Result<(), Failure>
                 supervisor: Arc::clone(&supervisor),
                 clock: Arc::clone(&clock),
                 inherited_env: inherited,
+                settings: watch::channel(Config::default()).1,
             });
             let (prompt, builtins) = if orchestrator {
                 (

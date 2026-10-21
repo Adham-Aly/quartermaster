@@ -15,7 +15,8 @@ before the model may act.
 
 | File | Holds |
 |---|---|
-| `argv.rs` | `build_argv`, `LaunchOptions`, `ToolSet`, `CREWMATE_BUILTINS`, `REPORTED_AS`, the `harness_tools!` list, `ORCHESTRATOR_DISALLOWED`, `CREWMATE_DISALLOWED`, `ATTRIBUTION_SETTINGS` |
+| `argv.rs` | `build_argv`, `LaunchOptions`, `ToolSet`, `CREWMATE_BUILTINS`, `REPORTED_AS`, the `harness_tools!` list, `ORCHESTRATOR_DISALLOWED`, `CREWMATE_DISALLOWED`, `settings_json` |
+| `autocompact.rs` | `restart` (when a changed window restarts `claude`), `check` (the start-up check on `get_context_usage`) |
 | `env.rs` | the child environment from scratch: `COPIED_KEYS`, `OWNED_KEYS`, the fixed `SWITCHES`, `MIRRORED_SDK_VERSION` |
 | `check.rs` | `SUPPORTED_VERSIONS`, `REQUIRED_CAPABILITIES`, `check`, `check_tools`, the zero-token `probe` |
 | `detect.rs` | finding `claude` and reading `claude auth status` |
@@ -47,6 +48,10 @@ before the model may act.
   grant by `check_tools`: any missing tool of ours, extra built-in, or foreign MCP server stops the
   process before the model acts, with one sentence naming what was found. Keep this check strict:
   it is the backstop if `claude` renames a switch or adds a tool.
+- At every start, `get_context_usage` must report `autocompactSource: "settings"` and
+  `isAutoCompactEnabled: true` (`autocompact::check`). If not, the session logs a warning and runs
+  on: a `claude` that renames the key, or managed policy that overrides the setting, shows up
+  there, and the start log shows the trigger point (`autoCompactThreshold`) either way.
 - `check` also holds the version to `SUPPORTED_VERSIONS` (min inclusive, max exclusive), the
   permission mode, and `REQUIRED_CAPABILITIES`. Supporting a new major version means reading what
   changed in its protocol first, then widening the range.
@@ -90,7 +95,16 @@ undocumented: after a `claude` update, check no socket opens.
   runs its own compaction as a turn (`compact_boundary`, then a `result` with no text). On a
   conversation too short to compact the turn ends with no `compact_boundary`.
 - Text is committed line by line; silent work is reported as `Activity` at most every 30 s.
-- `--settings` turns off Claude Code's own commit and PR attribution.
+- **Autocompact window.** `--settings` (`argv::settings_json`, always last) carries the
+  attribution switch off, `autoCompactEnabled: true` and `autoCompactWindow` from
+  `Config.compaction.autocompact_window` (100k–1M, Claude Code caps it at the model's window). A
+  running `claude` ignores a later `apply_flag_settings` for the window, so a change restarts it:
+  `restart_for_settings` stops the process only when it is idle with no job (never mid-turn or
+  mid-job) and emits `Suspended`, and the next turn resumes with the new `--settings`. The check
+  runs when a turn ends, when the settings change while idle, and before a turn starts. Keep
+  `--setting-sources=`: the user's own settings files must never be read.
+- Supported on claude 2.1.303 and 2.1.304 as well as 2.1.305 (checked: a 300k window gives a 267k
+  trigger, source `settings`), so the range starts at 2.1.303.
 
 ## Verify
 

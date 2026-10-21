@@ -35,6 +35,7 @@
 pub mod stream;
 
 use crate::argv::{LaunchOptions, ToolSet, build_argv};
+use crate::autocompact::{self, Restart};
 use crate::check::{ExpectedSession, REQUIRED_CAPABILITIES};
 use crate::env::build_env;
 use crate::jobs::Jobs;
@@ -50,6 +51,7 @@ use qm_engine::{
     ToolCallId, TurnFailure, TurnInput, TurnOutcome,
 };
 use qm_types::clock::Clock;
+use qm_types::config::Config;
 use qm_types::ids::{ModelId, SessionRef};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -88,6 +90,12 @@ pub struct Session {
     model: String,
     /// Our session ID: the `--session-id` we chose, or the one resumed.
     conversation: String,
+    /// The app's settings as they change; the autocompact window is read here.
+    settings: watch::Receiver<Config>,
+    /// False once the settings channel closed (nothing can change them any more).
+    settings_open: bool,
+    /// The autocompact window the current process was launched with.
+    launched_window: u32,
     tool_set: ToolSet,
     mcp: McpServer,
     expected: ExpectedSession,
@@ -266,6 +274,8 @@ enum Wake {
     LinesClosed,
     Exited(ExitCause),
     Command(Option<SessionCommand>),
+    /// The settings changed (`false`: the channel closed).
+    Settings(bool),
     Timer(Timer),
 }
 
@@ -312,6 +322,9 @@ impl Session {
             model: spec.model.as_str().to_owned(),
             clock,
             conversation: session_id,
+            settings: shared.config.settings.clone(),
+            settings_open: true,
+            launched_window: 0,
             tool_set,
             mcp,
             expected,
@@ -422,6 +435,7 @@ impl Session {
             }
         };
         let accept_commands = !self.starting && !self.closing && !self.done;
+        let watch_settings = accept_commands && self.settings_open;
         let (lines, exit) = match &mut self.proc {
             Some(proc) => (
                 proc.lines_open.then_some(&mut proc.lines),
@@ -430,6 +444,7 @@ impl Session {
             None => (None, None),
         };
         let commands = &mut self.commands;
+        let settings = &mut self.settings;
         tokio::select! {
             biased;
             line = recv_line(lines) => match line {
@@ -438,6 +453,7 @@ impl Session {
             },
             cause = wait_exit(exit) => Wake::Exited(cause),
             command = commands.recv(), if accept_commands => Wake::Command(command),
+            changed = settings.changed(), if watch_settings => Wake::Settings(changed.is_ok()),
             kind = sleep => Wake::Timer(kind),
         }
     }
@@ -455,6 +471,10 @@ impl Session {
                 self.core_gone = true;
             }
             Wake::Command(Some(command)) => self.on_command(command).await,
+            Wake::Settings(open) => {
+                self.settings_open = open;
+                self.restart_for_settings().await;
+            }
             Wake::Timer(timer) => self.on_timer(timer).await,
         }
     }
@@ -506,12 +526,14 @@ impl Session {
             ),
             _ => None,
         };
+        self.launched_window = self.autocompact_window();
         let options = LaunchOptions::for_session(
             &self.spec,
             &self.model,
             &self.conversation,
             resuming,
             plugin_dir,
+            self.launched_window,
         );
         let env = build_env(&self.shared.config.inherited_env, &self.spec)
             .map_err(|e| StartFailure::Spawn(e.to_string()))?;
@@ -561,6 +583,7 @@ impl Session {
         let context = self
             .query(json!({"subtype": "get_context_usage", "detail": "full"}))
             .await?;
+        self.check_autocompact(&context);
         let hooks = self.query(json!({"subtype": "get_hooks_listing"})).await?;
         let report = self.init_report(init, context, hooks);
         if report.raw.get("tools_source").is_none()
@@ -569,6 +592,35 @@ impl Session {
             return Err(StartFailure::Untrusted(problem));
         }
         Ok(report)
+    }
+
+    /// The autocompact window in force in the settings now.
+    fn autocompact_window(&self) -> u32 {
+        u32::from(self.settings.borrow().compaction.autocompact_window)
+    }
+
+    /// Logs the autocompact window and trigger point `claude` reports at launch, and warns when
+    /// it isn't ours (see [`autocompact::check`]).
+    fn check_autocompact(&self, context: &Result<Value, String>) {
+        let Ok(context) = context else {
+            tracing::warn!(session = %self.conversation, "couldn't read claude's context usage, so its autocompact window is unchecked");
+            return;
+        };
+        let trigger = context.get("autoCompactThreshold").and_then(Value::as_u64);
+        match autocompact::check(context) {
+            Ok(()) => tracing::info!(
+                session = %self.conversation,
+                window = self.launched_window,
+                trigger,
+                "claude's autocompact window comes from our settings"
+            ),
+            Err(problem) => tracing::warn!(
+                session = %self.conversation,
+                window = self.launched_window,
+                trigger,
+                "{problem}, so the autocompact window may not be in force"
+            ),
+        }
     }
 
     /// Sends one zero-token query and waits for its answer.
@@ -625,7 +677,7 @@ impl Session {
                     });
                 }
                 Wake::Timer(Timer::Start) => return Err(StartFailure::Timeout),
-                Wake::Timer(_) | Wake::Command(_) => {}
+                Wake::Timer(_) | Wake::Command(_) | Wake::Settings(_) => {}
             }
         }
     }
@@ -757,6 +809,8 @@ impl Session {
             self.fail_at_once(FailureKind::Protocol, message).await;
             return;
         }
+        // A change that waited for a job to finish takes effect here, before the turn.
+        self.restart_for_settings().await;
         if self.proc.is_none() {
             // Down (suspended, crashed or interrupted hard): bring the session back first.
             match self.start(true).await {
@@ -1554,6 +1608,7 @@ impl Session {
             // The end of a turn `claude` started by itself; its spend counts in the next turn.
             tracing::debug!(unasked = self.unasked, "ignored a result outside a turn");
             self.unasked = false;
+            self.restart_for_settings().await;
             return;
         };
         if let Some(text) = turn.lines.flush() {
@@ -1614,6 +1669,7 @@ impl Session {
                 self.write_set_model(&model);
             }
             self.arm_idle();
+            self.restart_for_settings().await;
         }
     }
 
@@ -1688,6 +1744,36 @@ impl Session {
         if self.gate.due(now) {
             self.send(EngineEvent::Activity { kind }).await;
         }
+    }
+
+    /// Restarts a running `claude` that launched with another autocompact window, when it is idle
+    /// with no job: the process stops as at an idle release, and the next turn resumes it with
+    /// the new `--settings`. A turn or a job holds the restart (see [`autocompact::restart`]).
+    async fn restart_for_settings(&mut self) {
+        if self.proc.is_none() || self.starting || self.closing || self.ending || self.done {
+            return;
+        }
+        let decision = autocompact::restart(
+            self.launched_window,
+            self.autocompact_window(),
+            self.turn.is_some(),
+            !self.jobs.is_idle(),
+        );
+        if decision != Restart::Now {
+            return;
+        }
+        tracing::info!(
+            session = %self.conversation,
+            from = self.launched_window,
+            to = self.autocompact_window(),
+            "restarting claude for the new autocompact window"
+        );
+        self.idle_deadline = None;
+        self.mirror_due = None;
+        self.mirror().await;
+        self.stop_process().await;
+        self.down = true;
+        self.send(EngineEvent::Suspended).await;
     }
 
     fn arm_idle(&mut self) {

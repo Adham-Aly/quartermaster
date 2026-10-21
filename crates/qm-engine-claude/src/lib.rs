@@ -18,6 +18,7 @@
 //! [`detect`] finds `claude` and its login.
 
 pub mod argv;
+pub mod autocompact;
 pub mod check;
 pub mod detect;
 pub mod env;
@@ -36,6 +37,7 @@ use qm_engine::{
 };
 use qm_types::BoxFuture;
 use qm_types::clock::Clock;
+use qm_types::config::Config;
 use qm_types::domain::{Effort, EngineKind, Provider, Role};
 use qm_types::ids::ModelId;
 use serde_json::Value;
@@ -43,6 +45,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
+use tokio::sync::watch;
 
 /// The name of our in-process MCP server; our tools reach the model as
 /// `mcp__quartermaster__<name>`.
@@ -57,6 +60,9 @@ pub struct ClaudeConfig {
     /// A snapshot of the app's own environment at startup. Only the keys in
     /// [`env::COPIED_KEYS`] (and `CLAUDE_CONFIG_DIR`, unchanged) are ever passed on.
     pub inherited_env: BTreeMap<String, String>,
+    /// The app's settings, as they change. Each session follows them: a changed autocompact
+    /// window restarts its `claude` at the next idle moment (see [`autocompact`]).
+    pub settings: watch::Receiver<Config>,
 }
 
 impl fmt::Debug for ClaudeConfig {
@@ -67,7 +73,7 @@ impl fmt::Debug for ClaudeConfig {
             .field("supervisor", &self.supervisor)
             .field("clock", &self.clock)
             .field("inherited_env_keys", &self.inherited_env.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
