@@ -68,6 +68,10 @@ QM_DEV=1 quartermaster dev probe claude      # detect claude and run its zero-to
 QM_DEV=1 quartermaster dev leftovers         # the startup report of leftover process groups
 QM_DEV=1 quartermaster dev login chatgpt --ref chatgpt:dev
 QM_DEV=1 QM_DEV_SEAT_SCRIPT=seat.toml quartermaster   # the Quartermaster on the scripted engine
+QM_DEV=1 QM_DEV_RUNNING_VERSION=0.0.1 quartermaster  # look older, so the newest release shows
+    # as an update (notice, Menu ▸ Update). Pressing Update really installs it over the running
+    # binary's folder: run a copy from a throwaway <dir>/bin, with XDG_CONFIG_HOME=<throwaway>
+    # for the installer's receipt; a copy in target/ is refused.
 ```
 
 The scripted engine plays a TOML script (format in `crates/qm-engine/src/scripted/script.rs`):

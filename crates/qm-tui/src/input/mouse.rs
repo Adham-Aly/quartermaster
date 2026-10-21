@@ -200,6 +200,8 @@ impl App {
             Hit::Session(hit) => self.session_click(hit),
             Hit::Diff(hit) => self.diff_click(hit),
             Hit::SlashItem(i) => self.run_slash_row(i),
+            Hit::UpdateNotice => self.choose_entry(crate::popups::MenuEntry::Update),
+            Hit::UpdateButton => self.press_update_button(),
             Hit::MenuItem(_) | Hit::Dialog => {}
             Hit::MenuButton
             | Hit::Popup(_)

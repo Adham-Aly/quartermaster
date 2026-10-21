@@ -1,8 +1,8 @@
 //! Popups over the current screen, and the top bar's menu that opens them.
 //!
-//! Settings and Help open as popup windows over whatever is showing (the Bridge, a session, the
-//! setup check, a diff); the screen beneath keeps its focus, so closing a popup (`Esc`, its ` ✕ `,
-//! or a click outside it) puts you back where you were. The window itself is
+//! Settings, Help and Update open as popup windows over whatever is showing (the Bridge, a
+//! session, the setup check, a diff); the screen beneath keeps its focus, so closing a popup
+//! (`Esc`, its ` ✕ `, or a click outside it) puts you back where you were. The window itself is
 //! `widgets::popup`; the menu's list is `widgets::dropdown`, through the context-menu machinery
 //! (`input::menu`, target `MenuTarget::Main`).
 //!
@@ -101,6 +101,8 @@ pub(crate) enum Popup {
     Settings,
     /// Keys and mouse help.
     Help,
+    /// The app's own update: where it stands, and the button that starts it (`update`).
+    Update,
 }
 
 impl Popup {
@@ -109,6 +111,7 @@ impl Popup {
         match self {
             Self::Settings => "Settings",
             Self::Help => "Help",
+            Self::Update => "Update",
         }
     }
 
@@ -117,6 +120,7 @@ impl Popup {
         match self {
             Self::Settings => MenuEntry::Settings,
             Self::Help => MenuEntry::Help,
+            Self::Update => MenuEntry::Update,
         }
     }
 }
@@ -127,19 +131,26 @@ pub(crate) enum MenuEntry {
     Settings,
     ModelLevels,
     Routing,
+    Update,
     Help,
 }
 
 impl MenuEntry {
     /// The menu's entries, top to bottom.
-    pub(crate) const ALL: [Self; 4] =
-        [Self::Settings, Self::ModelLevels, Self::Routing, Self::Help];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Settings,
+        Self::ModelLevels,
+        Self::Routing,
+        Self::Update,
+        Self::Help,
+    ];
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Settings => "Settings",
             Self::ModelLevels => "Model levels",
             Self::Routing => "Routing",
+            Self::Update => "Update",
             Self::Help => "Help: keys and mouse",
         }
     }
@@ -149,7 +160,7 @@ impl MenuEntry {
         match self {
             Self::Settings => ",",
             Self::Help => "?",
-            Self::ModelLevels | Self::Routing => "",
+            Self::ModelLevels | Self::Routing | Self::Update => "",
         }
     }
 
@@ -161,7 +172,7 @@ impl MenuEntry {
 
 /// The most `popup` wants, in cells, with `body` (the area between the top bar and the status
 /// bar) to show in.
-fn size(popup: Popup, body: Rect) -> (u16, u16) {
+fn size(popup: Popup, body: Rect, app: &App) -> (u16, u16) {
     match popup {
         Popup::Settings => (SETTINGS_WIDTH, body.height),
         Popup::Help => {
@@ -170,12 +181,21 @@ fn size(popup: Popup, body: Rect) -> (u16, u16) {
             let lines = crate::placeholder::lines(usize::from(width.saturating_sub(4))).len();
             (HELP_WIDTH, u16::try_from(lines + 2).unwrap_or(u16::MAX))
         }
+        Popup::Update => {
+            // As tall as its lines at the width it gets (border and padding included).
+            let width = window::centered(body, crate::update::WIDTH, body.height).width;
+            let room = usize::from(width.saturating_sub(4));
+            (
+                crate::update::WIDTH,
+                crate::update::height(&app.snapshot.update, room),
+            )
+        }
     }
 }
 
 /// Where `open` sits within `body` in this frame, or `None` when its anchor isn't drawn.
-fn area(open: OpenPopup, body: Rect, hits: &Hits) -> Option<Rect> {
-    let (width, height) = size(open.popup, body);
+fn area(open: OpenPopup, body: Rect, app: &App, hits: &Hits) -> Option<Rect> {
+    let (width, height) = size(open.popup, body, app);
     Some(match resolve(open.anchor, None, hits, body)? {
         Placement::Centred => window::centered(body, width, height),
         Placement::At(at) => window::at(body, at, width, height),
@@ -186,7 +206,7 @@ fn area(open: OpenPopup, body: Rect, hits: &Hits) -> Option<Rect> {
 /// popup's backdrop covers everything beneath it). A popup whose anchor isn't drawn is skipped.
 pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut FrameMap) {
     for &open in &app.view.popups {
-        let Some(area) = area(open, body, &map.hits) else {
+        let Some(area) = area(open, body, app, &map.hits) else {
             continue;
         };
         let popup = open.popup;
@@ -202,14 +222,17 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
         match popup {
             Popup::Settings => crate::settings::draw(frame, content, app, map),
             Popup::Help => crate::placeholder::draw_help(frame, content, app, map),
+            Popup::Update => crate::update::draw(frame, content, app, map),
         }
     }
 }
 
 impl App {
-    /// Whether `entry` shows a badge: something there needs you.
+    /// Whether `entry` shows a badge: something there needs you. The core says when the
+    /// update does.
     pub(crate) fn entry_badge(&self, entry: MenuEntry) -> bool {
         self.view.badges.contains(&entry)
+            || (entry == MenuEntry::Update && self.snapshot.update.badge)
     }
 
     /// Whether the menu button shows a badge: some entry does.
@@ -286,6 +309,7 @@ impl App {
             MenuEntry::Settings => self.open_popup(Popup::Settings),
             MenuEntry::ModelLevels => self.open_settings_tab(Tab::ModelLevels),
             MenuEntry::Routing => self.open_settings_tab(Tab::Routing),
+            MenuEntry::Update => self.open_popup(Popup::Update),
             MenuEntry::Help => self.open_popup(Popup::Help),
         }
     }
@@ -313,6 +337,9 @@ impl App {
     /// Help (or closes it) and `,` opens Settings.
     pub(crate) fn on_popup_key(&mut self, popup: Popup, key: KeyEvent, now: Instant) {
         if popup == Popup::Settings && self.on_settings_key(key, now) {
+            return;
+        }
+        if popup == Popup::Update && self.on_update_key(key.code) {
             return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
