@@ -53,12 +53,13 @@ pub(crate) fn log_path(paths: &TaskPaths) -> PathBuf {
     paths.jobs.join("setup.log")
 }
 
-/// Runs the setup command; returns how long it took. `cancel` turns true when the task is being
-/// stopped or the app quits.
+/// Runs the setup command in the task's workplace; returns how long it took. `cancel` turns true
+/// when the task is being stopped or the app quits.
 pub(crate) async fn run(
     svc: &TaskService,
     task: TaskId,
     paths: &TaskPaths,
+    cwd: &Path,
     command: &str,
     ports: PortBlock,
     mut cancel: watch::Receiver<bool>,
@@ -68,7 +69,7 @@ pub(crate) async fn run(
     let spec = SpawnSpec {
         program: PathBuf::from("/bin/sh"),
         args: vec!["-c".to_owned(), command.to_owned()],
-        cwd: paths.worktree.clone(),
+        cwd: cwd.to_path_buf(),
         env: setup_env(paths, ports, &deps.inherited_env),
         owner: ProcessOwner::Setup { task },
     };

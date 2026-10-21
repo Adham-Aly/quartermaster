@@ -145,7 +145,7 @@ pub(crate) fn delivery_check(
         gaps: Vec::new(),
     };
     match (delivery, probed) {
-        (DeliveryMode::BuildInPlace, _) | (_, None) => not_needed,
+        (DeliveryMode::BuildInPlace | DeliveryMode::Folder, _) | (_, None) => not_needed,
         (DeliveryMode::BranchOnly, _) if !has_github_remote => not_needed,
         (DeliveryMode::BranchOnly, Some(p)) => DeliveryCheck {
             push: p.push,

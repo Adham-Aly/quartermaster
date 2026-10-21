@@ -115,7 +115,7 @@ impl ContextBuilder {
 
     fn project_fact(&self, p: &ProjectRow) -> ProjectFact {
         let path = if p.origin == ProjectOrigin::Workspace {
-            "(built-in workspace)".to_owned()
+            format!("{} (personal workspace)", self.tilde(&p.path))
         } else {
             self.tilde(&p.path)
         };

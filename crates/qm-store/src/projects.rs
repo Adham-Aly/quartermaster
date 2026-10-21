@@ -250,6 +250,19 @@ pub fn set_autonomy(
     )? == 1)
 }
 
+/// Points an active project at another folder: the personal workspace's, when you change it.
+/// Returns whether a row changed.
+pub fn set_path(
+    conn: &Connection,
+    id: ProjectId,
+    path: &std::path::Path,
+) -> Result<bool, StoreError> {
+    Ok(conn.execute(
+        "UPDATE projects SET path = ?2 WHERE id = ?1 AND removed_at IS NULL",
+        params![id, path_text(path)?],
+    )? == 1)
+}
+
 /// Unregisters a project; its folder is never touched. Returns whether a row changed.
 pub fn mark_removed(conn: &Connection, id: ProjectId, at: Timestamp) -> Result<bool, StoreError> {
     Ok(conn.execute(

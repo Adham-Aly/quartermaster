@@ -270,11 +270,13 @@ string_enum! {
 }
 
 string_enum! {
-    /// How a project's finished work is delivered.
+    /// How a project's finished work is delivered. `Folder` is the personal workspace's plain
+    /// folder: crewmates work in it directly, with no git, so their edits are final.
     pub enum DeliveryMode ("delivery mode") {
         DirectPr = "direct_pr",
         BranchOnly = "branch_only",
         BuildInPlace = "build_in_place",
+        Folder = "folder",
     }
 }
 

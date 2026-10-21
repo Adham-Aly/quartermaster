@@ -150,7 +150,8 @@ pub struct MessageTaskArgs {
 }
 
 tool! {
-    /// Stops a direct report's work; unmerged work is saved to a kept ref first.
+    /// Stops a direct report's work; unmerged work is saved to a kept ref first. A plain-folder
+    /// task's edits stay where they are.
     StopTaskTool {
         name: "stop_task",
         class: Act,
@@ -170,7 +171,7 @@ pub struct StopTaskArgs {
 
 tool! {
     /// Closes a direct report's task and retires its worktree; unmerged work is saved to a kept ref
-    /// first.
+    /// first. A plain-folder task keeps its files where they are.
     CloseTaskTool {
         name: "close_task",
         class: Act,
@@ -220,10 +221,12 @@ pub struct SettleTaskArgs {
 pub enum SettleOutcome {
     /// Direct pull request: merged on GitHub at exactly this commit.
     Merged { pr: u64, commit: CommitSha },
-    /// Branch only: pushed and marked delivered (kept locally for the personal workspace).
+    /// Branch only: pushed and marked delivered. With no remote, marked delivered and kept locally.
     Delivered { branch: String, commit: CommitSha },
     /// Build in place: merged into your checkout's current branch.
     Landed { branch: String, commit: CommitSha },
+    /// Folder work: its changes are already in the folder; nothing was merged or pushed.
+    Done { folder: String },
     /// An answer-only task: its answer is kept and the task closed.
     Closed,
     /// Autonomy is off: waiting for your approval.

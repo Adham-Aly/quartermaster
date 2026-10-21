@@ -91,6 +91,21 @@ pub struct BriefBuildsOn {
     pub answer_path: String,
 }
 
+/// Where a crewmate works. A branch is cut from a settled base; a folder is a plain folder whose
+/// files are the work, with no git and nothing to commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BriefWorkspace {
+    /// The task's own branch. `start_ref` is where it starts, as shown: `origin/main`
+    /// (`tasks.base_ref`), or for a review task the builder's branch `qm/task-0040`.
+    /// `start_commit` is the commit it starts at (`tasks.base_commit`).
+    Branch {
+        start_ref: String,
+        start_commit: CommitSha,
+    },
+    /// The folder the task edits directly: the personal workspace's folder.
+    Folder { path: String },
+}
+
 /// Everything a brief says, recorded by the core when the task started.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BriefFacts {
@@ -103,11 +118,8 @@ pub struct BriefFacts {
     /// Whether the project has a remote (the personal workspace and local-only projects don't).
     pub has_remote: bool,
     pub verification: BriefVerification,
-    /// Where the branch starts, as shown: `origin/main` (`tasks.base_ref`), or for a review task
-    /// the builder's branch `qm/task-0040`.
-    pub start_ref: String,
-    /// The commit the branch starts at (`tasks.base_commit`).
-    pub start_commit: CommitSha,
+    /// Where the task works: its branch, or a plain folder.
+    pub workspace: BriefWorkspace,
     /// The branch a pull request targets (direct pull request only): `main`, `release/2.4`.
     pub pr_target: Option<String>,
     /// The task's block of ten ports.
@@ -158,6 +170,15 @@ fn delivery_words(delivery: DeliveryMode) -> &'static str {
         DeliveryMode::DirectPr => "direct pull request",
         DeliveryMode::BranchOnly => "branch only",
         DeliveryMode::BuildInPlace => "build in place",
+        DeliveryMode::Folder => "plain folder",
+    }
+}
+
+/// "the commit" for a branch, "your edits" for a folder: what a check or a review is about.
+fn final_state(f: &BriefFacts) -> &'static str {
+    match f.workspace {
+        BriefWorkspace::Branch { .. } => "your final commit",
+        BriefWorkspace::Folder { .. } => "your final edits",
     }
 }
 
@@ -228,16 +249,34 @@ fn header(out: &mut String, f: &BriefFacts) {
             (DeliveryMode::BranchOnly, _) if f.has_remote => "settling pushes this branch".into(),
             (DeliveryMode::BranchOnly, _) => "the branch stays in this repository".into(),
             (DeliveryMode::BuildInPlace, _) => "settling merges it into the user's checkout".into(),
+            (DeliveryMode::Folder, _) => "the edits there are the delivery".into(),
         }
     };
-    let _ = writeln!(
-        out,
-        "Branch {} from {} @ {} · {fate}",
-        f.task.branch(),
-        neutralise(&f.start_ref),
-        f.start_commit.short()
-    );
-    out.push_str("Evidence folder $QM_EVIDENCE_DIR, outside the worktree; never commit it\n");
+    match &f.workspace {
+        BriefWorkspace::Branch {
+            start_ref,
+            start_commit,
+        } => {
+            let _ = writeln!(
+                out,
+                "Branch {} from {} @ {} · {fate}",
+                f.task.branch(),
+                neutralise(start_ref),
+                start_commit.short()
+            );
+            out.push_str(
+                "Evidence folder $QM_EVIDENCE_DIR, outside the worktree; never commit it\n",
+            );
+        }
+        BriefWorkspace::Folder { path } => {
+            let _ = writeln!(
+                out,
+                "Folder {} · no branch, no git · {fate}",
+                neutralise(path)
+            );
+            out.push_str("Evidence folder $QM_EVIDENCE_DIR, outside the folder you work in\n");
+        }
+    }
     let ports = f.ports.ports();
     let _ = writeln!(
         out,
@@ -374,10 +413,13 @@ fn section_first_edit(out: &mut String, f: &BriefFacts) {
 }
 
 fn section_verification(out: &mut String, f: &BriefFacts) {
-    let rebase = format!(
-        "Rebase onto {} and resolve conflicts yourself. Never squash your own commits.\n",
-        neutralise(&f.start_ref)
-    );
+    let rebase = match &f.workspace {
+        BriefWorkspace::Branch { start_ref, .. } => format!(
+            "Rebase onto {} and resolve conflicts yourself. Never squash your own commits.\n",
+            neutralise(start_ref)
+        ),
+        BriefWorkspace::Folder { .. } => String::new(),
+    };
     match f.verification {
         BriefVerification::None => {
             out.push_str("\n## Verification: none\n");
@@ -408,14 +450,20 @@ fn section_verification(out: &mut String, f: &BriefFacts) {
                 let _ = writeln!(out, "\n## Verification: {running}");
             }
             if running == VerificationLevel::Quick {
-                out.push_str(if f.delivery == DeliveryMode::DirectPr {
-                    "CI must be green on your final commit. Nothing more is required: no evidence,\n\
-                     and the report headings are optional. Never squash your own commits.\n"
+                if f.delivery == DeliveryMode::DirectPr {
+                    out.push_str(
+                        "CI must be green on your final commit. Nothing more is required: no evidence,\n\
+                         and the report headings are optional. Never squash your own commits.\n",
+                    );
                 } else {
-                    "Name the local checks you ran on your final commit under Verified. Nothing more is\n\
-                     required: no evidence, and the other headings are optional. Never squash your own\n\
-                     commits.\n"
-                });
+                    let _ = writeln!(
+                        out,
+                        "Name the local checks you ran on {} under Verified. Nothing more is\n\
+                         required: no evidence, and the other headings are optional. Never squash your own\n\
+                         commits.",
+                        final_state(f)
+                    );
+                }
                 return;
             }
             out.push_str(&rebase);
@@ -427,16 +475,20 @@ fn section_verification(out: &mut String, f: &BriefFacts) {
                  Update any docs the change makes stale.\n",
             );
             if f.delivery != DeliveryMode::DirectPr {
-                out.push_str(
-                    "There's no pull request to run CI: name the local checks you ran on your final\n\
-                     commit under Verified.\n",
+                let _ = writeln!(
+                    out,
+                    "There's no pull request to run CI: name the local checks you ran on {} under Verified.",
+                    final_state(f)
                 );
             }
             if running == VerificationLevel::Reviewed {
-                out.push_str(
+                out.push_str(if f.delivery == DeliveryMode::Folder {
+                    "Then an independent review: report done without changing anything more. Fix what\n\
+                     it finds when your supervisor passes it on.\n"
+                } else {
                     "Then an independent review: commit locally and report done without pushing or\n\
-                     opening the pull request. Fix what it finds when your supervisor passes it on.\n",
-                );
+                     opening the pull request. Fix what it finds when your supervisor passes it on.\n"
+                });
             }
         }
     }
@@ -492,6 +544,10 @@ fn section_delivery(out: &mut String, f: &BriefFacts) {
         DeliveryMode::BuildInPlace => out.push_str(
             "Commit your work on this branch. Settling merges it into the branch the user's checkout\n\
              has checked out; never touch the checkout yourself.\n",
+        ),
+        DeliveryMode::Folder => out.push_str(
+            "Work directly in the folder. There's no git here: nothing to commit, push or open. Your\n\
+             edits are final, and settling marks the task done; nothing is undone when the task closes.\n",
         ),
     }
 }

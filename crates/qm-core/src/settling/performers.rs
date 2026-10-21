@@ -120,6 +120,10 @@ impl HeldPerformer for MergePerformer {
                 Landing::Landed(
                     Fact::Delivered { branch, .. } | Fact::DeliveredLocal { branch, .. },
                 ) => (format!("Delivered {branch} at {short}."), false),
+                Landing::Landed(Fact::DoneInFolder { folder }) => (
+                    format!("Delivered {task}: its changes are in {folder}."),
+                    false,
+                ),
                 Landing::Pushed { branch, .. } => (
                     format!(
                         "Pushed {branch} at {short}; it counts as delivered once GitHub's checks pass on it, and you're woken with settled then."

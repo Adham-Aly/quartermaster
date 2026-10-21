@@ -74,6 +74,8 @@ pub struct TaskRow {
     pub base_branch: Option<String>,
     pub base_ref: Option<String>,
     pub base_commit: Option<CommitSha>,
+    /// The task's branch: empty for a folder task, which has none (the database holds NULL). Only
+    /// git delivery reads it, and a folder task never reaches a git path.
     pub branch: String,
     pub port_base: Option<u16>,
     pub status: TaskStatus,
@@ -151,7 +153,7 @@ struct Raw {
     base_branch: Option<String>,
     base_ref: Option<String>,
     base_commit: Option<String>,
-    branch: String,
+    branch: Option<String>,
     port_base: Option<i64>,
     status: TaskStatus,
     outcome: Option<TaskOutcome>,
@@ -228,7 +230,7 @@ impl Raw {
             base_branch: self.base_branch,
             base_ref: self.base_ref,
             base_commit: sha("tasks.base_commit", self.base_commit)?,
-            branch: self.branch,
+            branch: self.branch.unwrap_or_default(),
             port_base: port(self.port_base)?,
             status: self.status,
             outcome: self.outcome,
@@ -302,7 +304,7 @@ pub fn insert(conn: &Connection, task: &NewTask) -> Result<TaskId, StoreError> {
             task.base_branch,
             task.base_ref,
             task.base_commit.as_ref().map(CommitSha::as_str),
-            id.branch(),
+            (task.delivery != DeliveryMode::Folder).then(|| id.branch()),
             task.port_base.map(i64::from),
             i64::from(task.escalations),
             to_millis(task.at),
@@ -502,6 +504,21 @@ pub fn ports_in_use(conn: &Connection) -> Result<Vec<u16>, StoreError> {
     rows.into_iter()
         .map(|b| port(Some(b)).map(Option::unwrap_or_default))
         .collect()
+}
+
+/// The tasks of a project that aren't closed yet, with their kinds, oldest first. A folder project
+/// checks these before a code-writing task starts in it.
+pub fn open_in_project(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<Vec<(TaskId, TaskKind)>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, kind FROM tasks WHERE project_id = ?1 AND status <> 'closed' ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map(params![project], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 /// The port blocks of tasks closed since `since`, newest first, at most `limit`.
