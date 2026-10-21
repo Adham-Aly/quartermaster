@@ -896,12 +896,14 @@ impl ProjectService {
     async fn register(&self, new: NewProject) -> Result<ProjectId, StoreError> {
         let summary = format!("project {} added ({})", new.name, new.origin);
         // The task numbers its branches already name are reserved before any task can take one.
-        let (git, checkout) = (
-            Git::with_program(self.git_program()),
-            vec![new.path.clone()],
-        );
+        // A folder project has no task branches, and its folder may not be a repository.
+        let checkouts = match new.delivery {
+            DeliveryMode::Folder => Vec::new(),
+            _ => vec![new.path.clone()],
+        };
+        let git = Git::with_program(self.git_program());
         let leftovers = tokio::task::spawn_blocking(move || {
-            crate::tasks::startup::branch_task_numbers(&git, &checkout)
+            crate::tasks::startup::branch_task_numbers(&git, &checkouts)
         })
         .await
         .unwrap_or_default();
