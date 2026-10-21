@@ -219,6 +219,9 @@ pub(super) async fn run(startup: &Startup, flags: &Flags) -> Result<(), Failure>
             } else {
                 Provider::ChatGpt
             };
+            let loaded = qm_core::config_file::load(&startup.dir)
+                .map_err(|e| dev_fail(format!("can't load settings: {e}")))?;
+            let (_settings_tx, settings) = watch::channel(loaded.config);
             let credentials = FileCredentialStore::open(startup.dir.auth_file())
                 .map_err(|e| dev_fail(format!("can't open the credential file: {e}")))?;
             let engine = ProviderEngine::new(ProviderEngineConfig {
@@ -232,6 +235,7 @@ pub(super) async fn run(startup: &Startup, flags: &Flags) -> Result<(), Failure>
                 models: crate::wiring::provider_models(),
                 builtins: Some(Arc::new(FileToolsFactory)),
                 inherited_env: inherited_env(),
+                settings,
                 user_agent: format!("quartermaster/{}", env!("CARGO_PKG_VERSION")),
             });
             let builtins = if orchestrator {

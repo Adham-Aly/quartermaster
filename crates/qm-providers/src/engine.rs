@@ -28,12 +28,14 @@ use qm_engine::{
 };
 use qm_types::BoxFuture;
 use qm_types::clock::Clock;
+use qm_types::config::Config;
 use qm_types::domain::{EngineKind, Provider};
 use qm_types::env::NEVER_PASSED_TO_AGENTS;
 use qm_types::ids::AccountId;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
+use tokio::sync::watch;
 
 /// Copied from the app's environment into `bash`'s, when present there.
 pub const COPIED_ENV_KEYS: &[&str] = &[
@@ -60,6 +62,9 @@ pub struct ProviderEngineConfig {
     pub builtins: Option<Arc<dyn BuiltinToolsFactory>>,
     /// The app's environment at startup.
     pub inherited_env: BTreeMap<String, String>,
+    /// The app's settings, as they change: the autocompact window is read at every compaction
+    /// check, so a change applies at the next check.
+    pub settings: watch::Receiver<Config>,
     /// `quartermaster/<version>`.
     pub user_agent: String,
 }
@@ -89,6 +94,7 @@ pub(crate) struct Shared {
     pub(crate) models: Arc<dyn ModelProfiles>,
     pub(crate) builtins: Option<Arc<dyn BuiltinToolsFactory>>,
     pub(crate) inherited_env: BTreeMap<String, String>,
+    pub(crate) settings: watch::Receiver<Config>,
     pub(crate) user_agent: String,
     pub(crate) http: HttpClient,
     /// The latest usage headers per account, for `Engine::usage`.
@@ -120,6 +126,7 @@ impl ProviderEngine {
                 models: config.models,
                 builtins: config.builtins,
                 inherited_env: config.inherited_env,
+                settings: config.settings,
                 user_agent: config.user_agent,
                 http,
                 usage: Mutex::new(HashMap::new()),
