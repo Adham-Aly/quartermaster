@@ -268,13 +268,16 @@ impl App {
 
     fn on_routing_key(&mut self, code: KeyCode) -> bool {
         let row = self.view.settings.routing_row;
-        if let Some(at) = list_move(code, Some(row), 2) {
+        if let Some(at) = list_move(code, Some(row), 3) {
             self.settings_set(|s| &mut s.routing_row, at);
             return true;
         }
         match code {
             KeyCode::Char(' ') => self.toggle_pin(),
             KeyCode::Enter if row == 0 => self.toggle_pin(),
+            KeyCode::Enter if row == 2 => {}
+            KeyCode::Char('-') => self.step_autocompact(false),
+            KeyCode::Char('+' | '=') => self.step_autocompact(true),
             KeyCode::Enter | KeyCode::Char('q') => {
                 self.open_picker(PickFor::QuartermasterModel, SettingsHit::QuartermasterModel);
             }
@@ -290,6 +293,19 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// Steps the autocompact window one step up or down and selects its row. At an end it does
+    /// nothing.
+    fn step_autocompact(&mut self, up: bool) {
+        self.settings_set(|s| &mut s.routing_row, 2);
+        let window = self.view.settings.model.autocompact_window;
+        let next = if up { window.up() } else { window.down() };
+        if next != window {
+            self.intend(Command::SetAutocompactWindow {
+                tokens: u32::from(next),
+            });
+        }
     }
 
     fn on_system_key(&mut self, code: KeyCode) -> bool {
@@ -504,6 +520,8 @@ impl App {
                 self.settings_set(|s| &mut s.routing_row, 1);
                 self.open_picker(PickFor::QuartermasterEffort, hit);
             }
+            SettingsHit::AutocompactDown => self.step_autocompact(false),
+            SettingsHit::AutocompactUp => self.step_autocompact(true),
             SettingsHit::Provider(i) => {
                 self.settings_set(|s| &mut s.provider, Some(i));
                 if double {

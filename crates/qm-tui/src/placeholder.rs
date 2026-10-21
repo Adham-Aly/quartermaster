@@ -188,6 +188,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "space c f q e",
                 "routing: the pin, its model, its fallback, the Quartermaster's model, its effort",
             ),
+            ("− +", "routing: autocompact window, for every agent"),
             ("n s", "system: notifications, the setup check"),
         ],
     ),

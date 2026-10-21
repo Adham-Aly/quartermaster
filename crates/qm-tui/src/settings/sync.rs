@@ -37,6 +37,7 @@ impl Settings {
             notifications: view.notifications,
             unavailable: view.unavailable.clone(),
             tier_efforts: view.tier_efforts.clone(),
+            autocompact_window: view.autocompact_window,
         }
     }
 }
