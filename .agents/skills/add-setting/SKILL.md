@@ -8,11 +8,12 @@ description: Add or change a user setting stored in config.toml - the schema in 
 ## Where a setting lives
 
 - **`config.toml`** (`qm_types::config::Config`): the user's preferences that aren't about a
-  particular account or detected model: the Quartermaster's model, the "always use" pin, each
-  tier's default effort, project search roots, notifications. **Never a secret**: credentials go in
-  `auth.json` through `qm_auth`.
-- **The database**: anything about a particular account or model (placements, per-placement effort,
-  labels, pauses, the preferred account) is a row (skill `add-migration`).
+  particular account or detected model: the Quartermaster's model and effort, the "always use"
+  pin, each tier's default effort, project search roots, notifications. **Never a secret**:
+  credentials go in `auth.json` through `qm_auth`.
+- **The database**: anything about a particular account or model (placements, the tier entries:
+  each a model at an effort; labels, pauses, the preferred account) is a row (skill
+  `add-migration`).
 - **`tui.toml`**: UI-only state per Mac, written by `qm-tui` itself (column widths), because the UI
   can't reach the core's config.
 

@@ -178,8 +178,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "model levels: move, remove, effort, find a model",
             ),
             (
-                "space c f q",
-                "routing: the pin, its model, its fallback, the Quartermaster's model",
+                "space c f q e",
+                "routing: the pin, its model, its fallback, the Quartermaster's model, its effort",
             ),
             ("n s", "system: notifications, the setup check"),
         ],

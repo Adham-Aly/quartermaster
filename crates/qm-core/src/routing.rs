@@ -57,7 +57,8 @@
 //! # 4. The Quartermaster's own model — [`quartermaster_choice`]
 //!
 //! The setting (Auto by default) applied to the current pool through
-//! `qm_routing::quartermaster_model::choose`; routing never changes the setting.
+//! `qm_routing::quartermaster_model::choose`, with your effort for it when you set one (else its
+//! model's tier default); routing never changes either setting.
 //!
 //! # Logins that stopped working
 //!
@@ -793,8 +794,13 @@ pub fn quartermaster_choice(
     let mut candidates = pool.placed.clone();
     candidates.extend(pool.pinned.iter().cloned());
     let preferred = accounts::preferred_account(conn)?;
-    let Some(choice) = quartermaster_model::choose(&setting, &candidates, preferred, &config.tiers)
-    else {
+    let Some(choice) = quartermaster_model::choose(
+        &setting,
+        config.quartermaster.effort,
+        &candidates,
+        preferred,
+        &config.tiers,
+    ) else {
         return Ok(None);
     };
     Ok(pool

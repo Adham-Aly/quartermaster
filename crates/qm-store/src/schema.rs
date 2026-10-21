@@ -15,6 +15,7 @@ pub static MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../migrations/0004_delivery.sql")).foreign_key_check(),
     M::up(include_str!("../migrations/0005_verification.sql")).foreign_key_check(),
     M::up(include_str!("../migrations/0006_sessions.sql")).foreign_key_check(),
+    M::up(include_str!("../migrations/0007_tier_entries.sql")).foreign_key_check(),
 ];
 
 /// The migration set.

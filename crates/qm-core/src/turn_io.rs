@@ -50,6 +50,9 @@ pub enum OpenReason {
     Closed { reason: String },
     /// The seat's model moved to another engine.
     EngineSwitch,
+    /// The seat's effort level changed (your setting, or its model's tier): resume the same
+    /// conversation at the new level where the engine and account still serve it.
+    EffortChange,
     /// You ran `/clear`: a new session with an empty conversation, and no summary of earlier
     /// turns.
     Cleared,

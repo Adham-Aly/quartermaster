@@ -30,6 +30,7 @@ impl Settings {
             models: view.models.clone(),
             pin: view.pin.clone(),
             quartermaster: view.quartermaster.clone(),
+            quartermaster_effort: view.quartermaster_effort,
             quartermaster_now: view.quartermaster_now.clone(),
             providers: view.providers.clone(),
             login: view.login.as_ref().map(Login::from_view),

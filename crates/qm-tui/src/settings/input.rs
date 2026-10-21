@@ -65,11 +65,9 @@ pub(crate) fn menu_items(target: MenuTarget) -> Vec<&'static str> {
             vec![ADD_TO_TIER, remove_from(tier), REMOVE_FROM_ALL, ALWAYS_USE]
         }
         MenuTarget::Model(BoardItem::Unused { .. }) => vec![ADD_TO_TIER, ALWAYS_USE],
-        MenuTarget::AddToTier(item) => BOARD
-            .into_iter()
-            .filter(|&t| item.tier() != Some(t))
-            .map(tier_label)
-            .collect(),
+        // Every tier, the entry's own too: the same model can sit there again at another effort,
+        // which the next step asks for.
+        MenuTarget::AddToTier(_) => BOARD.into_iter().map(tier_label).collect(),
         MenuTarget::Account(account) => {
             let mut items = Vec::new();
             if account.login == AccountLogin::Broken {
@@ -278,6 +276,13 @@ impl App {
             KeyCode::Enter if row == 0 => self.toggle_pin(),
             KeyCode::Enter | KeyCode::Char('q') => {
                 self.open_picker(PickFor::QuartermasterModel, SettingsHit::QuartermasterModel);
+            }
+            KeyCode::Char('e') => {
+                self.settings_set(|s| &mut s.routing_row, 1);
+                self.open_picker(
+                    PickFor::QuartermasterEffort,
+                    SettingsHit::QuartermasterEffort,
+                );
             }
             KeyCode::Char('c') => self.open_picker(PickFor::PinModel, SettingsHit::PinModel),
             KeyCode::Char('f') => self.open_picker(PickFor::PinFallback, SettingsHit::PinFallback),
@@ -494,6 +499,10 @@ impl App {
                 self.settings_set(|s| &mut s.routing_row, 1);
                 self.open_picker(PickFor::QuartermasterModel, hit);
             }
+            SettingsHit::QuartermasterEffort => {
+                self.settings_set(|s| &mut s.routing_row, 1);
+                self.open_picker(PickFor::QuartermasterEffort, hit);
+            }
             SettingsHit::Provider(i) => {
                 self.settings_set(|s| &mut s.provider, Some(i));
                 if double {
@@ -680,20 +689,8 @@ impl App {
                 }
             }
             MenuTarget::AddToTier(board) => {
-                let Some(id) = self.model_id(board) else {
-                    return;
-                };
                 if let Some(&to) = BOARD.iter().find(|&&t| tier_label(t) == item) {
-                    self.intend(Command::PlaceModel {
-                        model: id,
-                        from: None,
-                        to,
-                    });
-                    let model = board.model();
-                    self.settings_set(
-                        |s| &mut s.board,
-                        Some(BoardItem::Placed { model, tier: to }),
-                    );
+                    self.open_picker(PickFor::AddAt(board, to), SettingsHit::Board(board));
                 }
             }
             MenuTarget::Account(account) => match item {
@@ -728,19 +725,32 @@ impl App {
         let Some(model) = self.model_id(item) else {
             return;
         };
-        let from = item.tier();
+        let (from, effort) = (item.tier(), item.effort());
         let intent = match zone {
             Zone::Tier(to) if from == Some(to) => return,
-            Zone::Tier(to) => Command::PlaceModel { model, from, to },
+            Zone::Tier(to) => Command::PlaceModel {
+                model,
+                from,
+                effort,
+                to,
+            },
             Zone::NotInUse => match from {
-                Some(tier) => Command::RemovePlacement { model, tier },
+                Some(tier) => Command::RemovePlacement {
+                    model,
+                    tier,
+                    effort,
+                },
                 None => return,
             },
         };
         self.intend(intent);
         let index = item.model();
         let landed = match zone {
-            Zone::Tier(tier) => Some(BoardItem::Placed { model: index, tier }),
+            Zone::Tier(tier) => Some(BoardItem::Placed {
+                model: index,
+                tier,
+                effort,
+            }),
             Zone::NotInUse => {
                 let m = &self.view.settings.model.models[index];
                 if m.unused() {
@@ -749,6 +759,7 @@ impl App {
                     m.placements.first().map(|p| BoardItem::Placed {
                         model: index,
                         tier: p.tier,
+                        effort: p.effort,
                     })
                 }
             }
@@ -1045,23 +1056,8 @@ impl App {
             })
             .collect();
         Some(match purpose {
-            PickFor::Effort(item) => {
-                let tier = item.tier()?;
-                let m = settings.models.get(item.model())?;
-                let mut options = vec![(
-                    format!(
-                        "Tier default · {}",
-                        effort_label(model_tier_default(m, tier, &settings.tier_efforts))
-                    ),
-                    PickValue::Effort(None),
-                )];
-                options.extend(
-                    m.supported.iter().map(|&e: &Effort| {
-                        (effort_label(e).to_owned(), PickValue::Effort(Some(e)))
-                    }),
-                );
-                let current = m.placement(tier).map(|p| PickValue::Effort(p.effort));
-                (options, current)
+            PickFor::Effort(_) | PickFor::AddAt(..) | PickFor::QuartermasterEffort => {
+                return effort_options(settings, purpose);
             }
             PickFor::MoveTo(item) => {
                 let mut options: Vec<(String, PickValue)> = BOARD
@@ -1133,6 +1129,55 @@ impl App {
         })
     }
 
+    /// Runs an effort picker's choice: a tier entry's effort, the effort a new entry is added at,
+    /// or the Quartermaster's.
+    fn choose_effort(&mut self, purpose: PickFor, effort: Option<Effort>) {
+        match purpose {
+            PickFor::Effort(item) => {
+                let (Some(model), Some(tier)) = (self.model_id(item), item.tier()) else {
+                    return;
+                };
+                let current = item.effort();
+                if current == effort {
+                    return;
+                }
+                self.intend(Command::SetPlacementEffort {
+                    model,
+                    tier,
+                    current,
+                    effort,
+                });
+                let landed = BoardItem::Placed {
+                    model: item.model(),
+                    tier,
+                    effort,
+                };
+                self.settings_set(|s| &mut s.board, Some(landed));
+            }
+            PickFor::AddAt(item, tier) => {
+                let Some(model) = self.model_id(item) else {
+                    return;
+                };
+                self.intend(Command::PlaceModel {
+                    model,
+                    from: None,
+                    effort,
+                    to: tier,
+                });
+                let landed = BoardItem::Placed {
+                    model: item.model(),
+                    tier,
+                    effort,
+                };
+                self.settings_set(|s| &mut s.board, Some(landed));
+            }
+            PickFor::QuartermasterEffort => {
+                self.intend(Command::SetQuartermasterEffort { effort });
+            }
+            _ => {}
+        }
+    }
+
     fn choose_pick(&mut self, index: usize) {
         let Some(picker) = self.view.settings.picker.take() else {
             return;
@@ -1143,16 +1188,7 @@ impl App {
         };
         let pin = self.view.settings.model.pin.clone();
         match (picker.purpose, value) {
-            (PickFor::Effort(item), PickValue::Effort(effort)) => {
-                let (Some(model), Some(tier)) = (self.model_id(item), item.tier()) else {
-                    return;
-                };
-                self.intend(Command::SetPlacementEffort {
-                    model,
-                    tier,
-                    effort,
-                });
-            }
+            (purpose, PickValue::Effort(effort)) => self.choose_effort(purpose, effort),
             (PickFor::MoveTo(item), PickValue::Zone(zone)) => self.move_item(item, zone),
             (PickFor::PinModel, PickValue::Model(id)) => {
                 let fallback = pin.fallback.filter(|f| *f != id);
@@ -1210,4 +1246,99 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// The efforts a tier entry for `m` in `tier` can have: the tier default (with the level it comes
+/// to on this model), then each level the model supports, lowest first.
+fn entry_efforts(
+    m: &super::model::Model,
+    tier: Tier,
+    tiers: &qm_types::config::TierEfforts,
+) -> Vec<(String, Option<Effort>)> {
+    let mut out = vec![(
+        format!(
+            "Tier default · {}",
+            effort_label(model_tier_default(m, tier, tiers))
+        ),
+        None,
+    )];
+    out.extend(
+        m.supported
+            .iter()
+            .map(|&e| (effort_label(e).to_owned(), Some(e))),
+    );
+    out
+}
+
+/// The levels the Quartermaster's effort picker offers: those its model supports (the model you
+/// chose, else the one it runs on now), or the whole ladder when that isn't known.
+fn quartermaster_levels(settings: &super::model::Settings) -> Vec<Effort> {
+    let model = match &settings.quartermaster {
+        QuartermasterModel::Model(id) => Some(id),
+        _ => settings.quartermaster_now.as_ref().map(|now| &now.model),
+    };
+    let supported = model
+        .and_then(|id| settings.model(id))
+        .map(|m| m.supported.clone())
+        .unwrap_or_default();
+    if supported.is_empty() {
+        vec![
+            Effort::Low,
+            Effort::Medium,
+            Effort::High,
+            Effort::ExtraHigh,
+            Effort::Max,
+        ]
+    } else {
+        supported
+    }
+}
+
+/// What an effort picker offers, and the option now in effect: a tier entry's effort (leaving out
+/// the efforts the model's other entries in that tier hold), the effort a new entry is added at
+/// (only those the tier doesn't hold yet), or the Quartermaster's.
+fn effort_options(
+    settings: &super::model::Settings,
+    purpose: PickFor,
+) -> Option<(Vec<PickOption>, Option<PickValue>)> {
+    Some(match purpose {
+        PickFor::Effort(item) => {
+            let tier = item.tier()?;
+            let m = settings.models.get(item.model())?;
+            let own = item.effort();
+            // The model's other entries in this tier keep their efforts.
+            let options = entry_efforts(m, tier, &settings.tier_efforts)
+                .into_iter()
+                .filter(|(_, e)| *e == own || m.placement(tier, *e).is_none())
+                .map(|(label, e)| (label, PickValue::Effort(e)))
+                .collect();
+            (options, Some(PickValue::Effort(own)))
+        }
+        PickFor::AddAt(item, tier) => {
+            let m = settings.models.get(item.model())?;
+            let options: Vec<PickOption> = entry_efforts(m, tier, &settings.tier_efforts)
+                .into_iter()
+                .filter(|(_, e)| m.placement(tier, *e).is_none())
+                .map(|(label, e)| (format!("Add at {label}"), PickValue::Effort(e)))
+                .collect();
+            (options, Some(PickValue::Effort(None)))
+        }
+        PickFor::QuartermasterEffort => {
+            let levels = quartermaster_levels(settings);
+            let mut options = vec![(
+                String::from("Auto · its model's tier default"),
+                PickValue::Effort(None),
+            )];
+            options.extend(
+                levels
+                    .into_iter()
+                    .map(|e| (effort_label(e).to_owned(), PickValue::Effort(Some(e)))),
+            );
+            (
+                options,
+                Some(PickValue::Effort(settings.quartermaster_effort)),
+            )
+        }
+        _ => return None,
+    })
 }
