@@ -5,9 +5,12 @@
 //! engine for the developer seat), and connects the terminal UI (`qm-tui`) to the core through the
 //! internal API in `qm_types::api`. Nothing else depends on this crate.
 //!
-//! Startup: create the data directory, take `run.lock` (a second instance with the same data
-//! directory says so and exits non-zero), start logging, load `config.toml`, migrate the store on
-//! its database thread, start the core (`wiring`: engines, detection, reconciliation, the seat,
+//! Commands: `quartermaster` attaches to the background server (starting it), `--foreground` runs
+//! server and UI in one process, `server run|status|stop|restart` manage the server (see [`server`]).
+//!
+//! Startup: create the data directory, take `run.lock` (a second foreground instance with the same
+//! data directory says so and exits non-zero; a second server exits quietly), start logging,
+//! load `config.toml`, migrate the store on its database thread, start the core (`wiring`: engines, detection, reconciliation, the seat,
 //! catching up) and run the UI.
 
 mod catalog;
@@ -16,6 +19,7 @@ mod dev;
 mod home;
 mod lock;
 mod logging;
+mod server;
 mod wiring;
 
 use qm_store::db::Db;
@@ -44,10 +48,55 @@ fn fail(what: &str) -> impl FnOnce(&dyn std::fmt::Display) -> Failure {
     }
 }
 
+/// What a startup that holds the run lock has ready for the core.
+struct Booted {
+    config: qm_types::config::Config,
+    db: Db,
+    dev_script: Option<qm_engine::scripted::Script>,
+}
+
+/// Logging, settings and the database, after the run lock is held.
+fn boot(dir: &DataDir) -> Result<Booted, Failure> {
+    logging::init(&dir.logs()).map_err(|e| fail("can't start logging")(&e))?;
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        data_dir = %dir.root().display(),
+        "starting"
+    );
+
+    // Behind the developer gate: the scripted seat's script, checked before anything runs.
+    let dev_script = wiring::dev_seat_script(dir).map_err(|message| Failure { message })?;
+
+    let loaded = qm_core::config_file::load(dir).map_err(|e| fail("can't load settings")(&e))?;
+    for key in &loaded.unknown_keys {
+        tracing::warn!(key = %key, "config.toml has a setting this version doesn't know; it is ignored");
+    }
+
+    // Every pending migration in one transaction; a failure rolls back cleanly.
+    let db = Db::open(&dir.database()).map_err(|e| fail("can't open the database")(&e))?;
+    tracing::info!("database ready");
+    Ok(Booted {
+        config: loaded.config,
+        db,
+        dev_script,
+    })
+}
+
 fn run() -> Result<(), Failure> {
     if let Some(result) = dev::dispatch() {
         return result;
     }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match server::parse(&args).map_err(|message| Failure { message })? {
+        server::Command::Attach => server::attach(),
+        server::Command::Foreground => foreground(),
+        server::Command::ServerRun => server::run_server(),
+        control => server::control(&control),
+    }
+}
+
+/// Server and client in this one process, ending with the UI.
+fn foreground() -> Result<(), Failure> {
     // Everything the app creates (database, logs, settings) is private to you.
     nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
     let dir = DataDir::resolve().map_err(|e| fail("can't find the data directory")(&e))?;
@@ -65,7 +114,7 @@ fn run() -> Result<(), Failure> {
             return Err(Failure {
                 message: format!(
                     "Quartermaster is already running on this Mac (data directory {}). \
-                     Switch to that window, or quit it first.",
+                     Run `quartermaster` to attach to it, or `quartermaster server stop` first.",
                     dir.root().display()
                 ),
             });
@@ -73,24 +122,11 @@ fn run() -> Result<(), Failure> {
         Err(e) => return Err(fail("can't take the run lock")(&e)),
     };
 
-    logging::init(&dir.logs()).map_err(|e| fail("can't start logging")(&e))?;
-    tracing::info!(
-        version = env!("CARGO_PKG_VERSION"),
-        data_dir = %dir.root().display(),
-        "starting"
-    );
-
-    // Behind the developer gate: the scripted seat's script, checked before anything runs.
-    let dev_script = wiring::dev_seat_script(&dir).map_err(|message| Failure { message })?;
-
-    let loaded = qm_core::config_file::load(&dir).map_err(|e| fail("can't load settings")(&e))?;
-    for key in &loaded.unknown_keys {
-        tracing::warn!(key = %key, "config.toml has a setting this version doesn't know; it is ignored");
-    }
-
-    // Every pending migration in one transaction; a failure rolls back cleanly.
-    let db = Db::open(&dir.database()).map_err(|e| fail("can't open the database")(&e))?;
-    tracing::info!("database ready");
+    let Booted {
+        config,
+        db,
+        dev_script,
+    } = boot(&dir)?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -104,7 +140,7 @@ fn run() -> Result<(), Failure> {
     let core = runtime.spawn(wiring::start_core(
         dir.clone(),
         db,
-        loaded.config,
+        config,
         server,
         core_link::machine_name(),
         dev_script,

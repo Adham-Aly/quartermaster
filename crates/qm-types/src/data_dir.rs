@@ -5,7 +5,7 @@
 //! the paths; creating them with safe permissions at first run is the binary's job.
 //!
 //! ```text
-//! config.toml   state.db   auth.json   run.lock   logs/   workspace/
+//! config.toml   state.db   auth.json   run.lock   server.sock   logs/   workspace/
 //! seat/{home,session}/                      the Quartermaster
 //! secondmates/SM-02/{home,session}/
 //! tasks/T-0042/{worktree/,brief.md,skills/,session/,evidence/,jobs/,answer.md}
@@ -90,6 +90,11 @@ impl DataDir {
     /// Held while the app runs; a second instance refuses to start.
     pub fn run_lock(&self) -> PathBuf {
         self.root.join("run.lock")
+    }
+
+    /// The server's socket, bound only while the server holds `run.lock`.
+    pub fn server_socket(&self) -> PathBuf {
+        self.root.join("server.sock")
     }
 
     pub fn logs(&self) -> PathBuf {

@@ -19,10 +19,11 @@ qm-tools.workspace = true
 qm-tui.workspace = true
 qm-types.workspace = true
 jiff.workspace = true
-nix = { workspace = true, features = ["fs", "hostname"] }
+crossterm.workspace = true
+nix = { workspace = true, features = ["fs", "hostname", "process", "signal", "user"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

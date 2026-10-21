@@ -2,7 +2,8 @@
 //!
 //! The core is a library with no dependency on the UI. The UI sends [`Command`]s and renders the
 //! [`Update`]s it receives; both are plain serde data, so the in-process [`link`] here could be
-//! replaced by a socket (JSON lines) for a background daemon later without changing either side.
+//! kept as it is: the background server holds both ends in one process and its socket carries
+//! terminal frames ([`crate::wire`]), not these messages.
 //! `qm-tui` depends on `qm-types` only, which enforces the boundary at compile time.
 //!
 //! Today the link is a pair of unbounded Tokio channels: the core never blocks on a slow UI, and
