@@ -215,6 +215,12 @@ pub enum Command {
     SetAutocompactWindow {
         tokens: u32,
     },
+    /// Turn a registered project's autonomy on or off (from its menu in the Projects pane, or in
+    /// Settings). Only you send this: no agent tool reaches it.
+    SetProjectAutonomy {
+        project: String,
+        autonomy: Autonomy,
+    },
     // ---- Worker sessions. ----
     /// Open a worker's session (the core then fills [`Snapshot::session`]), or close it with
     /// `None` (back to the Bridge).

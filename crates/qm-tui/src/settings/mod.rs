@@ -147,6 +147,8 @@ pub(crate) enum SettingsHit {
     QuartermasterEffort,
     AutocompactDown,
     AutocompactUp,
+    /// Projects: a project's autonomy switch.
+    ProjectAutonomy(usize),
     /// System: the notifications switch and the setup check's "Open".
     NotificationsSwitch,
     SetupCheck,
@@ -298,6 +300,8 @@ pub(crate) struct SettingsView {
     pub(crate) board: Option<BoardItem>,
     /// Routing: 0 the pin, 1 the Quartermaster, 2 the autocompact window (`ROUTING_ROWS` in all).
     pub(crate) routing_row: usize,
+    /// Projects: the selected project row.
+    pub(crate) project_row: usize,
     /// Connect: a provider row, or `providers.len()` for the API-key row.
     pub(crate) provider: Option<usize>,
     pub(crate) drag: Option<Drag>,
@@ -489,7 +493,7 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
             "click to change",
             "n notifications · s setup check · esc close",
         ),
-        Tab::Projects => ("click a tab", "tab next · esc close"),
+        Tab::Projects => ("click to change", "a autonomy · esc close"),
     }
 }
 

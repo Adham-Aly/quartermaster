@@ -237,6 +237,19 @@ pub fn change_settings(
     Ok(changed == 1)
 }
 
+/// Sets a project's autonomy; only the user's own command reaches this. Returns whether a row
+/// changed.
+pub fn set_autonomy(
+    conn: &Connection,
+    id: ProjectId,
+    autonomy: Autonomy,
+) -> Result<bool, StoreError> {
+    Ok(conn.execute(
+        "UPDATE projects SET autonomy = ?2 WHERE id = ?1 AND removed_at IS NULL AND autonomy <> ?2",
+        params![id, autonomy],
+    )? == 1)
+}
+
 /// Unregisters a project; its folder is never touched. Returns whether a row changed.
 pub fn mark_removed(conn: &Connection, id: ProjectId, at: Timestamp) -> Result<bool, StoreError> {
     Ok(conn.execute(
@@ -278,4 +291,47 @@ pub fn with_work_running(conn: &Connection) -> Result<Vec<ProjectId>, StoreError
     Ok(stmt
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_autonomy_persists_and_the_context_block_reads_it() {
+        let dir = std::env::temp_dir().join(format!("qm-store-autonomy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch folder");
+        let mut conn = crate::connection::open(&dir.join("state.db")).expect("open");
+        crate::schema::migrate(&mut conn).expect("migrate");
+        let id = insert(
+            &conn,
+            &NewProject {
+                name: "web-app".into(),
+                path: dir.join("web-app"),
+                origin: ProjectOrigin::Linked,
+                default_branch: "main".into(),
+                github_remote: None,
+                delivery: DeliveryMode::DirectPr,
+                merge_method: MergeMethod::Squash,
+                at: Timestamp::now(),
+            },
+        )
+        .expect("insert");
+        let autonomy =
+            |conn: &Connection| crate::context::projects(conn).expect("read")[0].autonomy;
+        assert_eq!(autonomy(&conn), Autonomy::Off, "off by default");
+        assert!(set_autonomy(&conn, id, Autonomy::On).expect("set"));
+        assert_eq!(autonomy(&conn), Autonomy::On);
+        assert!(
+            !set_autonomy(&conn, id, Autonomy::On).expect("set"),
+            "no change"
+        );
+        assert!(set_autonomy(&conn, id, Autonomy::Off).expect("set"));
+        assert_eq!(
+            load(&conn, id).expect("load").expect("row").autonomy,
+            Autonomy::Off
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

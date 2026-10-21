@@ -189,6 +189,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "routing: the pin, its model, its fallback, the Quartermaster's model, its effort",
             ),
             ("− +", "routing: autocompact window, for every agent"),
+            (
+                "a · space",
+                "projects: turn the selected project's autonomy on or off",
+            ),
             ("n s", "system: notifications, the setup check"),
         ],
     ),
@@ -256,7 +260,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("click the Projects box", "how to add a project"),
             ("click outside · ✕", "close the popup"),
             ("double-click", "open a crewmate"),
-            ("right-click", "a row's menu"),
+            (
+                "right-click",
+                "a row's menu (a project's: its autonomy switch)",
+            ),
             ("drag a border", "resize the columns beside it"),
             ("drag over text", "select and copy it"),
             ("wheel", "scroll the pane under the pointer"),
