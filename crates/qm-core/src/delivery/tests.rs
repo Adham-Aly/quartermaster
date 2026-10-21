@@ -6,18 +6,21 @@ use qm_policy::names::{Boundary, check_commits};
 use qm_types::ids::CommitSha;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A throwaway folder, removed when dropped.
 struct Scratch(PathBuf);
 
 impl Scratch {
+    /// A new, empty folder named after the test, the process and a process-wide counter, so
+    /// tests running in parallel never share one.
     fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        let dir =
-            std::env::temp_dir().join(format!("qm-core-{name}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("scratch folder");
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("qm-core-{name}-{}-{n}", std::process::id()));
+        // A folder left by an earlier run whose pid was reused is stale; start clean.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).expect("scratch folder");
         Self(dir)
     }
 }
@@ -75,9 +78,10 @@ fn sha(dir: &Path, rev: &str) -> CommitSha {
 
 /// An `origin` whose `main` gained a GitHub-style merge commit after the task started, and a
 /// checkout whose task branch, started at the old `main`, holds `own` and is rebased onto the new
-/// one. Returns the scratch folder, the checkout, and the task's base.
-fn rebased_after_a_merge(own: &[&str]) -> (Scratch, PathBuf, CommitSha) {
-    let scratch = Scratch::new("own-commits");
+/// one. `test` names the scratch folder. Returns the scratch folder, the checkout, and the task's
+/// base.
+fn rebased_after_a_merge(test: &str, own: &[&str]) -> (Scratch, PathBuf, CommitSha) {
+    let scratch = Scratch::new(test);
     let origin = scratch.0.join("origin.git");
     let work = scratch.0.join("work");
     let other = scratch.0.join("other");
@@ -134,7 +138,10 @@ fn check(names: &[String]) -> Result<(), qm_types::error::Refusal> {
 
 #[test]
 fn a_rebase_after_a_merge_commit_counts_only_the_tasks_own_commits() {
-    let (_scratch, work, base) = rebased_after_a_merge(&["fix(core): one", "test(core): two"]);
+    let (_scratch, work, base) = rebased_after_a_merge(
+        "a-rebase-after-a-merge-commit-counts-only-the-tasks-own-commits",
+        &["fix(core): one", "test(core): two"],
+    );
     let repo = Repo::open(Git::new(), &work).expect("repo");
     let head = sha(&work, "HEAD");
 
@@ -156,7 +163,10 @@ fn a_rebase_after_a_merge_commit_counts_only_the_tasks_own_commits() {
 
 #[test]
 fn origin_is_fetched_before_the_merge_base_is_taken() {
-    let (_scratch, work, _base) = rebased_after_a_merge(&["fix(core): one"]);
+    let (_scratch, work, _base) = rebased_after_a_merge(
+        "origin-is-fetched-before-the-merge-base-is-taken",
+        &["fix(core): one"],
+    );
     // The checkout's origin/main is stale: back at the task's start.
     git(&work, &["update-ref", "refs/remotes/origin/main", "HEAD~2"]);
     let repo = Repo::open(Git::new(), &work).expect("repo");
@@ -167,7 +177,10 @@ fn origin_is_fetched_before_the_merge_base_is_taken() {
 
 #[test]
 fn a_bad_name_in_the_tasks_own_commits_is_still_refused() {
-    let (_scratch, work, _base) = rebased_after_a_merge(&["fix(core): one", "Fixed stuff"]);
+    let (_scratch, work, _base) = rebased_after_a_merge(
+        "a-bad-name-in-the-tasks-own-commits-is-still-refused",
+        &["fix(core): one", "Fixed stuff"],
+    );
     let repo = Repo::open(Git::new(), &work).expect("repo");
     let own = names(&repo, &sha(&work, "HEAD"), "main");
     assert_eq!(own, ["fix(core): one", "Fixed stuff"]);
@@ -177,7 +190,10 @@ fn a_bad_name_in_the_tasks_own_commits_is_still_refused() {
 
 #[test]
 fn merge_commits_in_the_tasks_own_range_are_left_out() {
-    let (_scratch, work, _base) = rebased_after_a_merge(&["fix(core): one"]);
+    let (_scratch, work, _base) = rebased_after_a_merge(
+        "merge-commits-in-the-tasks-own-range-are-left-out",
+        &["fix(core): one"],
+    );
     git(&work, &["switch", "--quiet", "-c", "side"]);
     commit(&work, "side", "feat(core): side work");
     git(&work, &["switch", "--quiet", "qm/task-0003"]);
@@ -200,7 +216,7 @@ fn merge_commits_in_the_tasks_own_range_are_left_out() {
 
 #[test]
 fn without_the_remote_ref_the_local_default_branch_is_used() {
-    let scratch = Scratch::new("own-commits-local");
+    let scratch = Scratch::new("without-the-remote-ref-the-local-default-branch-is-used");
     git(&scratch.0, &["init", "--quiet", "work"]);
     let work = scratch.0.join("work");
     commit(&work, "a", "feat(core): start");
