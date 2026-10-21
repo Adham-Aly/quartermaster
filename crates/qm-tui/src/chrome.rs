@@ -148,7 +148,7 @@ fn draw_update_notice(
         return x;
     }
     let mut style = theme::tone(notice.tone);
-    if app.hover == Some(Hit::UpdateNotice) {
+    if app.term.hover == Some(Hit::UpdateNotice) {
         style = style.add_modifier(Modifier::UNDERLINED);
     }
     let rect = Rect::new(start, area.y, notice_width, 1);
