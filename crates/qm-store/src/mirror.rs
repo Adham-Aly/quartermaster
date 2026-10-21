@@ -10,7 +10,7 @@
 
 use crate::kept::{KEPT, Kept, VOLATILE};
 use crate::{StoreError, connection, schema};
-use rusqlite::{Connection, params_from_iter, types::Value};
+use rusqlite::{Connection, Transaction, params_from_iter, types::Value};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -136,12 +136,48 @@ fn load(mem: &mut Connection, path: &Path) -> Result<(), StoreError> {
 
 /// Nulls every reference that names a row the load didn't keep. A dangling reference that isn't
 /// nullable means a predicate keeps a row without what it names, which is a bug, so it fails.
-///
-/// The triggers guard the app's writes (events and session lines are append-only, a retry's
-/// `retry_of` is fixed), and the repair is the one write they must allow. So the load drops them,
-/// repairs, and puts them back, all in one transaction.
 fn null_dangling(mem: &mut Connection) -> Result<(), StoreError> {
-    let tx = mem.transaction()?;
+    with_guards_lifted(mem, |tx| {
+        let violations: Vec<(String, Option<i64>, i64)> = tx
+            .prepare("PRAGMA foreign_key_check")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (table, rowid, fk) in violations {
+            let (column, not_null): (String, i64) = tx.query_row(
+                "SELECT f.\"from\", c.\"notnull\" FROM pragma_foreign_key_list(?1) f \
+                 JOIN pragma_table_info(?1) c ON c.name = f.\"from\" WHERE f.id = ?2",
+                (&table, fk),
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let rowid = rowid.ok_or_else(|| StoreError::Invalid {
+                column: "state.db",
+                message: format!("{table} holds a dangling reference and has no rowid to clear it"),
+            })?;
+            if not_null == 1 {
+                return Err(StoreError::Invalid {
+                    column: "state.db",
+                    message: format!("{table}.{column} names a row the load didn't keep"),
+                });
+            }
+            tx.execute(
+                &format!("UPDATE main.{table} SET {column} = NULL WHERE rowid = ?1"),
+                [rowid],
+            )?;
+        }
+        Ok(())
+    })
+}
+
+/// Runs `repair` in one transaction with every trigger lifted. The triggers guard the app's writes
+/// (events and session lines are append-only, a retry's `retry_of` is fixed), and a repair is the
+/// one kind of write they must allow: nulling a reference that a deleted row leaves behind. The
+/// triggers are put back, exactly as they were, before the commit. The TEMP dirty marks are not
+/// main-schema triggers and stay, so the repair still reaches the file.
+pub(crate) fn with_guards_lifted<T>(
+    conn: &mut Connection,
+    repair: impl FnOnce(&Transaction<'_>) -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    let tx = conn.transaction()?;
     let triggers: Vec<(String, String)> = tx
         .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'")?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -149,37 +185,12 @@ fn null_dangling(mem: &mut Connection) -> Result<(), StoreError> {
     for (name, _) in &triggers {
         tx.execute(&format!("DROP TRIGGER \"{name}\""), [])?;
     }
-    let violations: Vec<(String, Option<i64>, i64)> = tx
-        .prepare("PRAGMA foreign_key_check")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(3)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (table, rowid, fk) in violations {
-        let (column, not_null): (String, i64) = tx.query_row(
-            "SELECT f.\"from\", c.\"notnull\" FROM pragma_foreign_key_list(?1) f \
-             JOIN pragma_table_info(?1) c ON c.name = f.\"from\" WHERE f.id = ?2",
-            (&table, fk),
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        let rowid = rowid.ok_or_else(|| StoreError::Invalid {
-            column: "state.db",
-            message: format!("{table} holds a dangling reference and has no rowid to clear it"),
-        })?;
-        if not_null == 1 {
-            return Err(StoreError::Invalid {
-                column: "state.db",
-                message: format!("{table}.{column} names a row the load didn't keep"),
-            });
-        }
-        tx.execute(
-            &format!("UPDATE main.{table} SET {column} = NULL WHERE rowid = ?1"),
-            [rowid],
-        )?;
-    }
+    let value = repair(&tx)?;
     for (_, sql) in &triggers {
         tx.execute(sql, [])?;
     }
     tx.commit()?;
-    Ok(())
+    Ok(value)
 }
 
 /// Creates the dirty-table set and a trigger per kept table and write kind that adds the table's
@@ -442,6 +453,126 @@ mod tests {
             pending,
             (None, None),
             "an unconsumed wake is delivered again"
+        );
+    }
+
+    /// Everything `state.db` holds, the WAL included: what a reader of the folder would find.
+    fn file_text(scratch: &Scratch) -> String {
+        let mut bytes = std::fs::read(scratch.state()).expect("state.db");
+        if let Ok(wal) = std::fs::read(scratch.0.join("state.db-wal")) {
+            bytes.extend(wal);
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[test]
+    fn a_failed_flush_is_written_again_by_the_next_one() {
+        let scratch = Scratch::new("flush-failure");
+        let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
+        quartermaster(&mem);
+        mirror.flush(&mem).expect("a first flush");
+
+        // The disk refuses projects for now; memory has a project it can't write.
+        mirror
+            .disk
+            .execute_batch(
+                "CREATE TRIGGER refuse BEFORE INSERT ON projects \
+                 BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+            )
+            .expect("a refusing trigger");
+        mem.execute(
+            "INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, \
+                 merge_method, created_at, seq) \
+             VALUES (2, 'p', '/p', 'created', 'main', 'direct_pr', 'merge', 1, 2)",
+            [],
+        )
+        .expect("a project");
+        assert!(
+            mirror.flush(&mem).is_err(),
+            "the refusal reaches the caller"
+        );
+        assert!(mirror.stale, "the next flush will rewrite every kept table");
+
+        mirror
+            .disk
+            .execute_batch("DROP TRIGGER refuse")
+            .expect("the trigger goes");
+        // Nothing changed in memory since the failure, yet the next flush writes the project.
+        mirror.flush(&mem).expect("the retry");
+        assert!(!mirror.stale);
+        assert_eq!(
+            count(&mirror.disk, "projects"),
+            1,
+            "the refused project is written"
+        );
+    }
+
+    #[test]
+    fn an_upgrade_from_0008_keeps_only_kept_rows_and_a_second_start_changes_nothing() {
+        let scratch = Scratch::new("upgrade");
+        {
+            let mut old = connection::open_disk(&scratch.state()).expect("the old file");
+            rusqlite_migration::Migrations::from_slice(&schema::MIGRATIONS[..7])
+                .to_latest(&mut old)
+                .expect("the 0008 schema");
+            old.execute_batch(
+                "INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, \
+                     merge_method, created_at) \
+                 VALUES (1, 'p', '/p', 'created', 'main', 'direct_pr', 'merge', 1);
+                 INSERT INTO agents (id, role, home, status, created_at) \
+                 VALUES (1, 'quartermaster', '/home', 'idle', 1);
+                 INSERT INTO turns (id, agent_id, started_by, status, started_at, ended_at) \
+                 VALUES (1, 1, 'app_event', 'completed', 1, 2);
+                 INSERT INTO messages (id, agent_id, source, kind, text, created_at) \
+                 VALUES (1, 1, 'you', 'message', 'VOLATILE-OLD', 1);
+                 INSERT INTO session_lines (agent_id, kind, text, created_at) \
+                 VALUES (1, 'you', 'VOLATILE-OLD', 1);
+                 INSERT INTO events (at, kind, summary, payload) \
+                 VALUES (1, 'you.notice', 'kept', '{\"text\":\"KEPT-OLD\"}');",
+            )
+            .expect("the old rows");
+        }
+
+        let (mem, mirror) = Mirror::open(&scratch.state()).expect("the upgrade");
+        assert_eq!(count(&mem, "projects"), 1, "a kept row loads");
+        assert_eq!(count(&mem, "messages"), 0, "a message never loads");
+        let seq: i64 = mem
+            .query_row("SELECT seq FROM events WHERE id = 1", [], |r| r.get(0))
+            .expect("the event");
+        assert_eq!(seq, 1, "the upgrade gives the event its creation order");
+        drop((mem, mirror));
+        assert!(
+            !file_text(&scratch).contains("VOLATILE-OLD"),
+            "the upgrade wipes the old conversation from the file"
+        );
+        assert!(file_text(&scratch).contains("KEPT-OLD"));
+
+        // A start always rebuilds the file with VACUUM, so the bytes can differ; the rows and the
+        // schema version must not.
+        let stored = |path: &Path| -> String {
+            let disk = connection::open_disk(path).expect("state.db");
+            let version: i64 = disk
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .expect("a version");
+            let events: Vec<(i64, i64)> = disk
+                .prepare("SELECT id, seq FROM events ORDER BY id")
+                .expect("a query")
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .expect("rows")
+                .collect::<rusqlite::Result<_>>()
+                .expect("values");
+            format!(
+                "v{version} projects={} events={events:?}",
+                count(&disk, "projects")
+            )
+        };
+        let before = stored(&scratch.state());
+        let (mem, mirror) = Mirror::open(&scratch.state()).expect("a second start");
+        drop((mem, mirror));
+        assert_eq!(
+            stored(&scratch.state()),
+            before,
+            "a second start changes no row"
         );
     }
 }

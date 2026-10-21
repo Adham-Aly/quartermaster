@@ -335,6 +335,21 @@ pub(crate) async fn retire(
     })
     .await
     .map_err(|e| CloseError::Failed(e.to_string()))?;
+    // Closed tasks beyond the newest few hundred leave memory (Q8). A failure here doesn't undo the
+    // close; the next close tries again.
+    let forgot = svc
+        .db()
+        .call(|conn| {
+            qm_store::history::forget_closed_tasks(conn, qm_store::history::KEEP_CLOSED_TASKS)
+        })
+        .await;
+    match forgot {
+        Ok(gone) if !gone.is_empty() => {
+            tracing::info!(count = gone.len(), "forgot the oldest closed tasks");
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(%task, error = %e, "couldn't forget the oldest closed tasks"),
+    }
     Ok(retired)
 }
 
