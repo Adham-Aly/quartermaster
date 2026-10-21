@@ -6,6 +6,9 @@
 //! goes through [`redact`] before it reaches the disk, as a backstop: code should never log a
 //! secret in the first place. The level comes from `QM_LOG` (an `EnvFilter` directive), `info` by
 //! default. Nothing is logged to the terminal, which belongs to the UI.
+//!
+//! Seven days of files are kept: today's and the six before it. Older ones are removed when the
+//! server starts and each time the day changes.
 
 use jiff::Timestamp;
 use jiff::civil::Date;
@@ -24,6 +27,9 @@ use tracing_subscriber::fmt::MakeWriter;
 pub const QM_LOG: &str = "QM_LOG";
 
 const REDACTED: &str = "[redacted]";
+
+/// How many days of log files are kept, today's included.
+const KEEP_DAYS: i64 = 7;
 
 /// Token prefixes that mark a credential: everything after the prefix is hidden.
 const SECRET_PREFIXES: &[&str] = &[
@@ -69,6 +75,28 @@ fn local_day(at: Timestamp) -> Date {
     at.to_zoned(TimeZone::system()).date()
 }
 
+/// Removes the day's log files older than [`KEEP_DAYS`] days, counting today. A file name this
+/// module doesn't write is left alone; a file that can't be removed is left for the next day.
+fn prune_old(logs: &Path, today: Date) {
+    let Ok(oldest) = today.checked_sub(jiff::Span::new().days(KEEP_DAYS - 1)) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(logs) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let day = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("quartermaster-"))
+            .and_then(|n| n.strip_suffix(".log"))
+            .and_then(|d| d.parse::<Date>().ok());
+        if day.is_some_and(|day| day < oldest) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn open_log(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .create(true)
@@ -108,6 +136,7 @@ struct Day {
 impl DailyFile {
     fn open(logs: PathBuf, clock: Arc<dyn Clock>) -> io::Result<Self> {
         let date = local_day(clock.now());
+        prune_old(&logs, date);
         let file = open_log(&log_file(&logs, date))?;
         Ok(Self {
             logs,
@@ -121,6 +150,7 @@ impl DailyFile {
         let today = local_day(self.clock.now());
         let mut day = self.day.lock().unwrap_or_else(PoisonError::into_inner);
         if day.date != today {
+            prune_old(&self.logs, today);
             day.file = open_log(&log_file(&self.logs, today))?;
             day.date = today;
         }
@@ -307,5 +337,42 @@ mod tests {
         std::fs::remove_dir_all(&dir).expect("cleanup");
         assert_eq!(on_the_20th, "late on the 20th\n");
         assert_eq!(on_the_21st, "just after midnight\nlater the same day\n");
+    }
+
+    #[test]
+    fn a_new_day_keeps_seven_days_of_logs_and_removes_the_older_ones() {
+        let dir = std::env::temp_dir().join(format!("qm-retention-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let today = jiff::civil::date(2026, 10, 20);
+        // Eight days back to yesterday, plus one file this module doesn't write.
+        for back in 1..=8 {
+            let day = today
+                .checked_sub(jiff::Span::new().days(back))
+                .expect("a day");
+            std::fs::write(log_file(&dir, day), "old\n").expect("an old log");
+        }
+        std::fs::write(dir.join("notes.txt"), "kept\n").expect("a file of another kind");
+        let clock = Arc::new(Stepped(Mutex::new(local(today, 9, 0))));
+        let log = DailyFile::open(dir.clone(), clock.clone()).expect("today's file");
+        let kept = |day: Date| log_file(&dir, day).exists();
+
+        // Six days back (seven files with today) stay; eight days back goes.
+        assert!(kept(
+            today.checked_sub(jiff::Span::new().days(6)).expect("a day")
+        ));
+        assert!(!kept(
+            today.checked_sub(jiff::Span::new().days(7)).expect("a day")
+        ));
+        assert!(
+            dir.join("notes.txt").exists(),
+            "a file this module didn't write stays"
+        );
+
+        clock.set(local(today.tomorrow().expect("a next day"), 0, 1));
+        log.write_bytes(b"the next day\n").expect("a line");
+        let older = today.checked_sub(jiff::Span::new().days(6)).expect("a day");
+        assert!(!kept(older), "the day rolled over, so the window moves on");
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 }

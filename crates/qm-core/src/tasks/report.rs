@@ -4,7 +4,7 @@
 //! facts: on a done code report the task's own commit names and the head commit; the
 //! [`ReportGate`] (checks green in direct-PR mode, the review's state, the repair limit). Then one
 //! transaction: the `reports` row, the status (`reported`, or `waiting` for a decision), and the
-//! supervisor's wake. An answer-only task's answer is written to `answer.md` first.
+//! supervisor's wake. An answer-only task's answer is kept in its report row, nowhere else.
 
 use super::lifecycle::{TaskEvent, next_for};
 use super::{TaskService, cut_chars, failed, new_wake, own_commits_failure, refuse};
@@ -27,7 +27,6 @@ use qm_types::ids::{CommitSha, ModelId, ReportId, TaskId};
 use rusqlite::Connection;
 use std::fmt;
 use std::fmt::Write as _;
-use std::path::Path;
 
 /// The longest report text the supervisor's wake carries.
 pub const WAKE_REPORT_CHARS: usize = 2_000;
@@ -258,25 +257,6 @@ fn wake_text(task: TaskId, row: &TaskRow, args: &ReportArgs) -> String {
     )
 }
 
-/// Writes `answer.md` atomically: a temporary file in the task folder, then a rename; mode 0600.
-fn write_answer(root: &Path, path: &Path, answer: &str) -> std::io::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    std::fs::create_dir_all(root)?;
-    let tmp = root.join(".answer.md.tmp");
-    {
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        f.write_all(answer.as_bytes())?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)
-}
-
 /// The caller's task, for a crewmate tool.
 pub(crate) async fn callers_task(
     svc: &TaskService,
@@ -411,18 +391,6 @@ pub(crate) async fn record(
             .gate
             .check_with_head(&row, &args, head.as_ref())
             .await?;
-    }
-
-    // An answer-only task's answer, before the transaction (the last report wins).
-    if args.outcome == ReportOutcome::Done
-        && row.kind.is_answer_only()
-        && let Some(answer) = args.answer.clone()
-    {
-        let paths = svc.deps().data_dir.task(task);
-        tokio::task::spawn_blocking(move || write_answer(&paths.root, &paths.answer, &answer))
-            .await
-            .map_err(|e| failed(&e))?
-            .map_err(|e| failed(&format!("the answer couldn't be saved: {e}")))?;
     }
 
     let at = svc.clock().now();

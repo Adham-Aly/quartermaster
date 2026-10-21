@@ -37,7 +37,7 @@ pub struct ReportArgs {
     pub risk: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_done: Option<String>,
-    // Answer-only kinds: saved as answer.md.
+    // Answer-only kinds: the answer the task's report carries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
     // Reproductions: the report opens with "reproduced: yes|no".

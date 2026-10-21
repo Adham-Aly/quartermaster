@@ -276,8 +276,6 @@ pub struct TaskPaths {
     pub evidence: PathBuf,
     /// Background shell job output.
     pub jobs: PathBuf,
-    /// The answer of an answer-only task.
-    pub answer: PathBuf,
 }
 
 impl TaskPaths {
@@ -289,9 +287,19 @@ impl TaskPaths {
             session: root.join("session"),
             evidence,
             jobs: root.join("jobs"),
-            answer: root.join("answer.md"),
             root,
         }
+    }
+}
+
+/// Removes the file or folder at `path`, with everything in it. Nothing there is not an error.
+/// A symlink is removed itself, never followed.
+pub fn remove_path(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }
 }
 

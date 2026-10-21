@@ -23,8 +23,9 @@ use qm_store::agents::{self, InterruptedCrewTurn};
 use qm_store::events::{self, NewEvent};
 use qm_store::tasks::{self as task_store, TaskRow};
 use qm_store::turns::{cut_short, mark_recovered};
+use qm_types::data_dir::{DataDir, remove_path};
 use qm_types::domain::{DeliveryMode, TaskStatus, TurnStatus, WakeKind};
-use qm_types::ids::{PortBlock, ProjectId, TaskId};
+use qm_types::ids::{PortBlock, ProjectId, SecondmateId, TaskId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -50,6 +51,81 @@ pub enum StartupError {
     Store(#[from] StoreError),
     #[error("the task worktrees couldn't be checked: {0}")]
     Git(String),
+}
+
+/// What a start deletes from the data directory and the scratch root (plan §9): the Quartermaster's
+/// and each secondmate's session folder, the folders and evidence of tasks that are no longer open
+/// (an open task keeps its folder but loses its session and its legacy answer file), and the
+/// folders of retired secondmates. Worktrees, repositories, the workspace and Claude's own files
+/// are left alone. A file that can't be removed is logged, not fatal.
+async fn remove_leftover_files(svc: &TaskService) -> Result<(), StartupError> {
+    let (open, live) = svc
+        .db()
+        .call(|conn| {
+            let open = qm_store::context::open_tasks(conn)?
+                .into_iter()
+                .map(|t| t.task)
+                .collect::<Vec<_>>();
+            let live = qm_store::secondmates::active(conn)?
+                .into_iter()
+                .map(|s| s.id)
+                .collect::<Vec<_>>();
+            Ok((open, live))
+        })
+        .await?;
+    let data = svc.deps().data_dir.clone();
+    if let Err(e) = tokio::task::spawn_blocking(move || sweep_leftovers(&data, &open, &live)).await
+    {
+        tracing::warn!(error = %e, "sweeping leftover files stopped");
+    }
+    Ok(())
+}
+
+/// The blocking half of [`remove_leftover_files`]; `open` are the open tasks, `live` the active
+/// secondmates.
+fn sweep_leftovers(data: &DataDir, open: &[TaskId], live: &[SecondmateId]) {
+    let remove = |path: &Path| {
+        if let Err(e) = remove_path(path) {
+            tracing::warn!(path = %path.display(), error = %e, "couldn't remove a leftover file");
+        }
+    };
+    remove(&data.seat().session);
+    for (name, path) in subfolders(&data.secondmates_dir()) {
+        match name.parse::<SecondmateId>() {
+            Ok(id) if live.contains(&id) => remove(&data.secondmate(id).session),
+            Ok(_) => remove(&path),
+            Err(_) => {}
+        }
+    }
+    for (name, _) in subfolders(&data.tasks_dir()) {
+        let Ok(id) = name.parse::<TaskId>() else {
+            continue;
+        };
+        let paths = data.task(id);
+        if open.contains(&id) {
+            remove(&paths.session);
+            remove(&paths.root.join("answer.md"));
+        } else if !paths.worktree.exists() {
+            remove(&paths.root);
+        }
+    }
+    for (name, path) in subfolders(&data.scratch().join("evidence")) {
+        if !name.parse::<TaskId>().is_ok_and(|id| open.contains(&id)) {
+            remove(&path);
+        }
+    }
+}
+
+/// The names and paths of the folders directly in `dir`; none if it can't be read.
+fn subfolders(dir: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| Some((e.file_name().into_string().ok()?, e.path())))
+        .collect()
 }
 
 /// The task numbers that task branches in `checkouts` name (local and remote-tracking) and that
@@ -120,7 +196,7 @@ async fn reserve_leftover_task_numbers(svc: &TaskService) -> Result<(), StartupE
     Ok(())
 }
 
-/// Step 4 (before the seat opens). Deletes nothing.
+/// Step 4 (before the seat opens). Deletes only the leftover files [`remove_leftover_files`] names.
 pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupError> {
     let at = svc.clock().now();
     let interrupted = svc
@@ -134,6 +210,7 @@ pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupErr
 
     // Before anything can be numbered: a new task never takes a number an earlier run left behind.
     reserve_leftover_task_numbers(svc).await?;
+    remove_leftover_files(svc).await?;
 
     let report = worktree_report(svc).await?;
 
@@ -562,5 +639,80 @@ async fn not_resumed(svc: &TaskService, task: TaskId, branch: &str, branch_exist
         .await;
     if let Err(e) = result {
         tracing::warn!(%task, error = %e, "couldn't report a missing worktree");
+    }
+}
+
+#[cfg(test)]
+mod leftover_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn a_start_removes_the_leftovers_plan_nine_names_and_nothing_else() {
+        let base = std::env::temp_dir().join(format!("qm-leftovers-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let data = DataDir::with_scratch(base.join("home"), base.join("scratch"));
+        let task = |n: u32| TaskId::new(n).expect("a task number");
+        let live: SecondmateId = "SM-1".parse().expect("a secondmate");
+        let retired: SecondmateId = "SM-2".parse().expect("a secondmate");
+        let folder = |path: PathBuf| {
+            fs::create_dir_all(&path).expect("a folder");
+            path
+        };
+        let file = |path: PathBuf| {
+            fs::create_dir_all(path.parent().expect("a parent")).expect("a folder");
+            fs::write(&path, "x").expect("a file");
+            path
+        };
+
+        // The Quartermaster's and a live secondmate's session folders, and a retired secondmate.
+        let seat_session = folder(data.seat().session);
+        let live_session = folder(data.secondmate(live).session);
+        let plugin = folder(data.secondmate(live).root.join("plugin"));
+        let retired_root = folder(data.secondmates_dir().join(retired.to_string()));
+        // An open task keeps its folder and worktree, but loses its session and answer file.
+        let open = data.task(task(1));
+        folder(open.worktree.clone());
+        let open_session = folder(open.session.clone());
+        let open_answer = file(open.root.join("answer.md"));
+        let open_evidence = folder(open.evidence.clone());
+        // A closed task with no worktree goes whole; one whose worktree is still there keeps it.
+        let closed = data.task(task(2));
+        let closed_evidence = folder(closed.evidence.clone());
+        folder(closed.session.clone());
+        let stuck = data.task(task(3));
+        folder(stuck.worktree.clone());
+        let unrelated = folder(data.tasks_dir().join("notes"));
+
+        sweep_leftovers(&data, &[task(1)], &[live]);
+
+        assert!(!seat_session.exists(), "the Quartermaster's session folder");
+        assert!(!live_session.exists(), "a live secondmate's session folder");
+        assert!(
+            plugin.exists(),
+            "the secondmate's plugin folder is regenerated, not removed"
+        );
+        assert!(!retired_root.exists(), "a retired secondmate's folders");
+        assert!(
+            open.root.exists() && open.worktree.exists(),
+            "an open task keeps its worktree"
+        );
+        assert!(!open_session.exists(), "an open task's session");
+        assert!(!open_answer.exists(), "an open task's legacy answer file");
+        assert!(
+            open_evidence.exists(),
+            "an open task's evidence stays until it closes"
+        );
+        assert!(!closed.root.exists(), "a closed task's folder");
+        assert!(!closed_evidence.exists(), "a closed task's evidence");
+        assert!(
+            stuck.worktree.exists(),
+            "a closed task whose worktree remains keeps its folder"
+        );
+        assert!(
+            unrelated.exists(),
+            "a folder that isn't a task is left alone"
+        );
+        let _ = fs::remove_dir_all(&base);
     }
 }

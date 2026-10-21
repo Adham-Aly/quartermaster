@@ -84,10 +84,10 @@ pub struct BriefBuildsOn {
     pub fact: String,
     /// One paragraph saying what it found, wrapped at [`WRAP`]; " Full answer below." follows.
     pub summary: String,
-    /// The full answer (`answer.md`) or report, embedded on the next lines; cut at
+    /// The full answer or report, embedded on the next lines; cut at
     /// [`BUILDS_ON_ANSWER_CHARS`] with a pointer to `answer_path`.
     pub body: String,
-    /// Where the full text lives, for when the body is cut: `tasks/T-0041/answer.md`.
+    /// Where the full text lives, for when the body is cut: `tasks/T-0072/builds-on.md`.
     pub answer_path: String,
 }
 

@@ -62,6 +62,9 @@ pub enum BriefError {
     Join(String),
 }
 
+/// The file, in a task's folder, that holds the whole of the task it builds on.
+const BUILDS_ON_FILE: &str = "builds-on.md";
+
 /// Renders the brief of `task` from the store and saves it as `tasks/T-0042/brief.md`
 /// (atomically: a temporary file in the task folder, then a rename), mode 0600.
 pub async fn write_brief(
@@ -73,7 +76,10 @@ pub async fn write_brief(
         .call(move |conn| crew_view::brief_inputs(conn, task))
         .await?
         .ok_or(BriefError::NoTask(task))?;
-    let builds_on = builds_on_for(db, data_dir, &inputs).await?;
+    let builds_on = builds_on_for(db, data_dir, task, &inputs).await?;
+    // The brief shows only the start of a builds-on text; the whole of it is kept in the task's
+    // own folder, where the brief points.
+    let whole_builds_on = builds_on.as_ref().map(|on| on.body.clone());
     let facts = brief_facts(&inputs, builds_on)?;
     let text = render_brief(&facts);
     let paths = data_dir.task(task);
@@ -81,9 +87,15 @@ pub async fn write_brief(
     let root = paths.root.clone();
     let written = text.clone();
     let target = path.clone();
-    tokio::task::spawn_blocking(move || write_private(&root, &target, &written))
-        .await
-        .map_err(|e| BriefError::Join(e.to_string()))??;
+    tokio::task::spawn_blocking(move || -> Result<(), BriefError> {
+        write_private(&root, &target, &written)?;
+        if let Some(whole) = whole_builds_on {
+            write_private(&root, &root.join(BUILDS_ON_FILE), &whole)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| BriefError::Join(e.to_string()))??;
     Ok(WrittenBrief { text, path })
 }
 
@@ -98,7 +110,7 @@ pub async fn builds_on(
         .call(move |conn| crew_view::brief_inputs(conn, task))
         .await?
         .ok_or(BriefError::NoTask(task))?;
-    builds_on_for(db, data_dir, &inputs).await
+    builds_on_for(db, data_dir, task, &inputs).await
 }
 
 /// The crewmate's system prompt for `engine`: appended to Claude Code's preset on Claude, the
@@ -190,6 +202,7 @@ pub fn brief_facts(
 async fn builds_on_for(
     db: &Db,
     data_dir: &DataDir,
+    task: TaskId,
     inputs: &BriefInputs,
 ) -> Result<Option<BriefBuildsOn>, BriefError> {
     let (prior_id, retry) = match (inputs.builds_on, inputs.retry_of) {
@@ -203,25 +216,21 @@ async fn builds_on_for(
     else {
         return Ok(None);
     };
-    let answer_file = data_dir.task(prior_id).answer;
-    let file = answer_file.clone();
-    let answer = tokio::task::spawn_blocking(move || read_optional(&file))
-        .await
-        .map_err(|e| BriefError::Join(e.to_string()))??
-        .or_else(|| prior.last_clear.as_ref().and_then(|r| r.answer.clone()));
+    // The answer is the report's own text, kept with the task; there is no file to read.
+    let answer = prior.last_clear.as_ref().and_then(|r| r.answer.clone());
     let changed = if inputs.kind == TaskKind::Review && !retry {
         review_files(&prior).await
     } else {
         Vec::new()
     };
-    let folder = format!("tasks/{prior_id}");
+    let answer_path = format!("tasks/{task}/{BUILDS_ON_FILE}");
     let mut facts = prior_facts(
         inputs.kind,
         retry,
         &prior,
         answer.as_deref(),
         &changed,
-        &folder,
+        answer_path,
     );
     if inputs.kind == TaskKind::Review && !retry {
         crate::verification::review::append_brief_extras(db, data_dir, prior_id, &mut facts.body)
@@ -273,7 +282,7 @@ fn prior_facts(
     prior: &PriorTask,
     answer: Option<&str>,
     changed: &[PathBuf],
-    folder: &str,
+    answer_path: String,
 ) -> BriefBuildsOn {
     let clear = prior.last_clear.as_ref();
     let head = prior_head(prior);
@@ -308,11 +317,8 @@ fn prior_facts(
         .map(|s| cut_chars(&s, SUMMARY_CHARS))
         .unwrap_or_default();
 
-    let (body, answer_path) = if prior.kind.is_answer_only() && answer.is_some() {
-        (
-            answer.unwrap_or_default().to_owned(),
-            format!("{folder}/answer.md"),
-        )
+    let body = if prior.kind.is_answer_only() && answer.is_some() {
+        answer.unwrap_or_default().to_owned()
     } else {
         let mut body = match &head {
             Some(head) => format!("Branch {} @ {}\n", prior.branch, head.short()),
@@ -329,7 +335,7 @@ fn prior_facts(
                 body.push('\n');
             }
         }
-        (body, format!("{folder}/"))
+        body
     };
     BriefBuildsOn {
         task: prior.task,
@@ -401,18 +407,6 @@ fn cut_chars(text: &str, max: usize) -> String {
     out.truncate(out.trim_end().len());
     out.push('…');
     out
-}
-
-fn read_optional(path: &Path) -> Result<Option<String>, BriefError> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(BriefError::Io {
-            action: "can't read",
-            path: path.to_owned(),
-            source,
-        }),
-    }
 }
 
 /// Writes `text` to `path` through a temporary file in `dir` (created 0700 if missing), mode
