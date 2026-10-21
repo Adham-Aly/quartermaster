@@ -175,6 +175,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_table_keeps_a_counter_so_a_restart_forgets_nothing_it_numbers() {
+        // IDs are drawn at random and `seq` gives the order, so nothing counts up in the store.
+        let dir = std::env::temp_dir().join(format!("qm-counter-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let scratch = Scratch(dir.clone());
+        let path = dir.join("state.db");
+
+        let db = Db::open(&path).expect("a database");
+        db.call(seed_two_orchestrators).await.expect("the rows");
+        drop(db);
+
+        let db = Db::open(&path).expect("a restart");
+        let counters: i64 = db
+            .call(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = 'sqlite_sequence'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .expect("the schema");
+        assert_eq!(counters, 0, "no AUTOINCREMENT counter exists");
+        drop(db);
+        drop(scratch);
+    }
+
+    #[tokio::test]
     async fn each_orchestrators_newest_five_outcomes_survive_a_restart() {
         use jiff::Timestamp;
         use qm_types::ids::{AgentId, TaskId};

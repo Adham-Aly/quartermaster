@@ -89,4 +89,7 @@ reproducing turn-loop and UI behaviour.
 ## After the run
 
 Read the day's log in `$QUARTERMASTER_HOME/logs/` (skill `debug-from-logs`). Delete the
-throwaway directory when done. Never paste credentials from it into a report.
+throwaway directory when done. A run also makes its scratch root, `/tmp/quartermaster/<uid>/<hash>/`
+(attachments, drafts, evidence; the hash is of the data directory path). Remove it with the
+directory, and check the `<hash>` folder matches the run's. Never paste credentials from it into a
+report.

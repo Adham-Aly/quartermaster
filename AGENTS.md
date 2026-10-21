@@ -64,14 +64,18 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
 - `config.toml`: settings, never secrets; unknown keys are logged, not dropped; saved atomically.
 - `auth.json`: non-Claude credentials (0600, atomic, never logged). Claude uses the user's own
   `claude` login, which the app never reads or copies.
-- `state.db`: SQLite, migrated in one transaction at startup, used only through one thread.
+- `state.db`: SQLite, the disk copy of the kept rows. The working database is in memory: it is
+  migrated at startup, loaded from disk, and mirrored back after each database call.
 - `run.lock`: held by the server (or `--foreground`); a second `server run` exits quietly, a second
   `--foreground` says so and exits non-zero. `server.sock` (0600, same-uid peers) is bound only under the lock.
-- `logs/quartermaster-YYYY-MM-DD.log`: redacted; level from `QM_LOG` (default `info`). The
+- `logs/quartermaster-YYYY-MM-DD.log`: redacted; level from `QM_LOG` (default `info`); seven days kept, a new file at local midnight. The
   terminal belongs to the UI, so nothing is logged there.
-- `seat/`, `secondmates/SM-n/`, `tasks/T-n/` (worktree, brief, session, jobs, evidence),
-  `workspace/` (the personal workspace's default folder, plain files; `[workspace] folder` moves it), `ui.json` (UI state, never logged; `tui.toml` is only read once for old widths), `attachments/`
-  (pasted images; `drafts/` holds unsent drafts' images).
+- `seat/`, `secondmates/SM-n/`, `tasks/T-n/` (worktree, brief, jobs; the folder goes at close),
+  `workspace/` (the personal workspace's default folder, plain files; `[workspace] folder` moves it),
+  `ui.json` (UI state, never logged; `tui.toml` is only read once for old widths).
+- Scratch, `/tmp/quartermaster/<uid>/<hash>/` (`DataDir::scratch`; owner and 0700 checked, never a
+  symlink): `attachments/` (pasted images), `drafts/`, `evidence/T-n/` (removed at close). Engines
+  refuse writes there.
 
 ## House rules
 
@@ -106,8 +110,13 @@ These override anything else. Security comes first.
 - **One rulebook.** Every tool call from either engine comes back to `qm-tools` handlers, which
   check `qm-policy` and reach the core through `ToolHost`. Every `ToolHost` method has a default
   body; the core host re-checks the caller's role against the registry.
-- **One database thread.** Only `qm_store::db::Db::call` touches SQLite. Migrations are append-only;
-  tables are `STRICT`; events are append-only; rows are retired with `*_at`, never deleted.
+- **One database thread, in memory.** Only `qm_store::db::Db::call` touches SQLite. The working
+  database is in memory; `kept.rs` decides what reaches disk (every table has `seq` and a KEPT or
+  VOLATILE entry; conversations are VOLATILE). Migrations are append-only; tables are `STRICT`;
+  events are append-only; rows retire with `*_at`. Upserts on a mirrored table fail under the
+  dirty-mark trigger: use UPDATE, then INSERT.
+- **IDs are random; `seq` orders.** Task, secondmate and message numbers are drawn at random and
+  reused; no counter is stored. Creation order is `seq`, never the ID.
 - **Secrets stay in `qm-auth`.** `Secret` redacts `Debug`, has no `Display`, and neither it nor
   `Credential` is `Serialize`. No error, `Refusal`, event, log line or tool result carries one.
 - **Agents start from a clean environment.** Engines build the child environment from scratch;
