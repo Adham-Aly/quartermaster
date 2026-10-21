@@ -42,10 +42,15 @@ fn palette() -> Palette {
     CURRENT.get()
 }
 
-/// Asks the terminal for its colours and fits a palette to them. Call it in raw mode, while
-/// nothing else reads the terminal's input (which would swallow the answers).
-pub(crate) fn detect() -> Palette {
-    Palette::fit(&query::ask())
+/// Asks the terminal for its colours, for the host to fit a palette to. Call it in raw mode,
+/// while nothing else reads the terminal's input (which would swallow the answers).
+pub(crate) fn detect() -> qm_types::wire::Colors {
+    query::ask().to_wire()
+}
+
+/// The palette fitted to the colours a client reported.
+pub(crate) fn fit_reported(colors: &qm_types::wire::Colors) -> Palette {
+    Palette::fit(&fit::Reported::from_wire(colors))
 }
 
 /// The background of the fill (rest buttons, the current tab, the selected row).

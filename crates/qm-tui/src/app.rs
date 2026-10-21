@@ -1,25 +1,19 @@
-//! The UI's state and its event loop: keys, mouse, updates from the core, and quitting.
+//! The UI's state: keys, mouse, updates from the core, and quitting. The host (`host`) drives it.
 
 use crate::hit::{Divider, FrameMap, Hit, Pane};
-use crate::input::{menu, prefs, select};
+use crate::input::{menu, select};
 use crate::popups::Popup;
 use crate::router::Screen;
 use crate::term::Term;
-use crate::terminal::TerminalGuard;
 use crate::view::Flash;
 use crate::{chrome, router};
-use crossterm::event::{self, Event, KeyEventKind};
-use qm_types::api::{Command, CoreClient, Snapshot, Update};
+use crossterm::event::{Event, KeyEventKind};
+use qm_types::api::{Command, Snapshot, Update};
 use qm_types::ids::MessageId;
 use ratatui::Frame;
 use std::cell::Cell;
-use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-
-/// How long the loop waits for input before checking the core's updates again. Updates are drained
-/// without blocking, so this bounds how late one can show.
-const POLL: Duration = Duration::from_millis(40);
 
 /// How long the first `Ctrl`+`C` waits for the second.
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
@@ -59,8 +53,6 @@ pub(crate) struct App {
     pub(crate) draft: crate::input::draft::Draft,
     /// A `Ctrl`+`V` waiting for the pasteboard.
     pub(crate) pasting: Option<crate::input::clipboard_image::Pasting>,
-    /// The colours this window is drawn with, fitted to its terminal (`theme::scoped` per frame).
-    pub(crate) palette: crate::theme::Palette,
     /// Width of the left column (projects and crew), in cells.
     pub(crate) left_width: u16,
     /// Width of the task pane, in cells.
@@ -99,7 +91,6 @@ impl App {
             focus: Pane::Input,
             draft: crate::input::draft::Draft::default(),
             pasting: None,
-            palette: crate::theme::Palette::DEFAULT,
             left_width: LEFT_DEFAULT,
             right_width: RIGHT_DEFAULT,
             scroll_from_bottom: 0,
@@ -115,6 +106,28 @@ impl App {
             spin: 0,
             spinning: Cell::new(false),
         }
+    }
+
+    /// Whether the UI should end: you quit, or the core closed.
+    pub(crate) fn exiting(&self) -> bool {
+        self.exit
+    }
+
+    /// Ends the UI (the core's link dropped).
+    pub(crate) fn finish(&mut self) {
+        self.exit = true;
+    }
+
+    /// Takes the commands waiting for the core, including the settings screens' own.
+    pub(crate) fn take_commands(&mut self) -> Vec<Command> {
+        let mut commands = std::mem::take(&mut self.outbox);
+        commands.append(&mut self.view.settings.outbox);
+        commands
+    }
+
+    /// Whether a new frame is wanted, clearing the request.
+    pub(crate) fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
     }
 
     /// Asks for a new frame.
@@ -152,7 +165,7 @@ impl App {
 
     /// Draws a frame in this window's palette and keeps its hit map for the input that follows.
     pub(crate) fn draw(&mut self, frame: &mut Frame<'_>) {
-        crate::theme::scoped(self.palette, || self.draw_frame(frame));
+        crate::theme::scoped(self.term.palette, || self.draw_frame(frame));
     }
 
     /// [`Self::draw`], with the palette in force.
@@ -407,73 +420,6 @@ impl App {
                     .saturating_sub(1)
                     .clamp(RIGHT_RANGE.0, RIGHT_RANGE.1);
                 Self::set(&mut self.dirty, &mut self.right_width, width);
-            }
-        }
-    }
-}
-
-/// Runs the loop until you quit, the core closes, or the link drops.
-pub(crate) fn run(client: &mut CoreClient) -> io::Result<()> {
-    let prefs_path = prefs::default_path();
-    let mut remembered = Some(prefs_path.as_deref().map(prefs::load).unwrap_or_default());
-    if client.send(Command::Refresh).is_err() {
-        return Ok(());
-    }
-    let mut terminal = TerminalGuard::enter()?;
-    let mut app = App::new();
-    app.palette = terminal.palette();
-    crate::sample::install_from_env(&mut app);
-    loop {
-        loop {
-            match client.try_recv() {
-                Ok(Some(update)) => app.on_update(update),
-                Ok(None) => break,
-                Err(_closed) => {
-                    app.exit = true;
-                    break;
-                }
-            }
-        }
-        // The settings screens queue their changes on their own; they go out with the rest.
-        app.outbox.append(&mut app.view.settings.outbox);
-        for command in app.outbox.drain(..) {
-            if client.send(command).is_err() {
-                app.exit = true;
-            }
-        }
-        if app.exit {
-            return Ok(());
-        }
-        if let Some(remembered) = remembered.take() {
-            remembered.apply(&mut app);
-            app.prefs_path.clone_from(&prefs_path);
-        }
-        if std::mem::take(&mut app.term.suspend) {
-            terminal.suspend()?;
-            app.palette = terminal.palette();
-            app.dirty = true;
-        }
-        app.tick(Instant::now());
-        if app.dirty {
-            app.dirty = false;
-            terminal.draw(|frame| app.draw(frame))?;
-            app.after_draw();
-            if let Some(osc52) = app.term.osc52.take() {
-                // Outside the synchronized update, so the terminal acts on it at once.
-                terminal.write_raw(osc52.as_bytes())?;
-            }
-        }
-        if std::mem::take(&mut app.term.bells) > 0 {
-            terminal.write_raw(b"\x07")?;
-        }
-        if event::poll(POLL)? {
-            // Take everything already waiting before drawing again, so a burst of motion
-            // events costs one frame, not one each.
-            loop {
-                app.on_event(event::read()?, Instant::now());
-                if !event::poll(Duration::ZERO)? {
-                    break;
-                }
             }
         }
     }
