@@ -278,6 +278,7 @@ async fn drive(
             break;
         }
         host.tick(Instant::now());
+        host.count_windows();
         if host.app.take_dirty() {
             host.draw_all();
         }
@@ -339,6 +340,14 @@ impl Host {
                     self.pending_quit = Some((reason, reply));
                 }
             }
+        }
+    }
+
+    /// Tells the app how many windows are attached, and has them all redrawn when it changes.
+    fn count_windows(&mut self) {
+        if self.app.windows != self.windows.len() {
+            self.app.windows = self.windows.len();
+            self.app.redraw();
         }
     }
 
@@ -650,6 +659,8 @@ mod tests {
         let first_a = drawn(&mut a).await;
         let first_b = drawn(&mut b).await;
         assert!(first_a.contains("Projects") && first_b.contains("Projects"));
+        // Both windows name the count; a lone window wouldn't.
+        assert!(first_a.contains("2 windows") && first_b.contains("2 windows"));
         for c in "zqxj".chars() {
             let key = InputEvent::Key {
                 code: KeyCode::Char(c),
