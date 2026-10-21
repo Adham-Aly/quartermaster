@@ -1,5 +1,5 @@
-//! The secondmate tools: `start_secondmate`, `route_to_secondmate`, `configure_secondmate` (the
-//! Quartermaster's) and `start_crewmate.secondmate` (a secondmate's).
+//! The secondmate tools: `start_secondmate`, `route_to_secondmate`, `configure_secondmate`,
+//! `close_secondmate` (the Quartermaster's) and `start_crewmate.secondmate` (a secondmate's).
 //!
 //! Each handler checks the shape of its arguments and every override it carries against the turn
 //! that made the call, then calls one host method; the host (`qm_core::secondmates`) checks the
@@ -8,9 +8,10 @@
 use super::conversation::started_by;
 use super::crew::{MAX_INSTRUCTION_CHARS, MAX_INSTRUCTIONS, check_overrides, check_start_shape};
 use crate::defs::{
-    Ack, ConfigureSecondmateArgs, ConfigureSecondmateTool, Held, RouteToSecondmateArgs,
-    RouteToSecondmateTool, Routed, SecondmateStartCrewmateArgs, SecondmateStartCrewmateTool,
-    StartSecondmateArgs, StartSecondmateTool, TaskStarted,
+    Ack, CloseSecondmateArgs, CloseSecondmateTool, ConfigureSecondmateArgs,
+    ConfigureSecondmateTool, Held, RouteToSecondmateArgs, RouteToSecondmateTool, Routed,
+    SecondmateStartCrewmateArgs, SecondmateStartCrewmateTool, StartSecondmateArgs,
+    StartSecondmateTool, TaskStarted,
 };
 use crate::handler::{
     CharterChange, Handle, RouteRequest, SecondmateProposal, StartRequest, ToolCx, ToolFailure,
@@ -218,6 +219,15 @@ impl Handle for ConfigureSecondmateTool {
                 )
                 .await
         })
+    }
+}
+
+impl Handle for CloseSecondmateTool {
+    fn handle<'a>(
+        cx: &'a ToolCx<'a>,
+        args: CloseSecondmateArgs,
+    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
+        Box::pin(async move { cx.host.close_secondmate(cx.caller, args.secondmate).await })
     }
 }
 

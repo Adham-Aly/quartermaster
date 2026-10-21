@@ -30,6 +30,7 @@ pub static TOOLS: &[ToolDef] = &[
     ToolDef::of::<defs::StartSecondmateTool>(),
     ToolDef::of::<defs::RouteToSecondmateTool>(),
     ToolDef::of::<defs::ConfigureSecondmateTool>(),
+    ToolDef::of::<defs::CloseSecondmateTool>(),
     ToolDef::of::<defs::ParentReportTool>(),
     // Projects.
     ToolDef::of::<defs::FindProjectFolderTool>(),
