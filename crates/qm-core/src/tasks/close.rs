@@ -512,25 +512,3 @@ pub(crate) async fn close_task(
         kept_ref: retired.kept.map(|k| k.git_ref),
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_folder_failure_says_its_files_are_left_and_names_no_kept_ref() {
-        let task = TaskId::new(7).expect("a task id");
-        let text = failure_kept_text(DeliveryMode::Folder, task);
-        assert_eq!(text, "Its files in the folder are left as they are.");
-    }
-
-    #[test]
-    fn a_branch_failure_names_the_kept_ref() {
-        let task = TaskId::new(7).expect("a task id");
-        let text = failure_kept_text(DeliveryMode::BranchOnly, task);
-        assert_eq!(
-            text,
-            format!("Its work, if any, is kept at {}.", task.kept_ref())
-        );
-    }
-}

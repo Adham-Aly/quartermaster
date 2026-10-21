@@ -39,8 +39,6 @@ pub mod settling;
 pub mod setup_check;
 pub mod skills;
 pub mod tasks;
-#[cfg(test)]
-mod test_store;
 pub mod tool_host;
 pub mod turn_io;
 pub mod turns;

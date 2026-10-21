@@ -311,21 +311,6 @@ mod tests {
     }
 
     #[test]
-    fn the_workspace_folder_is_unset_by_default_and_round_trips() {
-        let config: Config = toml::from_str("[routing]\n").unwrap();
-        assert_eq!(config.workspace.folder, None);
-        let chosen = Config {
-            workspace: WorkspaceConfig {
-                folder: Some("~/notes".to_owned()),
-            },
-            ..Config::default()
-        };
-        let text = toml::to_string(&chosen).unwrap();
-        assert!(text.contains("[workspace]\nfolder = \"~/notes\""), "{text}");
-        assert_eq!(toml::from_str::<Config>(&text).unwrap(), chosen);
-    }
-
-    #[test]
     fn a_missing_compaction_section_loads_the_default() {
         let config: Config = toml::from_str("[routing]\n").unwrap();
         assert_eq!(

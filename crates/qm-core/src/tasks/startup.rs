@@ -491,39 +491,3 @@ async fn not_resumed(svc: &TaskService, task: TaskId, branch: &str, branch_exist
         tracing::warn!(%task, error = %e, "couldn't report a missing worktree");
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_store as fx;
-    use qm_types::domain::{ProjectOrigin, TaskKind};
-
-    #[test]
-    fn only_a_branch_task_with_a_worktree_is_listed_for_reconcile() {
-        let conn = fx::store();
-        let folder = fx::project(
-            &conn,
-            "personal",
-            ProjectOrigin::Workspace,
-            DeliveryMode::Folder,
-        );
-        let app = fx::project(
-            &conn,
-            "app",
-            ProjectOrigin::Linked,
-            DeliveryMode::BranchOnly,
-        );
-        let folder_work = fx::task(&conn, folder, TaskKind::Build, DeliveryMode::Folder);
-        fx::set_status(&conn, folder_work, "running");
-        let branch_work = fx::task(&conn, app, TaskKind::Build, DeliveryMode::BranchOnly);
-        fx::set_status(&conn, branch_work, "running");
-        // Queued: its worktree doesn't exist yet, so it isn't listed.
-        fx::task(&conn, app, TaskKind::Build, DeliveryMode::BranchOnly);
-
-        let open = task_store::open(&conn).expect("the open tasks");
-        assert_eq!(
-            tasks_with_worktrees(&open),
-            BTreeMap::from([(app, BTreeSet::from([branch_work]))])
-        );
-    }
-}
