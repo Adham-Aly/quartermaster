@@ -71,6 +71,7 @@ fn line(project: &ProjectRow, name_width: usize, inner_width: u16, hovered: bool
         DeliveryMode::DirectPr => "PR",
         DeliveryMode::BranchOnly => "branch",
         DeliveryMode::BuildInPlace => "in place",
+        DeliveryMode::Folder => "folder",
     };
     let auto = match project.autonomy {
         Autonomy::Off => "auto off",

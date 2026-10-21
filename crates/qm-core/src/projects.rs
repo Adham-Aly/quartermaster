@@ -12,8 +12,10 @@
 //! - **`configure_project` can't change autonomy or the verification level** (its arguments have no
 //!   field for either), and checks what it can change against the facts: a direct-PR project needs
 //!   a GitHub remote, a branch-only one a remote, and the personal workspace stays branch-only.
-//! - **The personal workspace** ([`ProjectService::ensure_workspace`]) is an app-owned repository
-//!   at `<data dir>/workspace`, registered as `personal`, branch-only, with no remote.
+//! - **The personal workspace** ([`ProjectService::ensure_workspace`]) is a plain folder, by default
+//!   `<data dir>/workspace` or the one `[workspace] folder` names. Its delivery is `folder`: no
+//!   git runs in it, its tasks have no branches, and changing the folder refuses while personal
+//!   tasks are open ([`move_workspace`]). Only the personal workspace can be a plain folder.
 //!
 //! [`ProjectsPart`] fills the Bridge's projects pane.
 
@@ -41,6 +43,7 @@ use qm_types::domain::{
 };
 use qm_types::error::Refusal;
 use qm_types::ids::{HeldActionId, ProjectId};
+use rusqlite::Connection;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -135,6 +138,93 @@ pub fn tilde(path: &Path, home: Option<&Path>) -> String {
         Some(rest) => format!("~/{}", rest.display()),
         None => path.display().to_string(),
     }
+}
+
+/// The personal workspace's folder: the one `[workspace] folder` names, `~` expanded, else
+/// `<data dir>/workspace`.
+pub(crate) fn workspace_folder(
+    config: &Config,
+    data_dir: &DataDir,
+    home: Option<&Path>,
+) -> PathBuf {
+    match config
+        .workspace
+        .folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+    {
+        Some(folder) => expand(folder, home),
+        None => data_dir.workspace(),
+    }
+}
+
+/// Checks a folder chosen for the personal workspace before anything changes: an absolute path (or
+/// one from `~`) to an existing folder that isn't read-only and isn't one of the app's task
+/// folders. Returns it expanded.
+pub(crate) fn check_workspace_folder(
+    folder: &str,
+    home: Option<&Path>,
+    data_dir: &DataDir,
+) -> Result<PathBuf, String> {
+    let text = folder.trim();
+    if text.is_empty() {
+        return Err("the personal folder needs a path".to_owned());
+    }
+    if !(text.starts_with('/') || text == "~" || text.starts_with("~/")) {
+        return Err(format!(
+            "{text} isn't an absolute path: write it from / or from ~"
+        ));
+    }
+    let path = expand(text, home);
+    if !path.is_dir() {
+        return Err(format!("{} isn't a folder", path.display()));
+    }
+    if path.metadata().is_ok_and(|m| m.permissions().readonly()) {
+        return Err(format!(
+            "{} is read-only, so crewmates can't work in it",
+            path.display()
+        ));
+    }
+    if path.starts_with(data_dir.tasks_dir()) {
+        return Err(format!(
+            "{} is one of the app's task folders, so it can't be the personal folder",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+/// Points the personal workspace at `folder` (already checked by [`check_workspace_folder`]).
+/// Refuses while personal tasks are open, or when another project is registered there. No files
+/// move. With no workspace registered yet, there's nothing to move: the next start registers it.
+pub(crate) fn move_workspace(conn: &Connection, folder: &Path) -> Result<(), String> {
+    let store = |e: StoreError| e.to_string();
+    let Some(workspace) = projects::workspace(conn).map_err(store)? else {
+        return Ok(());
+    };
+    if workspace.path == folder {
+        return Ok(());
+    }
+    let open = projects::open_tasks(conn, workspace.id).map_err(store)?;
+    if !open.is_empty() {
+        let names: Vec<String> = open.iter().map(ToString::to_string).collect();
+        return Err(format!(
+            "personal tasks are still open ({}); close them first, then change the personal folder",
+            names.join(", ")
+        ));
+    }
+    if let Some(other) = projects::active_by_path(conn, folder).map_err(store)?
+        && other.id != workspace.id
+    {
+        return Err(format!(
+            "{} is already the project {}",
+            folder.display(),
+            other.name
+        ));
+    }
+    projects::set_path(conn, workspace.id, folder).map_err(store)?;
+    Ok(())
 }
 
 /// Resolves a search root case-insensitively: each component that doesn't exist as written is
@@ -261,6 +351,7 @@ fn delivery_words(mode: DeliveryMode) -> &'static str {
         DeliveryMode::DirectPr => "direct pull requests",
         DeliveryMode::BranchOnly => "branch only",
         DeliveryMode::BuildInPlace => "build in place",
+        DeliveryMode::Folder => "a plain folder",
     }
 }
 
@@ -858,18 +949,20 @@ impl ProjectService {
         })
     }
 
-    /// `configure_project`: never autonomy or the verification level.
-    pub async fn configure(
+    /// The remotes of a project's repository, and whether the default branch named in `branch`
+    /// exists in it. A plain folder has no git, so it has neither.
+    async fn repo_facts(
         &self,
-        caller: &Caller,
-        args: &ConfigureProjectArgs,
-    ) -> Result<Ack, ToolFailure> {
-        let project = self.named(&args.project).await?;
+        project: &ProjectRow,
+        branch: Option<String>,
+    ) -> Result<(Vec<String>, bool), ToolFailure> {
+        if project.delivery == DeliveryMode::Folder {
+            return Ok((Vec::new(), false));
+        }
         let program = self.git_program();
         let env = self.inner.env.clone();
         let path = project.path.clone();
-        let branch = args.default_branch.clone();
-        let (remotes, branch_known) = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let remotes = git(&program, &env, &path, &["remote"])
                 .map(|out| out.lines().map(str::to_owned).collect::<Vec<_>>())
                 .unwrap_or_default();
@@ -892,7 +985,19 @@ impl ProjectService {
             (remotes, known)
         })
         .await
-        .map_err(|e| ToolFailure::Failed(format!("the project check stopped: {e}")))?;
+        .map_err(|e| ToolFailure::Failed(format!("the project check stopped: {e}")))
+    }
+
+    /// `configure_project`: never autonomy or the verification level.
+    pub async fn configure(
+        &self,
+        caller: &Caller,
+        args: &ConfigureProjectArgs,
+    ) -> Result<Ack, ToolFailure> {
+        let project = self.named(&args.project).await?;
+        let (remotes, branch_known) = self
+            .repo_facts(&project, args.default_branch.clone())
+            .await?;
 
         let said = check_change(&project, args, &remotes, branch_known)?;
 
@@ -1021,29 +1126,23 @@ impl ProjectService {
         })
     }
 
-    /// Sets up the personal workspace once: an app-owned repository at `<data dir>/workspace` with
-    /// a first commit, registered as `personal`, branch-only, no remote. Does nothing when it
-    /// exists, or while `git` is missing.
+    /// Registers the personal workspace once, as `personal`, in folder mode: its folder is the one
+    /// `[workspace] folder` names, else `<data dir>/workspace`, which is made here. The folder
+    /// isn't checked: a task that starts while it's missing fails and says so. Git never runs here.
     pub async fn ensure_workspace(&self) -> Result<Option<ProjectId>, HeldError> {
-        if let Some(existing) = self.inner.db.call(|conn| projects::workspace(conn)).await? {
-            return Ok(Some(existing.id));
+        let config = self.inner.config.borrow().clone();
+        let folder = workspace_folder(&config, &self.inner.data_dir, self.home().as_deref());
+        if folder == self.inner.data_dir.workspace() {
+            let dir = folder.clone();
+            tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir))
+                .await
+                .map_err(|e| HeldError::Failed(format!("setting up the workspace stopped: {e}")))?
+                .map_err(|e| {
+                    HeldError::Failed(format!(
+                        "the personal workspace folder couldn't be made: {e}"
+                    ))
+                })?;
         }
-        let facts = self.facts();
-        if facts.git.is_missing() {
-            return Ok(None);
-        }
-        let program = self.git_program();
-        let env = self.inner.env.clone();
-        let dir = self.inner.data_dir.workspace();
-        let repo = tokio::task::spawn_blocking(move || {
-            if !dir.join(".git").exists() {
-                init_repository(&program, &env, &dir)?;
-            }
-            repo_facts(&program, &env, &dir)
-        })
-        .await
-        .map_err(|e| HeldError::Failed(format!("setting up the workspace stopped: {e}")))?
-        .map_err(HeldError::Failed)?;
         let at = self.inner.clock.now();
         let id = self
             .inner
@@ -1051,6 +1150,15 @@ impl ProjectService {
             .call(move |conn| {
                 let tx = conn.transaction()?;
                 if let Some(existing) = projects::workspace(&tx)? {
+                    // Settings moved the folder while the app was off: follow it, if nothing is open.
+                    if existing.path != folder {
+                        if projects::open_tasks(&tx, existing.id)?.is_empty() {
+                            projects::set_path(&tx, existing.id, &folder)?;
+                        } else {
+                            tracing::warn!("the personal folder differs from settings; personal tasks are open, so it stays");
+                        }
+                    }
+                    tx.commit()?;
                     return Ok(existing.id);
                 }
                 let taken = projects::active_by_name(&tx, WORKSPACE_NAME)?.is_some();
@@ -1063,11 +1171,12 @@ impl ProjectService {
                     &tx,
                     &NewProject {
                         name,
-                        path: repo.root,
+                        path: folder,
                         origin: ProjectOrigin::Workspace,
-                        default_branch: repo.default_branch,
+                        // A plain folder has no branches: nothing names a default one.
+                        default_branch: String::new(),
                         github_remote: None,
-                        delivery: DeliveryMode::BranchOnly,
+                        delivery: DeliveryMode::Folder,
                         merge_method: DEFAULT_MERGE_METHOD,
                         at,
                     },
@@ -1142,12 +1251,20 @@ fn check_change(
     branch_known: bool,
 ) -> Result<Vec<String>, ToolFailure> {
     let mut said: Vec<String> = Vec::new();
+    let effective = args.delivery.unwrap_or(project.delivery);
     if let Some(delivery) = args.delivery {
-        if project.origin == ProjectOrigin::Workspace && delivery != DeliveryMode::BranchOnly {
+        if project.origin == ProjectOrigin::Workspace && delivery != DeliveryMode::Folder {
             return Err(refused(
-                "the personal workspace is branch-only: it has no remote, and its branches \
-                 stay local",
+                "the personal workspace is a plain folder: its changes go straight into it, with \
+                 no branches or remote",
             ));
+        }
+        if delivery == DeliveryMode::Folder && project.origin != ProjectOrigin::Workspace {
+            return Err(refused(format!(
+                "{} is a git project, so it delivers through branches or pull requests; only the \
+                 personal workspace is a plain folder",
+                project.name
+            )));
         }
         if delivery == DeliveryMode::DirectPr && project.github_remote.is_none() {
             return Err(refused(format!(
@@ -1170,6 +1287,12 @@ fn check_change(
         said.push(format!("merge method {method}"));
     }
     if let Some(branch) = &args.default_branch {
+        if effective == DeliveryMode::Folder {
+            return Err(refused(format!(
+                "{} is a plain folder, so it has no default branch",
+                project.name
+            )));
+        }
         if !branch_known {
             return Err(refused(format!(
                 "{} has no branch named {branch}, locally or on origin",
@@ -1179,6 +1302,12 @@ fn check_change(
         said.push(format!("default branch {branch}"));
     }
     if let Some(files) = &args.files_to_copy {
+        if effective == DeliveryMode::Folder && !files.is_empty() {
+            return Err(refused(format!(
+                "{} is a plain folder, so there's no worktree to copy files into",
+                project.name
+            )));
+        }
         said.push(if files.is_empty() {
             "no files to copy".to_owned()
         } else {
@@ -1365,20 +1494,10 @@ impl ProjectsPart {
         Self { projects, held }
     }
 
-    /// Sets up the personal workspace in the background as soon as a setup check finds `git`,
-    /// then asks for a fresh snapshot.
+    /// Registers the personal workspace in the background, then asks for a fresh snapshot.
     pub fn start(&self, conversation: Arc<Conversation>) {
         let projects = self.projects.clone();
-        let mut setup = projects.inner.setup.clone();
         tokio::spawn(async move {
-            // Waits for a check that found the tool (it may be installed from the setup screen).
-            if setup
-                .wait_for(|f| f.checked && !f.git.is_missing())
-                .await
-                .is_err()
-            {
-                return;
-            }
             match projects.ensure_workspace().await {
                 Ok(Some(_)) => conversation.changed(),
                 Ok(None) => {}
@@ -1428,5 +1547,99 @@ impl ApiPart for ProjectsPart {
                 Err(e) => tracing::error!(error = %e, "couldn't read the projects for the UI"),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch home folder with a data folder and one folder to choose, removed when dropped.
+    struct Home(PathBuf);
+
+    impl Home {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("qm-core-{name}-{}", std::process::id()));
+            // A folder left by an earlier run whose pid was reused is stale; start clean.
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("notes")).expect("scratch folder");
+            Self(dir)
+        }
+    }
+
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn with_folder(folder: &str) -> Config {
+        let mut config = Config::default();
+        config.workspace.folder = Some(folder.to_owned());
+        config
+    }
+
+    #[test]
+    fn the_default_workspace_folder_is_the_data_dir_workspace() {
+        let home = Home::new("default-folder");
+        let data = DataDir::new(home.0.join("data"));
+        assert_eq!(
+            workspace_folder(&Config::default(), &data, Some(&home.0)),
+            data.workspace()
+        );
+    }
+
+    #[test]
+    fn a_chosen_folder_is_used_with_the_tilde_expanded() {
+        let home = Home::new("chosen-folder");
+        let data = DataDir::new(home.0.join("data"));
+        assert_eq!(
+            workspace_folder(&with_folder("~/notes"), &data, Some(&home.0)),
+            home.0.join("notes")
+        );
+    }
+
+    #[test]
+    fn a_blank_folder_setting_means_the_default() {
+        let home = Home::new("blank-folder");
+        let data = DataDir::new(home.0.join("data"));
+        assert_eq!(
+            workspace_folder(&with_folder("  "), &data, Some(&home.0)),
+            data.workspace()
+        );
+    }
+
+    #[test]
+    fn a_chosen_folder_is_checked_and_returned_expanded() {
+        let home = Home::new("checked-folder");
+        let data = DataDir::new(home.0.join("data"));
+        assert_eq!(
+            check_workspace_folder("~/notes", Some(&home.0), &data),
+            Ok(home.0.join("notes"))
+        );
+    }
+
+    #[test]
+    fn a_relative_or_missing_folder_is_refused() {
+        let home = Home::new("refused-folder");
+        let data = DataDir::new(home.0.join("data"));
+        let relative = check_workspace_folder("notes", Some(&home.0), &data).unwrap_err();
+        assert!(relative.contains("absolute"), "{relative}");
+        let missing = check_workspace_folder("~/nowhere", Some(&home.0), &data).unwrap_err();
+        assert!(missing.contains("isn't a folder"), "{missing}");
+    }
+
+    #[test]
+    fn one_of_the_apps_task_folders_is_refused() {
+        let home = Home::new("task-folder");
+        let data = DataDir::new(home.0.join("data"));
+        std::fs::create_dir_all(data.tasks_dir().join("T-0001")).expect("a task folder");
+        let refused = check_workspace_folder(
+            &data.tasks_dir().display().to_string(),
+            Some(&home.0),
+            &data,
+        )
+        .unwrap_err();
+        assert!(refused.contains("task folders"), "{refused}");
     }
 }

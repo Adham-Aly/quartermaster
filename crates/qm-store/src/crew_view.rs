@@ -71,6 +71,9 @@ pub struct BriefInputs {
     pub tests_required: bool,
     pub builds_on: Option<TaskId>,
     pub retry_of: Option<TaskId>,
+    /// The project's folder: the task's worktree's checkout, or for a folder task the folder it
+    /// works in.
+    pub folder: String,
 }
 
 /// One report, as the brief reads it.
@@ -114,7 +117,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
                     p.github_remote IS NOT NULL, t.delivery_mode, t.verification_level,
                     t.verification_source, t.base_branch, t.base_ref, t.base_commit, t.port_base,
                     t.goal, t.instructions, t.constraints, t.tests_required, t.builds_on,
-                    t.retry_of
+                    t.retry_of, p.path
              FROM tasks AS t
              JOIN projects AS p ON p.id = t.project_id
              JOIN agents AS a ON a.id = t.supervisor_id
@@ -144,6 +147,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
                     tests_required: r.get(17)?,
                     builds_on: r.get(18)?,
                     retry_of: r.get(19)?,
+                    path: r.get(20)?,
                 })
             },
         )
@@ -190,6 +194,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
         tests_required: raw.tests_required,
         builds_on: raw.builds_on,
         retry_of: raw.retry_of,
+        folder: raw.path,
     }))
 }
 
@@ -212,6 +217,7 @@ struct RawBrief {
     tests_required: bool,
     builds_on: Option<TaskId>,
     retry_of: Option<TaskId>,
+    path: String,
 }
 
 /// The user's own words for `task`, copied by the app: the stored message's text when the task

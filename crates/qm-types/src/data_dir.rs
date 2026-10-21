@@ -101,7 +101,8 @@ impl DataDir {
         self.root.join("logs")
     }
 
-    /// The built-in personal workspace, an app-owned git repository.
+    /// The personal workspace's default folder (`[workspace] folder` changes it). Crewmates work
+    /// in it directly, with no git; an older one may still be a git repository.
     pub fn workspace(&self) -> PathBuf {
         self.root.join("workspace")
     }

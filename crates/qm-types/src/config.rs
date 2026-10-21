@@ -25,7 +25,18 @@ pub struct Config {
     pub compaction: CompactionConfig,
     pub tiers: TierEfforts,
     pub projects: ProjectsConfig,
+    pub workspace: WorkspaceConfig,
     pub notifications: NotificationsConfig,
+}
+
+/// The personal workspace: a plain folder crewmates work in directly. Unset, it is
+/// `<data dir>/workspace`. Set it only from Settings: the app checks the folder and refuses a change
+/// while personal tasks are open.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkspaceConfig {
+    /// An absolute path, or one starting with `~`.
+    pub folder: Option<String>,
 }
 
 /// The Quartermaster's own model and effort: separate settings routing never changes.
@@ -297,6 +308,21 @@ mod tests {
             "{text}"
         );
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), config);
+    }
+
+    #[test]
+    fn the_workspace_folder_is_unset_by_default_and_round_trips() {
+        let config: Config = toml::from_str("[routing]\n").unwrap();
+        assert_eq!(config.workspace.folder, None);
+        let chosen = Config {
+            workspace: WorkspaceConfig {
+                folder: Some("~/notes".to_owned()),
+            },
+            ..Config::default()
+        };
+        let text = toml::to_string(&chosen).unwrap();
+        assert!(text.contains("[workspace]\nfolder = \"~/notes\""), "{text}");
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), chosen);
     }
 
     #[test]

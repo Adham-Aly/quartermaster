@@ -38,6 +38,8 @@ pub enum Fact {
     Delivered { branch: String, head: CommitSha },
     /// The personal workspace: the branch is kept locally.
     DeliveredLocal { branch: String, head: CommitSha },
+    /// A folder task: its changes are already in `folder`. There is no head or branch.
+    DoneInFolder { folder: String },
     /// Merged into your checkout's branch.
     InPlace {
         branch: String,
@@ -48,30 +50,36 @@ pub enum Fact {
 }
 
 impl Fact {
-    pub fn head(&self) -> &CommitSha {
+    /// The head settled; `None` for a folder task.
+    pub fn head(&self) -> Option<&CommitSha> {
         match self {
             Self::MergedPr { head, .. }
             | Self::Delivered { head, .. }
             | Self::DeliveredLocal { head, .. }
-            | Self::InPlace { head, .. } => head,
+            | Self::InPlace { head, .. } => Some(head),
+            Self::DoneInFolder { .. } => None,
         }
     }
 
     /// The commit the work is at now: the merge commit, the delivered head, the new checkout head.
-    fn landed_commit(&self) -> &CommitSha {
+    /// `None` for a folder task, which has no commit.
+    fn landed_commit(&self) -> Option<&CommitSha> {
         match self {
-            Self::MergedPr { merge_commit, .. } => merge_commit,
-            Self::Delivered { head, .. } | Self::DeliveredLocal { head, .. } => head,
-            Self::InPlace { new_head, .. } => new_head,
+            Self::MergedPr { merge_commit, .. } => Some(merge_commit),
+            Self::Delivered { head, .. } | Self::DeliveredLocal { head, .. } => Some(head),
+            Self::InPlace { new_head, .. } => Some(new_head),
+            Self::DoneInFolder { .. } => None,
         }
     }
 
-    /// Where it went: the base branch, the task branch, or your checkout's branch.
+    /// Where it went: the base branch, the task branch, or your checkout's branch (a folder's
+    /// path, for a folder task).
     fn landed_into(&self) -> &str {
         match self {
             Self::MergedPr { base, .. } => base,
             Self::Delivered { branch, .. } | Self::DeliveredLocal { branch, .. } => branch,
             Self::InPlace { target, .. } => target,
+            Self::DoneInFolder { folder } => folder,
         }
     }
 
@@ -90,6 +98,9 @@ impl Fact {
             }
             Self::DeliveredLocal { branch, head } => {
                 serde_json::json!({ "fact": "delivered_local", "branch": branch, "head": head })
+            }
+            Self::DoneInFolder { folder } => {
+                serde_json::json!({ "fact": "done_in_folder", "folder": folder })
             }
             Self::InPlace {
                 branch,
@@ -124,7 +135,10 @@ pub fn landed(
     };
     task_store::set_status(conn, task, row.status, to, at)?;
     delivery_store::set_landed(conn, task, fact.landed_commit(), fact.landed_into())?;
-    let short = fact.head().short().to_owned();
+    let short = fact
+        .head()
+        .map(|h| h.short().to_owned())
+        .unwrap_or_default();
     let payload = fact.as_json();
     let (outcome_kind, outcome, text) = match fact {
         Fact::MergedPr { pr, base, .. } => {
@@ -158,6 +172,11 @@ pub fn landed(
             format!(
                 "{task} delivered: {branch} at {short} is kept in the workspace for the user to merge. Close it with close_task."
             ),
+        ),
+        Fact::DoneInFolder { folder } => (
+            OUTCOME_DELIVERED,
+            format!("{task} delivered in {folder}"),
+            format!("{task} delivered: its changes are in {folder}. Close it with close_task."),
         ),
         Fact::InPlace { branch, target, .. } => (
             OUTCOME_LANDED,

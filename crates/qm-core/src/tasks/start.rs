@@ -17,7 +17,7 @@
 use super::base::{RecordedBase, Starter, base_request};
 use super::ports::{PORT_RANGE, choose as choose_ports};
 use super::runner::RunnerStart;
-use super::session::RoutedSession;
+use super::session::{RoutedSession, Workplace};
 use super::{ProjectRow, TaskService, active_by_name, failed, load_project, refuse};
 use crate::briefs::write_brief;
 use crate::inbox::Notify;
@@ -25,6 +25,7 @@ use crate::routing::{CrewmateFacts, RouteOutcome, account_ref, route_crewmate};
 use crate::skills::{Gathered, gather};
 use jiff::Timestamp;
 use qm_git::{BaseRequest, BaseSource, GitError, Repo, SettledBase};
+use qm_policy::delivery::check_folder_writer;
 use qm_policy::holds::{check_escalation, stronger_target};
 use qm_policy::overrides::Authority;
 use qm_policy::verification::choose as choose_level;
@@ -41,6 +42,7 @@ use qm_store::reports;
 use qm_store::tasks::{self as task_store, NewTask, TaskRow};
 use qm_tools::defs::{RoutingSummary, TaskStarted};
 use qm_tools::handler::{Caller, StartRequest, ToolFailure};
+use qm_types::data_dir::TaskPaths;
 use qm_types::domain::{
     DeliveryMode, Effort, Provider, Role, StartedBy, TaskKind, TaskOutcome, TaskStatus, Tier,
     VerificationLevel, VerificationSource,
@@ -50,6 +52,7 @@ use qm_types::ids::{AgentId, MessageId, ModelId, PortBlock, SecondmateId, TaskId
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -175,7 +178,8 @@ struct Validated {
     review_of: Option<TaskRow>,
     user_words: String,
     user_words_message: Option<MessageId>,
-    request: BaseRequest,
+    /// The base to settle; `None` for a folder project, which has no branches.
+    request: Option<BaseRequest>,
     later_step: Option<AppliedLaterStep>,
     secondmate_request: Option<i64>,
     /// A review's builder's provider, which the review prefers to avoid.
@@ -352,23 +356,33 @@ fn validate(
     } else {
         (None, None)
     };
-    let request = match base_request(
-        if caller.role == Role::Secondmate {
-            Starter::Secondmate {
-                request: starter.0.as_deref(),
-                standing: starter.1.as_deref(),
-                typed: req.base_branch.as_deref(),
-            }
-        } else {
-            Starter::Quartermaster {
-                authority,
-                typed: req.base_branch.as_deref(),
-            }
-        },
-        inherited.as_ref(),
-    ) {
-        Ok(r) => r,
-        Err(r) => return Ok(Err(r)),
+    // A folder project has no branches, so there's no base to settle.
+    let request = if project.delivery == DeliveryMode::Folder {
+        if req.base_branch.is_some() {
+            return Ok(Err(Refusal::new(
+                "the personal folder has no branches, so a base branch can't be named",
+            )));
+        }
+        None
+    } else {
+        match base_request(
+            if caller.role == Role::Secondmate {
+                Starter::Secondmate {
+                    request: starter.0.as_deref(),
+                    standing: starter.1.as_deref(),
+                    typed: req.base_branch.as_deref(),
+                }
+            } else {
+                Starter::Quartermaster {
+                    authority,
+                    typed: req.base_branch.as_deref(),
+                }
+            },
+            inherited.as_ref(),
+        ) {
+            Ok(r) => Some(r),
+            Err(r) => return Ok(Err(r)),
+        }
     };
 
     // The applicable later step: nearest first up the builds_on chain.
@@ -602,8 +616,11 @@ pub(crate) async fn start_as(
     );
 
     // Phase B: settle the base (network), check delivery.
-    let mut base = settle(svc, &validated.project, validated.request.clone()).await?;
-    if let Some(reviewed) = &validated.review_of
+    let mut base = match &validated.request {
+        Some(request) => Some(settle(svc, &validated.project, request.clone()).await?),
+        None => None,
+    };
+    if let (Some(reviewed), Some(base)) = (&validated.review_of, base.as_mut())
         && let Some(head) = &reviewed.head_commit
     {
         // A review starts at the reviewed task's head, on its base ref.
@@ -661,6 +678,15 @@ pub(crate) async fn start_as(
         .call(move |conn| {
             let tx = conn.transaction()?;
             let mut notify = Notify::new();
+            // Folder work shares one folder, so one code-writing task at a time may be open in it.
+            let open = task_store::open_in_project(&tx, validated.project.id)?;
+            let writer = open
+                .iter()
+                .find(|(_, kind)| kind.can_change_code())
+                .map(|(task, _)| *task);
+            if let Err(r) = check_folder_writer(validated.project.delivery, req.kind, writer) {
+                return Ok((Recorded::Refused(r), notify));
+            }
             let new = NewTask {
                 project: validated.project.id,
                 supervisor: caller.agent,
@@ -683,14 +709,20 @@ pub(crate) async fn start_as(
                 secondmate_request: validated.secondmate_request,
                 delivery: validated.project.delivery,
                 verification: level.map(|l| (l.level, l.source)),
-                base_branch: base.typed_branch().map(str::to_owned),
-                base_ref: Some(base.base_ref.clone()),
-                base_commit: Some(base.commit.clone()),
+                base_branch: base
+                    .as_ref()
+                    .and_then(SettledBase::typed_branch)
+                    .map(str::to_owned),
+                base_ref: base.as_ref().map(|b| b.base_ref.clone()),
+                base_commit: base.as_ref().map(|b| b.commit.clone()),
                 port_base: Some(ports.base),
                 at,
             };
             let task = task_store::insert(&tx, &new)?;
-            let home = paths.task(task).worktree;
+            let home = match validated.project.delivery {
+                DeliveryMode::Folder => validated.project.path.clone(),
+                _ => paths.task(task).worktree,
+            };
             let agent = agents::insert_crewmate(
                 &tx,
                 &NewCrewmate {
@@ -756,8 +788,8 @@ pub(crate) async fn start_as(
                 serde_json::json!({
                     "why": summary.why,
                     "route": route_inputs,
-                    "base_ref": base.base_ref,
-                    "base_commit": base.commit,
+                    "base_ref": base.as_ref().map(|b| &b.base_ref),
+                    "base_commit": base.as_ref().map(|b| &b.commit),
                     "ports": ports.base,
                 }),
                 at,
@@ -1077,11 +1109,33 @@ pub(crate) async fn routed_session(
         })
 }
 
+/// Where a crewmate works: the home its agent row was recorded with (its worktree, or a folder
+/// task's folder), and whether its tools may write there.
+pub(crate) async fn workplace(svc: &TaskService, task: TaskId) -> Result<Workplace, PrepareError> {
+    let (row, agent) = svc
+        .db()
+        .call(move |conn| {
+            Ok((
+                task_store::load(conn, task)?,
+                agents::crewmate_of(conn, task)?,
+            ))
+        })
+        .await
+        .map_err(|e| PrepareError::Failed(e.to_string()))?;
+    let row = row.ok_or_else(|| PrepareError::Failed(format!("{task} doesn't exist")))?;
+    let agent = agent.ok_or_else(|| PrepareError::Failed(format!("{task} has no crewmate")))?;
+    Ok(Workplace {
+        dir: agent.home,
+        writes_dir: row.delivery != DeliveryMode::Folder || row.kind.can_change_code(),
+    })
+}
+
 /// Gathers the crewmate's instruction files and skills (idempotent).
 pub(crate) async fn gather_for(svc: &TaskService, task: TaskId) -> Result<Gathered, PrepareError> {
     let home = svc.deps().home.clone();
-    let paths = svc.deps().data_dir.task(task);
-    tokio::task::spawn_blocking(move || gather(&home, &paths.worktree, &paths.skills))
+    let skills = svc.deps().data_dir.task(task).skills;
+    let dir = workplace(svc, task).await?.dir;
+    tokio::task::spawn_blocking(move || gather(&home, &dir, &skills))
         .await
         .map_err(|e| PrepareError::Failed(e.to_string()))?
         .map_err(|e| PrepareError::Failed(format!("The skills couldn't be gathered: {e}")))
@@ -1120,13 +1174,87 @@ pub(crate) async fn prepare(
     .map_err(|e| PrepareError::Failed(e.to_string()))?
     .map_err(|e| PrepareError::Failed(format!("The task's folders couldn't be made: {e}")))?;
 
-    // 2. The worktree.
+    // 2. The project, then the workplace: a folder task works in its folder, which must still be
+    // there; any other task gets a worktree on its branch.
     let project = svc
         .db()
         .call(move |conn| load_project(conn, row.project))
         .await
         .map_err(|e| PrepareError::Failed(e.to_string()))?
         .ok_or_else(|| PrepareError::Failed(format!("{task}'s project is gone")))?;
+    if row.delivery == DeliveryMode::Folder {
+        check_folder(task, &project.path).await?;
+    } else {
+        make_worktree(svc, task, &project, &row, &paths).await?;
+    }
+
+    // 3. The setup command, in the workplace, unless it already ran.
+    let place = workplace(svc, task).await?;
+    if let Some(command) = project
+        .setup_command
+        .clone()
+        .filter(|c| !c.trim().is_empty())
+    {
+        let done = svc
+            .db()
+            .call(move |conn| task_store::last_event(conn, task, SETUP_DONE_EVENT))
+            .await
+            .map_err(|e| PrepareError::Failed(e.to_string()))?
+            .is_some();
+        if !done {
+            match super::setup::run(svc, task, &paths, &place.dir, &command, ports, cancel).await {
+                Ok(took) => {
+                    let at = svc.clock().now();
+                    let summary = format!(
+                        "{task}: the setup command finished in {}",
+                        crate::jobs::duration_words(took)
+                    );
+                    svc.write(move |tx, _| {
+                        task_store::event(
+                            tx,
+                            SETUP_DONE_EVENT,
+                            task,
+                            None,
+                            &summary,
+                            serde_json::json!({ "seconds": took.as_secs() }),
+                            at,
+                        )
+                        .map(drop)
+                    })
+                    .await
+                    .map_err(|e| PrepareError::Failed(e.to_string()))?;
+                }
+                Err(super::setup::SetupError::Cancelled) => return Err(PrepareError::Cancelled),
+                Err(e) => return Err(PrepareError::Failed(e.to_string())),
+            }
+        }
+    }
+
+    // 4. Skills and instruction files.
+    let gathered = gather_for(svc, task).await?;
+
+    // 5. The brief.
+    let brief = write_brief(svc.db(), &svc.deps().data_dir, task)
+        .await
+        .map_err(|e| PrepareError::Failed(format!("The brief couldn't be written: {e}")))?;
+
+    Ok(Prepared {
+        brief: brief.text,
+        gathered,
+        routed,
+        ports,
+    })
+}
+
+/// Makes the task's worktree on its branch from its recorded base, copying the files the project
+/// asks for. An interrupted attempt's worktree is picked up as it is.
+async fn make_worktree(
+    svc: &TaskService,
+    task: TaskId,
+    project: &ProjectRow,
+    row: &TaskRow,
+    paths: &TaskPaths,
+) -> Result<(), PrepareError> {
     let (Some(base_ref), Some(base_commit)) = (row.base_ref.clone(), row.base_commit.clone())
     else {
         return Err(PrepareError::Failed(format!("{task} has no base recorded")));
@@ -1186,62 +1314,23 @@ pub(crate) async fn prepare(
             })
             .await;
     }
+    Ok(())
+}
 
-    // 3. The setup command, unless it already ran.
-    if let Some(command) = project
-        .setup_command
-        .clone()
-        .filter(|c| !c.trim().is_empty())
-    {
-        let done = svc
-            .db()
-            .call(move |conn| task_store::last_event(conn, task, SETUP_DONE_EVENT))
-            .await
-            .map_err(|e| PrepareError::Failed(e.to_string()))?
-            .is_some();
-        if !done {
-            match super::setup::run(svc, task, &paths, &command, ports, cancel).await {
-                Ok(took) => {
-                    let at = svc.clock().now();
-                    let summary = format!(
-                        "{task}: the setup command finished in {}",
-                        crate::jobs::duration_words(took)
-                    );
-                    svc.write(move |tx, _| {
-                        task_store::event(
-                            tx,
-                            SETUP_DONE_EVENT,
-                            task,
-                            None,
-                            &summary,
-                            serde_json::json!({ "seconds": took.as_secs() }),
-                            at,
-                        )
-                        .map(drop)
-                    })
-                    .await
-                    .map_err(|e| PrepareError::Failed(e.to_string()))?;
-                }
-                Err(super::setup::SetupError::Cancelled) => return Err(PrepareError::Cancelled),
-                Err(e) => return Err(PrepareError::Failed(e.to_string())),
-            }
-        }
-    }
-
-    // 4. Skills and instruction files.
-    let gathered = gather_for(svc, task).await?;
-
-    // 5. The brief.
-    let brief = write_brief(svc.db(), &svc.deps().data_dir, task)
+/// A folder task's folder must still be there. Nothing is created or changed in it: it's yours.
+async fn check_folder(task: TaskId, folder: &Path) -> Result<(), PrepareError> {
+    let dir = folder.to_path_buf();
+    let there = tokio::task::spawn_blocking(move || dir.is_dir())
         .await
-        .map_err(|e| PrepareError::Failed(format!("The brief couldn't be written: {e}")))?;
-
-    Ok(Prepared {
-        brief: brief.text,
-        gathered,
-        routed,
-        ports,
-    })
+        .map_err(|e| PrepareError::Failed(e.to_string()))?;
+    if there {
+        Ok(())
+    } else {
+        Err(PrepareError::Failed(format!(
+            "{task}'s folder {} isn't there, so nothing was started",
+            folder.display()
+        )))
+    }
 }
 
 /// A worktree failure, said plainly.

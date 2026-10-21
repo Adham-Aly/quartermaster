@@ -183,12 +183,12 @@ pub fn set_checks(
 pub fn set_landed(
     conn: &Connection,
     task: TaskId,
-    commit: &CommitSha,
+    commit: Option<&CommitSha>,
     into: &str,
 ) -> Result<(), StoreError> {
     conn.execute(
         "UPDATE tasks SET landed_commit = ?2, landed_into = ?3 WHERE id = ?1",
-        params![task, commit.as_str(), into],
+        params![task, commit.map(CommitSha::as_str), into],
     )?;
     Ok(())
 }
@@ -295,6 +295,7 @@ pub fn task_line(conn: &Connection, task: TaskId) -> Result<Option<String>, Stor
                 "landed in {}",
                 d.landed_into.as_deref().unwrap_or("your checkout")
             ),
+            DeliveryMode::Folder => "done · its changes are in the folder".to_owned(),
         }));
     }
     if row.status == TaskStatus::Closed {

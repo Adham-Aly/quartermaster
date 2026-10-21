@@ -251,6 +251,8 @@ pub(crate) enum FieldFor {
     ReconnectKey(usize),
     /// A custom endpoint's base URL, asked before its key.
     BaseUrl,
+    /// The personal workspace's folder (Settings ▸ Projects).
+    WorkspaceFolder,
 }
 
 /// An open text field.
@@ -267,7 +269,9 @@ impl std::fmt::Debug for Field {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let text = match self.purpose {
             FieldFor::ApiKey(_) | FieldFor::ReconnectKey(_) => "<redacted>",
-            FieldFor::Label(_) | FieldFor::BaseUrl => self.text.as_str(),
+            FieldFor::Label(_) | FieldFor::BaseUrl | FieldFor::WorkspaceFolder => {
+                self.text.as_str()
+            }
         };
         f.debug_struct("Field")
             .field("purpose", &self.purpose)
@@ -493,7 +497,7 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
             "click to change",
             "n notifications · s setup check · esc close",
         ),
-        Tab::Projects => ("click to change", "a autonomy · esc close"),
+        Tab::Projects => ("click to change", "a autonomy · f personal folder · esc close"),
     }
 }
 

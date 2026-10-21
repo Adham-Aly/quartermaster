@@ -22,7 +22,7 @@ use qm_store::agents::{self, InterruptedCrewTurn};
 use qm_store::events::{self, NewEvent};
 use qm_store::tasks as task_store;
 use qm_store::turns::{cut_short, mark_recovered};
-use qm_types::domain::{TaskStatus, TurnStatus, WakeKind};
+use qm_types::domain::{DeliveryMode, TaskStatus, TurnStatus, WakeKind};
 use qm_types::ids::{PortBlock, ProjectId, TaskId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -153,7 +153,10 @@ async fn worktree_report(svc: &TaskService) -> Result<ReconcileReport, StartupEr
             let projects = active_projects(conn)?;
             let open = task_store::open(conn)?;
             let mut by_project: BTreeMap<ProjectId, BTreeSet<TaskId>> = BTreeMap::new();
-            for t in open.iter().filter(|t| has_worktree(t.status)) {
+            for t in open
+                .iter()
+                .filter(|t| has_worktree(t.status) && t.delivery != DeliveryMode::Folder)
+            {
                 by_project.entry(t.project).or_default().insert(t.id);
             }
             let preparing: BTreeSet<TaskId> = open
@@ -161,8 +164,10 @@ async fn worktree_report(svc: &TaskService) -> Result<ReconcileReport, StartupEr
                 .filter(|t| t.status == TaskStatus::Preparing)
                 .map(|t| t.id)
                 .collect();
+            // A folder project has no worktrees, and git never runs in it.
             let projects = projects
                 .into_iter()
+                .filter(|p| p.delivery != DeliveryMode::Folder)
                 .map(|p| ReconcileProject {
                     project: p.id,
                     checkout: p.path,

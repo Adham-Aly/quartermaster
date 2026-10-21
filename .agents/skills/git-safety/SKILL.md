@@ -69,7 +69,7 @@ crewmate's environment.
   `git log --no-merges <merge-base>..head` against a freshly fetched `origin/<branch>` (the local
   branch only when that ref is missing), never from the stored `base_commit`.
 - After a merge the remote branch is deleted; side exits (stop, discard, retry) close the PR.
-- Kept refs (`refs/quartermaster/kept/T-n`) are saved before a worktree is removed
+- Kept refs (`refs/quartermaster/kept/T-n`) are saved before a worktree is removed. A plain-folder task has no worktree, branch or kept ref, and the app never runs git in its folder
   (`qm-git` `retire.rs`), so a user's work is never lost; startup `reconcile` deletes nothing.
 
 ## Tokens

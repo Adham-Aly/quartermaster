@@ -347,9 +347,13 @@ pub(crate) async fn record(
     }
     let to = next_for(task, row.status, event)?;
 
-    // On done for a code kind: the task's own commit names, and the head commit.
+    // On done for code work in a git mode: the task's own commit names, and the head commit. A
+    // folder task has no commits: its edits in the folder are the delivery.
     let mut head: Option<CommitSha> = None;
-    if args.outcome == ReportOutcome::Done && row.kind.can_change_code() {
+    if args.outcome == ReportOutcome::Done
+        && row.kind.can_change_code()
+        && row.delivery != DeliveryMode::Folder
+    {
         let paths = svc.deps().data_dir.task(task);
         let project = svc
             .db()

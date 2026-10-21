@@ -274,6 +274,7 @@ fn delivery_label(delivery: DeliveryMode) -> &'static str {
         DeliveryMode::DirectPr => "direct pull request",
         DeliveryMode::BranchOnly => "branch only",
         DeliveryMode::BuildInPlace => "build in place",
+        DeliveryMode::Folder => "a plain folder",
     }
 }
 

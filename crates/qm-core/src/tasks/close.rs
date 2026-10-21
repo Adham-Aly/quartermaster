@@ -6,7 +6,8 @@
 //! 2. **Stop the crewmate**: its runner interrupts a running turn, closes the session and stops
 //!    every job or setup group still open for the task.
 //! 3. **Retire the worktree**: unmerged work saved to `refs/quartermaster/kept/T-0042`, then the
-//!    worktree removed and the branch deleted, except a delivered branch-only task's branch.
+//!    worktree removed and the branch deleted, except a delivered branch-only task's branch. A
+//!    folder task has no worktree or branch: its files stay where they are, and nothing is undone.
 //! 4. **Close** (one transaction): `closed` with its outcome, the crewmate retired, `task.closed`,
 //!    and `wait_over` for every task waiting on it.
 //!
@@ -25,7 +26,7 @@ use qm_store::agents;
 use qm_store::tasks as task_store;
 use qm_tools::defs::TaskUpdated;
 use qm_tools::handler::{Caller, ToolFailure};
-use qm_types::domain::{AgentStatus, TaskStatus, WakeKind};
+use qm_types::domain::{AgentStatus, DeliveryMode, TaskStatus, WakeKind};
 use qm_types::ids::TaskId;
 
 /// `events.kind` of an exit being recorded.
@@ -169,7 +170,9 @@ pub(crate) async fn retire(
                     Exit::Failed { reason } => {
                         (format!("{task} failed: {reason}"), Some(reason.clone()))
                     }
-                    Exit::Stopped { reason } => (format!("{task} is being stopped"), reason.clone()),
+                    Exit::Stopped { reason } => {
+                        (format!("{task} is being stopped"), reason.clone())
+                    }
                     Exit::Discarded => (format!("{task} is being discarded"), None),
                     Exit::Landed | Exit::Answered => (format!("{task} is closing"), None),
                 };
@@ -183,10 +186,12 @@ pub(crate) async fn retire(
                     at,
                 )?;
                 if let Exit::Failed { reason } = &recorded {
-                    let text = format!(
-                        "{task} failed before it could finish: {reason}. Its work, if any, is kept at {}.",
-                        task.kept_ref()
-                    );
+                    let kept = if row.delivery == DeliveryMode::Folder {
+                        "Its files in the folder are left as they are.".to_owned()
+                    } else {
+                        format!("Its work, if any, is kept at {}.", task.kept_ref())
+                    };
+                    let text = format!("{task} failed before it could finish: {reason}. {kept}");
                     let wake = new_wake(
                         supervisor,
                         WakeKind::TaskFailed,
@@ -245,14 +250,18 @@ pub(crate) async fn retire(
         }
     }
 
-    // 3. Retire the worktree.
+    // 3. Retire the worktree. A folder task has none, so nothing on disk is touched.
     let project = svc
         .db()
         .call(move |conn| load_project(conn, row.project))
         .await
         .map_err(|e| CloseError::Failed(e.to_string()))?;
+    let folder_left = match (&project, row.delivery) {
+        (Some(project), DeliveryMode::Folder) => Some(project.path.display().to_string()),
+        _ => None,
+    };
     let retired = match project {
-        Some(project) if row.status != TaskStatus::Queued => {
+        Some(project) if row.status != TaskStatus::Queued && folder_left.is_none() => {
             let git = svc.deps().git.clone();
             let paths = svc.deps().data_dir.task(task);
             let base_commit = row.base_commit.clone();
@@ -334,9 +343,12 @@ pub(crate) async fn retire(
         if let Some(agent) = agents::crewmate_of(tx, task)? {
             agents::set_status(tx, agent.id, AgentStatus::Retired, at)?;
         }
-        let summary = match &kept {
-            Some(k) => format!("{task} closed: {outcome} · work kept at {}", k.git_ref),
-            None => format!("{task} closed: {outcome}"),
+        let summary = match (&kept, &folder_left) {
+            (_, Some(folder)) => {
+                format!("{task} closed: {outcome} · its files in {folder} are left as they are")
+            }
+            (Some(k), None) => format!("{task} closed: {outcome} · work kept at {}", k.git_ref),
+            (None, None) => format!("{task} closed: {outcome}"),
         };
         task_store::event(
             tx,
