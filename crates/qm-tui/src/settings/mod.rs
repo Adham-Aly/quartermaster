@@ -497,7 +497,10 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
             "click to change",
             "n notifications · s setup check · esc close",
         ),
-        Tab::Projects => ("click to change", "a autonomy · f personal folder · esc close"),
+        Tab::Projects => (
+            "click to change",
+            "a autonomy · f personal folder · esc close",
+        ),
     }
 }
 
