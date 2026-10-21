@@ -26,6 +26,7 @@ use crate::app::App;
 use crate::hit::{FrameMap, Hit, Hits, Pane};
 use crate::settings::Tab;
 use crate::text::{cells, width, wrap};
+use crate::theme;
 use crate::widgets::popup::{self as window, PopupHit, Window};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -261,7 +262,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
             Popup::ProjectsHint => {
                 let lines: Vec<Line<'_>> = wrap(PROJECTS_HINT, usize::from(content.width))
                     .into_iter()
-                    .map(Line::raw)
+                    .map(|line| Line::styled(line, theme::text()))
                     .collect();
                 frame.render_widget(Paragraph::new(lines), content);
             }
