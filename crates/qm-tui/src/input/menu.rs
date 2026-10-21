@@ -22,7 +22,7 @@ const COPY_ID: &str = "Copy ID";
 const COPY_NAME: &str = "Copy name";
 
 /// The items a menu on `target` offers, given whether the Quartermaster's turn is running.
-pub(crate) fn items(target: MenuTarget, turn_running: bool) -> Vec<&'static str> {
+pub(crate) fn items(target: MenuTarget, turn_running: bool, detachable: bool) -> Vec<&'static str> {
     match target {
         MenuTarget::Crew(AgentRef::Crewmate { .. }) => {
             vec![OPEN_SESSION, SHOW_TASK, INTERRUPT, COPY_TASK_ID]
@@ -34,7 +34,11 @@ pub(crate) fn items(target: MenuTarget, turn_running: bool) -> Vec<&'static str>
         MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_) => {
             crate::settings::menu_items(target)
         }
-        MenuTarget::Main => MenuEntry::ALL.into_iter().map(MenuEntry::label).collect(),
+        MenuTarget::Main => MenuEntry::ALL
+            .into_iter()
+            .filter(|entry| detachable || !entry.of_server())
+            .map(MenuEntry::label)
+            .collect(),
     }
 }
 
@@ -81,7 +85,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, menu: &Menu, hits: &mut Hit
 impl App {
     /// Opens the menu on `target` against `anchor`, unless it would be empty.
     pub(crate) fn open_menu(&mut self, target: MenuTarget, anchor: Anchor) {
-        let items = items(target, self.snapshot.turn_running);
+        let items = items(target, self.snapshot.turn_running, self.detachable);
         if items.is_empty() {
             return;
         }

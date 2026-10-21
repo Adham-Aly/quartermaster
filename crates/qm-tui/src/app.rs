@@ -10,6 +10,7 @@ use crate::{chrome, router};
 use crossterm::event::{Event, KeyEventKind};
 use qm_types::api::{Command, Snapshot, Update};
 use qm_types::ids::MessageId;
+use qm_types::wire::ExitReason;
 use ratatui::Frame;
 use std::cell::Cell;
 use std::time::{Duration, Instant};
@@ -68,6 +69,9 @@ pub(crate) struct App {
     exit: bool,
     /// This UI is one window of a background server: quitting from a window detaches it.
     pub(crate) detachable: bool,
+    /// Why the windows leave if the core closes after a stop asked from the menu: the server is
+    /// stopping, or restarting.
+    pub(crate) stop_reason: Option<ExitReason>,
     /// How many windows are attached to this UI; the status bar names the count when it's more
     /// than one.
     pub(crate) windows: usize,
@@ -101,6 +105,7 @@ impl App {
             outbox: Vec::new(),
             exit: false,
             detachable: false,
+            stop_reason: None,
             windows: 0,
             dirty: true,
             reveal: None,
@@ -192,7 +197,14 @@ impl App {
             self.view.menu = None;
         }
         if let Quit::Confirm { working } = self.term.quit {
-            chrome::draw_quit_dialog(frame, area, working, self.term.hover, &mut map.hits);
+            chrome::draw_quit_dialog(
+                frame,
+                area,
+                working,
+                self.quit_verb(),
+                self.term.hover,
+                &mut map.hits,
+            );
         }
         self.term.drawn = map;
         // Widening past the fold shows the task pane in place, so the overlay has nothing left
@@ -367,8 +379,28 @@ impl App {
         self.dirty = true;
     }
 
+    /// Stops the server (or restarts it) from the menu: the core's quit path, with its question
+    /// when agents are working; every window leaves for `reason` once it closes.
+    pub(crate) fn request_server_stop(&mut self, reason: ExitReason) {
+        self.outbox.push(Command::RequestQuit);
+        self.term.quit = Quit::Requested;
+        self.stop_reason = Some(reason);
+        self.dirty = true;
+    }
+
+    /// The dialog's word for what it confirms: "quit" for the app, and for a background server
+    /// what was asked of it.
+    fn quit_verb(&self) -> &'static str {
+        match (self.detachable, self.stop_reason) {
+            (false, _) => "quit",
+            (true, Some(ExitReason::Restarting)) => "restart",
+            (true, _) => "stop",
+        }
+    }
+
     pub(crate) fn cancel_quit(&mut self) {
         self.term.quit = Quit::Idle;
+        self.stop_reason = None;
         self.dirty = true;
     }
 

@@ -29,6 +29,7 @@ use crate::text::{cells, width, wrap};
 use crate::theme;
 use crate::widgets::popup::{self as window, PopupHit, Window};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use qm_types::wire::ExitReason;
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
@@ -161,17 +162,29 @@ pub(crate) enum MenuEntry {
     Routing,
     Update,
     Help,
+    /// Only this window leaves (a background server's menu only).
+    Detach,
+    RestartServer,
+    StopServer,
 }
 
 impl MenuEntry {
     /// The menu's entries, top to bottom.
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Settings,
         Self::ModelLevels,
         Self::Routing,
         Self::Update,
         Self::Help,
+        Self::Detach,
+        Self::RestartServer,
+        Self::StopServer,
     ];
+
+    /// Whether the entry is about the background server, so a UI without one has no use for it.
+    pub(crate) const fn of_server(self) -> bool {
+        matches!(self, Self::Detach | Self::RestartServer | Self::StopServer)
+    }
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
@@ -180,6 +193,9 @@ impl MenuEntry {
             Self::Routing => "Routing",
             Self::Update => "Update",
             Self::Help => "Help: keys and mouse",
+            Self::Detach => "Detach",
+            Self::RestartServer => "Restart server",
+            Self::StopServer => "Stop server",
         }
     }
 
@@ -188,7 +204,12 @@ impl MenuEntry {
         match self {
             Self::Settings => ",",
             Self::Help => "?",
-            Self::ModelLevels | Self::Routing | Self::Update => "",
+            Self::ModelLevels
+            | Self::Routing
+            | Self::Update
+            | Self::Detach
+            | Self::RestartServer
+            | Self::StopServer => "",
         }
     }
 
@@ -213,10 +234,7 @@ fn size(popup: Popup, body: Rect, app: &App) -> (u16, u16) {
             // As tall as its lines at the width it gets (border and padding included).
             let width = window::centered(body, crate::update::WIDTH, body.height).width;
             let room = usize::from(width.saturating_sub(4));
-            (
-                crate::update::WIDTH,
-                crate::update::height(&app.snapshot.update, room),
-            )
+            (crate::update::WIDTH, crate::update::height(app, room))
         }
         Popup::ProjectsHint => {
             // Just wide enough for its wrapped lines (border and padding included).
@@ -276,6 +294,7 @@ impl App {
     pub(crate) fn entry_badge(&self, entry: MenuEntry) -> bool {
         self.view.badges.contains(&entry)
             || (entry == MenuEntry::Update && self.snapshot.update.badge)
+            || (entry == MenuEntry::RestartServer && crate::update::restart_pending(self))
     }
 
     /// Whether the menu button shows a badge: some entry does.
@@ -354,6 +373,9 @@ impl App {
             MenuEntry::Routing => self.open_settings_tab(Tab::Routing),
             MenuEntry::Update => self.open_popup(Popup::Update),
             MenuEntry::Help => self.open_popup(Popup::Help),
+            MenuEntry::Detach => self.term.detach = true,
+            MenuEntry::RestartServer => self.request_server_stop(ExitReason::Restarting),
+            MenuEntry::StopServer => self.request_server_stop(ExitReason::ServerStopped),
         }
     }
 

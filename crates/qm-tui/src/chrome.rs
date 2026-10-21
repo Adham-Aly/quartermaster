@@ -131,7 +131,8 @@ fn draw_update_notice(
     app: &App,
     hits: &mut Hits,
 ) -> u16 {
-    let Some(notice) = &app.snapshot.update.notice else {
+    let shown = crate::update::shown(app);
+    let Some(notice) = &shown.notice else {
         return x;
     };
     let start = x + 2;
@@ -272,13 +273,19 @@ pub(crate) fn draw_quit_dialog(
     frame: &mut Frame<'_>,
     area: Rect,
     working: u32,
+    verb: &str,
     hover: Option<Hit>,
     hits: &mut Hits,
 ) {
-    let message = if working == 1 {
-        "1 crewmate is working; it'll pick up again next launch.".to_owned()
+    let (subject, them) = if working == 1 {
+        ("1 crewmate is".to_owned(), "it")
     } else {
-        format!("{working} crewmates are working; they'll pick up again next launch.")
+        (format!("{working} crewmates are"), "them")
+    };
+    let message = if verb == "quit" {
+        format!("{subject} working; {them} will pick up again next launch.")
+    } else {
+        format!("{subject} working; the server pauses {them} until it starts again.")
     };
     let dialog_width = area.width.saturating_sub(4).min(58);
     let inner_width = dialog_width.saturating_sub(4);
@@ -304,13 +311,15 @@ pub(crate) fn draw_quit_dialog(
 
     let mut lines: Vec<Line<'_>> = rows.into_iter().map(Line::from).collect();
     lines.push(Line::default());
-    let quit = "Quit";
+    let mut quit = verb.to_owned();
+    quit[..1].make_ascii_uppercase();
+    let quit = quit.as_str();
     let cancel = "Cancel";
     lines.push(Line::from(vec![
         button::span(quit, hover == Some(Hit::ConfirmQuit)),
         Span::raw(" "),
         button::span(cancel, hover == Some(Hit::CancelQuit)),
-        Span::styled("   ⏎ quit · esc cancel", theme::dim()),
+        Span::styled(format!("   ⏎ {verb} · esc cancel"), theme::dim()),
     ]));
     let text_area = Rect::new(
         inner.x + 1,
