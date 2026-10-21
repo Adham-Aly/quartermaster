@@ -26,7 +26,7 @@ impl App {
 
     /// The wheel over the session: up shows older lines.
     pub(crate) fn session_wheel(&mut self, up: bool) {
-        let max = self.drawn.scroll_max_of(Pane::Session);
+        let max = self.term.drawn.scroll_max_of(Pane::Session);
         let scroll = self.session_scroll();
         let to = if up {
             (scroll + WHEEL_LINES).min(max)

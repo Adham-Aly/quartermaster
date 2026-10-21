@@ -35,7 +35,7 @@ pub(crate) fn draw(
     };
     let style = pane_style(app, Pane::Task);
     let mut block = pane_block(&title, style);
-    let close_hovered = app.hover == Some(Hit::CloseOverlay);
+    let close_hovered = app.term.hover == Some(Hit::CloseOverlay);
     if overlay {
         let close_style = if close_hovered {
             theme::accent()
@@ -103,7 +103,7 @@ pub(crate) fn rows(app: &App, width: u16) -> Vec<Row> {
             .collect();
     };
     match app.snapshot.tasks.iter().find(|t| t.task == task) {
-        Some(detail) => detail_rows(detail, width, app.hover),
+        Some(detail) => detail_rows(detail, width, app.term.hover),
         // A task is selected (its id is the title), so "no task selected" would be wrong.
         None => empty_lines(&[&format!("{task}'s details haven't arrived yet.")], width)
             .into_iter()

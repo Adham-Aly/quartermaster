@@ -90,7 +90,7 @@ impl App {
             || self.view.location_for.is_some()
             || self.view.menu.is_some()
             || self.popup().is_some()
-            || matches!(self.quit, Quit::Confirm { .. })
+            || matches!(self.term.quit, Quit::Confirm { .. })
         {
             return None;
         }

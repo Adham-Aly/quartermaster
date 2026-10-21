@@ -84,10 +84,7 @@ pub(crate) struct View {
     /// "Change location" picked on a project proposal: the input box holds the folder for this held
     /// action.
     pub(crate) location_for: Option<HeldActionId>,
-    /// The app's own text selection, while dragging and until the next click.
-    pub(crate) selection: Option<Selection>,
     pub(crate) menu: Option<Menu>,
-    pub(crate) flash: Option<Flash>,
     /// The prompt field's first shown row in view, as the last frame drew it.
     pub(crate) input_scroll: usize,
     /// The sample fixture is showing: core snapshots are ignored.

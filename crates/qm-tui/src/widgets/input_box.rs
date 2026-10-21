@@ -70,7 +70,7 @@ pub(crate) fn draw_field(
     let style = if field.accent {
         theme::accent()
     } else {
-        theme::border(false, app.hover == Some(Hit::Pane(Pane::Input)))
+        theme::border(false, app.term.hover == Some(Hit::Pane(Pane::Input)))
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -166,7 +166,7 @@ pub(crate) fn draw_field(
 /// The terminal's own cursor follows the field, for input methods, unless a dialog has the
 /// keyboard.
 fn set_cursor(frame: &mut Frame<'_>, app: &App, field: &Field, at: Position) {
-    if field.focused && !matches!(app.quit, Quit::Confirm { .. } | Quit::Requested) {
+    if field.focused && !matches!(app.term.quit, Quit::Confirm { .. } | Quit::Requested) {
         frame.set_cursor_position(at);
     }
 }

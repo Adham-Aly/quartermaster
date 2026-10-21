@@ -42,14 +42,14 @@ impl App {
         if self.screen != Screen::Bridge {
             return;
         }
-        let order = order(self.drawn.folded, self.view.task_overlay);
+        let order = order(self.term.drawn.folded, self.view.task_overlay);
         self.focus_pane(next(&order, self.focus, forward));
     }
 
     /// Closes the task overlay, moving focus off the pane it took with it.
     pub(crate) fn close_overlay(&mut self) {
         self.change(|app| &mut app.view.task_overlay, false);
-        if self.focus == Pane::Task && self.drawn.folded {
+        if self.focus == Pane::Task && self.term.drawn.folded {
             self.focus_pane(Pane::Crew);
         }
     }
@@ -64,9 +64,9 @@ impl App {
             self.close_popup();
         } else if self.view.task_overlay {
             self.close_overlay();
-        } else if self.view.selection.is_some() {
-            self.pointer.selecting = false;
-            self.change(|app| &mut app.view.selection, None);
+        } else if self.term.selection.is_some() {
+            self.term.pointer.selecting = false;
+            self.change(|app| &mut app.term.selection, None);
         } else if self.focus == Pane::Input && self.selection().is_some() {
             self.change(|app| &mut app.draft.anchor, None);
         } else if self.view.guidance_for.is_some() {

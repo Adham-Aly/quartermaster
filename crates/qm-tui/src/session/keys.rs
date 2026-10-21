@@ -29,9 +29,9 @@ impl App {
         };
         match key.code {
             KeyCode::Esc => {
-                if self.view.selection.is_some() {
-                    self.pointer.selecting = false;
-                    self.change(|app| &mut app.view.selection, None);
+                if self.term.selection.is_some() {
+                    self.term.pointer.selecting = false;
+                    self.change(|app| &mut app.term.selection, None);
                 } else if self.selection().is_some() {
                     self.change(|app| &mut app.draft.anchor, None);
                 } else {
@@ -56,8 +56,9 @@ impl App {
             }
             return true;
         }
-        let max = self.drawn.scroll_max_of(Pane::Session);
+        let max = self.term.drawn.scroll_max_of(Pane::Session);
         let page = self
+            .term
             .drawn
             .hits
             .rect_of(Hit::Pane(Pane::Session))
@@ -93,7 +94,7 @@ impl App {
         let Some(view) = self.session_view() else {
             return;
         };
-        let in_view = |hit| self.drawn.hits.rect_of(Hit::Session(hit)).is_some();
+        let in_view = |hit| self.term.drawn.hits.rect_of(Hit::Session(hit)).is_some();
         let newest = view.lines.iter().enumerate().rev().find_map(|(i, line)| {
             let starts_run = line.kind == SessionLineKind::Tool
                 && (i == 0 || view.lines[i - 1].kind != SessionLineKind::Tool);
