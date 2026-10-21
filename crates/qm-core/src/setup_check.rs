@@ -7,22 +7,18 @@
 //! and installs nothing: installs and logins run only from the setup screen's terminal pane,
 //! after your click, and never with `sudo` (the commands are in [`view`]).
 //!
-//! [`SetupCheck`] runs detection off the async threads, publishes the facts on a
-//! `watch::Receiver<SetupFacts>` (the delivery probe reads it), and decides when the screen
-//! opens by itself: on the first run, and whenever what it found changes since you last closed it
-//! (a `setup.seen` event keeps what you last saw). [`SetupPart`] is the API's end: it re-runs the
-//! check on `Command::RecheckSetup`, records `Command::SetupSeen`, and fills `Snapshot.setup` and
-//! the Bridge's one-line banner (`Snapshot.setup_issues`).
+//! [`SetupCheck`] runs detection off the async threads in the background and publishes the facts
+//! on a `watch::Receiver<SetupFacts>` (the delivery probe reads it). The screen never opens by
+//! itself: what needs you shows as a red dot on the menu and in Settings (`Snapshot.setup_issues`),
+//! and goes away once it's fixed. [`SetupPart`] is the API's end: it re-runs the check on
+//! `Command::RecheckSetup` and fills `Snapshot.setup` and `Snapshot.setup_issues`.
 //!
 //! What each missing tool switches off ([`SetupFacts::switched_off`]): without `gh`, pull
 //! requests, branch delivery, GitHub clones and CI results; without a `claude` subscription
-//! login, the Claude engine (an API-key login isn't used); without `git`, everything, so
-//! the check blocks.
+//! login, the Claude engine (an API-key login isn't used); without `git`, everything.
 
 use crate::api::{ApiPart, Conversation, Handled};
 use crate::turn_io::ChatLog;
-use qm_store::db::Db;
-use qm_store::events::{self, NewEvent};
 use qm_types::BoxFuture;
 use qm_types::api::{
     Command, SetupAction, SetupActionKind, SetupItem, SetupMark, SetupStep, SetupTool, SetupView,
@@ -34,15 +30,17 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 /// How long one detection command may run.
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The event that records what the check found when you last closed it.
-pub const SETUP_SEEN: &str = "setup.seen";
+/// How often the check runs again in the background, so the red dot comes and goes with what's on
+/// this Mac. The UI asks for a check sooner when the terminal regains focus while something needs
+/// you.
+pub const RECHECK_EVERY: Duration = Duration::from_mins(5);
 
 /// Homebrew's official installer, shown to copy when Homebrew is missing.
 pub const HOMEBREW_INSTALL: &str = "/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"";
@@ -163,11 +161,6 @@ impl SetupFacts {
         self.claude.is_logged_in()
     }
 
-    /// `git` is missing, so the check blocks.
-    pub fn blocking(&self) -> bool {
-        self.checked && self.git.is_missing()
-    }
-
     /// What the missing or logged-out tools switch off.
     pub fn switched_off(&self) -> Vec<Feature> {
         if !self.checked {
@@ -191,7 +184,7 @@ impl SetupFacts {
         off
     }
 
-    /// One short phrase per thing that needs you, for the Bridge's banner.
+    /// One short phrase per thing that needs you; any at all shows the red dot.
     pub fn issues(&self) -> Vec<String> {
         if !self.checked {
             return Vec::new();
@@ -217,16 +210,6 @@ impl SetupFacts {
             _ => issues.push("GitHub CLI (gh) not logged in".to_owned()),
         }
         issues
-    }
-
-    /// What "something changed" compares: each tool's state, not its version.
-    fn fingerprint(&self) -> String {
-        format!(
-            "git={} gh={} claude={}",
-            self.git.word(),
-            self.gh.word(),
-            self.claude.word()
-        )
     }
 }
 
@@ -624,6 +607,11 @@ fn later() -> SetupAction {
     SetupAction::new("Not now", SetupActionKind::Later)
 }
 
+/// The fix line Settings ▸ System shows: "Log in to GitHub: press Open, or run gh auth login".
+fn fix(what: &str, command: &str) -> String {
+    format!("{what}: press Open, or run {command}.")
+}
+
 fn program(path: Option<&PathBuf>, name: &str) -> String {
     path.map_or_else(|| name.to_owned(), |p| p.display().to_string())
 }
@@ -648,6 +636,10 @@ fn git_item(facts: &SetupFacts) -> SetupItem {
                 ),
                 copy_action("xcode-select --install"),
             ];
+            item.fix = Some(fix(
+                "Install Apple's Command Line Tools",
+                "xcode-select --install",
+            ));
             item
         }
         state => {
@@ -662,6 +654,51 @@ fn git_item(facts: &SetupFacts) -> SetupItem {
     }
 }
 
+/// Claude Code isn't installed: Homebrew installs it, else the official installer's command.
+fn claude_missing_item(facts: &SetupFacts) -> SetupItem {
+    let mut item = SetupItem::new(SetupTool::Claude, SetupMark::Missing, "Claude Code");
+    "Claude Code · not installed".clone_into(&mut item.summary);
+    item.explanation = Some(
+        "Needed for the Claude engine. Until it's set up, routing uses your other \
+         accounts."
+            .to_owned(),
+    );
+    if let Some(brew) = &facts.homebrew {
+        item.state = vec![Styled::new("not installed", Tone::Error)];
+        item.actions = vec![
+            run_action(
+                "Install with Homebrew",
+                "brew install --cask claude-code",
+                vec![
+                    brew.path.display().to_string(),
+                    "install".to_owned(),
+                    "--cask".to_owned(),
+                    "claude-code".to_owned(),
+                ],
+                "install",
+            ),
+            copy_action("brew install --cask claude-code"),
+            later(),
+        ];
+        item.fix = Some(fix(
+            "Install it with Homebrew",
+            "brew install --cask claude-code",
+        ));
+    } else {
+        item.state = vec![
+            Styled::new("not installed", Tone::Error),
+            Styled::new(" · Homebrew isn't installed either", Tone::Text),
+        ];
+        item.steps = vec![SetupStep::new("1. Install Claude Code", CLAUDE_INSTALL)];
+        item.fix = Some(format!(
+            "Install it with {CLAUDE_INSTALL}; Open shows the command to copy."
+        ));
+        item.footnote =
+            Some("Or install it with Homebrew. I'll check again when you're back.".to_owned());
+    }
+    item
+}
+
 fn claude_item(facts: &SetupFacts) -> SetupItem {
     let login = run_action(
         "Log in to Claude",
@@ -674,43 +711,7 @@ fn claude_item(facts: &SetupFacts) -> SetupItem {
         "log in",
     );
     match &facts.claude {
-        ToolState::Missing => {
-            let mut item = SetupItem::new(SetupTool::Claude, SetupMark::Missing, "Claude Code");
-            "Claude Code · not installed".clone_into(&mut item.summary);
-            item.explanation = Some(
-                "Needed for the Claude engine. Until it's set up, routing uses your other \
-                 accounts."
-                    .to_owned(),
-            );
-            if let Some(brew) = &facts.homebrew {
-                item.state = vec![Styled::new("not installed", Tone::Error)];
-                item.actions = vec![
-                    run_action(
-                        "Install with Homebrew",
-                        "brew install --cask claude-code",
-                        vec![
-                            brew.path.display().to_string(),
-                            "install".to_owned(),
-                            "--cask".to_owned(),
-                            "claude-code".to_owned(),
-                        ],
-                        "install",
-                    ),
-                    copy_action("brew install --cask claude-code"),
-                    later(),
-                ];
-            } else {
-                item.state = vec![
-                    Styled::new("not installed", Tone::Error),
-                    Styled::new(" · Homebrew isn't installed either", Tone::Text),
-                ];
-                item.steps = vec![SetupStep::new("1. Install Claude Code", CLAUDE_INSTALL)];
-                item.footnote = Some(
-                    "Or install it with Homebrew. I'll check again when you're back.".to_owned(),
-                );
-            }
-            item
-        }
+        ToolState::Missing => claude_missing_item(facts),
         ToolState::LoggedOut { .. } | ToolState::Installed { .. } => {
             let mut item = SetupItem::new(SetupTool::Claude, SetupMark::Warn, "Claude Code");
             let words = if matches!(facts.claude, ToolState::LoggedOut { .. }) {
@@ -724,6 +725,7 @@ fn claude_item(facts: &SetupFacts) -> SetupItem {
             ];
             item.summary = format!("Claude Code · {words}");
             item.actions = vec![login];
+            item.fix = Some(fix("Log in to Claude", "claude auth login"));
             item.hint = Some("runs claude auth login in a pane".to_owned());
             item
         }
@@ -741,6 +743,10 @@ fn claude_item(facts: &SetupFacts) -> SetupItem {
             );
             item.actions = vec![login, later()];
             item.hint = Some("runs claude auth login in a pane".to_owned());
+            item.fix = Some(fix(
+                "Log in with a Claude subscription",
+                "claude auth login",
+            ));
             item
         }
         ToolState::LoggedIn { version, account } => {
@@ -784,6 +790,7 @@ fn gh_item(facts: &SetupFacts) -> SetupItem {
                     copy_action("brew install gh"),
                     later(),
                 ];
+                item.fix = Some(fix("Install it with Homebrew", "brew install gh"));
             } else {
                 item.state = vec![
                     Styled::new("not installed", Tone::Error),
@@ -793,6 +800,10 @@ fn gh_item(facts: &SetupFacts) -> SetupItem {
                     SetupStep::new("1. Install Homebrew", HOMEBREW_INSTALL),
                     SetupStep::new("2. Install gh", "brew install gh"),
                 ];
+                item.fix = Some(
+                    "Install Homebrew, then run brew install gh; Open shows the commands to copy."
+                        .to_owned(),
+                );
                 item.footnote = Some(
                     "Or download the installer from cli.github.com. I'll check again when \
                          you're back."
@@ -847,6 +858,7 @@ fn gh_item(facts: &SetupFacts) -> SetupItem {
                 later(),
             ];
             item.hint = Some("runs gh auth login in a pane".to_owned());
+            item.fix = Some(fix("Log in to GitHub", "gh auth login --web"));
             item
         }
     }
@@ -854,11 +866,9 @@ fn gh_item(facts: &SetupFacts) -> SetupItem {
 
 /// The setup screen for `facts`: items in the order git, Claude Code, GitHub CLI, the ones that
 /// are fine first, then what's missing, then what needs a login.
-pub fn view(facts: &SetupFacts, prompt: bool) -> SetupView {
+pub fn view(facts: &SetupFacts) -> SetupView {
     let mut view = SetupView::default();
     view.checked = facts.checked;
-    view.prompt = prompt && facts.checked;
-    view.blocking = facts.blocking();
     view.homebrew = facts
         .homebrew
         .as_ref()
@@ -886,19 +896,17 @@ pub fn view(facts: &SetupFacts, prompt: bool) -> SetupView {
     view
 }
 
-/// Runs the check and remembers what you last saw.
+/// Runs the check in the background and publishes what it found.
 #[derive(Clone)]
 pub struct SetupCheck {
     inner: Arc<CheckInner>,
 }
 
 struct CheckInner {
-    db: Db,
+    /// Paces the background re-checks.
     clock: Arc<dyn Clock>,
     env: BTreeMap<String, String>,
     facts: watch::Sender<SetupFacts>,
-    /// Open the screen by itself.
-    prompt: Mutex<bool>,
     /// One check at a time.
     running: tokio::sync::Mutex<()>,
     /// How many checks have finished.
@@ -915,14 +923,12 @@ impl std::fmt::Debug for SetupCheck {
 
 impl SetupCheck {
     /// A check that runs its commands with `env` (the app's environment).
-    pub fn new(db: Db, clock: Arc<dyn Clock>, env: BTreeMap<String, String>) -> Self {
+    pub fn new(clock: Arc<dyn Clock>, env: BTreeMap<String, String>) -> Self {
         Self {
             inner: Arc::new(CheckInner {
-                db,
                 clock,
                 env,
                 facts: watch::Sender::new(SetupFacts::default()),
-                prompt: Mutex::new(false),
                 running: tokio::sync::Mutex::new(()),
                 generation: std::sync::atomic::AtomicU64::new(0),
             }),
@@ -932,15 +938,6 @@ impl SetupCheck {
     /// The latest facts, updated after every check.
     pub fn facts(&self) -> watch::Receiver<SetupFacts> {
         self.inner.facts.subscribe()
-    }
-
-    /// Whether the screen should open by itself.
-    pub fn prompt(&self) -> bool {
-        *self
-            .inner
-            .prompt
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Runs the check (off the async threads) and publishes what it found.
@@ -954,86 +951,22 @@ impl SetupCheck {
                 return self.inner.facts.borrow().clone();
             }
         };
-        let seen = self
-            .inner
-            .db
-            .call(|conn| Ok(events::latest(conn, SETUP_SEEN, 1)?.pop()))
-            .await;
-        let fingerprint = facts.fingerprint();
-        let prompt = match seen {
-            Ok(None) => true,
-            Ok(Some(event)) => {
-                let last = event
-                    .payload
-                    .get("fingerprint")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                last != fingerprint && !facts.issues().is_empty()
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "couldn't read when the setup check was last seen");
-                false
-            }
-        };
         tracing::info!(
             git = facts.git.word(),
             gh = facts.gh.word(),
             claude = facts.claude.word(),
             "setup check"
         );
-        *self
-            .inner
-            .prompt
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = prompt;
         self.inner.facts.send_replace(facts.clone());
         self.inner
             .generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         facts
     }
-
-    /// You closed the screen: it opens by itself again only when what it finds changes.
-    pub async fn seen(&self) {
-        let facts = self.inner.facts.borrow().clone();
-        if !facts.checked {
-            return;
-        }
-        *self
-            .inner
-            .prompt
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = false;
-        let at = self.inner.clock.now();
-        let fingerprint = facts.fingerprint();
-        let summary = format!("you closed the setup check ({fingerprint})");
-        if let Err(e) = self
-            .inner
-            .db
-            .call(move |conn| {
-                events::insert(
-                    conn,
-                    &NewEvent {
-                        kind: SETUP_SEEN,
-                        agent: None,
-                        task: None,
-                        turn: None,
-                        summary: &summary,
-                        payload: serde_json::json!({ "fingerprint": fingerprint }),
-                        at,
-                    },
-                )
-            })
-            .await
-        {
-            tracing::error!(error = %e, "couldn't record that you closed the setup check");
-        }
-    }
 }
 
-/// The API's end of the setup check. A check runs in the background and the UI gets a fresh
-/// snapshot when it's done, so the API never waits on `gh` or `claude`.
+/// The API's end of the setup check. Checks run in the background and the UI gets a fresh
+/// snapshot when each is done, so the API never waits on `gh` or `claude`.
 #[derive(Debug)]
 pub struct SetupPart {
     check: SetupCheck,
@@ -1048,9 +981,23 @@ impl SetupPart {
         }
     }
 
-    /// Runs the check in the background, then asks for a fresh snapshot (it never blocks
-    /// startup).
+    /// Runs the check now and then every [`RECHECK_EVERY`], in the background (it never blocks
+    /// startup). Call it once.
     pub fn start(&self) {
+        let check = self.check.clone();
+        let conversation = Arc::clone(&self.conversation);
+        let clock = Arc::clone(&self.check.inner.clock);
+        tokio::spawn(async move {
+            loop {
+                check.run().await;
+                conversation.changed();
+                clock.sleep(RECHECK_EVERY).await;
+            }
+        });
+    }
+
+    /// Runs the check once more in the background, then asks for a fresh snapshot.
+    fn recheck(&self) {
         let check = self.check.clone();
         let conversation = Arc::clone(&self.conversation);
         tokio::spawn(async move {
@@ -1064,12 +1011,8 @@ impl ApiPart for SetupPart {
     fn handle<'a>(&'a self, command: &'a Command) -> Option<BoxFuture<'a, Handled>> {
         match command {
             Command::RecheckSetup => Some(Box::pin(async move {
-                self.start();
+                self.recheck();
                 Handled::Unchanged
-            })),
-            Command::SetupSeen => Some(Box::pin(async move {
-                self.check.seen().await;
-                Handled::Changed
             })),
             _ => None,
         }
@@ -1079,7 +1022,7 @@ impl ApiPart for SetupPart {
         Box::pin(async move {
             let facts = self.check.inner.facts.borrow().clone();
             snapshot.setup_issues = facts.issues();
-            snapshot.setup = view(&facts, self.check.prompt());
+            snapshot.setup = view(&facts);
             snapshot.setup.generation = self
                 .check
                 .inner

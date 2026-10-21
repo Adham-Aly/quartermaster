@@ -15,8 +15,8 @@
 //! - `terminal` enters and leaves full-screen mode (raw mode, alternate screen, mouse capture
 //!   with motion, bracketed paste) and restores the terminal on drop and on panic. Every frame is
 //!   wrapped in a synchronized update (DEC mode 2026), so it appears all at once.
-//! - `router` is the screen router; `chrome` draws the top bar (its menu button), setup banner,
-//!   status bar and quit dialog around every screen; `bridge` draws the Bridge; `popups` opens
+//! - `router` is the screen router; `chrome` draws the top bar (its menu button), the status
+//!   bar and quit dialog around every screen; `bridge` draws the Bridge; `popups` opens
 //!   Settings (`settings`), Help (`placeholder`) and Update (`update`) as popup windows over the
 //!   screen, from the top bar's menu or their keys.
 //! - `widgets` holds the Bridge's panes and their parts: projects, crew, conversation, cards,

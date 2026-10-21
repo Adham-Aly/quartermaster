@@ -1,9 +1,9 @@
 //! The setup check screen.
 //!
 //! What this Mac has of `git`, the GitHub CLI and Claude Code comes from the core in
-//! `Snapshot.setup`, display-ready. The screen opens by itself on the first run and whenever what
-//! the check found changes (`SetupView::prompt`), and stays open while `git` is missing
-//! (`blocking`); the Bridge's banner opens it too.
+//! `Snapshot.setup`, display-ready. The screen never opens by itself: the core checks in the
+//! background, and what needs you shows as a red dot until it's fixed; you open the screen from
+//! Settings.
 //!
 //! Nothing runs without your click. A Run button starts its command in an embedded terminal pane
 //! (`pane`), where you see exactly what Homebrew or a login does and can type into it; `Esc` or
@@ -39,8 +39,6 @@ const AWAY_AFTER: Duration = Duration::from_secs(5);
 /// Something on the setup screen a click acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SetupHit {
-    /// The Bridge's one-line banner.
-    Banner,
     /// Button `action` of item `item` (indexes into `SetupView::items` and its actions).
     Action { item: usize, action: usize },
     /// The Copy button of a numbered step.
@@ -85,8 +83,6 @@ pub(crate) struct SetupState {
     runs: Vec<Run>,
     /// The item the keys act on, by tool so it survives new snapshots.
     selected: Option<SetupTool>,
-    /// The screen opened by itself for the current prompt.
-    prompted: bool,
     /// The last terminal event while the setup screen showed.
     last_event: Option<Instant>,
 }
@@ -272,12 +268,8 @@ impl App {
         }
     }
 
-    /// Not now / `Esc` on the check: closes it until something changes; the banner stays.
+    /// Not now / `Esc` on the check: closes it; the red dot stays until it's fixed.
     fn setup_later(&mut self) {
-        if self.snapshot.setup.blocking {
-            return;
-        }
-        self.command(Command::SetupSeen);
         self.show(Screen::Bridge);
     }
 
@@ -294,7 +286,6 @@ impl App {
             .iter()
             .all(|i| i.mark == SetupMark::Ok);
         if all_ok {
-            self.command(Command::SetupSeen);
             self.show(Screen::Bridge);
         }
         self.redraw();
@@ -319,10 +310,9 @@ impl App {
         }
     }
 
-    /// A click on the setup screen or the banner.
+    /// A click on the setup screen.
     pub(crate) fn setup_click(&mut self, hit: SetupHit, now: Instant) {
         match hit {
-            SetupHit::Banner => self.show(Screen::Setup),
             SetupHit::Action { item, action } => {
                 if let Some(tool) = self.snapshot.setup.items.get(item).map(|i| i.tool) {
                     self.setup.selected = Some(tool);
@@ -450,12 +440,15 @@ impl App {
         }
     }
 
-    /// Any terminal event: on the setup screen, the first after a while away (or the terminal
-    /// regaining focus, `focus_gained`) runs the check again, for the steps you did outside the
-    /// app.
+    /// Any terminal event: the terminal regaining focus (`focus_gained`) while something needs
+    /// you, or on the setup screen the first event after a while away, runs the check again, for
+    /// the steps you did outside the app.
     pub(crate) fn setup_activity(&mut self, now: Instant, focus_gained: bool) {
         if self.screen != Screen::Setup {
             self.setup.last_event = None;
+            if focus_gained && !self.snapshot.setup_issues.is_empty() {
+                self.command(Command::RecheckSetup);
+            }
             return;
         }
         let away = self
@@ -500,20 +493,24 @@ impl App {
         }
     }
 
-    /// A new snapshot: finished runs whose re-check came back show their result, and the screen
-    /// opens by itself for a new prompt, or while `git` is missing.
+    /// A new snapshot: the Settings entry's red dot shows while the check finds anything that
+    /// needs you, and finished runs whose re-check came back show their result.
     pub(crate) fn setup_after_snapshot(&mut self) {
-        let view = &self.snapshot.setup;
+        let entry = crate::popups::MenuEntry::Settings;
+        let needs_you = !self.snapshot.setup_issues.is_empty();
+        if needs_you != self.view.badges.contains(&entry) {
+            if needs_you {
+                self.view.badges.push(entry);
+            } else {
+                self.view.badges.retain(|e| *e != entry);
+            }
+            self.redraw();
+        }
+        let generation = self.snapshot.setup.generation;
         for run in &mut self.setup.runs {
-            if run.awaiting.is_some_and(|g| view.generation > g) {
+            if run.awaiting.is_some_and(|g| generation > g) {
                 run.awaiting = None;
             }
-        }
-        if view.blocking || (view.prompt && !self.setup.prompted) {
-            self.setup.prompted = true;
-            self.show(Screen::Setup);
-        } else if !view.prompt {
-            self.setup.prompted = false;
         }
     }
 }
@@ -557,9 +554,7 @@ pub(crate) fn hints(app: &App) -> String {
             parts.push("c copy".to_owned());
         }
     }
-    if !app.snapshot.setup.blocking {
-        parts.push("esc later".to_owned());
-    }
+    parts.push("esc back".to_owned());
     parts.join(" · ")
 }
 
