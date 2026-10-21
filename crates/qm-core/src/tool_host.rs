@@ -38,8 +38,8 @@ use qm_types::BoxFuture;
 use qm_types::clock::Clock;
 use qm_types::domain::{MessageKind, MessageSource, Role};
 use qm_types::error::Refusal;
-use qm_types::ids::TaskId;
 use qm_types::ids::{MessageId, StandingInstructionId};
+use qm_types::ids::{SecondmateId, TaskId};
 use std::fmt;
 use std::sync::Arc;
 
@@ -589,6 +589,19 @@ impl ToolHost for CoreToolHost {
             offered_to(caller, "configure_secondmate")?;
             self.secondmates("configure_secondmate")?
                 .configure(caller, change)
+                .await
+        })
+    }
+
+    fn close_secondmate<'a>(
+        &'a self,
+        caller: &'a Caller,
+        secondmate: SecondmateId,
+    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
+        Box::pin(async move {
+            offered_to(caller, "close_secondmate")?;
+            self.secondmates("close_secondmate")?
+                .close(caller, secondmate)
                 .await
         })
     }

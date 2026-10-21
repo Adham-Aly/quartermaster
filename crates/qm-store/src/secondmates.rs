@@ -200,6 +200,22 @@ pub fn name_taken(conn: &Connection, name: &str) -> Result<bool, StoreError> {
     Ok(by_name(conn, name)?.is_some())
 }
 
+/// Retires secondmate `id` and its agent row, in the caller's transaction. Nothing is deleted:
+/// its history, requests and tasks stay, and its ID is never handed out again (rows are never
+/// removed, so SQLite's next ID is always higher). Returns whether it was active.
+pub fn retire(conn: &Connection, id: SecondmateId, at: Timestamp) -> Result<bool, StoreError> {
+    let n = conn.execute(
+        "UPDATE secondmates SET retired_at = ?2 WHERE id = ?1 AND retired_at IS NULL",
+        params![id, to_millis(at)],
+    )?;
+    conn.execute(
+        "UPDATE agents SET status = 'retired', retired_at = COALESCE(retired_at, ?2)
+         WHERE secondmate_id = ?1 AND role = 'secondmate' AND retired_at IS NULL",
+        params![id, to_millis(at)],
+    )?;
+    Ok(n == 1)
+}
+
 pub fn set_scope(conn: &Connection, id: SecondmateId, scope: &str) -> Result<(), StoreError> {
     conn.execute(
         "UPDATE secondmates SET scope = ?2 WHERE id = ?1",

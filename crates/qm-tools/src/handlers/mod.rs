@@ -47,6 +47,7 @@ pub static HANDLERS: &[Binding] = &[
     bind::<crate::defs::StartSecondmateTool>(),
     bind::<crate::defs::RouteToSecondmateTool>(),
     bind::<crate::defs::ConfigureSecondmateTool>(),
+    bind::<crate::defs::CloseSecondmateTool>(),
     bind::<crate::defs::SecondmateStartCrewmateTool>(),
     bind::<crate::defs::ParentReportTool>(),
     bind::<crate::defs::PrOpenTool>(),
