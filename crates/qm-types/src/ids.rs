@@ -7,8 +7,7 @@
 //! read naturally) and is stored as an `INTEGER`. Parsing is strict about the prefix and lenient
 //! about zero padding: `T-42` parses and displays as `T-0042`.
 //!
-//! A task's git names derive from its ID: branch `qm/task-0042` and kept ref
-//! `refs/quartermaster/kept/T-0042`, where unmerged work is saved before a worktree is retired.
+//! A task's git names derive from its ID: branch `qm/task-0042` and worktree folder `T-0042`.
 //!
 //! **Row IDs** ([`AgentId`], [`TurnId`], [`WakeId`], …) are internal database keys with no display
 //! form; they serialise as plain numbers.
@@ -157,8 +156,6 @@ display_id!(
 impl TaskId {
     /// Prefix of every task branch.
     pub const BRANCH_PREFIX: &'static str = "qm/task-";
-    /// Prefix of every kept ref.
-    pub const KEPT_REF_PREFIX: &'static str = "refs/quartermaster/kept/";
 
     /// The task's branch, `qm/task-0042`.
     pub fn branch(self) -> String {
@@ -171,26 +168,6 @@ impl TaskId {
             .strip_prefix(Self::BRANCH_PREFIX)
             .ok_or_else(|| IdError::new("task branch", branch, "it must start with qm/task-"))?;
         parse_number("task branch", branch, digits).map(Self)
-    }
-
-    /// The ref unmerged work is saved to before the worktree is retired,
-    /// `refs/quartermaster/kept/T-0042`.
-    pub fn kept_ref(self) -> String {
-        format!("{}{self}", Self::KEPT_REF_PREFIX)
-    }
-
-    /// The task a kept ref belongs to.
-    pub fn from_kept_ref(git_ref: &str) -> Result<Self, IdError> {
-        git_ref
-            .strip_prefix(Self::KEPT_REF_PREFIX)
-            .ok_or_else(|| {
-                IdError::new(
-                    "kept ref",
-                    git_ref,
-                    "it must start with refs/quartermaster/kept/",
-                )
-            })?
-            .parse()
     }
 }
 

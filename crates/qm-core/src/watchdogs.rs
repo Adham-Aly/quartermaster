@@ -220,7 +220,7 @@ fn idle_wake_text(task: TaskId, minutes: u32, again: bool) -> String {
     format!(
         "{task} ended a turn {minutes} minutes ago without a report and has {still}done nothing \
          since. Its last words are kept as its report (task_status {task}). Steer it with \
-         message_task, or stop it with stop_task (its work is kept either way)."
+         message_task, or stop it with stop_task (its worktree and branch are removed either way)."
     )
 }
 
