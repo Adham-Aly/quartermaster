@@ -24,12 +24,10 @@
 
 use crate::app::App;
 use crate::hit::{FrameMap, Hit, Hits, Pane};
-use crate::settings::Tab;
 use crate::text::{cells, width, wrap};
 use crate::theme;
 use crate::widgets::popup::{self as window, PopupHit, Window};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use qm_types::wire::ExitReason;
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
@@ -158,44 +156,19 @@ impl Popup {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum MenuEntry {
     Settings,
-    ModelLevels,
-    Routing,
     Update,
     Help,
-    /// Only this window leaves (a background server's menu only).
-    Detach,
-    RestartServer,
-    StopServer,
 }
 
 impl MenuEntry {
     /// The menu's entries, top to bottom.
-    pub(crate) const ALL: [Self; 8] = [
-        Self::Settings,
-        Self::ModelLevels,
-        Self::Routing,
-        Self::Update,
-        Self::Help,
-        Self::Detach,
-        Self::RestartServer,
-        Self::StopServer,
-    ];
-
-    /// Whether the entry is about the background server, so a UI without one has no use for it.
-    pub(crate) const fn of_server(self) -> bool {
-        matches!(self, Self::Detach | Self::RestartServer | Self::StopServer)
-    }
+    pub(crate) const ALL: [Self; 3] = [Self::Settings, Self::Update, Self::Help];
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Settings => "Settings",
-            Self::ModelLevels => "Model levels",
-            Self::Routing => "Routing",
             Self::Update => "Update",
             Self::Help => "Help: keys and mouse",
-            Self::Detach => "Detach",
-            Self::RestartServer => "Restart server",
-            Self::StopServer => "Stop server",
         }
     }
 
@@ -204,12 +177,7 @@ impl MenuEntry {
         match self {
             Self::Settings => ",",
             Self::Help => "?",
-            Self::ModelLevels
-            | Self::Routing
-            | Self::Update
-            | Self::Detach
-            | Self::RestartServer
-            | Self::StopServer => "",
+            Self::Update => "",
         }
     }
 
@@ -294,7 +262,6 @@ impl App {
     pub(crate) fn entry_badge(&self, entry: MenuEntry) -> bool {
         self.view.badges.contains(&entry)
             || (entry == MenuEntry::Update && self.snapshot.update.badge)
-            || (entry == MenuEntry::RestartServer && crate::update::restart_pending(self))
     }
 
     /// Whether the menu button shows a badge: some entry does.
@@ -369,19 +336,9 @@ impl App {
         match entry {
             // Settings opens on the tab it was last on.
             MenuEntry::Settings => self.open_popup(Popup::Settings),
-            MenuEntry::ModelLevels => self.open_settings_tab(Tab::ModelLevels),
-            MenuEntry::Routing => self.open_settings_tab(Tab::Routing),
             MenuEntry::Update => self.open_popup(Popup::Update),
             MenuEntry::Help => self.open_popup(Popup::Help),
-            MenuEntry::Detach => self.term.detach = true,
-            MenuEntry::RestartServer => self.request_server_stop(ExitReason::Restarting),
-            MenuEntry::StopServer => self.request_server_stop(ExitReason::ServerStopped),
         }
-    }
-
-    fn open_settings_tab(&mut self, tab: Tab) {
-        self.open_popup(Popup::Settings);
-        self.show_settings_tab(tab);
     }
 
     /// The menu button, or `Ctrl`+`O`: opens the menu under the button, or closes it.

@@ -100,11 +100,6 @@ impl App {
         self.change(|app| slot(&mut app.view.settings), value);
     }
 
-    /// Shows Settings tab `tab` (the menu's Model levels and Routing entries).
-    pub(crate) fn show_settings_tab(&mut self, tab: Tab) {
-        self.show_tab(tab);
-    }
-
     fn show_tab(&mut self, tab: Tab) {
         if self.view.settings.tab != tab {
             self.settings_set(|s| &mut s.scroll, 0);
