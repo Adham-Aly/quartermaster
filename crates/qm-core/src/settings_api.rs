@@ -60,7 +60,7 @@ use qm_types::api::{
     SettingsModel, SettingsView, Snapshot,
 };
 use qm_types::clock::Clock;
-use qm_types::config::{AlwaysUse, Config, QuartermasterModel};
+use qm_types::config::{AlwaysUse, AutocompactWindow, Config, QuartermasterModel};
 use qm_types::data_dir::DataDir;
 use qm_types::domain::{AccountKind, Effort, EngineKind, Provider};
 use qm_types::ids::{AccountId, ModelId};
@@ -294,6 +294,10 @@ impl ApiPart for SettingsPart {
                 let enabled = *enabled;
                 Box::pin(async move { inner.set_notifications(enabled).await })
             }
+            Command::SetAutocompactWindow { tokens } => {
+                let tokens = *tokens;
+                Box::pin(async move { inner.set_autocompact_window(tokens).await })
+            }
             _ => return None,
         })
     }
@@ -479,6 +483,22 @@ impl Inner {
             Ok(()) => Handled::Changed,
             Err(e) => {
                 self.note(&format!("The notifications setting couldn't be saved: {e}"))
+                    .await
+            }
+        }
+    }
+
+    /// Sets the autocompact window (clamped and rounded to a step by `AutocompactWindow`); each
+    /// agent applies it at its next idle moment.
+    async fn set_autocompact_window(&self, tokens: u32) -> Handled {
+        let window = AutocompactWindow::new(tokens);
+        match self
+            .save_config(|c| c.compaction.autocompact_window = window)
+            .await
+        {
+            Ok(()) => Handled::Changed,
+            Err(e) => {
+                self.note(&format!("The autocompact window couldn't be saved: {e}"))
                     .await
             }
         }
@@ -988,6 +1008,7 @@ impl Inner {
         };
         view.notifications = config.notifications.enabled;
         view.tier_efforts = config.tiers.clone();
+        view.autocompact_window = config.compaction.autocompact_window;
         view.quartermaster = match &config.quartermaster.model {
             QuartermasterModel::Model(m) => QuartermasterChoice::Model(m.clone()),
             QuartermasterModel::Auto => QuartermasterChoice::Auto,

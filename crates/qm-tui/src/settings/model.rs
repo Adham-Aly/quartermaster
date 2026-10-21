@@ -8,7 +8,7 @@
 //! drag straight away) and queue it for the core.
 
 use qm_types::api::{self, Command};
-use qm_types::config::TierEfforts;
+use qm_types::config::{AutocompactWindow, TierEfforts};
 use qm_types::domain::{Effort, Provider as ProviderId, Tier};
 use qm_types::ids::{AccountId, ModelId};
 use std::time::{Duration, Instant};
@@ -83,6 +83,8 @@ pub(crate) struct Settings {
     pub(crate) notifications: bool,
     /// Each tier's default effort as routing uses it (`config.toml`'s `[tiers]`).
     pub(crate) tier_efforts: TierEfforts,
+    /// The autocompact window every agent compacts at (Routing).
+    pub(crate) autocompact_window: AutocompactWindow,
     /// Why the core's settings part didn't start this run, shown in place of the tabs that need it.
     pub(crate) unavailable: Option<String>,
 }
@@ -277,6 +279,9 @@ impl Settings {
             }
             Command::SetQuartermasterEffort { effort } => self.quartermaster_effort = *effort,
             Command::SetNotifications { enabled } => self.notifications = *enabled,
+            Command::SetAutocompactWindow { tokens } => {
+                self.autocompact_window = AutocompactWindow::new(*tokens);
+            }
             // Only the core can act on the rest (logins it runs, keys it checks).
             _ => {}
         }
