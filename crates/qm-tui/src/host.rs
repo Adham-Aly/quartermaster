@@ -547,6 +547,9 @@ impl Host {
                 if let Some((reason, reply)) = self.pending_quit.take() {
                     self.exit_reason = reason;
                     let _ = reply.send(QuitOutcome::Closing);
+                } else if let Some(reason) = self.app.stop_reason.take() {
+                    // A window's menu asked for it.
+                    self.exit_reason = reason;
                 }
             }
             _ => {}

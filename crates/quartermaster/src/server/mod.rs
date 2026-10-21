@@ -16,7 +16,10 @@
 //!
 //! - [`serve`]: the socket, the peer check, the handshake and control requests.
 //! - [`spawn`]: finding the server and starting it (launchd one-shot, or a direct spawn).
-//! - [`attach`]: the client in the terminal.
+//! - [`attach`]: the client in the terminal: re-attaches after a restart, respawns a crashed
+//!   server once (a second loss within 30 s is an error), and handles version skew: the same
+//!   protocol attaches with a "restart the server" notice, another protocol is refused with an
+//!   offer to restart that says first whether agents are working.
 
 mod attach;
 mod serve;

@@ -49,7 +49,10 @@
 //! returns when the core drops its end of the link.
 //!
 //! Under a background server ([`host::serve`]) a second `Ctrl`+`C` only detaches that window; the
-//! server is stopped from the command line (`quartermaster server stop`), through [`host::Handle`].
+//! server is stopped from the menu's Stop server (Restart server and Detach are there too) or the
+//! command line (`quartermaster server stop`, through [`host::Handle`]). A client newer than the
+//! server it reaches (same protocol) draws a one-row notice of its own with a Restart button below
+//! the host's window ([`Notice`]); an installed update says the same in the Update popup.
 
 mod app;
 mod attach;
@@ -80,7 +83,7 @@ mod widgets;
 
 use qm_types::api::CoreClient;
 
-pub use attach::attach;
+pub use attach::{Left, Notice, attach};
 
 /// Runs the terminal UI on the current thread until you quit or the core closes the link, then
 /// restores the terminal. The binary calls it with its end of `qm_types::api::link()` while the
@@ -101,7 +104,7 @@ pub fn run(client: CoreClient) -> std::io::Result<()> {
         let _ = windows_tx.send(Box::new(near) as Box<dyn host::Conn>);
         // No other window can arrive, so the host ends when this one leaves.
         drop(windows_tx);
-        let (hosted, attached) = tokio::join!(host::run(client, windows), attach(far));
+        let (hosted, attached) = tokio::join!(host::run(client, windows), attach(far, None));
         hosted.and(attached.map(drop))
     })
 }

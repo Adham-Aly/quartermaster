@@ -68,7 +68,9 @@ for keys.
 Closing the window (or `Ctrl`+`C` twice on an empty field) only detaches: the server and your
 agents keep running, and any number of windows can attach. `quartermaster server status`,
 `server stop` (asks first when agents are working; `--force` skips the question) and
-`server restart` manage it. `quartermaster --foreground` runs server and window in one process.
+`server restart` manage it, and so do the menu's Detach, Restart server and Stop server. After an
+update, restart the server to run the new version: a newer window attached to an older server
+says so and offers a Restart button, and windows re-attach by themselves. `quartermaster --foreground` runs server and window in one process.
 One server runs per data directory. For a throwaway one:
 `QUARTERMASTER_HOME=$(mktemp -d) quartermaster --foreground`.
 
