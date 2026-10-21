@@ -69,6 +69,9 @@ pub(crate) struct App {
     exit: bool,
     /// This UI is one window of a background server: quitting from a window detaches it.
     pub(crate) detachable: bool,
+    /// How many windows are attached to this UI; the status bar names the count when it's more
+    /// than one.
+    pub(crate) windows: usize,
     /// Set when something changed and the screen needs a new frame.
     dirty: bool,
     /// A card to scroll into view, a step per frame, until its buttons show.
@@ -101,6 +104,7 @@ impl App {
             outbox: Vec::new(),
             exit: false,
             detachable: false,
+            windows: 0,
             dirty: true,
             reveal: None,
             prefs_path: None,

@@ -253,6 +253,12 @@ fn status_counts(left: &mut Vec<Span<'static>>, area: Rect, app: &App, hits: &mu
     } else {
         left.push(Span::styled("nothing running", theme::dim()));
     }
+    if app.windows > 1 {
+        left.push(Span::styled(
+            format!(" · {} windows", app.windows),
+            theme::dim(),
+        ));
+    }
 }
 
 fn counted(n: u32, one: &str, many: &str) -> String {
