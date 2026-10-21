@@ -1162,8 +1162,11 @@ pub(crate) async fn prepare(
         paths.skills.clone(),
         gh,
     ];
+    let scratch = svc.deps().data_dir.clone();
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
+        // The evidence folder is under the scratch root, so that root is checked first.
+        scratch.ensure_scratch()?;
         for dir in &dirs {
             std::fs::create_dir_all(dir)?;
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
