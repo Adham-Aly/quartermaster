@@ -93,6 +93,30 @@ mod tests {
     /// A fresh folder for one test's `state.db`, removed when the guard drops.
     struct Scratch(std::path::PathBuf);
 
+    /// Two closed tasks, one under the Quartermaster and one under a secondmate, both past
+    /// the open-task rule, so their outcomes are the rows the context block reads.
+    fn seed_two_orchestrators(conn: &mut Connection) -> Result<(), StoreError> {
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, \
+                 merge_method, created_at, seq) \
+             VALUES (1, 'p', '/p', 'created', 'main', 'direct_pr', 'merge', 1, 1);
+             INSERT INTO agents (id, role, home, status, created_at, seq) \
+             VALUES (1, 'quartermaster', '/home', 'idle', 1, 1);
+             INSERT INTO secondmates (id, name, scope, created_at) VALUES (1, 'SM', 'p', 1);
+             INSERT INTO agents (id, role, home, status, created_at, seq, supervisor_id, secondmate_id) \
+             VALUES (2, 'secondmate', '/home', 'idle', 1, 2, 1, 1);",
+        )?;
+        for (id, supervisor) in [(1, 1), (2, 2)] {
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, \
+                     delivery_mode, branch, status, outcome, created_at, closed_at, seq) \
+                 VALUES (?1, 1, ?2, 'build', 't', 'g', 'direct_pr', ?3, 'closed', 'landed', 1, 1, ?1)",
+                rusqlite::params![id, supervisor, format!("qm/task-{id}")],
+            )?;
+        }
+        Ok(())
+    }
+
     impl Drop for Scratch {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
@@ -147,6 +171,102 @@ mod tests {
             "no conversation is written"
         );
         assert!(text.contains("KEPT-THROUGH-DB"), "a kept event is written");
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn each_orchestrators_newest_five_outcomes_survive_a_restart() {
+        use jiff::Timestamp;
+        use qm_types::ids::{AgentId, TaskId};
+        let dir = std::env::temp_dir().join(format!("qm-outcomes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let scratch = Scratch(dir.clone());
+        let path = dir.join("state.db");
+        let quartermaster = AgentId::new(1);
+        let secondmate = AgentId::new(2);
+
+        let db = Db::open(&path).expect("a database");
+        db.call(seed_two_orchestrators).await.expect("the rows");
+
+        // Seven outcomes for the Quartermaster's task and three for the secondmate's.
+        db.call(|conn| {
+            for i in 0..10_i64 {
+                let task: u32 = if i < 7 { 1 } else { 2 };
+                crate::tasks::event(
+                    conn,
+                    "outcome.landed",
+                    TaskId::new(task).expect("a task number"),
+                    None,
+                    &format!("OUT-{i}"),
+                    serde_json::json!({}),
+                    Timestamp::from_millisecond(1_000 + i).expect("a time"),
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("the outcomes");
+
+        let before = db
+            .call(move |conn| {
+                Ok((
+                    crate::events::latest_of(conn, "outcome.", quartermaster, 5)?,
+                    crate::events::latest_of(conn, "outcome.", secondmate, 5)?,
+                ))
+            })
+            .await
+            .expect("the outcomes read");
+        let summaries = |rows: &[crate::events::EventRow]| -> Vec<String> {
+            rows.iter().map(|r| r.summary.clone()).collect()
+        };
+        assert_eq!(
+            summaries(&before.0),
+            ["OUT-6", "OUT-5", "OUT-4", "OUT-3", "OUT-2"],
+            "the Quartermaster's five newest outcomes"
+        );
+        assert_eq!(before.1.len(), 3, "the secondmate's three outcomes");
+        assert_eq!(
+            before.0[0]
+                .payload
+                .get("supervisor")
+                .and_then(serde_json::Value::as_i64),
+            Some(1),
+            "a task event names its supervisor"
+        );
+        drop(db);
+
+        let db = Db::open(&path).expect("a restart");
+        let kept = db
+            .call(move |conn| {
+                let total: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM events WHERE kind LIKE 'outcome.%'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                Ok((
+                    total,
+                    crate::events::latest_of(conn, "outcome.", quartermaster, 5)?,
+                    crate::events::latest_of(conn, "outcome.", secondmate, 5)?,
+                ))
+            })
+            .await
+            .expect("the outcomes after a restart");
+        assert_eq!(
+            kept.0, 8,
+            "five of the Quartermaster's and all three of the secondmate's are kept"
+        );
+        assert_eq!(
+            summaries(&kept.1),
+            summaries(&before.0),
+            "the same five after a restart"
+        );
+        assert_eq!(
+            summaries(&kept.2),
+            summaries(&before.1),
+            "the same three after a restart"
+        );
+        drop(db);
         drop(scratch);
     }
 }

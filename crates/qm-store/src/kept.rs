@@ -118,15 +118,20 @@ pub const KEPT: &[Kept] = &[
     },
     Kept {
         table: "events",
-        // Block lines not yet seen by the oldest live orchestrator; the newest five outcomes
-        // (per secondmate once `payload.supervisor` partitions them, step E); everything of an
-        // open task; and the two facts the app keeps for good.
+        // Block lines not yet seen by the oldest live orchestrator (from the lower of its watermark
+        // and the one before it, so a turn that is rolled back still finds its lines); the newest
+        // five outcomes of each orchestrator (`payload.supervisor`); everything of an open task;
+        // and the two facts the app keeps for good.
         predicate: "(kind LIKE 'you.%' OR kind LIKE 'task.%' OR kind LIKE 'pr.%' \
                      OR kind LIKE 'checks.%' OR kind LIKE 'secondmate.%' OR kind LIKE 'model.%' \
                      OR kind IN ('model_new', 'model_gone')) \
-                    AND seq > (SELECT COALESCE(MIN(event_seq), 0) FROM block_watermarks) \
-                    OR seq IN (SELECT seq FROM events AS newest WHERE newest.kind LIKE 'outcome.%' \
-                               ORDER BY newest.seq DESC LIMIT 5) \
+                    AND seq > (SELECT COALESCE(MIN(floor), 0) FROM \
+                               (SELECT MIN(event_seq, COALESCE(prev_event_seq, event_seq)) AS floor \
+                                FROM block_watermarks)) \
+                    OR seq IN (SELECT seq FROM (SELECT seq, ROW_NUMBER() OVER ( \
+                                   PARTITION BY COALESCE(json_extract(payload, '$.supervisor'), 0) \
+                                   ORDER BY seq DESC) AS rank \
+                               FROM events WHERE kind LIKE 'outcome.%') WHERE rank <= 5) \
                     OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed') \
                     OR kind IN ('starter_tiers_seeded', 'settings.model_listed')",
     },

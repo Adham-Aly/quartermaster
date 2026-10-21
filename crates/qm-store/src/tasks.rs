@@ -346,7 +346,8 @@ pub fn all(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
     collect(&mut stmt, [])
 }
 
-/// Appends one `task.*` event.
+/// Appends one `task.*` event. Its payload also names the task's supervisor as `supervisor`, so an
+/// orchestrator's block shows its own tasks' lines and outcomes (plan 5, step E).
 #[allow(clippy::too_many_arguments)]
 pub fn event(
     conn: &Connection,
@@ -354,9 +355,19 @@ pub fn event(
     task: TaskId,
     agent: Option<AgentId>,
     summary: &str,
-    payload: serde_json::Value,
+    mut payload: serde_json::Value,
     at: Timestamp,
 ) -> Result<EventId, StoreError> {
+    let supervisor: Option<AgentId> = conn
+        .query_row(
+            "SELECT supervisor_id FROM tasks WHERE id = ?1",
+            params![task],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let (Some(supervisor), Some(map)) = (supervisor, payload.as_object_mut()) {
+        map.insert("supervisor".to_owned(), serde_json::json!(supervisor.get()));
+    }
     events::insert(
         conn,
         &NewEvent {
