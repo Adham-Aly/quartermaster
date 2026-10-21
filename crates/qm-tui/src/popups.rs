@@ -8,8 +8,9 @@
 //!
 //! The open popups are a stack (`View::popups`, top last) of [`OpenPopup`]s: plain, serialisable
 //! data with no screen coordinates. Each records its [`Anchor`], what it is placed against (the
-//! screen's centre, the menu button, a row), which is resolved against the frame being drawn and
-//! clamped into it ([`resolve`]). So the same stack can be drawn in windows of any size.
+//! screen's centre, the menu button, the Projects pane, a row), which is resolved against the
+//! frame being drawn and clamped into it ([`resolve`]). So the same stack can be drawn in windows
+//! of any size.
 //!
 //! - A new popup is a [`Popup`] variant, its title and size ([`Popup::title`], [`area`]), a line
 //!   in [`draw`], and its keys in [`App::on_popup_key`]. Open it with [`App::open_popup`], or
@@ -22,12 +23,16 @@
 //!   button shows a dot when any entry does, and an entry's popup shows one in its title.
 
 use crate::app::App;
-use crate::hit::{FrameMap, Hit, Hits};
+use crate::hit::{FrameMap, Hit, Hits, Pane};
 use crate::settings::Tab;
+use crate::text::{cells, width, wrap};
+use crate::theme;
 use crate::widgets::popup::{self as window, PopupHit, Window};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
+use ratatui::text::Line;
+use ratatui::widgets::Paragraph;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -39,6 +44,8 @@ pub(crate) enum Anchor {
     Centre,
     /// Just under the top bar's menu button.
     MenuButton,
+    /// Just under the Projects pane's title, at its left edge.
+    ProjectsPane,
     /// On the row a context menu's target names (`MenuTarget::row`), `dx` cells in from its left
     /// edge and `dy` rows down from its top: where the pointer was, or under the row's label.
     Row { dx: u16, dy: u16 },
@@ -70,16 +77,28 @@ pub(crate) fn resolve(
             .map_or(Position::new(within.x, within.y + 1), |button| {
                 Position::new(button.x.saturating_sub(1), button.bottom() + 1)
             }),
+        // The box's border on the row under the pane's title; centred where the pane isn't drawn.
+        Anchor::ProjectsPane => {
+            let pane = hits.rect_of(Hit::Pane(Pane::Projects));
+            return Some(pane.map_or(Placement::Centred, |pane| {
+                Placement::At(clamp(Position::new(pane.x, pane.y + 2), within))
+            }));
+        }
         Anchor::Row { dx, dy } => {
             let row = hits.rect_of(row?)?;
             Position::new(row.x.saturating_add(dx), row.y.saturating_add(dy))
         }
     };
+    Some(Placement::At(clamp(at, within)))
+}
+
+/// `at`, moved into `within`.
+fn clamp(at: Position, within: Rect) -> Position {
     let x =
         at.x.clamp(within.x, within.right().saturating_sub(1).max(within.x));
     let y =
         at.y.clamp(within.y, within.bottom().saturating_sub(1).max(within.y));
-    Some(Placement::At(Position::new(x, y)))
+    Position::new(x, y)
 }
 
 /// An open popup: what it is and what it is placed against.
@@ -93,6 +112,11 @@ pub(crate) struct OpenPopup {
 const SETTINGS_WIDTH: u16 = 124;
 /// The widest the Help popup gets, in cells.
 const HELP_WIDTH: u16 = 104;
+/// The widest the projects hint gets, in cells.
+const PROJECTS_HINT_WIDTH: u16 = 48;
+/// What the projects hint says.
+const PROJECTS_HINT: &str =
+    "Give your Quartermaster a folder path or a GitHub repo link to add a project.";
 
 /// A window that opens over the current screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +127,8 @@ pub(crate) enum Popup {
     Help,
     /// The app's own update: where it stands, and the button that starts it (`update`).
     Update,
+    /// How to add a project: opened from the Projects pane; `Esc` or any click closes it.
+    ProjectsHint,
 }
 
 impl Popup {
@@ -112,15 +138,17 @@ impl Popup {
             Self::Settings => "Settings",
             Self::Help => "Help",
             Self::Update => "Update",
+            Self::ProjectsHint => "Add a project",
         }
     }
 
-    /// The menu entry whose badge the popup's title shows.
-    const fn entry(self) -> MenuEntry {
+    /// The menu entry whose badge the popup's title shows, if it has one.
+    const fn entry(self) -> Option<MenuEntry> {
         match self {
-            Self::Settings => MenuEntry::Settings,
-            Self::Help => MenuEntry::Help,
-            Self::Update => MenuEntry::Update,
+            Self::Settings => Some(MenuEntry::Settings),
+            Self::Help => Some(MenuEntry::Help),
+            Self::Update => Some(MenuEntry::Update),
+            Self::ProjectsHint => None,
         }
     }
 }
@@ -190,6 +218,13 @@ fn size(popup: Popup, body: Rect, app: &App) -> (u16, u16) {
                 crate::update::height(&app.snapshot.update, room),
             )
         }
+        Popup::ProjectsHint => {
+            // Just wide enough for its wrapped lines (border and padding included).
+            let room = PROJECTS_HINT_WIDTH.min(body.width).saturating_sub(4);
+            let lines = wrap(PROJECTS_HINT, usize::from(room));
+            let longest = lines.iter().map(|line| width(line)).max().unwrap_or(0);
+            (cells(longest) + 4, cells(lines.len()) + 2)
+        }
     }
 }
 
@@ -210,7 +245,8 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
             continue;
         };
         let popup = open.popup;
-        let window = Window::new(popup.title()).badge(app.entry_badge(popup.entry()));
+        let badge = popup.entry().is_some_and(|entry| app.entry_badge(entry));
+        let window = Window::new(popup.title()).badge(badge);
         let inner = window::draw(frame, area, window, app.term.hover, map);
         // One cell of padding left and right, as in every box.
         let content = Rect::new(
@@ -223,6 +259,13 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
             Popup::Settings => crate::settings::draw(frame, content, app, map),
             Popup::Help => crate::placeholder::draw_help(frame, content, app, map),
             Popup::Update => crate::update::draw(frame, content, app, map),
+            Popup::ProjectsHint => {
+                let lines: Vec<Line<'_>> = wrap(PROJECTS_HINT, usize::from(content.width))
+                    .into_iter()
+                    .map(|line| Line::styled(line, theme::text()))
+                    .collect();
+                frame.render_widget(Paragraph::new(lines), content);
+            }
         }
     }
 }
@@ -333,6 +376,11 @@ impl App {
         self.open_menu(crate::view::MenuTarget::Main, Anchor::MenuButton);
     }
 
+    /// The Projects pane's hint on how to add a project, under the pane's title.
+    pub(crate) fn open_projects_hint(&mut self) {
+        self.open_popup_at(Popup::ProjectsHint, Anchor::ProjectsPane);
+    }
+
     /// A key while a popup is open: the popup's own keys first; then `Esc` closes it, `?` opens
     /// Help (or closes it) and `,` opens Settings.
     pub(crate) fn on_popup_key(&mut self, popup: Popup, key: KeyEvent, now: Instant) {
@@ -356,7 +404,8 @@ impl App {
     }
 
     /// A click on the top popup's window, its close button or outside it. Outside it (or on its
-    /// border), an open picker or text field in Settings closes first.
+    /// border), an open picker or text field in Settings closes first. Any click closes the
+    /// projects hint.
     pub(crate) fn popup_click(&mut self, hit: PopupHit) {
         let settings = &self.view.settings;
         let overlay = self.popup() == Some(Popup::Settings)
@@ -364,7 +413,41 @@ impl App {
         match hit {
             PopupHit::Backdrop | PopupHit::Window if overlay => self.close_settings_overlays(),
             PopupHit::Close | PopupHit::Backdrop => self.close_popup(),
+            PopupHit::Window if self.popup() == Some(Popup::ProjectsHint) => self.close_popup(),
             PopupHit::Window => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projects_hint_fits_its_text() {
+        let (width, height) = size(Popup::ProjectsHint, Rect::new(0, 1, 150, 42), &App::new());
+        assert!(width <= PROJECTS_HINT_WIDTH);
+        let lines = wrap(PROJECTS_HINT, usize::from(width - 4));
+        assert_eq!(cells(lines.len()) + 2, height);
+        assert_eq!(
+            lines.concat().replace(' ', ""),
+            PROJECTS_HINT.replace(' ', "")
+        );
+    }
+
+    #[test]
+    fn projects_hint_opens_under_the_pane_title() {
+        let body = Rect::new(0, 1, 150, 42);
+        let mut hits = Hits::default();
+        hits.add(Rect::new(0, 1, 31, 6), Hit::Pane(Pane::Projects));
+        assert_eq!(
+            resolve(Anchor::ProjectsPane, None, &hits, body),
+            Some(Placement::At(Position::new(0, 3))),
+        );
+        // Where the pane isn't drawn, it opens centred.
+        assert_eq!(
+            resolve(Anchor::ProjectsPane, None, &Hits::default(), body),
+            Some(Placement::Centred),
+        );
     }
 }

@@ -178,6 +178,10 @@ impl App {
     fn on_projects_key(&mut self, code: KeyCode) {
         self.show_selection();
         let rows = self.snapshot.projects.len();
+        if code == KeyCode::Char('a') {
+            self.open_projects_hint();
+            return;
+        }
         if code == KeyCode::Char(' ') {
             if let Some(i) = self.view.selected_project.filter(|&i| i < rows) {
                 self.open_menu_for_row(MenuTarget::Project(i));
