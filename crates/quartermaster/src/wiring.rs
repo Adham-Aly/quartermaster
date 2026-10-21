@@ -348,7 +348,17 @@ async fn foundations(
     // those accounts out.
     let health = Arc::new(LoginHealth::new());
     let tokens = token_keeper(credentials.as_ref(), &health, &LoginEndpoints::default());
-    let (engines, claude_plan) = engines(db, clock, tokens.clone(), dev_script.clone()).await;
+    // The settings channel exists before the engines: each Claude session follows the autocompact
+    // window through it.
+    let (config, config_rx) = watch::channel(config);
+    let (engines, claude_plan) = engines(
+        db,
+        clock,
+        tokens.clone(),
+        dev_script.clone(),
+        config_rx.clone(),
+    )
+    .await;
     // A Claude subscription isn't logged into in the app; its account follows the
     // `claude` login, so it is there (and its models read below) from the first launch.
     if let Some(plan) = claude_plan {
@@ -365,7 +375,6 @@ async fn foundations(
         Some(catalog) => spawn_detection(db, &engines, Arc::clone(catalog), clock),
         None => watch::channel(true).1,
     };
-    let (config, config_rx) = watch::channel(config);
     let model = seat_model(
         db,
         clock,
@@ -693,6 +702,7 @@ async fn engines(
     clock: &Arc<dyn Clock>,
     tokens: Option<Arc<TokenKeeper>>,
     dev_script: Option<Script>,
+    settings: watch::Receiver<Config>,
 ) -> (BTreeMap<EngineKind, Arc<dyn Engine>>, Option<String>) {
     let recorder = StoreRecorder::new(db.clone(), Arc::clone(clock));
     let supervisor: Arc<dyn Supervisor> = Arc::new(OsSupervisor::new(Some(Arc::new(recorder))));
@@ -727,6 +737,7 @@ async fn engines(
                 supervisor: Arc::clone(&supervisor),
                 clock: Arc::clone(clock),
                 inherited_env: inherited.clone(),
+                settings,
             })),
         );
     }

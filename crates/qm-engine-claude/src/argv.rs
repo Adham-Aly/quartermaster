@@ -6,6 +6,7 @@
 use crate::SERVER_NAME;
 use qm_engine::SessionSpec;
 use qm_types::domain::Role;
+use serde_json::json;
 use std::path::PathBuf;
 
 /// The only built-in tools a crewmate is offered, as the `--tools` allow-list. The rule: every tool
@@ -89,9 +90,17 @@ pub const CREWMATE_DISALLOWED: &str = concat!(
     ",AskUserQuestion,EnterPlanMode,ExitPlanMode,ToolSearch"
 );
 
-/// The `--settings` value: Claude Code's own commit and PR attribution off (the SDK's
-/// `extraArgs.settings`).
-pub const ATTRIBUTION_SETTINGS: &str = r#"{"attribution":{"commit":"","pr":""}}"#;
+/// The `--settings` value (the SDK's `extraArgs.settings`): Claude Code's own commit and PR
+/// attribution off, the autocompact window, and autocompact on, so the user's own `/autocompact`
+/// toggle can't turn it off for our agents. Claude Code caps the window at the model's own.
+pub fn settings_json(autocompact_window: u32) -> String {
+    json!({
+        "attribution": {"commit": "", "pr": ""},
+        "autoCompactEnabled": true,
+        "autoCompactWindow": autocompact_window,
+    })
+    .to_string()
+}
 
 /// Which tool and permission set the session gets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,19 +142,20 @@ pub struct LaunchOptions {
     pub tools: ToolSet,
     /// `--plugin-dir-no-mcp=`: the skills-only plugin folder (crewmates with skills).
     pub plugin_dir: Option<PathBuf>,
-    /// `--settings <json>`, two arguments, last.
+    /// `--settings <json>`, two arguments, last: [`settings_json`].
     pub settings: Option<String>,
 }
 
 impl LaunchOptions {
     /// The options production uses for a session: a new one gets `session_id`, a resumed one
-    /// `--resume` with `resume_id`.
+    /// `--resume` with `resume_id`. `autocompact_window` is the setting in force at launch.
     pub fn for_session(
         spec: &SessionSpec,
         model: &str,
         session_id: &str,
         resuming: bool,
         plugin_dir: Option<PathBuf>,
+        autocompact_window: u32,
     ) -> Self {
         Self {
             model: model.to_owned(),
@@ -154,7 +164,7 @@ impl LaunchOptions {
             session_id: (!resuming).then(|| session_id.to_owned()),
             tools: ToolSet::for_role(spec.role),
             plugin_dir,
-            settings: Some(ATTRIBUTION_SETTINGS.to_owned()),
+            settings: Some(settings_json(autocompact_window)),
         }
     }
 }
@@ -212,4 +222,50 @@ pub fn build_argv(options: &LaunchOptions) -> Vec<String> {
         argv.push(settings.clone());
     }
     argv
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(window: u32) -> LaunchOptions {
+        LaunchOptions {
+            model: "claude-sonnet-5-5".into(),
+            effort: None,
+            resume: None,
+            session_id: Some("s".into()),
+            tools: ToolSet::Orchestrator,
+            plugin_dir: None,
+            settings: Some(settings_json(window)),
+        }
+    }
+
+    #[test]
+    fn settings_json_carries_attribution_and_the_window() {
+        for window in [100_000, 200_000, 1_000_000] {
+            let value: serde_json::Value =
+                serde_json::from_str(&settings_json(window)).expect("valid JSON");
+            assert_eq!(
+                value,
+                json!({
+                    "attribution": {"commit": "", "pr": ""},
+                    "autoCompactEnabled": true,
+                    "autoCompactWindow": window,
+                })
+            );
+        }
+        assert_eq!(
+            settings_json(200_000),
+            r#"{"attribution":{"commit":"","pr":""},"autoCompactEnabled":true,"autoCompactWindow":200000}"#
+        );
+    }
+
+    #[test]
+    fn settings_stay_last_and_the_sources_stay_empty() {
+        let argv = build_argv(&options(167_000));
+        let n = argv.len();
+        assert_eq!(argv[n - 2], "--settings");
+        assert_eq!(argv[n - 1], settings_json(167_000));
+        assert!(argv.iter().any(|a| a == "--setting-sources="));
+    }
 }
