@@ -61,6 +61,32 @@ impl Rgb {
     }
 }
 
+impl Reported {
+    /// The colours as they travel to the host.
+    pub(crate) fn to_wire(&self) -> qm_types::wire::Colors {
+        let rgb = |c: Rgb| [c.r, c.g, c.b];
+        qm_types::wire::Colors {
+            fg: self.fg.map(rgb),
+            bg: self.bg.map(rgb),
+            ansi: self.ansi.iter().map(|c| c.map(rgb)).collect(),
+        }
+    }
+
+    /// The colours a client reported.
+    pub(crate) fn from_wire(colors: &qm_types::wire::Colors) -> Self {
+        let rgb = |[r, g, b]: [u8; 3]| Rgb::new(r, g, b);
+        let mut ansi = [None; 16];
+        for (slot, color) in ansi.iter_mut().zip(&colors.ansi) {
+            *slot = color.map(rgb);
+        }
+        Self {
+            fg: colors.fg.map(rgb),
+            bg: colors.bg.map(rgb),
+            ansi,
+        }
+    }
+}
+
 /// What the terminal said about its colours: `None` where it didn't answer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Reported {

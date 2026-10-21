@@ -14,7 +14,7 @@
 //! any `Write`.
 
 use crate::backend::Backend16;
-use crate::theme::{self, Palette};
+use crate::theme;
 use crossterm::cursor::Show;
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
@@ -26,6 +26,7 @@ use crossterm::terminal::{
     BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
     disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement,
 };
+use qm_types::wire::Colors;
 use ratatui::{Frame, Terminal};
 use std::io::{self, Stdout, Write};
 use std::sync::Once;
@@ -71,11 +72,12 @@ pub(crate) fn write_leave(w: &mut impl Write, enhanced: bool) -> io::Result<()> 
     w.flush()
 }
 
-/// The full-screen terminal, restored when dropped.
+/// The full-screen terminal, restored when dropped. It only holds the terminal's modes and
+/// writes bytes; what to draw is the host's business.
 pub(crate) struct TerminalGuard {
-    terminal: Terminal<Backend16<Stdout>>,
-    /// The palette fitted to this terminal's colours.
-    palette: Palette,
+    out: Stdout,
+    /// The terminal's colours when it was last entered.
+    colors: Colors,
 }
 
 impl std::fmt::Debug for TerminalGuard {
@@ -88,11 +90,11 @@ impl TerminalGuard {
     /// Enters full-screen mode. On failure, whatever was already switched on is switched off.
     pub(crate) fn enter() -> io::Result<Self> {
         install_panic_hook();
-        let entered = switch_on().and_then(|palette| {
-            Terminal::new(Backend16::new(io::stdout())).map(|terminal| (terminal, palette))
-        });
-        match entered {
-            Ok((terminal, palette)) => Ok(Self { terminal, palette }),
+        match switch_on() {
+            Ok(colors) => Ok(Self {
+                out: io::stdout(),
+                colors,
+            }),
             Err(err) => {
                 restore();
                 Err(err)
@@ -100,33 +102,30 @@ impl TerminalGuard {
         }
     }
 
-    /// The palette fitted to this terminal's colours when it was last entered.
-    pub(crate) const fn palette(&self) -> Palette {
-        self.palette
+    /// The terminal's colours when it was last entered.
+    pub(crate) fn colors(&self) -> Colors {
+        self.colors.clone()
     }
 
-    /// Draws one frame inside a synchronized update (DEC mode 2026), so a terminal that supports
-    /// it shows the frame all at once.
-    pub(crate) fn draw(&mut self, render: impl FnOnce(&mut Frame<'_>)) -> io::Result<()> {
-        draw_synchronized(&mut self.terminal, render)
+    /// Whether the keyboard enhancement was pushed, so `⇧⏎` arrives as itself.
+    pub(crate) fn keyboard_enhanced() -> bool {
+        ENHANCED.load(Ordering::SeqCst)
     }
 
-    /// Writes raw bytes to the terminal between frames (an OSC 52 copy).
+    /// Writes bytes the host drew to the terminal, as they are.
     pub(crate) fn write_raw(&mut self, bytes: &[u8]) -> io::Result<()> {
-        let backend = self.terminal.backend_mut();
-        backend.write_all(bytes)?;
-        backend.flush()
+        self.out.write_all(bytes)?;
+        self.out.flush()
     }
 
     /// `Ctrl`+`Z`: leaves full-screen mode, stops the process with `SIGTSTP` as the shell
-    /// expects, and when the shell's `fg` continues it, enters again and clears the screen so the
-    /// next frame redraws everything.
-    pub(crate) fn suspend(&mut self) -> io::Result<()> {
+    /// expects, and when the shell's `fg` continues it, enters again. The caller then asks the
+    /// host for a full repaint. Returns the terminal's colours again: its theme may have changed
+    /// while the app was stopped.
+    pub(crate) fn suspend() -> io::Result<Colors> {
         restore();
         nix::sys::signal::raise(nix::sys::signal::Signal::SIGTSTP).map_err(io::Error::from)?;
-        // The terminal's theme may have changed while the app was stopped.
-        self.palette = switch_on()?;
-        self.terminal.clear()
+        switch_on()
     }
 }
 
@@ -136,8 +135,8 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// Draws one frame into `terminal` between `?2026h` and `?2026l` (see [`TerminalGuard::draw`]).
-fn draw_synchronized<W: Write>(
+/// Draws one frame into `terminal` between `?2026h` and `?2026l` (so a terminal that supports it shows the frame all at once).
+pub(crate) fn draw_synchronized<W: Write>(
     terminal: &mut Terminal<Backend16<W>>,
     render: impl FnOnce(&mut Frame<'_>),
 ) -> io::Result<()> {
@@ -148,16 +147,16 @@ fn draw_synchronized<W: Write>(
 }
 
 /// Raw mode, then the terminal's colours, then the enter sequences (with the keyboard
-/// enhancement when supported). Returns the palette fitted to the colours.
-fn switch_on() -> io::Result<Palette> {
+/// enhancement when supported). Returns the colours the terminal reported.
+fn switch_on() -> io::Result<Colors> {
     enable_raw_mode()?;
     // Before anything else reads the terminal's input, which would swallow the answers.
-    let palette = theme::detect();
+    let colors = theme::detect();
     // The query needs raw mode to read the terminal's answer.
     let enhanced = supports_keyboard_enhancement().unwrap_or(false);
     ENHANCED.store(enhanced, Ordering::SeqCst);
     write_enter(&mut io::stdout(), enhanced)?;
-    Ok(palette)
+    Ok(colors)
 }
 
 /// Leaves full-screen mode. Every step runs even if an earlier one fails, and errors are ignored:
