@@ -100,11 +100,6 @@ impl App {
             return;
         }
 
-        if let Screen::Session(_) = self.screen
-            && self.on_session_key(key, now)
-        {
-            return;
-        }
         // The slash-command menu takes its keys (Tab included) before focus and the editor.
         if self.on_slash_key(key) {
             return;
@@ -133,7 +128,10 @@ impl App {
             _ => {}
         }
         if self.focus == Pane::Input {
-            self.on_editor_key(key, now);
+            // A closed session takes no text.
+            if self.shown_session().is_none() || self.session_open() {
+                self.on_editor_key(key, now);
+            }
             return;
         }
         if key.code == KeyCode::Char('?') {
@@ -150,8 +148,9 @@ impl App {
             Pane::Crew => self.on_crew_key(key.code, now),
             Pane::Conversation => self.on_conversation_key(key.code, now),
             Pane::Task => self.on_task_key(key.code, now),
-            // Other screens' and popups' panes: their keys are theirs.
-            Pane::Session | Pane::Settings | Pane::Help | Pane::Input => {}
+            Pane::Session => self.on_session_key(key.code),
+            // Popups' panes: their keys are theirs.
+            Pane::Settings | Pane::Help | Pane::Input => {}
         }
     }
 

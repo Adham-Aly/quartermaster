@@ -193,11 +193,8 @@ impl App {
     /// `Ctrl`+`C` on a field holding text: clears it (another on the empty field starts quitting).
     /// Returns whether it did.
     pub(crate) fn clear_input_on_ctrl_c(&mut self) -> bool {
-        let field_showing = match self.screen {
-            crate::router::Screen::Bridge => true,
-            crate::router::Screen::Session(_) => self.session_open(),
-            _ => false,
-        };
+        let field_showing = self.screen == crate::router::Screen::Bridge
+            && (self.shown_session().is_none() || self.session_open());
         if !field_showing
             || self.focus != Pane::Input
             || self.draft.text.is_empty()
@@ -221,7 +218,7 @@ impl App {
             return;
         }
         // In a worker's session: direct intervention, its own draft.
-        if let crate::router::Screen::Session(agent) = self.screen {
+        if let Some(agent) = self.shown_session() {
             if !self.session_open() {
                 return;
             }
@@ -284,7 +281,7 @@ impl App {
             return;
         }
 
-        if let crate::router::Screen::Session(_) = self.screen {
+        if self.screen == crate::router::Screen::Bridge && self.shown_session().is_some() {
             if self.session_open()
                 && self.view.menu.is_none()
                 && !matches!(self.term.quit, crate::app::Quit::Confirm { .. })

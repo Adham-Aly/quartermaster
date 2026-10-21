@@ -157,8 +157,9 @@ impl App {
     /// The status bar's approvals or decisions count was clicked: focus the conversation and make
     /// the newest card of that kind current, scrolled into view.
     pub(crate) fn jump_to_card(&mut self, kind: CardKind) {
-        // From a session or the Diff screen, the card is on the Bridge.
+        // From a session or the Diff screen, the card is in the Quartermaster's conversation.
         self.show(crate::router::Screen::Bridge);
+        self.leave_session();
         self.focus_pane(Pane::Conversation);
         let newest = self
             .snapshot
@@ -194,13 +195,14 @@ impl App {
         }
     }
 
-    /// Opens `agent`'s session screen: a crewmate or a secondmate; the Quartermaster's row focuses
-    /// the Bridge input.
+    /// Opens `agent`'s session in the middle panel: a crewmate or a secondmate; the
+    /// Quartermaster's row brings its conversation back there and focuses its input.
     pub(crate) fn open_worker_session(&mut self, agent: AgentRef) {
         match agent {
             AgentRef::Crewmate { .. } | AgentRef::Secondmate { .. } => self.enter_session(agent),
             AgentRef::Quartermaster => {
                 self.show(crate::router::Screen::Bridge);
+                self.leave_session();
                 self.focus_pane(Pane::Input);
             }
         }

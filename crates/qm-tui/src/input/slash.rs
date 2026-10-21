@@ -85,6 +85,7 @@ impl App {
     /// focused and starting with `/` and a part of a command's name.
     pub(crate) fn slash_menu(&self) -> Option<SlashMenu> {
         if self.screen != Screen::Bridge
+            || self.shown_session().is_some()
             || self.focus != Pane::Input
             || self.view.guidance_for.is_some()
             || self.view.location_for.is_some()

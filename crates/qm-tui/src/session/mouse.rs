@@ -1,6 +1,6 @@
-//! The session screen's mouse: `← Back`, `Interrupt`, `Expand`/`Collapse`, a tool-call run's
-//! `▸ 3 tool calls` line, and the wheel over the session. Clicks on the session box or the input focus them, drags select and copy, as everywhere
-//! (`input::mouse`).
+//! A worker's session's mouse: `← Quartermaster`, `Interrupt`, `Expand`/`Collapse`, a tool-call
+//! run's `▸ 3 tool calls` line, and the wheel over the session. Clicks on the session box or the
+//! input focus them, drags select and copy, as everywhere (`input::mouse`).
 
 use super::SessionHit;
 use crate::app::App;
@@ -8,7 +8,7 @@ use crate::hit::Pane;
 use crate::input::mouse::WHEEL_LINES;
 
 impl App {
-    /// A click on something of the session screen.
+    /// A click on something in a worker's session.
     pub(crate) fn session_click(&mut self, hit: SessionHit) {
         match hit {
             SessionHit::Back => self.leave_session(),

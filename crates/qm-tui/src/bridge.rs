@@ -1,5 +1,6 @@
 //! The Bridge's body: projects and crew on the left, the Quartermaster's conversation and your
-//! input in the middle, the selected task on the right.
+//! input in the middle (or a worker's session in their place, `session`), the selected task on
+//! the right.
 //!
 //! The columns default to 31 cells, and 36 for the task pane's 32 cells of
 //! text, and can be resized by dragging the borders between them. Below 120 columns the task pane
@@ -100,22 +101,11 @@ pub(crate) fn draw_body(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut 
     projects::draw(frame, projects_area, app, map);
     crew::draw(frame, crew_area, app, map);
 
-    // Middle column: the conversation above your input.
-    let input_height = input_box::height(app, cols.middle.width).min(cols.middle.height / 2);
-    let input_area = Rect {
-        y: cols.middle.bottom() - input_height,
-        height: input_height,
-        ..cols.middle
-    };
-    let conversation_area = Rect {
-        height: cols.middle.height - input_height,
-        ..cols.middle
-    };
-    map.conversation_scroll_max = conversation::draw(frame, conversation_area, app, map);
-    input_box::draw(frame, input_area, app, map);
-    // The slash-command menu sits on the conversation, just above the input box.
-    if let Some(menu) = app.slash_menu() {
-        slash_menu::draw(frame, conversation_area, input_area, &menu, app, map);
+    // Middle column: a worker's session, when one is open, or the conversation above your input.
+    if let Some(agent) = app.shown_session() {
+        crate::session::draw(frame, cols.middle, app, agent, map);
+    } else {
+        draw_conversation(frame, cols.middle, app, map);
     }
 
     // Right column: the selected task.
@@ -144,6 +134,27 @@ pub(crate) fn draw_body(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut 
         let overlay = Rect::new(body.right() - width, body.y, width, body.height);
         frame.render_widget(Clear, overlay);
         task::draw(frame, overlay, app, map, true);
+    }
+}
+
+/// The middle column's Quartermaster: the conversation above your input, and the slash-command
+/// menu while it shows.
+fn draw_conversation(frame: &mut Frame<'_>, middle: Rect, app: &App, map: &mut FrameMap) {
+    let input_height = input_box::height(app, middle.width).min(middle.height / 2);
+    let input_area = Rect {
+        y: middle.bottom() - input_height,
+        height: input_height,
+        ..middle
+    };
+    let conversation_area = Rect {
+        height: middle.height - input_height,
+        ..middle
+    };
+    map.conversation_scroll_max = conversation::draw(frame, conversation_area, app, map);
+    input_box::draw(frame, input_area, app, map);
+    // The slash-command menu sits on the conversation, just above the input box.
+    if let Some(menu) = app.slash_menu() {
+        slash_menu::draw(frame, conversation_area, input_area, &menu, app, map);
     }
 }
 
