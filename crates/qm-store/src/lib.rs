@@ -33,6 +33,7 @@ pub mod delivery;
 mod error;
 pub mod events;
 pub mod held;
+pub mod history;
 pub mod ids;
 pub mod inbox;
 pub mod jobs;

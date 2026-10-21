@@ -85,3 +85,68 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
         "a panic with no message".to_owned()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh folder for one test's `state.db`, removed when the guard drops.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_conversation_never_reaches_the_file_through_the_database() {
+        let dir = std::env::temp_dir().join(format!("qm-db-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let scratch = Scratch(dir.clone());
+
+        let db = Db::open(&dir.join("state.db")).expect("a database");
+        db.call(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, \
+                     merge_method, created_at, seq) \
+                 VALUES (1, 'p', '/p', 'created', 'main', 'direct_pr', 'merge', 1, 1);
+                 INSERT INTO agents (id, role, home, status, created_at, seq) \
+                 VALUES (1, 'quartermaster', '/home', 'idle', 1, 1);
+                 INSERT INTO turns (id, agent_id, started_by, status, started_at, ended_at, seq) \
+                 VALUES (1, 1, 'app_event', 'completed', 1, 2, 1);
+                 INSERT INTO messages (id, agent_id, source, kind, text, created_at, seq) \
+                 VALUES (1, 1, 'you', 'message', 'VOLATILE-THROUGH-DB', 1, 1);
+                 INSERT INTO session_lines (agent_id, kind, text, created_at, seq) \
+                 VALUES (1, 'you', 'VOLATILE-THROUGH-DB', 1, 1);",
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the rows");
+        db.call(|conn| {
+            conn.execute(
+                "INSERT INTO events (at, kind, summary, payload, seq) \
+                 VALUES (1, 'you.notice', 'kept', '{\"text\":\"KEPT-THROUGH-DB\"}', 2)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("an event");
+        drop(db);
+
+        let mut bytes = std::fs::read(dir.join("state.db")).expect("state.db");
+        if let Ok(wal) = std::fs::read(dir.join("state.db-wal")) {
+            bytes.extend(wal);
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("VOLATILE-THROUGH-DB"),
+            "no conversation is written"
+        );
+        assert!(text.contains("KEPT-THROUGH-DB"), "a kept event is written");
+        drop(scratch);
+    }
+}

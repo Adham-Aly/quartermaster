@@ -88,6 +88,15 @@ impl TurnLoop {
             .db
             .call(move |conn| qm_store::turns::record_cleared(conn, agent, &summary, at))
             .await?;
+        // After the marker: it records the newest turn it follows, which forgetting would erase.
+        let forgot = self
+            .deps
+            .db
+            .call(move |conn| qm_store::history::forget_conversation(conn, agent, i64::MAX))
+            .await;
+        if let Err(e) = forgot {
+            tracing::warn!(who = %self.who, error = %e, "couldn't forget the cleared conversation");
+        }
         tracing::info!(who = %self.who, "context cleared; opening a new session");
         self.slash_note(agent, CLEARED_NOTE).await;
         // A new session now, so the next message doesn't wait for it; if none can open, this

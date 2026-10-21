@@ -132,6 +132,17 @@ pub const KEPT: &[Kept] = &[
     },
 ];
 
+/// The predicate that keeps rows of `table`.
+///
+/// # Panics
+///
+/// If `table` is not mirrored: a caller names only tables it knows are kept.
+pub fn predicate(table: &str) -> &'static str {
+    KEPT.iter()
+        .find(|k| k.table == table)
+        .map_or_else(|| panic!("{table} is not a kept table"), |k| k.predicate)
+}
+
 /// The tables that live only in memory: a restart starts them empty. The conversation and what
 /// the block shows since a turn are here; they leave `state.db` at load.
 pub const VOLATILE: &[&str] = &["messages", "session_lines", "turns"];

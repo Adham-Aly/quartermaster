@@ -470,6 +470,18 @@ impl TurnLoop {
             .db
             .call(move |conn| qm_store::turns::record_event(conn, &event))
             .await?;
+        // The engine's summary replaces what came before this turn, so the stored lines before it
+        // go too (plan section 3.3, forgetting).
+        if let Some(turn) = turn {
+            let forgot = self
+                .deps
+                .db
+                .call(move |conn| qm_store::history::forget_before_turn(conn, agent, turn))
+                .await;
+            if let Err(e) = forgot {
+                tracing::warn!(who = %self.who, error = %e, "couldn't forget the compacted conversation");
+            }
+        }
         Ok(())
     }
 
