@@ -34,22 +34,33 @@ impl Db {
     /// spawns the thread. A failing migration rolls back and nothing is applied.
     pub fn open(path: &Path) -> Result<Db, StoreError> {
         let (mem, mirror) = Mirror::open(path)?;
-        Ok(Self::spawn(Store { mem, mirror }))
+        Self::spawn(Store { mem, mirror })
     }
 
-    /// Hands an opened store to a new database thread.
-    fn spawn(mut store: Store) -> Db {
+    /// Hands an opened store to a new database thread. The thread seeds the `seq` clock from
+    /// the rows it loaded before it takes a job (`seq` is per thread), and `open` waits for that.
+    fn spawn(mut store: Store) -> Result<Db, StoreError> {
         let (jobs, rx) = mpsc::channel::<Job>();
+        let (seeded, ready) = mpsc::channel::<Result<(), StoreError>>();
         std::thread::Builder::new()
             .name("qm-db".into())
             .spawn(move || {
+                let result = crate::seq::observe_all(&store.mem);
+                let failed = result.is_err();
+                let _ = seeded.send(result);
+                if failed {
+                    return;
+                }
                 // Ends when every sender (every Db handle) has dropped.
                 for job in rx {
                     job(&mut store);
                 }
             })
             .expect("the database thread could not be spawned");
-        Db { jobs }
+        ready
+            .recv()
+            .unwrap_or_else(|_| Err(StoreError::Panicked("the database thread stopped".into())))?;
+        Ok(Db { jobs })
     }
 
     /// Runs `f` on the database thread and returns its result.
@@ -299,6 +310,52 @@ mod tests {
             summaries(&before.1),
             "the same three after a restart"
         );
+        drop(db);
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn a_restart_orders_new_rows_after_the_loaded_ones_when_the_clock_steps_back() {
+        use crate::events::NewEvent;
+        use jiff::Timestamp;
+        let dir = std::env::temp_dir().join(format!("qm-seq-rollback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let scratch = Scratch(dir.clone());
+        let path = dir.join("state.db");
+        let event = |kind: &'static str, at: i64| NewEvent {
+            kind,
+            agent: None,
+            task: None,
+            turn: None,
+            summary: kind,
+            payload: serde_json::json!({}),
+            at: Timestamp::from_millisecond(at).expect("a time"),
+        };
+
+        let db = Db::open(&path).expect("a database");
+        db.call(move |conn| {
+            crate::events::insert(conn, &event("model.first", 4_000_000_000_000))?;
+            Ok(())
+        })
+        .await
+        .expect("the first row");
+        drop(db);
+
+        // After the restart the clock reads an earlier time than the loaded row.
+        let db = Db::open(&path).expect("a restart");
+        let order = db
+            .call(move |conn| {
+                crate::events::insert(conn, &event("model.second", 1_000))?;
+                let mut stmt = conn.prepare("SELECT kind FROM events ORDER BY seq")?;
+                let kinds = stmt
+                    .query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(kinds)
+            })
+            .await
+            .expect("the rows");
+        assert_eq!(order, ["model.first", "model.second"]);
         drop(db);
         drop(scratch);
     }
