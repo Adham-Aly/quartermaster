@@ -135,19 +135,20 @@ impl Attachments {
     /// in memory, so after a restart a folder can outlive its message while open work still
     /// names it; a new message with that number would otherwise take the folder. Runs on the
     /// database thread before anything can store a message (`qm-store` `ids::reserve`).
-    pub async fn reserve_numbers(&self, db: &Db) {
-        let root = self.root.clone();
-        let numbers = match tokio::task::spawn_blocking(move || message_numbers(&root)).await {
-            Ok(Ok(numbers)) => numbers,
-            Ok(Err(e)) if e.kind() == io::ErrorKind::NotFound => return,
-            Ok(Err(e)) => {
-                // Without the list, a new message may take a folder; `move_to` refuses to replace
-                // one, so the image fails instead of the folder going.
-                tracing::error!(error = %e, "couldn't list the attachments folder to reserve its numbers");
-                return;
-            }
+    pub async fn reserve_numbers(&self, db: &Db, legacy: &Path) {
+        let (root, old) = (self.root.clone(), legacy.to_path_buf());
+        let numbers = tokio::task::spawn_blocking(move || {
+            let mut numbers = message_numbers(&root)?;
+            numbers.extend(message_numbers(&old)?);
+            Ok::<_, io::Error>(numbers)
+        })
+        .await;
+        // Without the list, a new message may take a folder; `move_to` refuses to replace one, so
+        // the image fails instead of the folder going.
+        let numbers = match numbers.map_err(io::Error::other).and_then(|r| r) {
+            Ok(numbers) => numbers,
             Err(e) => {
-                tracing::error!(error = %e, "couldn't list the attachments folder to reserve its numbers");
+                tracing::error!(error = %e, "couldn't list the attachments folders to reserve their numbers");
                 return;
             }
         };
@@ -160,6 +161,79 @@ impl Attachments {
         if let Err(e) = reserved {
             tracing::error!(error = %e, "couldn't reserve the attachments' message numbers");
         }
+    }
+
+    /// Makes the previous layout temporary, once at startup. Its images were in the data
+    /// directory (`legacy`, `<data>/attachments`) and its drafts' in `legacy_drafts`. A
+    /// `message-<id>` folder that open work names moves here, and a link is left at its old path,
+    /// so the names already in that work still open; every other entry goes. Drafts go whole:
+    /// drafts are held by the server now, and nothing names the old files.
+    pub async fn migrate_legacy(&self, db: &Db, legacy: &Path, legacy_drafts: &Path) {
+        let (old, drafts) = (legacy.to_path_buf(), legacy_drafts.to_path_buf());
+        let names = tokio::task::spawn_blocking(move || {
+            let names = entry_names(&old)?;
+            let _ = fs::remove_dir_all(&drafts);
+            Ok::<_, io::Error>(names)
+        })
+        .await;
+        let names = match names.map_err(io::Error::other).and_then(|r| r) {
+            Ok(names) => names,
+            Err(e) => {
+                tracing::error!(error = %e, "couldn't read the old attachments folder");
+                return;
+            }
+        };
+        let needles: Vec<String> = names
+            .iter()
+            .filter(|n| n.starts_with(FOLDER_PREFIX))
+            .map(|n| format!("/{n}/"))
+            .collect();
+        let named = db
+            .call(move |conn| {
+                needles
+                    .iter()
+                    .map(|needle| qm_store::attachments::in_open_work(conn, needle))
+                    .collect::<Result<Vec<bool>, StoreError>>()
+            })
+            .await;
+        let named = match named {
+            Ok(named) => named,
+            Err(e) => {
+                tracing::error!(error = %e, "couldn't tell which old images open work names");
+                return;
+            }
+        };
+        let open: BTreeSet<String> = names
+            .iter()
+            .filter(|n| n.starts_with(FOLDER_PREFIX))
+            .zip(named)
+            .filter(|(_, named)| *named)
+            .map(|(n, _)| n.clone())
+            .collect();
+        let (old, new) = (legacy.to_path_buf(), self.root.clone());
+        let _ = tokio::task::spawn_blocking(move || {
+            for name in names {
+                let entry = old.join(&name);
+                let link = fs::symlink_metadata(&entry).is_ok_and(|m| m.file_type().is_symlink());
+                // A link left by an earlier start stays while open work still names its folder.
+                if link && open.contains(&name) {
+                    continue;
+                }
+                if open.contains(&name) && !link && !new.join(&name).exists() {
+                    let target = new.join(&name);
+                    if let Err(e) = fs::create_dir_all(&new).and_then(|()| fs::rename(&entry, &target)) {
+                        tracing::error!(error = %e, "couldn't move an old image folder that open work names");
+                        continue;
+                    }
+                    if let Err(e) = std::os::unix::fs::symlink(&target, &entry) {
+                        tracing::error!(error = %e, "couldn't leave a link to an old image folder");
+                    }
+                } else {
+                    let _ = qm_types::data_dir::remove_path(&entry);
+                }
+            }
+        })
+        .await;
     }
 
     /// Runs the startup pass, then [`Attachments::sweep`] every [`SWEEP_EVERY`], for as long as the
@@ -353,12 +427,22 @@ fn move_to(dir: &Path, folder: &Path) -> io::Result<()> {
     fs::rename(dir, folder)
 }
 
+/// The entries of `dir` by name; none if it doesn't exist.
+fn entry_names(dir: &Path) -> io::Result<Vec<String>> {
+    match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
 /// The message numbers named by the `message-<id>` folders in `root`.
 fn message_numbers(root: &Path) -> io::Result<Vec<u32>> {
     let mut out = Vec::new();
-    for entry in fs::read_dir(root)? {
-        let name = entry?.file_name();
-        let Some(id) = name.to_str().and_then(|n| n.strip_prefix(FOLDER_PREFIX)) else {
+    for name in entry_names(root)? {
+        let Some(id) = name.strip_prefix(FOLDER_PREFIX) else {
             continue;
         };
         if let Ok(n) = id.parse::<u32>()
@@ -655,13 +739,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_old_folder_open_work_names_moves_and_the_rest_goes() {
+        let root = Root::new("legacy");
+        let (old, drafts, new) = (
+            root.0.join("old"),
+            root.0.join("drafts"),
+            root.0.join("scratch"),
+        );
+        let named = old.join("message-7");
+        fs::create_dir_all(&named).unwrap();
+        fs::write(named.join("image-1.png"), b"kept").unwrap();
+        fs::create_dir_all(old.join("message-8")).unwrap();
+        fs::create_dir_all(&drafts).unwrap();
+        fs::write(drafts.join("0123456789abcdef-1.png"), b"draft").unwrap();
+
+        let db = Db::open(&root.0.join("state.db")).expect("a database");
+        let goal = format!("look at {}/image-1.png", named.display());
+        db.call(move |conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, \
+                     merge_method, created_at, seq) \
+                 VALUES (1, 'p', '/p', 'created', 'main', 'direct_pr', 'merge', 1, 1);
+                 INSERT INTO agents (id, role, home, status, created_at, seq) \
+                 VALUES (1, 'quartermaster', '/home', 'idle', 1, 1);",
+            )?;
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, \
+                     delivery_mode, branch, status, created_at, seq) \
+                 VALUES (1, 1, 1, 'build', 't', ?1, 'direct_pr', 'qm/task-1', 'running', 1, 1)",
+                [goal],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the open task");
+
+        let attachments = Attachments::new(new.clone(), Arc::new(qm_types::clock::SystemClock));
+        attachments.migrate_legacy(&db, &old, &drafts).await;
+
+        assert_eq!(
+            fs::read(new.join("message-7/image-1.png")).unwrap(),
+            b"kept"
+        );
+        assert!(
+            fs::symlink_metadata(&named)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the old path links to the moved folder, so the names in open work still open"
+        );
+        assert_eq!(fs::read(named.join("image-1.png")).unwrap(), b"kept");
+        assert!(!old.join("message-8").exists(), "an unnamed folder goes");
+        assert!(!drafts.exists(), "old drafts go");
+    }
+
+    #[tokio::test]
     async fn a_number_named_on_disk_is_never_issued_to_a_new_message() {
         let root = Root::new("reserve");
         fs::create_dir_all(root.0.join("message-8")).unwrap();
         let db_path = root.0.join("state.db");
         let db = Db::open(&db_path).expect("a database");
         let attachments = Attachments::new(root.0.clone(), Arc::new(qm_types::clock::SystemClock));
-        attachments.reserve_numbers(&db).await;
+        attachments
+            .reserve_numbers(&db, &root.0.join("legacy"))
+            .await;
         db.call(|conn| {
             for _ in 0..50 {
                 let n = qm_store::ids::fresh(conn, "messages", 8..=9)?;

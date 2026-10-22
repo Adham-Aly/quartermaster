@@ -122,7 +122,11 @@ pub(crate) async fn start_core(
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     // Before anything can store a message: the numbers pasted images on disk already name.
     let attachments = Attachments::new(dir.attachments(), Arc::clone(&clock));
-    attachments.reserve_numbers(&db).await;
+    let legacy = dir.root().join("attachments");
+    attachments.reserve_numbers(&db, &legacy).await;
+    attachments
+        .migrate_legacy(&db, &legacy, &dir.root().join("drafts"))
+        .await;
     let base = foundations(&dir, &db, config, &clock, dev_script).await;
     let seat = Arc::new(Seat::new(SeatDeps {
         db: db.clone(),
