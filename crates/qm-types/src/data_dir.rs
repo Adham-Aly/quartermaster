@@ -225,6 +225,7 @@ impl DataDir {
         TaskPaths::at(
             self.tasks_dir().join(id.to_string()),
             self.scratch.join("evidence").join(id.to_string()),
+            self.scratch.join("scratchpad").join(id.to_string()),
         )
     }
 }
@@ -512,10 +513,13 @@ pub struct TaskPaths {
     pub evidence: PathBuf,
     /// Background shell job output.
     pub jobs: PathBuf,
+    /// The provider-engine crewmate's private scratchpad (and its helpers'), for temporary files.
+    /// In the scratch root; made only for provider sessions and removed when the task closes.
+    pub scratchpad: PathBuf,
 }
 
 impl TaskPaths {
-    fn at(root: PathBuf, evidence: PathBuf) -> Self {
+    fn at(root: PathBuf, evidence: PathBuf, scratchpad: PathBuf) -> Self {
         Self {
             worktree: root.join("worktree"),
             brief: root.join("brief.md"),
@@ -523,6 +527,7 @@ impl TaskPaths {
             session: root.join("session"),
             evidence,
             jobs: root.join("jobs"),
+            scratchpad,
             root,
         }
     }

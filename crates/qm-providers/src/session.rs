@@ -27,9 +27,9 @@ use crate::retry::RetryPolicy;
 use crate::session_store::{self, Entry, SessionStore, SessionStoreError};
 use crate::transcript::Message;
 use qm_engine::{
-    ACTIVITY_EVERY, ActivityGate, CloseReason, EngineEvent, EngineSide, FailureKind, InitReport,
-    RateLimitStatus, SessionCommand, SessionSpec, SystemPrompt, ToolDescriptor, ToolResult,
-    TurnFailure, TurnInput, TurnOutcome, TurnUsage,
+    ACTIVITY_EVERY, ActivityGate, Builtins, CloseReason, EngineEvent, EngineSide, FailureKind,
+    InitReport, RateLimitStatus, SessionCommand, SessionSpec, SystemPrompt, ToolDescriptor,
+    ToolResult, TurnFailure, TurnInput, TurnOutcome, TurnUsage,
 };
 use qm_types::ids::{JobLabel, ModelId, SessionRef};
 use serde_json::json;
@@ -278,11 +278,18 @@ impl Session {
             );
             (id, history, Context::default())
         };
-        let system_prompt = match &spec.prompt {
+        let mut system_prompt = match &spec.prompt {
             SystemPrompt::Replace { text } | SystemPrompt::AppendToClaudeCode { text } => {
                 text.clone()
             }
         };
+        if let Builtins::ProviderFileTools {
+            scratchpad: Some(dir),
+            ..
+        } = &spec.builtins
+        {
+            system_prompt.push_str(&crate::files::scratchpad_section(dir));
+        }
         let mut tools = spec.tools.clone();
         let our_tools = spec.tools.iter().map(|t| t.name.clone()).collect();
         if let Some(b) = &builtins {

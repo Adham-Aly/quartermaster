@@ -243,6 +243,7 @@ pub(super) async fn run(startup: &Startup, flags: &Flags) -> Result<(), Failure>
             } else {
                 Builtins::ProviderFileTools {
                     write_roots: vec![cwd.clone()],
+                    scratchpad: None,
                 }
             };
             Wiring {

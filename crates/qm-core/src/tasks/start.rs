@@ -44,8 +44,8 @@ use qm_tools::defs::{RoutingSummary, TaskStarted};
 use qm_tools::handler::{Caller, StartRequest, ToolFailure};
 use qm_types::data_dir::TaskPaths;
 use qm_types::domain::{
-    DeliveryMode, Effort, Provider, Role, StartedBy, TaskKind, TaskOutcome, TaskStatus, Tier,
-    VerificationLevel, VerificationSource,
+    DeliveryMode, Effort, EngineKind, Provider, Role, StartedBy, TaskKind, TaskOutcome, TaskStatus,
+    Tier, VerificationLevel, VerificationSource,
 };
 use qm_types::error::Refusal;
 use qm_types::ids::{AgentId, MessageId, ModelId, PortBlock, ProjectId, SecondmateId, TaskId};
@@ -1155,7 +1155,7 @@ pub(crate) async fn prepare(
 
     // 1. Folders.
     let gh = super::env::gh_dir(&paths);
-    let dirs = [
+    let mut dirs = vec![
         paths.root.clone(),
         paths.session.clone(),
         paths.evidence.clone(),
@@ -1163,6 +1163,10 @@ pub(crate) async fn prepare(
         paths.skills.clone(),
         gh,
     ];
+    // Claude Code makes its own scratchpad; the provider engine's crewmate gets this one.
+    if routed.engine != EngineKind::Claude {
+        dirs.push(paths.scratchpad.clone());
+    }
     let scratch = svc.deps().data_dir.clone();
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt as _;

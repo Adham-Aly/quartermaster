@@ -68,6 +68,7 @@ pub(crate) fn crewmate_spec(
             } else {
                 vec![paths.evidence.clone()]
             },
+            scratchpad: Some(paths.scratchpad.clone()),
         },
     };
     spec.skills_dir.clone_from(&gathered.skills_dir);
