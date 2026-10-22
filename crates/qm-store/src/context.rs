@@ -240,30 +240,73 @@ pub struct Watermark {
     pub seq: i64,
 }
 
-/// The watermark for `turn`, read from `block_watermarks`. While `turn` is the newest turn the
-/// row names, the watermark is the turn before it; a turn that ended `no_wakes` was rolled back
-/// by [`crate::turns::finish_turn`], so it never shows as the watermark.
+/// The events a turn's block shows as "since": those with `after < seq`, and `seq < before` when
+/// there is an upper bound. Both come from `block_watermarks`, never from the events table, so a
+/// reload reads the same range (the kept predicate keeps only some kinds, and never a turn's own
+/// `seat.turn_started`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Range {
+    pub watermark: Option<Watermark>,
+    pub after: i64,
+    pub before: Option<i64>,
+}
+
+/// The range for `turn`. While `turn` is the newest turn the row names, the lower bound is the
+/// turn before it (none for a first turn, so everything from the start) and the upper bound is
+/// `turn`'s own start. A turn the row doesn't name has no upper bound and starts after the row's
+/// turn. A turn that ended `no_wakes` was rolled back by [`crate::turns::finish_turn`], so it
+/// never shows as the watermark.
+pub fn range(conn: &Connection, agent: AgentId, turn: TurnId) -> Result<Range, StoreError> {
+    // (turn, its start, the turn before it, that turn's start)
+    type Row = (Option<TurnId>, i64, Option<TurnId>, Option<i64>);
+    let row: Option<Row> = conn
+        .query_row(
+            "SELECT turn_id, event_seq, prev_turn_id, prev_event_seq
+             FROM block_watermarks WHERE agent_id = ?1",
+            params![agent],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        Some((Some(newest), start, _, _)) if newest != turn => Range {
+            watermark: Some(Watermark {
+                turn: newest,
+                seq: start,
+            }),
+            after: start,
+            before: None,
+        },
+        Some((Some(_), start, Some(previous), previous_start)) => {
+            let after = previous_start.unwrap_or(0);
+            Range {
+                watermark: Some(Watermark {
+                    turn: previous,
+                    seq: after,
+                }),
+                after,
+                before: Some(start),
+            }
+        }
+        Some((Some(_), start, None, _)) => Range {
+            watermark: None,
+            after: 0,
+            before: Some(start),
+        },
+        _ => Range {
+            watermark: None,
+            after: 0,
+            before: None,
+        },
+    })
+}
+
+/// The watermark for `turn`: the turn the block last showed everything up to (see [`range`]).
 pub fn watermark(
     conn: &Connection,
     agent: AgentId,
     turn: TurnId,
 ) -> Result<Option<Watermark>, StoreError> {
-    let row: Option<(Option<i64>, Option<i64>)> = conn
-        .query_row(
-            "SELECT CASE WHEN turn_id = ?2 THEN prev_turn_id ELSE turn_id END,
-                    CASE WHEN turn_id = ?2 THEN prev_event_seq ELSE event_seq END
-             FROM block_watermarks WHERE agent_id = ?1",
-            params![agent, turn],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    Ok(match row {
-        Some((Some(watermark), seq)) => Some(Watermark {
-            turn: TurnId::new(watermark),
-            seq: seq.unwrap_or(0),
-        }),
-        _ => None,
-    })
+    Ok(range(conn, agent, turn)?.watermark)
 }
 
 /// The models in one tier, as routing can use them now.
