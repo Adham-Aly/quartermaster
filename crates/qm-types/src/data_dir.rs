@@ -115,7 +115,7 @@ impl DataDir {
         &self.root
     }
 
-    /// This data directory's scratch root: attachments, drafts and task evidence.
+    /// This data directory's scratch root: attachments, drafts, task evidence and scratchpads.
     pub fn scratch(&self) -> &Path {
         &self.scratch
     }
