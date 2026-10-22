@@ -126,7 +126,10 @@ mod tests {
             "a task event gains its task's supervisor; other events are left alone"
         );
         let update = conn.execute("UPDATE events SET summary = 'changed'", []);
-        assert!(update.is_err(), "the upgrade puts the append-only guard back");
+        assert!(
+            update.is_err(),
+            "the upgrade puts the append-only guard back"
+        );
     }
 
     #[test]

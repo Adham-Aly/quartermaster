@@ -63,7 +63,11 @@ mod tests {
     async fn send(part: &DraftsPart, draft: SavedDraft) {
         let command = Command::SaveDraft { draft };
         let handled = part.handle(&command).expect("a draft command").await;
-        assert_eq!(handled, Handled::Unchanged, "a draft never needs a new snapshot");
+        assert_eq!(
+            handled,
+            Handled::Unchanged,
+            "a draft never needs a new snapshot"
+        );
     }
 
     async fn filled(part: &DraftsPart) -> Vec<SavedDraft> {

@@ -14,6 +14,7 @@
 use crate::app::{App, Quit};
 use crate::backend::Backend16;
 use crate::convert;
+use crate::draft_sync::DraftSync;
 use crate::persist::Persister;
 use crate::term::{Background, Term};
 use crate::terminal::draw_synchronized;
@@ -217,6 +218,7 @@ async fn drive(
     }
     let mut app = App::new();
     // What you left (layout, popups, drafts) comes back; a sample fixture then replaces the picture.
+    let drafts = data_dir.as_ref().map(DraftSync::open);
     let persist = data_dir.map(|dir| Persister::open(&dir, &mut app));
     crate::sample::install_from_env(&mut app);
     app.detachable = control.is_some();
@@ -230,6 +232,7 @@ async fn drive(
         greeting: 0,
         inbox: inbox_tx,
         crew: 0,
+        drafts,
         persist,
         pending_quit: None,
         exit_reason: ExitReason::Quit,
@@ -303,6 +306,8 @@ struct Host {
     inbox: mpsc::UnboundedSender<Msg>,
     /// Crewmates and helpers in the latest snapshot, beyond the Quartermaster.
     crew: u32,
+    /// Keeps the unsent drafts in step with the core; `None` when there is no data directory.
+    drafts: Option<DraftSync>,
     /// Remembers the UI's state across restarts; `None` remembers nothing.
     persist: Option<Persister>,
     /// A stop from the server waiting for the core's answer, and why the windows leave if it comes.
@@ -357,6 +362,9 @@ impl Host {
 
     /// Has the persister notice what changed, and write it once things have been quiet.
     fn remember(&mut self, now: Instant) {
+        if let Some(drafts) = &mut self.drafts {
+            drafts.tick(&mut self.app);
+        }
         if let Some(persist) = &mut self.persist {
             persist.tick(&self.app, now);
         }
@@ -533,6 +541,9 @@ impl Host {
     fn on_update(&mut self, update: Update) {
         match &update {
             Update::Snapshot(snapshot) => {
+                if let Some(drafts) = self.drafts.as_mut().filter(|_| !self.app.view.sample) {
+                    drafts.restore(&mut self.app, &snapshot.drafts);
+                }
                 self.crew = u32::try_from(snapshot.crew.iter().filter(|r| r.depth > 0).count())
                     .unwrap_or(u32::MAX);
             }
