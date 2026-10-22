@@ -203,7 +203,13 @@ impl Engine for ProviderEngine {
         let seed = rand::random();
         let builtins: Option<Arc<dyn BuiltinTools>> = match (&spec.builtins, &self.shared.builtins)
         {
-            (Builtins::ProviderFileTools { write_roots }, Some(factory)) => {
+            (
+                Builtins::ProviderFileTools {
+                    write_roots,
+                    scratchpad,
+                },
+                Some(factory),
+            ) => {
                 let jobs_dir = spec.session_dir.parent().map_or_else(
                     || spec.session_dir.join("jobs"),
                     |task_dir| task_dir.join("jobs"),
@@ -211,7 +217,7 @@ impl Engine for ProviderEngine {
                 let cx = BuiltinCx {
                     agent: spec.agent,
                     cwd: spec.cwd.clone(),
-                    write_roots: write_roots.clone(),
+                    write_roots: write_roots.iter().chain(scratchpad).cloned().collect(),
                     jobs_dir,
                     env: self.bash_env(&spec),
                     supervisor: Arc::clone(&self.shared.supervisor),

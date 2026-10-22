@@ -44,8 +44,8 @@ use qm_tools::defs::{RoutingSummary, TaskStarted};
 use qm_tools::handler::{Caller, StartRequest, ToolFailure};
 use qm_types::data_dir::TaskPaths;
 use qm_types::domain::{
-    DeliveryMode, Effort, Provider, Role, StartedBy, TaskKind, TaskOutcome, TaskStatus, Tier,
-    VerificationLevel, VerificationSource,
+    DeliveryMode, Effort, EngineKind, Provider, Role, StartedBy, TaskKind, TaskOutcome, TaskStatus,
+    Tier, VerificationLevel, VerificationSource,
 };
 use qm_types::error::Refusal;
 use qm_types::ids::{AgentId, MessageId, ModelId, PortBlock, ProjectId, SecondmateId, TaskId};
@@ -1163,6 +1163,8 @@ pub(crate) async fn prepare(
         paths.skills.clone(),
         gh,
     ];
+    // Claude Code makes its own scratchpad; the provider engine's crewmate gets this one.
+    let scratchpad = (routed.engine != EngineKind::Claude).then(|| paths.scratchpad.clone());
     let scratch = svc.deps().data_dir.clone();
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
@@ -1171,6 +1173,10 @@ pub(crate) async fn prepare(
         for dir in &dirs {
             std::fs::create_dir_all(dir)?;
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        if let Some(dir) = &scratchpad {
+            // Made private, every folder on the way checked: no link can redirect it.
+            scratch.ensure_scratch_dir(dir)?;
         }
         Ok(())
     })
