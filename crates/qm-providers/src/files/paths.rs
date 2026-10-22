@@ -74,9 +74,12 @@ impl WritePolicy {
                 path.display()
             ));
         }
-        if self.roots.iter().any(|root| target.starts_with(root)) {
-            Ok(target)
-        } else if self.temp.iter().any(|root| target.starts_with(root)) {
+        if self
+            .roots
+            .iter()
+            .chain(&self.temp)
+            .any(|root| target.starts_with(root))
+        {
             Ok(target)
         } else {
             Err(format!(
