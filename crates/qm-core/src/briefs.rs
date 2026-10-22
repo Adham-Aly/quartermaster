@@ -459,11 +459,11 @@ mod tests {
                                    merge_method, created_at)
              VALUES (1, 'personal', '/fixture/personal', 'workspace', '', 'folder', 'squash', 0);
              INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal,
-                                delivery_mode, branch, status, created_at)
+                                delivery_mode, branch, status, created_at, seq)
              VALUES (1, 1, 1, 'fix', 'Folder task', 'Prior folder work',
-                     'folder', NULL, 'reported', 0),
+                     'folder', NULL, 'reported', 0, 1),
                     (2, 1, 1, 'fix', 'Git task', 'Prior git work',
-                     'branch_only', 'qm/task-0002', 'reported', 1);",
+                     'branch_only', 'qm/task-0002', 'reported', 1, 2);",
         )
         .expect("seed prior tasks");
 
@@ -471,11 +471,25 @@ mod tests {
             .expect("read NULL branch")
             .expect("folder task");
         assert_eq!(folder.branch, None);
-        let facts = prior_facts(TaskKind::Review, false, &folder, None, &[], "tasks/T-0001");
+        let facts = prior_facts(
+            TaskKind::Review,
+            false,
+            &folder,
+            None,
+            &[],
+            "tasks/T-0001/answer.md".to_owned(),
+        );
         assert_eq!(facts.fact, "the work under review");
         assert!(facts.body.is_empty(), "no invented branch line");
-        assert_eq!(facts.answer_path, "tasks/T-0001/");
-        let retry = prior_facts(TaskKind::Fix, true, &folder, None, &[], "tasks/T-0001");
+        assert_eq!(facts.answer_path, "tasks/T-0001/answer.md");
+        let retry = prior_facts(
+            TaskKind::Fix,
+            true,
+            &folder,
+            None,
+            &[],
+            "tasks/T-0001/answer.md".to_owned(),
+        );
         assert_eq!(retry.fact, "the failed attempt this task retries");
         assert_eq!(retry.body, "");
 
@@ -483,7 +497,14 @@ mod tests {
             .expect("read git branch")
             .expect("git task");
         assert_eq!(git.branch.as_deref(), Some("qm/task-0002"));
-        let facts = prior_facts(TaskKind::Review, false, &git, None, &[], "tasks/T-0002");
+        let facts = prior_facts(
+            TaskKind::Review,
+            false,
+            &git,
+            None,
+            &[],
+            "tasks/T-0002/answer.md".to_owned(),
+        );
         assert_eq!(facts.fact, "the work under review on qm/task-0002");
         assert_eq!(facts.body, "Branch qm/task-0002\n");
     }
