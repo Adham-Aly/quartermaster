@@ -8,11 +8,14 @@
 
 use crate::StoreError;
 use crate::events::{self, NewEvent};
+use crate::ids;
 use crate::reports::{self, NewReport};
+use crate::seq;
 use crate::time::to_millis;
 use crate::wakes;
 use jiff::Timestamp;
 use qm_types::domain::{AgentStatus, Effort, EngineKind, ReportSource, StartedBy, TurnStatus};
+use qm_types::ids::space;
 use qm_types::ids::{
     AccountId, AgentId, ModelId, ReportId, SecondmateId, SessionRef, TaskId, TurnId,
 };
@@ -54,14 +57,16 @@ pub struct CrewAgent {
 /// Records a crewmate as `starting`.
 pub fn insert_crewmate(conn: &Connection, c: &NewCrewmate<'_>) -> Result<AgentId, StoreError> {
     Ok(conn.query_row(
-        "INSERT INTO agents (role, supervisor_id, task_id, home, status, created_at)
-         VALUES ('crewmate', ?1, ?2, ?3, 'starting', ?4)
+        "INSERT INTO agents (role, supervisor_id, task_id, home, status, created_at, seq, id)
+         VALUES ('crewmate', ?1, ?2, ?3, 'starting', ?4, ?5, ?6)
          RETURNING id",
         params![
             c.supervisor,
             c.task,
             c.home.to_string_lossy(),
-            to_millis(c.at)
+            to_millis(c.at),
+            seq::next(c.at),
+            ids::fresh(conn, "agents", space::ROW)?,
         ],
         |r| r.get(0),
     )?)
@@ -91,7 +96,7 @@ pub fn crewmate_of(conn: &Connection, task: TaskId) -> Result<Option<CrewAgent>,
         .query_row(
             &format!(
                 "SELECT {COLUMNS} FROM agents WHERE task_id = ?1 AND role = 'crewmate'
-                 ORDER BY id DESC LIMIT 1"
+                 ORDER BY seq DESC LIMIT 1"
             ),
             params![task],
             row,
@@ -193,10 +198,18 @@ pub fn start_crew_turn(
         StartedBy::AppEvent => ("app_event", None),
     };
     Ok(conn.query_row(
-        "INSERT INTO turns (agent_id, started_by, message_id, model, started_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO turns (agent_id, started_by, message_id, model, started_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          RETURNING id",
-        params![agent, by, message, model, to_millis(at)],
+        params![
+            agent,
+            by,
+            message,
+            model,
+            to_millis(at),
+            seq::next(at),
+            ids::fresh(conn, "turns", space::TURN)?,
+        ],
         |r| r.get(0),
     )?)
 }
@@ -389,7 +402,7 @@ pub fn last_turn_failed_at_provider(conn: &Connection, agent: AgentId) -> Result
     let reason: Option<Option<String>> = conn
         .query_row(
             "SELECT outcome_reason FROM turns WHERE agent_id = ?1 AND status <> 'running'
-             ORDER BY id DESC LIMIT 1",
+             ORDER BY seq DESC LIMIT 1",
             params![agent],
             |r| r.get(0),
         )
@@ -405,7 +418,7 @@ pub fn last_finished_turn(
     Ok(conn
         .query_row(
             "SELECT id, status, outcome_reason FROM turns WHERE agent_id = ?1 AND status <> 'running'
-             ORDER BY id DESC LIMIT 1",
+             ORDER BY seq DESC LIMIT 1",
             params![agent],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )

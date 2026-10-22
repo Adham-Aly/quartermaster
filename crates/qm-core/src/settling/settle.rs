@@ -793,7 +793,7 @@ fn review_of(
              JOIN tasks AS t ON t.id = r.task_id
              WHERE t.builds_on = ?1 AND t.kind = 'review' AND t.base_commit = ?2
                AND r.review_verdict IS NOT NULL
-             ORDER BY r.id DESC LIMIT 1",
+             ORDER BY r.seq DESC LIMIT 1",
             params![task, head.as_str()],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )

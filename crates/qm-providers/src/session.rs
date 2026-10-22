@@ -14,6 +14,9 @@
 //! them finished, and closes the session `Crashed`. Other sessions never notice.
 
 use crate::adapters::{self, WireApi};
+
+#[cfg(test)]
+mod forget_tests;
 use crate::agent_loop::CompactError;
 use crate::builtin::{BuiltinTools, JobNotice};
 use crate::compaction::Context;
@@ -21,7 +24,7 @@ use crate::engine::{Shared, adapter_capability, api_for};
 use crate::limits::Limits;
 use crate::model::ModelProfile;
 use crate::retry::RetryPolicy;
-use crate::session_file::{self, Entry, SessionFile, SessionFileError};
+use crate::session_store::{self, Entry, SessionStore, SessionStoreError};
 use crate::transcript::Message;
 use qm_engine::{
     ACTIVITY_EVERY, ActivityGate, CloseReason, EngineEvent, EngineSide, FailureKind, InitReport,
@@ -82,13 +85,15 @@ pub(crate) struct Session {
     /// `tokens_after`, or the size at a failed automatic attempt (see
     /// [`crate::compaction::auto_compaction_due`]).
     pub(crate) compaction_guard: Option<u64>,
-    pub(crate) file: SessionFile,
+    pub(crate) history: SessionStore,
     /// Turns and compactions that wait for the running turn to end, in order.
     queued_turns: VecDeque<Queued>,
     pub(crate) steering: Vec<TurnInput>,
     /// Results the core sent for our pending tool calls, by call ID.
     pub(crate) pending_results: HashMap<String, Option<ToolResult>>,
     close_requested: bool,
+    /// The session ends for good: its transcript goes with it.
+    forget_requested: bool,
     pub(crate) in_turn: bool,
     /// The last rate-limit status reported per window, so only changes are reported.
     pub(crate) rate_limits: HashMap<String, RateLimitStatus>,
@@ -224,6 +229,21 @@ async fn run(
     session.serve().await;
 }
 
+impl Drop for Session {
+    fn drop(&mut self) {
+        // A panic/aborted task cannot receive a later Forget. Only an orderly Close is
+        // resumable (for example an effort change); terminal and abandoned sessions are not.
+        let closed = self
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed;
+        if self.forget_requested || !closed {
+            SessionStore::forget(&self.id);
+        }
+    }
+}
+
 impl Session {
     #[allow(clippy::too_many_arguments)] // The parts of a session, each needed once.
     fn start(
@@ -237,31 +257,26 @@ impl Session {
     ) -> Result<Self, CloseReason> {
         let now = shared.clock.now();
         let model = shared.models.profile(spec.account.provider, &spec.model);
-        let (session_id, file, context) = if let Some(reference) = &spec.resume {
-            let loaded = SessionFile::resume(&spec.session_dir, reference.as_str()).map_err(
-                |e: SessionFileError| CloseReason::ResumeFailed {
-                    message: e.to_string(),
-                },
-            )?;
-            // The core passes the model to use; a model change in the file is history.
-            let (context, _model) = session_file::rebuild_context(&loaded.entries);
-            (reference.as_str().to_owned(), loaded.file, context)
+        let (session_id, history, context) = if let Some(reference) = &spec.resume {
+            let loaded =
+                SessionStore::resume(reference.as_str()).map_err(|e: SessionStoreError| {
+                    CloseReason::ResumeFailed {
+                        message: e.to_string(),
+                    }
+                })?;
+            // The core passes the model to use; a model change in the history is history.
+            let (context, _model) = session_store::rebuild_context(&loaded.entries);
+            (reference.as_str().to_owned(), loaded.store, context)
         } else {
             let id = uuid::Uuid::now_v7().hyphenated().to_string();
-            let file = SessionFile::create(
-                &spec.session_dir,
+            let history = SessionStore::create(
                 &id,
                 now,
                 spec.account.provider,
                 spec.model.clone(),
                 spec.effort,
-            )
-            .map_err(|e| CloseReason::Crashed {
-                exit_code: None,
-                signal: None,
-                stderr_tail: e.to_string(),
-            })?;
-            (id, file, Context::default())
+            );
+            (id, history, Context::default())
         };
         let system_prompt = match &spec.prompt {
             SystemPrompt::Replace { text } | SystemPrompt::AppendToClaudeCode { text } => {
@@ -294,11 +309,12 @@ impl Session {
             jobs: Jobs::default(),
             context,
             compaction_guard: None,
-            file,
+            history,
             queued_turns: VecDeque::new(),
             steering: Vec::new(),
             pending_results: HashMap::new(),
             close_requested: false,
+            forget_requested: false,
             in_turn: false,
             rate_limits: HashMap::new(),
             spec,
@@ -374,7 +390,11 @@ impl Session {
     /// A command between turns.
     fn idle_command(&mut self, command: Option<SessionCommand>) {
         match command {
-            None | Some(SessionCommand::Close) => self.close_requested = true,
+            None | Some(SessionCommand::Forget) => {
+                self.forget_requested = true;
+                self.close_requested = true;
+            }
+            Some(SessionCommand::Close) => self.close_requested = true,
             Some(SessionCommand::StartTurn { input } | SessionCommand::Inject { input }) => {
                 self.queued_turns.push_back(Queued::Turn(input));
             }
@@ -399,7 +419,12 @@ impl Session {
     /// A command during a turn. Returns why the turn must stop, if it must.
     pub(crate) fn turn_command(&mut self, command: Option<SessionCommand>) -> Option<Cancel> {
         match command {
-            None | Some(SessionCommand::Close) => {
+            Some(SessionCommand::Close) => {
+                self.close_requested = true;
+                Some(Cancel::Close)
+            }
+            None | Some(SessionCommand::Forget) => {
+                self.forget_requested = true;
                 self.close_requested = true;
                 Some(Cancel::Close)
             }
@@ -472,15 +497,18 @@ impl Session {
         if let Some(tools) = &self.builtins {
             tools.model_changed(&model);
         }
-        let id = self.file.next_id();
+        let id = self.history.next_id();
         let at = self.shared.clock.now();
-        if let Err(e) = self.file.write(&Entry::ModelChange { id, at, model }) {
+        if let Err(e) = self.history.write(&Entry::ModelChange { id, at, model }) {
             tracing::warn!(error = %e, "couldn't record a model change");
         }
     }
 
-    /// Closes the session: jobs stopped and reported, the file synced, `SessionClosed`.
+    /// Closes the session: jobs stopped and reported, then `SessionClosed`.
     async fn close(&mut self) {
+        if self.forget_requested {
+            SessionStore::forget(&self.id);
+        }
         if let Some(tools) = self.builtins.clone() {
             tools.shutdown().await;
             let deadline = self.shared.clock.instant() + JOB_SHUTDOWN_WAIT;
@@ -495,9 +523,6 @@ impl Session {
         let leftover: Vec<JobLabel> = self.jobs.running.iter().cloned().collect();
         for job in leftover {
             self.finish_job(job, None, String::new()).await;
-        }
-        if let Err(e) = self.file.sync() {
-            tracing::warn!(error = %e, "couldn't sync the session file on close");
         }
         self.emit(EngineEvent::SessionClosed {
             reason: CloseReason::Requested,
@@ -672,14 +697,14 @@ impl Session {
         }
     }
 
-    /// Appends a message to the context and the file.
+    /// Appends a message to the context and the history.
     pub(crate) fn record(&mut self, message: Message) {
         let at = self.shared.clock.now();
-        let id = match self.file.append_message(at, &message) {
+        let id = match self.history.append_message(at, &message) {
             Ok(id) => id,
             Err(e) => {
-                tracing::warn!(error = %e, "couldn't write to the session file");
-                self.file.next_id()
+                tracing::warn!(error = %e, "couldn't record a message in the session history");
+                self.history.next_id()
             }
         };
         self.context.push(id, message);

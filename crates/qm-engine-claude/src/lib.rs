@@ -13,8 +13,8 @@
 //! become committed text lines, MCP `tools/call` becomes `ToolCall`, `result` becomes `TurnEnded`
 //! with usage and cost, and the built-in `EndConversation` becomes `EndConversationCalled`. It
 //! shuts an idle process down after the spec's idle timeout, resumes it by the stored session ID,
-//! mirrors the transcript into the agent's `session/` folder after every turn and restores it
-//! before resuming if Claude's copy is gone ([`transcript`]). [`check`] is the startup check;
+//! and leaves the transcript to Claude, reading only its cost totals ([`transcript`]). [`check`] is
+//! the startup check;
 //! [`detect`] finds `claude` and its login.
 
 pub mod argv;

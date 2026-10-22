@@ -33,13 +33,13 @@ pub fn claim_ids(
     values.extend(ids.iter().map(|id| rusqlite::types::Value::from(id.get())));
 
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let mut claimed = {
+    let claimed = {
         let mut stmt = tx.prepare(&format!(
             "UPDATE wakes SET delivered_turn_id = ?1, delivered_at = ?2
              WHERE id IN ({placeholders})
                AND delivered_at IS NULL AND consumed_at IS NULL
                AND target_agent_id IN (SELECT id FROM agents WHERE retired_at IS NULL)
-             RETURNING id, kind, payload, dedupe_key, task_id, created_at"
+             RETURNING id, kind, payload, dedupe_key, task_id, created_at, seq"
         ))?;
         let rows = stmt.query_map(params_from_iter(values.iter()), |r| {
             Ok((
@@ -49,11 +49,14 @@ pub fn claim_ids(
                 r.get::<_, String>(3)?,
                 r.get::<_, Option<TaskId>>(4)?,
                 r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
             ))
         })?;
         let mut out = Vec::new();
-        for row in rows {
-            let (id, kind, payload, dedupe_key, task, created) = row?;
+        // `RETURNING` gives no order: the claim is read back oldest first.
+        let mut rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.sort_by_key(|row| row.6);
+        for (id, kind, payload, dedupe_key, task, created, _) in rows {
             out.push(ClaimedWake {
                 id,
                 kind,
@@ -69,7 +72,6 @@ pub fn claim_ids(
         out
     };
     tx.commit()?;
-    claimed.sort_by_key(|w| w.id);
     Ok(claimed)
 }
 
@@ -98,7 +100,7 @@ pub fn pending_ids(
          JOIN agents AS a ON a.id = w.target_agent_id
          WHERE w.target_agent_id = ?1 AND w.delivered_at IS NULL AND w.consumed_at IS NULL
            AND a.retired_at IS NULL
-         ORDER BY w.id",
+         ORDER BY w.seq",
     )?;
     let rows = stmt
         .query_map(params![agent], |r| {

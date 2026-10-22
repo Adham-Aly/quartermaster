@@ -16,15 +16,18 @@ use super::{TaskService, active_projects, load_project, new_wake};
 use crate::inbox::Inbox;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
+use qm_git::Git;
 use qm_git::{MissingWorktree, ReconcileProject, ReconcileReport, reconcile as git_reconcile};
 use qm_store::StoreError;
 use qm_store::agents::{self, InterruptedCrewTurn};
 use qm_store::events::{self, NewEvent};
 use qm_store::tasks::{self as task_store, TaskRow};
 use qm_store::turns::{cut_short, mark_recovered};
+use qm_types::data_dir::{DataDir, remove_path};
 use qm_types::domain::{DeliveryMode, TaskStatus, TurnStatus, WakeKind};
-use qm_types::ids::{PortBlock, ProjectId, TaskId};
+use qm_types::ids::{PortBlock, ProjectId, SecondmateId, TaskId};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// `events.kind` of a task resumed (or not) after a restart.
@@ -50,7 +53,227 @@ pub enum StartupError {
     Git(String),
 }
 
-/// Step 4 (before the seat opens). Deletes nothing.
+/// What a start deletes from the data directory and the scratch root (plan §9): the Quartermaster's
+/// and each secondmate's session folder, the folders and evidence of tasks that are no longer open
+/// (an open task keeps its folder but loses its session and its legacy answer file), and the
+/// folders of retired secondmates. Worktrees, repositories, the workspace and Claude's own files
+/// are left alone. A file that can't be removed is logged, not fatal.
+async fn remove_leftover_files(svc: &TaskService) -> Result<(), StartupError> {
+    let (open, live) = svc
+        .db()
+        .call(|conn| {
+            let open = qm_store::context::open_tasks(conn)?
+                .into_iter()
+                .map(|t| t.task)
+                .collect::<Vec<_>>();
+            let live = qm_store::secondmates::active(conn)?
+                .into_iter()
+                .map(|s| s.id)
+                .collect::<Vec<_>>();
+            Ok((open, live))
+        })
+        .await?;
+    let data = svc.deps().data_dir.clone();
+    if let Err(e) = tokio::task::spawn_blocking(move || sweep_leftovers(&data, &open, &live)).await
+    {
+        tracing::warn!(error = %e, "sweeping leftover files stopped");
+    }
+    Ok(())
+}
+
+/// The blocking half of [`remove_leftover_files`]; `open` are the open tasks, `live` the active
+/// secondmates.
+fn sweep_leftovers(data: &DataDir, open: &[TaskId], live: &[SecondmateId]) {
+    if let Err(e) = data.ensure_scratch_dir(&data.scratch().join("evidence")) {
+        tracing::error!(error = %e, "unsafe scratch hierarchy; no startup file cleanup performed");
+        return;
+    }
+    let remove = |path: &Path| {
+        if let Err(e) = remove_path(path) {
+            tracing::warn!(path = %path.display(), error = %e, "couldn't remove a leftover file");
+        }
+    };
+    remove(&data.seat().session);
+    for (name, path) in subfolders(&data.secondmates_dir()) {
+        match name.parse::<SecondmateId>() {
+            Ok(id) if live.contains(&id) => remove(&data.secondmate(id).session),
+            Ok(_) => remove(&path),
+            Err(_) => {}
+        }
+    }
+    for (name, _) in subfolders(&data.tasks_dir()) {
+        let Ok(id) = name.parse::<TaskId>() else {
+            continue;
+        };
+        let paths = data.task(id);
+        // Evidence lives in the scratch root now: an open task's old copy moves there, and a
+        // closed task's goes.
+        let legacy = paths.root.join("evidence");
+        if open.contains(&id) {
+            move_legacy_evidence(&legacy, &paths.evidence);
+            remove(&paths.session);
+            remove(&paths.root.join("answer.md"));
+        } else {
+            remove(&legacy);
+            if !paths.worktree.exists() {
+                remove(&paths.root);
+            }
+        }
+    }
+    for (name, path) in subfolders(&data.scratch().join("evidence")) {
+        if !name.parse::<TaskId>().is_ok_and(|id| open.contains(&id)) {
+            remove(&path);
+        }
+    }
+}
+
+/// Preserve conflicting sources; successful moves leave an old-path compatibility link.
+fn move_legacy_evidence(legacy: &Path, evidence: &Path) {
+    if let Err(e) = qm_types::data_dir::migrate_scratch_directory(legacy, evidence) {
+        tracing::error!(error = %e, "task evidence preserved after migration failure");
+    }
+}
+
+/// The names and paths of the folders directly in `dir`; none if it can't be read.
+fn subfolders(dir: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| Some((e.file_name().into_string().ok()?, e.path())))
+        .collect()
+}
+
+/// The task numbers that task branches in `checkouts` name (local and remote-tracking) and that
+/// folders in `tasks_dir` name. An earlier run left them behind, and the store can't see them, so
+/// a fresh number must not take one. Blocking. An `Err` means a repository couldn't be read, so
+/// the numbers it names are unknown (see [`reserve_scan`]).
+pub(crate) fn leftover_task_numbers(
+    git: &Git,
+    tasks_dir: &Path,
+    checkouts: &[PathBuf],
+) -> Result<Vec<u32>, String> {
+    let mut numbers = branch_task_numbers(git, checkouts)?;
+    if let Ok(entries) = std::fs::read_dir(tasks_dir) {
+        numbers.extend(
+            entries
+                .flatten()
+                .filter_map(|e| e.file_name().to_str()?.parse::<TaskId>().ok())
+                .map(TaskId::get),
+        );
+    }
+    numbers.sort_unstable();
+    numbers.dedup();
+    Ok(numbers)
+}
+
+/// The task numbers that task branches in each of `checkouts` name. Blocking. A checkout that
+/// can't be read fails the whole scan: a number it names would otherwise look free.
+pub(crate) fn branch_task_numbers(git: &Git, checkouts: &[PathBuf]) -> Result<Vec<u32>, String> {
+    let mut numbers = Vec::new();
+    for checkout in checkouts {
+        let repo = qm_git::Repo::open(git.clone(), checkout)
+            .map_err(|e| format!("{} couldn't be opened: {e}", checkout.display()))?;
+        let found = repo.task_numbers().map_err(|e| {
+            format!(
+                "{} task branches couldn't be listed: {e}",
+                checkout.display()
+            )
+        })?;
+        numbers.extend(found.into_iter().map(TaskId::get));
+    }
+    Ok(numbers)
+}
+
+/// Reserves the numbers of a scan that worked, or holds task numbers when it didn't, so no task
+/// takes a number that a branch might already name. Runs on the database thread.
+pub(crate) fn reserve_scan(scan: Result<Vec<u32>, String>) {
+    match scan {
+        Ok(numbers) => qm_store::ids::reserve("tasks", numbers),
+        Err(reason) => {
+            tracing::error!(%reason, "task creation is held until the app restarts");
+            qm_store::ids::hold("tasks", reason);
+        }
+    }
+}
+
+/// Reserves the task numbers git and the `tasks/` folder already name (see
+/// [`leftover_task_numbers`]) on the database thread, where the store numbers tasks.
+async fn reserve_leftover_task_numbers(svc: &TaskService) -> Result<(), StartupError> {
+    let checkouts = svc
+        .db()
+        .call(|conn| {
+            // A folder project has no task branches, and its folder may not be a repository.
+            Ok(active_projects(conn)?
+                .into_iter()
+                .filter(|p| p.delivery != DeliveryMode::Folder)
+                .map(|p| p.path)
+                .collect::<Vec<_>>())
+        })
+        .await?;
+    let (git, tasks_dir) = (svc.deps().git.clone(), svc.deps().data_dir.tasks_dir());
+    let leftovers =
+        tokio::task::spawn_blocking(move || leftover_task_numbers(&git, &tasks_dir, &checkouts))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+    svc.db()
+        .call(move |_| {
+            reserve_scan(leftovers);
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// Scan after best-effort cleanup: even a pruned retired row can still have a folder, and that
+/// folder must never become a new secondmate's home. Include every named entry, not just folders.
+fn leftover_secondmate_numbers(dir: &Path) -> Result<Vec<u32>, String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{} couldn't be read: {e}", dir.display())),
+    };
+    let mut numbers = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{} couldn't be read: {e}", dir.display()))?;
+        if let Some(id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<SecondmateId>().ok())
+        {
+            numbers.push(id.get());
+        }
+    }
+    Ok(numbers)
+}
+
+fn reserve_secondmate_scan(scan: Result<Vec<u32>, String>) {
+    match scan {
+        Ok(numbers) => qm_store::ids::reserve("secondmates", numbers),
+        Err(reason) => {
+            tracing::error!(%reason, "secondmate creation is held until the app restarts");
+            qm_store::ids::hold("secondmates", reason);
+        }
+    }
+}
+
+async fn reserve_leftover_secondmate_numbers(svc: &TaskService) -> Result<(), StartupError> {
+    let dir = svc.deps().data_dir.secondmates_dir();
+    let scan = tokio::task::spawn_blocking(move || leftover_secondmate_numbers(&dir))
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+    svc.db()
+        .call(move |_| {
+            reserve_secondmate_scan(scan);
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// Step 4 (before the seat opens). Deletes only the leftover files [`remove_leftover_files`] names.
 pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupError> {
     let at = svc.clock().now();
     let interrupted = svc
@@ -61,6 +284,11 @@ pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupErr
             Ok(interrupted)
         })
         .await?;
+
+    // Before anything can be numbered: a new task never takes a number an earlier run left behind.
+    reserve_leftover_task_numbers(svc).await?;
+    remove_leftover_files(svc).await?;
+    reserve_leftover_secondmate_numbers(svc).await?;
 
     let report = worktree_report(svc).await?;
 
@@ -210,7 +438,7 @@ fn capitalise(s: &str) -> String {
     }
 }
 
-/// One event per finding (kept refs alone are information).
+/// One event per finding (kept refs deleted at startup are information).
 fn findings(report: &ReconcileReport) -> Vec<(&'static str, Option<TaskId>, String)> {
     let mut out = Vec::new();
     for u in &report.unexpected_worktrees {
@@ -453,7 +681,7 @@ async fn not_resumed(svc: &TaskService, task: TaskId, branch: &str, branch_exist
     let at = svc.clock().now();
     let text = if branch_exists {
         format!(
-            "{task}'s worktree is missing (its branch {branch} is safe), so it wasn't resumed. stop_task keeps its work in a kept ref."
+            "{task}'s worktree is missing (its branch {branch} is safe), so it wasn't resumed. stop_task retires it."
         )
     } else {
         format!(
@@ -489,5 +717,168 @@ async fn not_resumed(svc: &TaskService, task: TaskId, branch: &str, branch_exist
         .await;
     if let Err(e) = result {
         tracing::warn!(%task, error = %e, "couldn't report a missing worktree");
+    }
+}
+
+#[cfg(test)]
+mod leftover_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn a_start_removes_the_leftovers_plan_nine_names_and_nothing_else() {
+        let base = std::env::temp_dir().join(format!("qm-leftovers-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let data = DataDir::with_scratch(base.join("home"), base.join("scratch"));
+        let task = |n: u32| TaskId::new(n).expect("a task number");
+        let live: SecondmateId = "SM-1".parse().expect("a secondmate");
+        let retired: SecondmateId = "SM-2".parse().expect("a secondmate");
+        let folder = |path: PathBuf| {
+            fs::create_dir_all(&path).expect("a folder");
+            path
+        };
+        let file = |path: PathBuf| {
+            fs::create_dir_all(path.parent().expect("a parent")).expect("a folder");
+            fs::write(&path, "x").expect("a file");
+            path
+        };
+
+        // The Quartermaster's and a live secondmate's session folders, and a retired secondmate.
+        let seat_session = folder(data.seat().session);
+        let live_session = folder(data.secondmate(live).session);
+        let plugin = folder(data.secondmate(live).root.join("plugin"));
+        let retired_root = folder(data.secondmates_dir().join(retired.to_string()));
+        // An open task keeps its folder and worktree, but loses its session and answer file.
+        let open = data.task(task(1));
+        folder(open.worktree.clone());
+        let open_session = folder(open.session.clone());
+        let open_answer = file(open.root.join("answer.md"));
+        let open_evidence = folder(open.evidence.clone());
+        // A closed task with no worktree goes whole; one whose worktree is still there keeps it.
+        let closed = data.task(task(2));
+        let closed_evidence = folder(closed.evidence.clone());
+        folder(closed.session.clone());
+        let stuck = data.task(task(3));
+        folder(stuck.worktree.clone());
+        let unrelated = folder(data.tasks_dir().join("notes"));
+        // An open task's evidence from the data directory moves to the scratch root.
+        let moved = data.task(task(4));
+        file(moved.root.join("evidence").join("shot.png"));
+
+        for path in [
+            data.scratch().to_path_buf(),
+            data.scratch().join("evidence"),
+        ] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        sweep_leftovers(&data, &[task(1), task(4)], &[live]);
+
+        assert!(
+            moved.evidence.join("shot.png").exists(),
+            "an open task's old evidence moves to the scratch root"
+        );
+        assert!(
+            moved.root.join("evidence/shot.png").exists(),
+            "saved old paths remain usable"
+        );
+
+        assert!(!seat_session.exists(), "the Quartermaster's session folder");
+        assert!(!live_session.exists(), "a live secondmate's session folder");
+        assert!(
+            plugin.exists(),
+            "the secondmate's plugin folder is regenerated, not removed"
+        );
+        assert!(!retired_root.exists(), "a retired secondmate's folders");
+        assert!(
+            open.root.exists() && open.worktree.exists(),
+            "an open task keeps its worktree"
+        );
+        assert!(!open_session.exists(), "an open task's session");
+        assert!(!open_answer.exists(), "an open task's legacy answer file");
+        assert!(
+            open_evidence.exists(),
+            "an open task's evidence stays until it closes"
+        );
+        assert!(!closed.root.exists(), "a closed task's folder");
+        assert!(!closed_evidence.exists(), "a closed task's evidence");
+        assert!(
+            stuck.worktree.exists(),
+            "a closed task whose worktree remains keeps its folder"
+        );
+        assert!(
+            unrelated.exists(),
+            "a folder that isn't a task is left alone"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_checkout_that_cant_be_read_holds_task_numbers_instead_of_reserving_none() {
+        let base = std::env::temp_dir().join(format!("qm-scan-held-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let not_a_repo = base.join("project");
+        fs::create_dir_all(&not_a_repo).expect("a folder");
+        let git = Git::with_program("git");
+        let scan = branch_task_numbers(&git, std::slice::from_ref(&not_a_repo));
+        assert!(scan.is_err(), "an unreadable checkout is not an empty scan");
+        reserve_scan(scan);
+        let mut conn = rusqlite::Connection::open_in_memory().expect("memory");
+        qm_store::schema::migrate(&mut conn).expect("schema");
+        let refused = qm_store::ids::fresh(&conn, "tasks", qm_types::ids::space::TASK);
+        assert!(refused.is_err(), "no task number is issued until restart");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_surviving_secondmate_folder_reserves_its_pruned_rows_number() {
+        struct DrawRetired;
+        impl qm_types::ids::IdSource for DrawRetired {
+            fn number(&mut self, min: u32, max: u32) -> u32 {
+                42_u32.clamp(min, max)
+            }
+        }
+
+        let base = std::env::temp_dir().join(format!("qm-sm-held-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let data = DataDir::with_scratch(base.join("home"), base.join("scratch"));
+        let retired = data.secondmates_dir().join("SM-42");
+        fs::create_dir_all(&retired).expect("retired folder");
+        fs::create_dir_all(data.scratch()).expect("scratch");
+        // Cleanup is best effort. An unsafe scratch root makes it leave the folders alone.
+        fs::set_permissions(data.scratch(), fs::Permissions::from_mode(0o755)).unwrap();
+        sweep_leftovers(&data, &[], &[]);
+        assert!(retired.exists(), "the retired folder survived cleanup");
+        let scan = leftover_secondmate_numbers(&data.secondmates_dir());
+        assert_eq!(scan, Ok(vec![42]));
+        reserve_secondmate_scan(scan);
+
+        let mut conn = rusqlite::Connection::open_in_memory().expect("memory");
+        qm_store::schema::migrate(&mut conn).expect("schema");
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM secondmates", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "the retired row was pruned");
+        qm_store::ids::use_source(Box::new(DrawRetired));
+        let fresh = qm_store::ids::fresh(&conn, "secondmates", qm_types::ids::space::SECONDMATE)
+            .expect("another number is available");
+        assert_ne!(
+            fresh, 42,
+            "even repeated draws cannot reuse a surviving folder"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_task_folder_an_earlier_run_left_holds_its_number() {
+        let base = std::env::temp_dir().join(format!("qm-folder-held-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let tasks_dir = base.join("tasks");
+        fs::create_dir_all(tasks_dir.join("T-0042")).expect("a leftover folder");
+        fs::create_dir_all(tasks_dir.join("not-a-task")).expect("another folder");
+        let git = Git::with_program("git");
+        let numbers = leftover_task_numbers(&git, &tasks_dir, &[]);
+        assert_eq!(numbers, Ok(vec![42]), "only a task's folder names a number");
+        let _ = fs::remove_dir_all(&base);
     }
 }

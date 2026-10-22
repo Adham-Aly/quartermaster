@@ -164,7 +164,6 @@ impl Git {
             git: self,
             dir: dir.to_owned(),
             args: args.into_iter().map(|a| a.as_ref().to_owned()).collect(),
-            env: Vec::new(),
             transport: None,
         }
     }
@@ -176,7 +175,6 @@ pub(crate) struct Invocation<'a> {
     git: &'a Git,
     dir: PathBuf,
     args: Vec<OsString>,
-    env: Vec<(OsString, OsString)>,
     /// Set for a network command: the app's own transport, and the longer time limit.
     transport: Option<Transport>,
 }
@@ -196,13 +194,6 @@ impl GitOutput {
 }
 
 impl Invocation<'_> {
-    /// Sets an extra variable (after the inherited `GIT_*` ones were removed).
-    pub(crate) fn env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
-        self.env
-            .push((key.as_ref().to_owned(), value.as_ref().to_owned()));
-        self
-    }
-
     /// Makes this a network command travelling over `transport` (which only
     /// `Repo::network_command` makes), with the longer time limit.
     pub(crate) fn over(mut self, transport: Transport) -> Self {
@@ -235,9 +226,6 @@ impl Invocation<'_> {
             .env("LC_ALL", "C")
             .env("LANG", "C")
             .env_remove("LANGUAGE");
-        for (key, value) in &self.env {
-            command.env(key, value);
-        }
         if let Some(transport) = &self.transport {
             for (key, value) in transport.env() {
                 command.env(key, value);

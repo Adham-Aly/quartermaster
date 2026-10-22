@@ -361,16 +361,6 @@ impl DeliveryCloseFacts {
 }
 
 impl CloseFacts for DeliveryCloseFacts {
-    fn merged_into(&self, conn: &Connection, task: TaskId) -> Vec<String> {
-        match delivery_store::landed_into(conn, task) {
-            Ok(into) => into.into_iter().collect(),
-            Err(e) => {
-                tracing::warn!(%task, error = %e, "couldn't read where the task landed");
-                Vec::new()
-            }
-        }
-    }
-
     fn on_side_exit(&self, task: TaskId) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             if !CLOSE_PR_ON_SIDE_EXIT {

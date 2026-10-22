@@ -222,6 +222,7 @@ impl SecondmateService {
         let turn_loop = TurnLoop::for_secondmate(
             TurnLoopDeps {
                 db: deps.db.clone(),
+                inbox: deps.inbox.clone(),
                 clock: Arc::clone(&deps.clock),
                 seat: Arc::new(SecondmateSeat::new(self.clone(), id)),
                 context: Arc::new(SecondmateContext::new(deps.db.clone(), &deps.clock, id)),

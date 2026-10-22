@@ -9,10 +9,13 @@
 //! channel, which reads them through its own queries.
 
 use crate::StoreError;
+use crate::ids;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::data_dir::DataDir;
 use qm_types::domain::{Effort, EngineKind, RequestStatus, TaskKind};
+use qm_types::ids::space;
 use qm_types::ids::{
     AccountId, AgentId, CorrelationId, ModelId, ProjectId, SecondmateId, SessionRef, TaskId, TurnId,
 };
@@ -56,18 +59,32 @@ pub struct NewSecondmate<'a> {
 /// Writes the secondmate, its projects and its agent row (`idle`), in the caller's transaction.
 pub fn insert(conn: &Connection, new: &NewSecondmate<'_>) -> Result<SecondmateRecord, StoreError> {
     let id: SecondmateId = conn.query_row(
-        "INSERT INTO secondmates (name, scope, standing_base_branch, created_at)
-         VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO secondmates (name, scope, standing_base_branch, created_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          RETURNING id",
-        params![new.name, new.scope, new.standing_branch, to_millis(new.at)],
+        params![
+            new.name,
+            new.scope,
+            new.standing_branch,
+            to_millis(new.at),
+            seq::next(new.at),
+            ids::fresh(conn, "secondmates", space::SECONDMATE)?,
+        ],
         |r| r.get(0),
     )?;
     set_projects(conn, id, new.projects)?;
     let home = new.data_dir.secondmate(id).home;
     conn.execute(
-        "INSERT INTO agents (role, supervisor_id, secondmate_id, home, status, created_at)
-         VALUES ('secondmate', ?1, ?2, ?3, 'idle', ?4)",
-        params![new.parent, id, home.to_string_lossy(), to_millis(new.at)],
+        "INSERT INTO agents (role, supervisor_id, secondmate_id, home, status, created_at, seq, id)
+         VALUES ('secondmate', ?1, ?2, ?3, 'idle', ?4, ?5, ?6)",
+        params![
+            new.parent,
+            id,
+            home.to_string_lossy(),
+            to_millis(new.at),
+            seq::next(new.at),
+            ids::fresh(conn, "agents", space::ROW)?,
+        ],
     )?;
     load(conn, id)?.ok_or_else(|| StoreError::Invalid {
         column: "secondmates.id",
@@ -127,7 +144,7 @@ pub fn projects_of(
     let mut stmt = conn.prepare(
         "SELECT p.id, p.name FROM secondmate_projects sp JOIN projects p ON p.id = sp.project_id
          WHERE sp.secondmate_id = ?1 AND p.removed_at IS NULL
-         ORDER BY p.id",
+         ORDER BY p.seq",
     )?;
     let rows = stmt
         .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -164,7 +181,7 @@ pub fn agent_of(conn: &Connection, id: SecondmateId) -> Result<Option<AgentId>, 
     Ok(conn
         .query_row(
             "SELECT id FROM agents WHERE secondmate_id = ?1 AND role = 'secondmate'
-             ORDER BY id DESC LIMIT 1",
+             ORDER BY seq DESC LIMIT 1",
             params![id],
             |r| r.get(0),
         )
@@ -175,7 +192,7 @@ pub fn agent_of(conn: &Connection, id: SecondmateId) -> Result<Option<AgentId>, 
 pub fn active(conn: &Connection) -> Result<Vec<SecondmateRecord>, StoreError> {
     let heads = {
         let mut stmt = conn.prepare(&format!(
-            "{SELECT} WHERE s.retired_at IS NULL ORDER BY s.id"
+            "{SELECT} WHERE s.retired_at IS NULL ORDER BY s.seq"
         ))?;
         stmt.query_map([], head)?
             .collect::<rusqlite::Result<Vec<_>>>()?
@@ -188,7 +205,7 @@ pub fn by_name(conn: &Connection, name: &str) -> Result<Option<SecondmateId>, St
     Ok(conn
         .query_row(
             "SELECT id FROM secondmates WHERE retired_at IS NULL AND name = ?1 COLLATE NOCASE
-             ORDER BY id LIMIT 1",
+             ORDER BY seq LIMIT 1",
             params![name],
             |r| r.get(0),
         )
@@ -202,11 +219,18 @@ pub fn name_taken(conn: &Connection, name: &str) -> Result<bool, StoreError> {
 
 /// Retires secondmate `id` and its agent row, in the caller's transaction. Nothing is deleted:
 /// its history, requests and tasks stay, and its ID is never handed out again (rows are never
-/// removed, so SQLite's next ID is always higher). Returns whether it was active.
+/// removed, so SQLite's next ID is always higher). Its pending schedules are cancelled, since
+/// its loop is stopped and nothing would ever fire them. Returns whether it was active.
 pub fn retire(conn: &Connection, id: SecondmateId, at: Timestamp) -> Result<bool, StoreError> {
     let n = conn.execute(
         "UPDATE secondmates SET retired_at = ?2 WHERE id = ?1 AND retired_at IS NULL",
         params![id, to_millis(at)],
+    )?;
+    conn.execute(
+        "UPDATE schedules SET status = 'cancelled'
+         WHERE status = 'pending'
+           AND owner_agent_id IN (SELECT id FROM agents WHERE secondmate_id = ?1)",
+        params![id],
     )?;
     conn.execute(
         "UPDATE agents SET status = 'retired', retired_at = COALESCE(retired_at, ?2)
@@ -280,7 +304,7 @@ pub fn session_row(
     Ok(conn
         .query_row(
             "SELECT id, engine, account_id, model, effort, home, session_ref FROM agents
-             WHERE secondmate_id = ?1 AND role = 'secondmate' ORDER BY id DESC LIMIT 1",
+             WHERE secondmate_id = ?1 AND role = 'secondmate' ORDER BY seq DESC LIMIT 1",
             params![id],
             |r| {
                 Ok(SecondmateAgent {
@@ -422,8 +446,8 @@ pub fn insert_request(
     Ok(conn.query_row(
         "INSERT INTO secondmate_requests
              (secondmate_id, turn_id, request, user_words, instructions, base_branch, overrides,
-              status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8)
+              status, created_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8, ?9, ?10)
          RETURNING id",
         params![
             new.secondmate,
@@ -433,7 +457,9 @@ pub fn insert_request(
             instructions,
             new.base_branch,
             overrides,
-            to_millis(new.at)
+            to_millis(new.at),
+            seq::next(new.at),
+            ids::fresh(conn, "secondmate_requests", space::CORRELATION)?,
         ],
         |r| r.get(0),
     )?)
@@ -523,7 +549,7 @@ pub fn open_requests(conn: &Connection, id: SecondmateId) -> Result<Vec<RequestR
         let mut stmt = conn.prepare(&format!(
             "SELECT {REQUEST_COLUMNS} FROM secondmate_requests
              WHERE secondmate_id = ?1 AND status IN ('open', 'answered')
-             ORDER BY id DESC LIMIT ?2"
+             ORDER BY seq DESC LIMIT ?2"
         ))?;
         stmt.query_map(
             params![id, i64::try_from(OPEN_REQUESTS).unwrap_or(i64::MAX)],
@@ -552,7 +578,7 @@ pub fn turn_message(
 
 /// Tasks supervised by `agent` (a secondmate's crewmates' tasks), open or not.
 pub fn tasks_of(conn: &Connection, agent: AgentId) -> Result<Vec<TaskId>, StoreError> {
-    let mut stmt = conn.prepare("SELECT id FROM tasks WHERE supervisor_id = ?1 ORDER BY id")?;
+    let mut stmt = conn.prepare("SELECT id FROM tasks WHERE supervisor_id = ?1 ORDER BY seq")?;
     let rows = stmt
         .query_map(params![agent], |r| r.get(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -566,7 +592,7 @@ pub fn open_tasks_of(
 ) -> Result<Vec<(TaskId, ProjectId, String)>, StoreError> {
     let mut stmt = conn.prepare(
         "SELECT id, project_id, status FROM tasks
-         WHERE supervisor_id = ?1 AND status <> 'closed' ORDER BY id",
+         WHERE supervisor_id = ?1 AND status <> 'closed' ORDER BY seq",
     )?;
     let rows = stmt
         .query_map(params![agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?

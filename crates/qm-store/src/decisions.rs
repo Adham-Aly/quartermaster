@@ -15,7 +15,7 @@ pub fn pending_for(conn: &Connection, task: TaskId) -> Result<Option<HeldActionI
         .query_row(
             "SELECT id FROM held_actions
              WHERE task_id = ?1 AND kind = 'decision' AND status = 'pending'
-             ORDER BY id DESC LIMIT 1",
+             ORDER BY seq DESC LIMIT 1",
             params![task],
             |r| r.get(0),
         )

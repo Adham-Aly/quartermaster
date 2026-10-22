@@ -8,7 +8,7 @@
 //!    │                         │ crash (exit)            idle timer, no job
 //!    ▼                         ▼                          ▼
 //!  Closed ◀── Close ──────── Down ◀── Suspended ◀────── Idle
-//!                              │ StartTurn/Inject: restore transcript, spawn --resume,
+//!                              │ StartTurn/Inject: spawn --resume,
 //!                              └─▶ initialize ok: SessionReady{resumed:true} ─▶ InTurn
 //! ```
 //!
@@ -20,16 +20,15 @@
 //! - **Open.** Spawn, `initialize`, wait up to 60 s for its answer while serving the MCP
 //!   handshake, then ask `get_context_usage` and `get_hooks_listing` for the init report, then
 //!   `SessionReady`. Commands sent meanwhile wait in the channel.
-//! - **Turn.** The user message, `TurnStarted`, the stream mapped to events, `result` ends it;
-//!   the transcript is mirrored once `claude` reports itself idle (or 500 ms later).
+//! - **Turn.** The user message, `TurnStarted`, the stream mapped to events, `result` ends it.
 //! - **Interrupt.** `interrupt`; the next `result` ends the turn `Interrupted`. With no `result`
 //!   within 10 s the process is stopped, jobs are reported finished, the turn ends `Interrupted`
 //!   and the session is `Suspended`.
-//! - **Idle shutdown.** After `spec.idle_shutdown` with no turn and no job: mirror, stop,
+//! - **Idle shutdown.** After `spec.idle_shutdown` with no turn and no job: stop,
 //!   `Suspended`. The next turn resumes with `--resume=<id>`.
 //! - **Crash.** An exit nobody asked for: drain stdout for at most 200 ms, report running jobs
 //!   finished, then fail the turn (`ProcessExited`) or, between turns, report `Suspended`.
-//! - **`EndConversation`.** Reported, the turn ends normally, then mirror, stop and
+//! - **`EndConversation`.** Reported, the turn ends normally, then stop and
 //!   `SessionClosed { EndConversation }`.
 
 pub mod stream;
@@ -71,8 +70,6 @@ const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
 const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a turn may take to end after our `interrupt` before the process is stopped.
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long after `result` the transcript is mirrored if `claude` doesn't report itself idle.
-const MIRROR_FALLBACK: Duration = Duration::from_millis(500);
 /// How long stdout is drained after an unrequested exit.
 const CRASH_DRAIN: Duration = Duration::from_millis(200);
 /// The message that makes `claude` compact its conversation (`SessionCommand::Compact`).
@@ -114,7 +111,6 @@ pub struct Session {
     /// A `SetModel` to send at the next idle moment.
     pending_model: Option<String>,
     idle_deadline: Option<Instant>,
-    mirror_due: Option<Instant>,
     start_deadline: Option<Instant>,
     /// Checks of the first `system/init`, when the init report couldn't make them.
     init_checks: Option<InitChecks>,
@@ -283,7 +279,6 @@ enum Wake {
 enum Timer {
     Start,
     Interrupt,
-    Mirror,
     Idle,
     Activity,
 }
@@ -340,7 +335,6 @@ impl Session {
             pending_calls: HashMap::new(),
             pending_model: None,
             idle_deadline: None,
-            mirror_due: None,
             start_deadline: None,
             init_checks: None,
             refused: None,
@@ -406,9 +400,6 @@ impl Session {
         }
         if let Some(at) = self.turn.as_ref().and_then(|t| t.interrupt_deadline) {
             timers.push((at, Timer::Interrupt));
-        }
-        if let Some(at) = self.mirror_due {
-            timers.push((at, Timer::Mirror));
         }
         if let Some(at) = self.idle_deadline {
             timers.push((at, Timer::Idle));
@@ -487,7 +478,6 @@ impl Session {
     async fn start(&mut self, resuming: bool) -> Result<InitReport, StartFailure> {
         self.starting = true;
         // Only the start deadline may fire while starting.
-        self.mirror_due = None;
         self.idle_deadline = None;
         let result = self.start_inner(resuming).await;
         self.starting = false;
@@ -499,19 +489,6 @@ impl Session {
     }
 
     async fn start_inner(&mut self, resuming: bool) -> Result<InitReport, StartFailure> {
-        if resuming && let Some(home) = self.claude_home.clone() {
-            let (id, dir) = (self.conversation.clone(), self.spec.session_dir.clone());
-            match tokio::task::spawn_blocking(move || transcript::restore(&home, &id, &dir)).await {
-                Ok(Ok(true)) => {
-                    tracing::info!(session = %self.conversation, "restored the Claude transcript from the mirror");
-                }
-                Ok(Ok(false)) => {}
-                Ok(Err(e)) => {
-                    tracing::warn!(session = %self.conversation, "couldn't restore the Claude transcript: {e}");
-                }
-                Err(e) => tracing::warn!("the transcript restore task failed: {e}"),
-            }
-        }
         let saved = saved_spent(
             self.claude_home.clone().filter(|_| resuming),
             self.conversation.clone(),
@@ -798,7 +775,7 @@ impl Session {
                     self.begin_turn(TurnInput::text(COMPACT_COMMAND)).await;
                 }
             }
-            SessionCommand::Close => self.on_close().await,
+            SessionCommand::Close | SessionCommand::Forget => self.on_close().await,
             other => tracing::debug!(?other, "ignored an unknown command"),
         }
     }
@@ -932,10 +909,9 @@ impl Session {
         }
     }
 
-    /// Ends the session: mirror, stop the process, report running jobs, `SessionClosed`.
+    /// Ends the session: stop the process, report running jobs, `SessionClosed`.
     async fn finish(&mut self, reason: CloseReason) {
         if self.proc.is_some() {
-            self.mirror().await;
             self.stop_process().await;
         }
         for event in self.jobs.finish_all() {
@@ -953,15 +929,9 @@ impl Session {
         let now = self.clock.instant();
         match timer {
             Timer::Start => {}
-            Timer::Mirror => {
-                self.mirror_due = None;
-                self.mirror().await;
-            }
             Timer::Idle => {
                 self.idle_deadline = None;
                 if self.turn.is_none() && self.jobs.is_idle() && self.proc.is_some() {
-                    self.mirror_due = None;
-                    self.mirror().await;
                     self.stop_process().await;
                     self.down = true;
                     self.send(EngineEvent::Suspended).await;
@@ -986,7 +956,6 @@ impl Session {
                 if self.turn.is_none() {
                     return;
                 }
-                self.mirror().await;
                 self.stop_process().await;
                 for event in self.jobs.finish_all() {
                     self.send(event).await;
@@ -1053,7 +1022,6 @@ impl Session {
         }
         self.down = true;
         self.pending_calls.clear();
-        self.mirror_due = None;
         self.idle_deadline = None;
 
         let mut message = format!("claude exited ({})", describe_exit(Some(cause)));
@@ -1268,25 +1236,21 @@ impl Session {
                     self.call_started().await;
                 }
             }
-            "session_state_changed" => match str_at(msg, "/state") {
-                Some("running") => {
-                    if self.turn.is_none()
-                        && !self.starting
-                        && !self.closing
-                        && !self.ending
-                        && self.proc.is_some()
-                    {
-                        // Claude started a turn by itself (e.g. after a background job): report it
-                        // as a turn.
-                        tracing::info!(session = %self.conversation, "claude started a turn nobody requested");
-                        self.idle_deadline = None;
-                        self.turn = Some(Turn::new(self.clock.instant()));
-                        self.send(EngineEvent::TurnStarted).await;
-                    }
+            "session_state_changed" if str_at(msg, "/state") == Some("running") => {
+                if self.turn.is_none()
+                    && !self.starting
+                    && !self.closing
+                    && !self.ending
+                    && self.proc.is_some()
+                {
+                    // Claude started a turn by itself (e.g. after a background job): report it
+                    // as a turn.
+                    tracing::info!(session = %self.conversation, "claude started a turn nobody requested");
+                    self.idle_deadline = None;
+                    self.turn = Some(Turn::new(self.clock.instant()));
+                    self.send(EngineEvent::TurnStarted).await;
                 }
-                Some("idle") if self.mirror_due.take().is_some() => self.mirror().await,
-                _ => {}
-            },
+            }
             "init" => self.on_system_init(msg).await,
             "api_retry" => {
                 if self.turn.is_some() {
@@ -1389,7 +1353,6 @@ impl Session {
         self.refused = Some(message.clone());
         self.stop_process().await;
         self.down = true;
-        self.mirror_due = None;
         self.idle_deadline = None;
         for event in self.jobs.finish_all() {
             self.send(event).await;
@@ -1664,7 +1627,6 @@ impl Session {
         } else if self.closing {
             self.finish(CloseReason::Requested).await;
         } else {
-            self.mirror_due = Some(self.clock.instant() + MIRROR_FALLBACK);
             if let Some(model) = self.pending_model.take() {
                 self.write_set_model(&model);
             }
@@ -1769,8 +1731,6 @@ impl Session {
             "restarting claude for the new autocompact window"
         );
         self.idle_deadline = None;
-        self.mirror_due = None;
-        self.mirror().await;
         self.stop_process().await;
         self.down = true;
         self.send(EngineEvent::Suspended).await;
@@ -1820,27 +1780,6 @@ impl Session {
         line.push(b'\n');
         // A closed writer means the process is going down; the exit is handled elsewhere.
         let _ = writer.send(line);
-    }
-
-    async fn mirror(&mut self) {
-        let Some(home) = self.claude_home.clone() else {
-            return;
-        };
-        let (id, dir, now) = (
-            self.conversation.clone(),
-            self.spec.session_dir.clone(),
-            self.clock.now(),
-        );
-        match tokio::task::spawn_blocking(move || transcript::mirror(&home, &id, &dir, now)).await {
-            Ok(Ok(Some(_))) => {}
-            Ok(Ok(None)) => {
-                tracing::warn!(session = %self.conversation, "Claude's transcript wasn't found to mirror");
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(session = %self.conversation, "couldn't mirror the Claude transcript: {e}");
-            }
-            Err(e) => tracing::warn!("the transcript mirror task failed: {e}"),
-        }
     }
 
     fn session_ref(&self) -> SessionRef {

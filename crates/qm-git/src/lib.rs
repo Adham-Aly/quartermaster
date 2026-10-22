@@ -5,8 +5,9 @@
 //! project's hooks as usual. This crate creates a task's worktree at `tasks/T-0042/worktree` on
 //! branch `qm/task-0042` (names from `qm_types::ids::TaskId`), resolves base branches (the
 //! remote's default branch freshly fetched, or a typed base branch that traces back to you),
-//! saves unmerged work to `refs/quartermaster/kept/T-0042` before retiring a worktree, and lands
-//! build-in-place work into your checkout's current branch only when its working tree is clean.
+//! removes a retired task's worktree and branch (unmerged commits are left for git to collect),
+//! and lands build-in-place work into your checkout's current branch only when its working tree
+//! is clean.
 //!
 
 //! # The pieces
@@ -18,8 +19,7 @@
 //!   or a [`BaseRefusal`] with the reason.
 //! - [`Repo::prepare_worktree`] creates the worktree, copies the project's listed files and runs
 //!   its setup command; [`run_setup`] runs a setup command on its own.
-//! - [`Repo::retire`] saves unmerged work to the kept ref, then removes the worktree and branch,
-//!   crash-safe and idempotent.
+//! - [`Repo::retire`] removes the worktree, then the branch, idempotently.
 //! - [`Repo::reattach_worktree`] adds a vanished worktree back on its existing branch.
 //! - [`Repo::worktree_head`], [`Repo::own_commits`] and [`Repo::changed_files`] read a task's
 //!   head, commit messages and changed files for its report and reviews.
@@ -53,6 +53,6 @@ pub use reconcile::{
     UnexpectedReason, UnexpectedWorktree, UnreadableProject, reconcile,
 };
 pub use repo::{ORIGIN, Repo, WorktreeEntry};
-pub use retire::{BranchRemoval, KeptWork, RetireSpec, Retirement, WorktreeRemoval};
+pub use retire::{BranchRemoval, RetireSpec, Retirement, WorktreeRemoval};
 pub use setup::{DEFAULT_SETUP_TIMEOUT, SetupCommand, SetupOutcome, run_setup};
 pub use worktree::{CopyReport, PreparedWorktree, ReattachedWorktree, WorktreeSpec};

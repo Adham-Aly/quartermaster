@@ -14,14 +14,13 @@
 //! | `models` | [`tier_models`]: the routing pool, by tier |
 
 use crate::StoreError;
-use crate::events::TURN_STARTED;
 use crate::time::from_millis;
 use jiff::Timestamp;
 use qm_types::domain::{
     AgentStatus, Autonomy, DeliveryMode, Effort, ProjectOrigin, TaskKind, TaskStatus, Tier,
     VerificationLevel,
 };
-use qm_types::ids::{AgentId, EventId, ModelId, SecondmateId, TaskId, TurnId};
+use qm_types::ids::{AgentId, ModelId, SecondmateId, TaskId, TurnId};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// A registered project.
@@ -41,7 +40,7 @@ pub fn projects(conn: &Connection) -> Result<Vec<ProjectRow>, StoreError> {
     let mut stmt = conn.prepare(
         "SELECT name, path, origin, delivery_mode, autonomy, verification_level FROM projects
          WHERE removed_at IS NULL
-         ORDER BY origin = 'workspace', id",
+         ORDER BY origin = 'workspace', seq",
     )?;
     Ok(stmt
         .query_map([], |r| {
@@ -103,7 +102,7 @@ pub fn workers(conn: &Connection) -> Result<Vec<WorkerRow>, StoreError> {
          JOIN projects AS p ON p.id = t.project_id
          LEFT JOIN agents AS s ON s.id = a.supervisor_id AND s.role = 'secondmate'
          WHERE a.role = 'crewmate' AND a.retired_at IS NULL
-         ORDER BY t.id",
+         ORDER BY t.seq",
     )?;
     let raw = crew_stmt
         .query_map([], |r| {
@@ -141,7 +140,7 @@ pub fn workers(conn: &Connection) -> Result<Vec<WorkerRow>, StoreError> {
         "SELECT a.id, s.id, s.scope, a.status, s.standing_base_branch
          FROM agents AS a JOIN secondmates AS s ON s.id = a.secondmate_id
          WHERE a.role = 'secondmate' AND a.retired_at IS NULL AND s.retired_at IS NULL
-         ORDER BY s.id",
+         ORDER BY s.seq",
     )?;
     let secondmates = sm_stmt
         .query_map([], |r| {
@@ -210,7 +209,7 @@ pub fn open_tasks(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
          JOIN projects AS p ON p.id = t.project_id
          LEFT JOIN agents AS s ON s.id = t.supervisor_id AND s.role = 'secondmate'
          WHERE t.status <> 'closed'
-         ORDER BY t.id DESC",
+         ORDER BY t.seq DESC",
     )?;
     let mut rows = stmt
         .query_map([], |r| {
@@ -232,37 +231,82 @@ pub fn open_tasks(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
     Ok(rows)
 }
 
-/// Where "since your last turn" starts: the previous turn of the agent and its `seat.turn_started`
-/// event.
+/// Where "since your last turn" starts: the turn the block last showed everything up to, and the
+/// creation order (`seq`) of its `seat.turn_started` event. A `seq` rather than an event ID, so it
+/// still means something after a restart, when the turn itself is gone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Watermark {
     pub turn: TurnId,
-    pub event: EventId,
+    pub seq: i64,
 }
 
-/// The agent's turn before `turn` that reached the model, with its `seat.turn_started` event. A
-/// wake turn that found no wakes never reached the model (`no_wakes`), so it is skipped: what
-/// happened before it still counts as new.
+/// The events a turn's block shows as "since": those with `after < seq`, and `seq < before` when
+/// there is an upper bound. Both come from `block_watermarks`, never from the events table, so a
+/// reload reads the same range (the kept predicate keeps only some kinds, and never a turn's own
+/// `seat.turn_started`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Range {
+    pub watermark: Option<Watermark>,
+    pub after: i64,
+    pub before: Option<i64>,
+}
+
+/// The range for `turn`. While `turn` is the newest turn the row names, the lower bound is the
+/// turn before it (none for a first turn, so everything from the start) and the upper bound is
+/// `turn`'s own start. A turn the row doesn't name has no upper bound and starts after the row's
+/// turn. A turn that ended `no_wakes` was rolled back by [`crate::turns::finish_turn`], so it
+/// never shows as the watermark.
+pub fn range(conn: &Connection, agent: AgentId, turn: TurnId) -> Result<Range, StoreError> {
+    // (turn, its start, the turn before it, that turn's start)
+    type Row = (Option<TurnId>, i64, Option<TurnId>, Option<i64>);
+    let row: Option<Row> = conn
+        .query_row(
+            "SELECT turn_id, event_seq, prev_turn_id, prev_event_seq
+             FROM block_watermarks WHERE agent_id = ?1",
+            params![agent],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        Some((Some(newest), start, _, _)) if newest != turn => Range {
+            watermark: Some(Watermark {
+                turn: newest,
+                seq: start,
+            }),
+            after: start,
+            before: None,
+        },
+        Some((Some(_), start, Some(previous), previous_start)) => {
+            let after = previous_start.unwrap_or(0);
+            Range {
+                watermark: Some(Watermark {
+                    turn: previous,
+                    seq: after,
+                }),
+                after,
+                before: Some(start),
+            }
+        }
+        Some((Some(_), start, None, _)) => Range {
+            watermark: None,
+            after: 0,
+            before: Some(start),
+        },
+        _ => Range {
+            watermark: None,
+            after: 0,
+            before: None,
+        },
+    })
+}
+
+/// The watermark for `turn`: the turn the block last showed everything up to (see [`range`]).
 pub fn watermark(
     conn: &Connection,
     agent: AgentId,
     turn: TurnId,
 ) -> Result<Option<Watermark>, StoreError> {
-    Ok(conn
-        .query_row(
-            "SELECT e.turn_id, e.id FROM events AS e JOIN turns AS t ON t.id = e.turn_id
-             WHERE e.kind = ?1 AND t.agent_id = ?2 AND t.id < ?3
-               AND coalesce(t.outcome_reason, '') <> 'no_wakes'
-             ORDER BY e.id DESC LIMIT 1",
-            params![TURN_STARTED, agent, turn],
-            |r| {
-                Ok(Watermark {
-                    turn: r.get(0)?,
-                    event: r.get(1)?,
-                })
-            },
-        )
-        .optional()?)
+    Ok(range(conn, agent, turn)?.watermark)
 }
 
 /// The models in one tier, as routing can use them now.
@@ -289,4 +333,133 @@ pub fn tier_models(conn: &Connection) -> Result<Vec<TierRow>, StoreError> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Db;
+    use crate::events;
+    use crate::turns::{self, FinishedTurn, NO_WAKES, NewTurn, TurnTotals};
+    use qm_types::domain::{StartedBy, TurnStatus};
+
+    /// Starts a turn and ends it with `reason`, as a completed turn.
+    fn finished(conn: &mut Connection, agent: AgentId, at: i64, reason: Option<&str>) -> TurnId {
+        let at = Timestamp::from_second(at).expect("a time");
+        let turn = turns::start_turn(
+            conn,
+            &NewTurn {
+                agent,
+                started_by: StartedBy::AppEvent,
+                model: None,
+                at,
+            },
+        )
+        .expect("a turn");
+        turns::finish_turn(
+            conn,
+            &FinishedTurn {
+                turn,
+                agent,
+                status: TurnStatus::Completed,
+                reason: reason.map(str::to_owned),
+                detail: None,
+                actions: Vec::new(),
+                retried: false,
+                usage: TurnTotals::default(),
+                model: None,
+                close_outs: Vec::new(),
+                limit: None,
+                release_wakes: false,
+                at,
+            },
+        )
+        .expect("the turn's end");
+        turn
+    }
+
+    #[tokio::test]
+    async fn the_watermark_skips_a_no_wakes_turn_and_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!("qm-watermark-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let path = dir.join("state.db");
+        let agent = AgentId::new(1);
+
+        let db = Db::open(&path).expect("a database");
+        db.call(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, \
+                     merge_method, created_at, seq) \
+                 VALUES (1, 'p', '/p', 'created', 'main', 'direct_pr', 'merge', 1, 1);
+                 INSERT INTO agents (id, role, home, status, created_at, seq) \
+                 VALUES (1, 'quartermaster', '/home', 'idle', 1, 1);",
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the rows");
+
+        // A ends normally, B finds no wakes and never reaches the model, C ends normally.
+        let (a, c, seq_a, seq_c, for_c) = db
+            .call(move |conn| {
+                let a = finished(conn, agent, 2, None);
+                let _b = finished(conn, agent, 3, Some(NO_WAKES));
+                let c = finished(conn, agent, 4, None);
+                let seq_a = events::turn_started_seq(conn, a)?.expect("A's start");
+                let seq_c = events::turn_started_seq(conn, c)?.expect("C's start");
+                // While C is still the newest turn, its watermark is A.
+                let for_c = watermark(conn, agent, c)?;
+                Ok((a, c, seq_a, seq_c, for_c))
+            })
+            .await
+            .expect("three turns");
+        assert_eq!(
+            for_c,
+            Some(Watermark {
+                turn: a,
+                seq: seq_a
+            }),
+            "B never reached the model, so C's watermark is A"
+        );
+
+        // N starts: its watermark is C.
+        let (n, seq_n, for_n) = db
+            .call(move |conn| {
+                let n = finished(conn, agent, 5, None);
+                let seq_n = events::turn_started_seq(conn, n)?.expect("N's start");
+                Ok((n, seq_n, watermark(conn, agent, n)?))
+            })
+            .await
+            .expect("N");
+        assert_eq!(
+            for_n,
+            Some(Watermark {
+                turn: c,
+                seq: seq_c
+            })
+        );
+        drop(db);
+
+        // After a restart the turns are gone from memory, but the row still names N: the next
+        // turn's watermark is still N.
+        let db = Db::open(&path).expect("a restart");
+        let after_restart = db
+            .call(move |conn| {
+                let m = finished(conn, agent, 6, None);
+                watermark(conn, agent, m)
+            })
+            .await
+            .expect("the watermark after a restart");
+        assert_eq!(
+            after_restart,
+            Some(Watermark {
+                turn: n,
+                seq: seq_n
+            }),
+            "the watermark survives a restart"
+        );
+        drop(db);
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
 }

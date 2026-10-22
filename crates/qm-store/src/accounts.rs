@@ -14,10 +14,13 @@
 //! preferred) and refuse what doesn't apply with a plain [`ChangeError::Refused`], never a panic.
 
 use crate::StoreError;
+use crate::ids;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{AccountKind, EngineKind, Provider};
 use qm_types::ids::AccountId;
+use qm_types::ids::space;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 /// A new account.
@@ -117,8 +120,9 @@ impl RawAccount {
 /// Records a new account. Its engine follows its provider.
 pub fn insert_account(conn: &Connection, new: &NewAccount) -> Result<AccountId, StoreError> {
     let id = conn.query_row(
-        "INSERT INTO accounts (provider, label, kind, engine, credential_ref, base_url, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO accounts (provider, label, kind, engine, credential_ref, base_url, created_at, seq,
+                               id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          RETURNING id",
         params![
             new.provider,
@@ -128,6 +132,8 @@ pub fn insert_account(conn: &Connection, new: &NewAccount) -> Result<AccountId, 
             new.credential_ref,
             new.base_url,
             to_millis(new.at),
+            seq::next(new.at),
+            ids::fresh(conn, "accounts", space::ROW)?,
         ],
         |r| r.get(0),
     )?;
@@ -149,7 +155,7 @@ pub fn load_account(conn: &Connection, id: AccountId) -> Result<Option<AccountRo
 /// Every account not removed, oldest first.
 pub fn list_active(conn: &Connection) -> Result<Vec<AccountRow>, StoreError> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM accounts WHERE removed_at IS NULL ORDER BY id"
+        "SELECT {COLUMNS} FROM accounts WHERE removed_at IS NULL ORDER BY seq"
     ))?;
     let raw = stmt
         .query_map([], row_to_account)?

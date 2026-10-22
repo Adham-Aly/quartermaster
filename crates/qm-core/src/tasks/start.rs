@@ -242,7 +242,9 @@ fn validate(
         None => None,
         Some(target) => {
             let Some(row) = task_store::load(conn, target)? else {
-                return Ok(Err(Refusal::new(format!("{target} doesn't exist"))));
+                return Ok(Err(Refusal::new(format!(
+                    "can't build on {target}: its details are unavailable because it closed and was forgotten or doesn't exist; use find_tasks to choose a task still kept, or include the needed facts in a new task"
+                ))));
             };
             let report = reports::latest_clear(conn, target)?;
             let fact = match (row.kind, &report) {
@@ -672,7 +674,6 @@ pub(crate) async fn start_as(
         }
     };
     let hook = Arc::clone(&svc.deps().start_hook);
-    let title = req.title.clone();
     let recorded = svc
         .db()
         .call(move |conn| {
@@ -837,7 +838,7 @@ pub(crate) async fn start_as(
             } else {
                 svc.schedule_reroute();
             }
-            tracing::info!(%task, title, "task started");
+            tracing::info!(%task, "task started");
             Ok(TaskStarted {
                 task,
                 branch: task.branch(),
@@ -1162,8 +1163,11 @@ pub(crate) async fn prepare(
         paths.skills.clone(),
         gh,
     ];
+    let scratch = svc.deps().data_dir.clone();
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
+        // The evidence folder is under the scratch root, so that root is checked first.
+        scratch.ensure_scratch()?;
         for dir in &dirs {
             std::fs::create_dir_all(dir)?;
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;

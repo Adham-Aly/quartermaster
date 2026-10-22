@@ -2,9 +2,8 @@
 //!
 //! The safer of the two behaviours: a secondmate with any open task is refused, never retired
 //! with work still running, so nothing it supervises is dropped silently. Retiring marks its
-//! `secondmates` and `agents` rows retired (nothing is deleted: its conversation, events, routed
-//! requests and its tasks' kept refs stay) and stops its loop, which closes its session. Rows are
-//! never removed, so its ID is never handed out again.
+//! `secondmates` and `agents` rows retired and stops its loop, closing its session. History
+//! remains only in memory until forgotten or restarted; numbers can be reused after restart.
 
 use super::{SecondmateService, event_kind, failed, refuse};
 use qm_policy::scope::check_own_secondmate;
@@ -34,13 +33,31 @@ impl SecondmateService {
             .await
             .map_err(|e| failed(&e))??;
         self.stop_loop(id);
+        // The folders go now, not at the next start: the loop is stopped and no turn runs.
+        let data = self.inner.deps.data_dir.clone();
+        let removed = tokio::task::spawn_blocking(move || remove_retired_folders(&data, id)).await;
+        if let Ok(Err(e)) = removed {
+            tracing::warn!(error = %e, "couldn't remove a retired secondmate's folders; the next start will");
+        }
         Ok(Ack {
-            note: format!(
-                "{id} is retired: its session is closed and it has left the workers list. Its \
-                 history and its tasks' kept work are kept."
-            ),
+            note: retired_note(id),
         })
     }
+}
+
+fn retired_note(id: SecondmateId) -> String {
+    format!(
+        "{id} is retired: its session is closed and it has left the workers list. Its \
+         chat history is memory-only and is lost after restart; numbers can then be reused."
+    )
+}
+
+/// Removes a retired secondmate's folders: its home, its session and its plugin folder.
+pub(crate) fn remove_retired_folders(
+    data: &qm_types::data_dir::DataDir,
+    id: SecondmateId,
+) -> std::io::Result<()> {
+    qm_types::data_dir::remove_path(&data.secondmate(id).root)
 }
 
 /// [`SecondmateService::close`]'s transaction.
@@ -94,9 +111,12 @@ pub(crate) fn close_in(
 mod tests {
     use super::close_in;
     use qm_store::context::{WorkerRow, workers};
+    use qm_store::schedules::{self, NewSchedule};
     use qm_store::secondmates::{self, NewSecondmate};
+    use qm_store::wakes::{self, NewWake};
     use qm_tools::handler::ToolFailure;
     use qm_types::data_dir::DataDir;
+    use qm_types::domain::WakeKind;
     use qm_types::ids::{AgentId, SecondmateId};
     use rusqlite::{Connection, params};
     use std::path::PathBuf;
@@ -144,18 +164,18 @@ mod tests {
             self.conn
                 .execute(
                     "INSERT INTO projects (name, path, origin, default_branch, delivery_mode,
-                         merge_method, created_at)
-                     VALUES ('p', '/tmp/p', 'linked', 'main', 'direct_pr', 'merge', 0)",
-                    [],
+                         merge_method, created_at, seq)
+                     VALUES ('p', '/tmp/p', 'linked', 'main', 'direct_pr', 'merge', 0, ?1)",
+                    params![qm_store::seq::next_millis(0)],
                 )
                 .expect("project");
             let project = self.conn.last_insert_rowid();
             self.conn
                 .execute(
                     "INSERT INTO tasks (project_id, supervisor_id, kind, title, goal,
-                         delivery_mode, branch, status, created_at)
-                     VALUES (?1, ?2, 'build', 't', 'g', 'direct_pr', 'qm/task-1', 'running', 0)",
-                    params![project, supervisor],
+                         delivery_mode, branch, status, created_at, seq)
+                     VALUES (?1, ?2, 'build', 't', 'g', 'direct_pr', 'qm/task-1', 'running', 0, ?3)",
+                    params![project, supervisor, qm_store::seq::next_millis(1)],
                 )
                 .expect("task");
         }
@@ -186,6 +206,17 @@ mod tests {
     }
 
     #[test]
+    fn retirement_notice_does_not_promise_a_permanent_archive() {
+        let id = "SM-02".parse().expect("secondmate");
+        let note = super::retired_note(id);
+        assert!(note.contains("SM-02 is retired"));
+        assert!(note.contains("memory-only"));
+        assert!(note.contains("lost after restart"));
+        assert!(note.contains("numbers can then be reused"));
+        assert!(!note.contains("history is kept"));
+    }
+
+    #[test]
     fn an_idle_secondmate_is_retired_and_leaves_the_workers_list() {
         let mut f = Fixture::new("idle");
         let (id, agent) = f.secondmate("Web");
@@ -196,7 +227,7 @@ mod tests {
             "the worker is gone from the context block's source"
         );
         assert!(secondmates::load(&f.conn, id).expect("load").is_none());
-        // History is kept: the rows and the event are still there.
+        // History is still in memory, not promised across restart.
         let kept: i64 = f
             .conn
             .query_row(
@@ -215,10 +246,11 @@ mod tests {
             )
             .expect("events");
         assert_eq!(events, 1);
-        // A second close is refused, and the ID is never reused, even for the same name.
+        // A second close is refused, and the retired row keeps its number, so a new secondmate
+        // with the same name gets another one.
         assert!(refusal(f.close(f.qm, id)).contains("no active secondmate"));
         let (next, _) = f.secondmate("Web");
-        assert!(next > id);
+        assert_ne!(next, id);
     }
 
     #[test]
@@ -239,5 +271,106 @@ mod tests {
         let (_, other) = f.secondmate("Api");
         assert!(refusal(f.close(other, id)).contains("isn't your secondmate"));
         assert!(f.listed(id));
+    }
+
+    /// Loads `state.db` the way a restart does: the kept rows, pruned, in a fresh connection.
+    fn restart(f: &Fixture) -> Connection {
+        let (conn, _mirror) =
+            qm_store::mirror::Mirror::open(&f.dir.join("state.db")).expect("restart");
+        conn
+    }
+
+    fn rows(conn: &Connection, sql: &str, id: SecondmateId) -> i64 {
+        conn.query_row(sql, params![id], |r| r.get(0))
+            .expect("count")
+    }
+
+    #[test]
+    fn a_retired_secondmate_with_a_pending_schedule_survives_a_restart() {
+        let mut f = Fixture::new("schedule");
+        let (id, agent) = f.secondmate("Web");
+        let now = jiff::Timestamp::now();
+        schedules::insert(
+            &f.conn,
+            &NewSchedule {
+                owner: agent,
+                due_at: now,
+                tz: "UTC",
+                what: "check the build",
+                turn: None,
+                at: now,
+            },
+        )
+        .expect("schedule");
+        f.close(f.qm, id).expect("retired");
+        assert_eq!(schedules::pending(&f.conn).expect("pending").len(), 0);
+        // Retiring cancelled the schedule, so nothing keeps the agent: its parent goes with it.
+        let conn = restart(&f);
+        assert_eq!(
+            rows(
+                &conn,
+                "SELECT COUNT(*) FROM agents WHERE secondmate_id = ?1",
+                id
+            ),
+            0
+        );
+        assert_eq!(
+            rows(&conn, "SELECT COUNT(*) FROM secondmates WHERE id = ?1", id),
+            0
+        );
+    }
+
+    #[test]
+    fn a_retired_secondmate_still_wanted_by_a_wake_survives_a_restart() {
+        let mut f = Fixture::new("wake");
+        let (id, agent) = f.secondmate("Web");
+        wakes::insert_wake(
+            &f.conn,
+            &NewWake {
+                target: agent,
+                kind: WakeKind::Checks,
+                payload: serde_json::json!({}),
+                dedupe_key: "checks-1".into(),
+                task: None,
+                at: jiff::Timestamp::now(),
+            },
+        )
+        .expect("wake");
+        f.close(f.qm, id).expect("retired");
+        // The unconsumed wake keeps the agent row, so its parent row is kept with it, and the
+        // restart links them the same way.
+        let conn = restart(&f);
+        assert_eq!(
+            rows(
+                &conn,
+                "SELECT COUNT(*) FROM agents WHERE secondmate_id = ?1",
+                id
+            ),
+            1
+        );
+        assert_eq!(
+            rows(&conn, "SELECT COUNT(*) FROM secondmates WHERE id = ?1", id),
+            1
+        );
+    }
+
+    #[test]
+    fn retiring_removes_the_secondmates_folders_at_once() {
+        let base = std::env::temp_dir().join(format!("qm-retire-folders-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let data = DataDir::new(base.join("home"));
+        let id: SecondmateId = "SM-3".parse().expect("a secondmate");
+        let home = data.secondmate(id).home;
+        std::fs::create_dir_all(&home).expect("the home");
+        std::fs::write(home.join("note.txt"), "x").expect("a file");
+        let other: SecondmateId = "SM-4".parse().expect("a secondmate");
+        std::fs::create_dir_all(data.secondmate(other).home).expect("another home");
+
+        super::remove_retired_folders(&data, id).expect("removed");
+        let gone = !data.secondmate(id).root.exists();
+        let kept = data.secondmate(other).root.exists();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(gone, "a retired secondmate's folders go at retirement");
+        assert!(kept, "another secondmate's folders stay");
     }
 }

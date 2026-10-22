@@ -44,7 +44,7 @@ use crate::compaction::{self, KEEP_RECENT_TOKENS, ON_REQUEST_KEEP_TOKENS, SUMMAR
 use crate::replay::{self, ReplayTarget};
 use crate::retry::NoRetry;
 use crate::session::{Cancel, Session};
-use crate::session_file::Entry;
+use crate::session_store::Entry;
 use crate::sse::SseFramer;
 use crate::transcript::{Block, Message, args_are_valid};
 use bytes::Bytes;
@@ -208,15 +208,15 @@ impl Session {
             final_text: end.final_text,
         })
         .await;
-        let id = self.file.next_id();
+        let id = self.history.next_id();
         let at = self.shared.clock.now();
         let entry = Entry::TurnEnd {
             id,
             at,
             outcome: outcome_name.to_owned(),
         };
-        if let Err(e) = self.file.write(&entry).and_then(|()| self.file.sync()) {
-            tracing::warn!(error = %e, "couldn't finish the session file's turn");
+        if let Err(e) = self.history.write(&entry) {
+            tracing::warn!(error = %e, "couldn't finish the session history's turn");
         }
     }
 
@@ -912,9 +912,6 @@ impl Session {
             final_text: String::new(),
         })
         .await;
-        if let Err(e) = self.file.sync() {
-            tracing::warn!(error = %e, "couldn't sync the session file after a compaction");
-        }
     }
 
     /// Summarises all but about the newest `keep_tokens` of the context.
@@ -968,9 +965,9 @@ impl Session {
             .map(compaction::estimate_tokens)
             .sum::<u64>();
         self.compaction_guard = Some(tokens_after);
-        let id = self.file.next_id();
+        let id = self.history.next_id();
         let at = self.shared.clock.now();
-        if let Err(e) = self.file.write(&Entry::Compaction {
+        if let Err(e) = self.history.write(&Entry::Compaction {
             id,
             at,
             summary,

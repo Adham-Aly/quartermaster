@@ -10,9 +10,12 @@
 //!   [`release_unconsumed`] puts its wakes back in the inbox.
 
 use crate::StoreError;
+use crate::ids;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::WakeKind;
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, TaskId, TurnId, WakeId};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -50,8 +53,8 @@ pub fn insert_wake(conn: &Connection, wake: &NewWake) -> Result<Option<WakeId>, 
     })?;
     let id = conn
         .query_row(
-            "INSERT INTO wakes (target_agent_id, kind, payload, dedupe_key, task_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO wakes (target_agent_id, kind, payload, dedupe_key, task_id, created_at, seq, id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT (target_agent_id, dedupe_key) DO NOTHING
              RETURNING id",
             params![
@@ -60,7 +63,9 @@ pub fn insert_wake(conn: &Connection, wake: &NewWake) -> Result<Option<WakeId>, 
                 payload,
                 wake.dedupe_key,
                 wake.task,
-                to_millis(wake.at)
+                to_millis(wake.at),
+                seq::next(wake.at),
+                ids::fresh(conn, "wakes", space::ROW)?,
             ],
             |r| r.get(0),
         )
@@ -90,16 +95,16 @@ pub fn claim_wakes(
     limit: u32,
 ) -> Result<Vec<ClaimedWake>, StoreError> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let mut claimed = {
+    let claimed = {
         let mut stmt = tx.prepare(
             "UPDATE wakes SET delivered_turn_id = ?1, delivered_at = ?2
              WHERE id IN (
                  SELECT id FROM wakes
                  WHERE target_agent_id = ?3 AND delivered_at IS NULL AND consumed_at IS NULL
-                 ORDER BY id
+                 ORDER BY seq
                  LIMIT ?4
              )
-             RETURNING id, kind, payload, dedupe_key, task_id, created_at",
+             RETURNING id, kind, payload, dedupe_key, task_id, created_at, seq",
         )?;
         let rows = stmt.query_map(params![turn, to_millis(at), target, limit], |r| {
             Ok((
@@ -109,11 +114,14 @@ pub fn claim_wakes(
                 r.get::<_, String>(3)?,
                 r.get::<_, Option<TaskId>>(4)?,
                 r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
             ))
         })?;
         let mut out = Vec::new();
-        for row in rows {
-            let (id, kind, payload, dedupe_key, task, created) = row?;
+        // `RETURNING` gives no order: the claim is read back oldest first.
+        let mut rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.sort_by_key(|row| row.6);
+        for (id, kind, payload, dedupe_key, task, created, _) in rows {
             out.push(ClaimedWake {
                 id,
                 kind,
@@ -129,7 +137,6 @@ pub fn claim_wakes(
         out
     };
     tx.commit()?;
-    claimed.sort_by_key(|w| w.id);
     Ok(claimed)
 }
 

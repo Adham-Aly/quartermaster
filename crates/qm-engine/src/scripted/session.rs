@@ -181,7 +181,7 @@ impl Session {
                         return;
                     }
                 }
-                Some(SessionCommand::Close) | None => {
+                Some(SessionCommand::Close | SessionCommand::Forget) | None => {
                     self.close(CloseReason::Requested).await;
                     return;
                 }
@@ -625,7 +625,7 @@ impl Session {
             let clock = Arc::clone(&self.clock);
             tokio::select! {
                 command = self.side.commands.recv() => match command {
-                    None | Some(SessionCommand::Close) => return Err(Stop::Close),
+                    None | Some(SessionCommand::Close | SessionCommand::Forget) => return Err(Stop::Close),
                     Some(SessionCommand::Interrupt) => return Err(Stop::Interrupted),
                     Some(SessionCommand::ToolResult { call, result }) => {
                         self.results.insert(call, result);

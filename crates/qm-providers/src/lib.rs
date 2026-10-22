@@ -34,7 +34,7 @@ pub mod limits;
 pub mod model;
 pub mod replay;
 pub mod retry;
-pub mod session_file;
+pub mod session_store;
 pub mod sse;
 pub mod transcript;
 

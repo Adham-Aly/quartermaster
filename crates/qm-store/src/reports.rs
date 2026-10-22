@@ -5,9 +5,12 @@
 //! which wakes nobody.
 
 use crate::StoreError;
+use crate::ids;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{ReportOutcome, ReportSource, ReviewVerdict, RiskLevel};
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, CommitSha, ReportId, TaskId};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -63,6 +66,8 @@ impl NewReport<'_> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReportRow {
     pub id: ReportId,
+    /// Creation order across every table with a `seq` (see `seq.rs`).
+    pub seq: i64,
     pub task: TaskId,
     pub agent: AgentId,
     pub source: ReportSource,
@@ -94,8 +99,8 @@ pub fn insert(conn: &Connection, r: &NewReport<'_>) -> Result<ReportId, StoreErr
     Ok(conn.query_row(
         "INSERT INTO reports (task_id, agent_id, source, outcome, headings, answer, reproduced,
              diagnosis, review_verdict, review_findings, review_risk, review_risk_reason, blockers,
-             head_commit, final_text, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+             head_commit, final_text, created_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
          RETURNING id",
         params![
             r.task,
@@ -114,6 +119,8 @@ pub fn insert(conn: &Connection, r: &NewReport<'_>) -> Result<ReportId, StoreErr
             r.head_commit.map(CommitSha::as_str),
             r.final_text,
             to_millis(r.at),
+            seq::next(r.at),
+            ids::fresh(conn, "reports", space::ROW)?,
         ],
         |row| row.get(0),
     )?)
@@ -121,7 +128,7 @@ pub fn insert(conn: &Connection, r: &NewReport<'_>) -> Result<ReportId, StoreErr
 
 const COLUMNS: &str = "id, task_id, agent_id, source, outcome, headings, answer, reproduced,
     diagnosis, review_verdict, review_findings, review_risk, review_risk_reason, blockers,
-    head_commit, final_text, created_at";
+    head_commit, final_text, created_at, seq";
 
 type Raw = (
     (
@@ -138,7 +145,7 @@ type Raw = (
         Option<RiskLevel>,
         Option<String>,
     ),
-    (String, Option<String>, Option<String>, i64),
+    (String, Option<String>, Option<String>, i64, i64),
 );
 
 fn raw(r: &rusqlite::Row<'_>) -> rusqlite::Result<Raw> {
@@ -146,7 +153,7 @@ fn raw(r: &rusqlite::Row<'_>) -> rusqlite::Result<Raw> {
         (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?),
         (r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?),
         (r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?),
-        (r.get(13)?, r.get(14)?, r.get(15)?, r.get(16)?),
+        (r.get(13)?, r.get(14)?, r.get(15)?, r.get(16)?, r.get(17)?),
     ))
 }
 
@@ -155,7 +162,7 @@ fn build(raw: Raw) -> Result<ReportRow, StoreError> {
         (id, task, agent, source, outcome),
         (headings, answer, reproduced, diagnosis),
         (review_verdict, findings, review_risk, review_risk_reason),
-        (blockers, head_commit, final_text, at),
+        (blockers, head_commit, final_text, at, seq),
     ) = raw;
     Ok(ReportRow {
         id,
@@ -175,6 +182,7 @@ fn build(raw: Raw) -> Result<ReportRow, StoreError> {
         head_commit,
         final_text,
         at: from_millis("reports.created_at", at)?,
+        seq,
     })
 }
 
@@ -184,7 +192,7 @@ pub fn latest_clear(conn: &Connection, task: TaskId) -> Result<Option<ReportRow>
         .query_row(
             &format!(
                 "SELECT {COLUMNS} FROM reports WHERE task_id = ?1 AND source = 'report_call'
-                 ORDER BY id DESC LIMIT 1"
+                 ORDER BY seq DESC LIMIT 1"
             ),
             params![task],
             raw,
@@ -196,7 +204,7 @@ pub fn latest_clear(conn: &Connection, task: TaskId) -> Result<Option<ReportRow>
 /// Every report of the task, oldest first.
 pub fn for_task(conn: &Connection, task: TaskId) -> Result<Vec<ReportRow>, StoreError> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM reports WHERE task_id = ?1 ORDER BY id"
+        "SELECT {COLUMNS} FROM reports WHERE task_id = ?1 ORDER BY seq"
     ))?;
     stmt.query_map(params![task], raw)?
         .collect::<rusqlite::Result<Vec<_>>>()?
