@@ -371,7 +371,7 @@ impl TurnLoop {
                 .db
                 .call(move |conn| qm_store::turns::record_event(conn, &event))
                 .await?;
-            self.close_session().await;
+            self.forget_session().await;
             self.next_open = OpenReason::Closed {
                 reason: "EndConversation".to_owned(),
             };

@@ -775,7 +775,7 @@ impl Session {
                     self.begin_turn(TurnInput::text(COMPACT_COMMAND)).await;
                 }
             }
-            SessionCommand::Close => self.on_close().await,
+            SessionCommand::Close | SessionCommand::Forget => self.on_close().await,
             other => tracing::debug!(?other, "ignored an unknown command"),
         }
     }

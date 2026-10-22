@@ -522,7 +522,10 @@ impl CrewRunner {
     /// Stops the crewmate and answers whoever asked.
     async fn finish(mut self) {
         let interrupted = self.stopped_mid_turn;
-        self.end_session().await;
+        // A stopped task is closing, and a shut-down app keeps no transcripts either way: neither
+        // resumes. A failed session may still be retried, so its transcript stays.
+        let forget = matches!(self.ending, Some(Ending::Stop(_) | Ending::Shutdown));
+        self.end_session(forget).await;
         let task = self.task;
         let agent = self.agent;
         self.svc.runner_ended(task, agent);
@@ -542,12 +545,16 @@ impl CrewRunner {
         }
     }
 
-    /// Closes the session (waiting for it), stops every job or setup group still open for the
-    /// task, and marks the crewmate stopped.
-    async fn end_session(&mut self) {
+    /// Closes the session (waiting for it; `forget` drops its transcript too), stops every job or
+    /// setup group still open for the task, and marks the crewmate stopped.
+    async fn end_session(&mut self, forget: bool) {
         let clock = self.clock();
         if let Some(mut handle) = self.session.take() {
-            let _ = handle.close();
+            let _ = if forget {
+                handle.forget()
+            } else {
+                handle.close()
+            };
             let deadline = clock.instant() + INTERRUPT_GRACE;
             loop {
                 tokio::select! {
