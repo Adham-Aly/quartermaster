@@ -263,6 +263,10 @@ mod tests {
             Some(1),
             "a task event names its supervisor"
         );
+        // The pump has read every event, so no task is waiting on one (kept.rs).
+        db.call(|conn| crate::parent_channel::set_cursor(conn, i64::MAX))
+            .await
+            .expect("the pump's cursor");
         drop(db);
 
         let db = Db::open(&path).expect("a restart");
