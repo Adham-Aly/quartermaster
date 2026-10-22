@@ -113,6 +113,7 @@ mod tests {
     use qm_store::wakes::{self, NewWake};
     use qm_tools::handler::ToolFailure;
     use qm_types::data_dir::DataDir;
+    use qm_types::data_dir::DataDir;
     use qm_types::domain::WakeKind;
     use qm_types::ids::{AgentId, SecondmateId};
     use rusqlite::{Connection, params};
@@ -344,7 +345,7 @@ mod tests {
     fn retiring_removes_the_secondmates_folders_at_once() {
         let base = std::env::temp_dir().join(format!("qm-retire-folders-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        let data = qm_types::data_dir::DataDir::new(base.join("home"));
+        let data = DataDir::new(base.join("home"));
         let id: SecondmateId = "SM-3".parse().expect("a secondmate");
         let home = data.secondmate(id).home;
         std::fs::create_dir_all(&home).expect("the home");
