@@ -120,6 +120,11 @@ fn sweep_leftovers(data: &DataDir, open: &[TaskId], live: &[SecondmateId]) {
             }
         }
     }
+    for (name, path) in subfolders(&data.scratch().join(qm_types::data_dir::PLANS)) {
+        if !name.parse::<TaskId>().is_ok_and(|id| open.contains(&id)) {
+            remove(&path);
+        }
+    }
     for (name, path) in subfolders(&data.scratch().join("evidence")) {
         if !name.parse::<TaskId>().is_ok_and(|id| open.contains(&id)) {
             remove(&path);

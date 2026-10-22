@@ -609,6 +609,12 @@ pub(crate) async fn start_as(
         validated.user_words_message = None;
     }
 
+    // Code work on a plan waits for the plan: approved by the user, or finished under auto.
+    if let Some(plan) = plan_built_on(svc, &req).await? {
+        super::plan::ready_to_build(svc, plan)
+            .map_err(|why| refuse(format!("The task can't start: {why}")))?;
+    }
+
     // 5. The verification level (none for answer-only, review and build in place).
     let level = choose_level(
         req.kind,
@@ -1142,6 +1148,22 @@ pub(crate) async fn gather_for(svc: &TaskService, task: TaskId) -> Result<Gather
         .map_err(|e| PrepareError::Failed(format!("The skills couldn't be gathered: {e}")))
 }
 
+/// The plan task a code-writing request builds on, if it builds on one.
+async fn plan_built_on(
+    svc: &TaskService,
+    req: &StartRequest,
+) -> Result<Option<TaskId>, ToolFailure> {
+    let Some(target) = req.builds_on.filter(|_| req.kind.can_change_code()) else {
+        return Ok(None);
+    };
+    let row = svc
+        .db()
+        .call(move |conn| task_store::load(conn, target))
+        .await
+        .map_err(|e| failed(&e))?;
+    Ok(row.filter(|r| r.kind == TaskKind::Plan).map(|r| r.id))
+}
+
 /// Phase C: folders, worktree, setup, skills, brief. Every step picks up what an interrupted
 /// attempt left; the session is opened by the runner.
 #[allow(clippy::too_many_lines)]
@@ -1177,6 +1199,7 @@ pub(crate) async fn prepare(
     .await
     .map_err(|e| PrepareError::Failed(e.to_string()))?
     .map_err(|e| PrepareError::Failed(format!("The task's folders couldn't be made: {e}")))?;
+    plan_folder(svc, task, &row, &paths).await?;
 
     // 2. The project, then the workplace: a folder task works in its folder, which must still be
     // there; any other task gets a worktree on its branch.
@@ -1409,6 +1432,7 @@ pub(crate) async fn start_retry(
         turn: None,
         task: None,
         secondmate,
+        plan: None,
     };
     let user_words = match words.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
         Some(words) if original.trim().is_empty() => {
@@ -1450,4 +1474,40 @@ pub(crate) async fn start_retry(
         user_words: Some(user_words),
     };
     start_as(svc, &caller, req, how).await
+}
+
+/// A plan task's plan folder, made with its state; a build on a plan gets its own copy of the
+/// plan and its assets, so the plan task can close while the build runs. Both stay under the
+/// scratch root.
+async fn plan_folder(
+    svc: &TaskService,
+    task: TaskId,
+    row: &TaskRow,
+    paths: &TaskPaths,
+) -> Result<(), PrepareError> {
+    let source = match row.builds_on.filter(|_| row.kind.can_change_code()) {
+        Some(target) => svc
+            .db()
+            .call(move |conn| task_store::load(conn, target))
+            .await
+            .map_err(|e| PrepareError::Failed(e.to_string()))?
+            .filter(|r| r.kind == TaskKind::Plan)
+            .map(|r| svc.plan_dir(r.id)),
+        None => None,
+    };
+    let is_plan = row.kind == TaskKind::Plan;
+    let dir = paths.plan.clone();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        if is_plan {
+            crate::plans::create(&dir)?;
+        } else if let Some(from) = source
+            && !dir.join(qm_plans::PLAN_FILE).is_file()
+        {
+            crate::plans::copy_for_build(&from, &dir)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| PrepareError::Failed(e.to_string()))?
+    .map_err(|e| PrepareError::Failed(format!("{task}'s plan folder couldn't be made: {e}")))
 }

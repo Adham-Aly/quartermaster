@@ -21,7 +21,7 @@ use qm_store::StoreError;
 use qm_store::crew_view::{self, BriefInputs, PriorTask, StoredReport};
 use qm_store::db::Db;
 use qm_types::data_dir::DataDir;
-use qm_types::domain::{DeliveryMode, EngineKind, ReportOutcome, Role, TaskKind};
+use qm_types::domain::{DeliveryMode, EngineKind, PlanMode, ReportOutcome, Role, TaskKind};
 use qm_types::ids::{CommitSha, PortBlock, TaskId};
 use std::fs;
 use std::io::{self, Write as _};
@@ -115,13 +115,27 @@ pub async fn builds_on(
 
 /// The crewmate's system prompt for `engine`: appended to Claude Code's preset on Claude, the
 /// whole prompt on the provider and scripted engines (which also list the skills).
-pub fn crewmate_system_prompt(engine: EngineKind, gathered: &Gathered) -> SystemPrompt {
+pub fn crewmate_system_prompt(
+    engine: EngineKind,
+    gathered: &Gathered,
+    plan: Option<PlanMode>,
+) -> SystemPrompt {
     match engine {
         EngineKind::Claude => SystemPrompt::AppendToClaudeCode {
-            text: crewmate_prompt(PromptEngine::Claude, &gathered.files, &gathered.skills),
+            text: crewmate_prompt(
+                PromptEngine::Claude,
+                &gathered.files,
+                &gathered.skills,
+                plan,
+            ),
         },
         EngineKind::Provider | EngineKind::Scripted => SystemPrompt::Replace {
-            text: crewmate_prompt(PromptEngine::Provider, &gathered.files, &gathered.skills),
+            text: crewmate_prompt(
+                PromptEngine::Provider,
+                &gathered.files,
+                &gathered.skills,
+                plan,
+            ),
         },
     }
 }

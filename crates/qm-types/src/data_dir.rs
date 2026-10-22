@@ -225,6 +225,7 @@ impl DataDir {
         TaskPaths::at(
             self.tasks_dir().join(id.to_string()),
             self.scratch.join("evidence").join(id.to_string()),
+            self.scratch.join(PLANS).join(id.to_string()),
         )
     }
 }
@@ -272,6 +273,9 @@ fn development_scratch(
     }
     Ok(scratch)
 }
+
+/// The folder of task plans, inside the scratch root.
+pub const PLANS: &str = "plans";
 
 /// The folder of draft images, inside the scratch root.
 pub const DRAFT_IMAGES: &str = "drafts";
@@ -512,11 +516,15 @@ pub struct TaskPaths {
     pub evidence: PathBuf,
     /// Background shell job output.
     pub jobs: PathBuf,
+    /// The plan this task writes or builds from: `plan.md`, `plan.html`, `assets/`, the app's
+    /// `state.json` (`QM_PLAN_DIR`). In the scratch root, so plans never outlive `/tmp`.
+    pub plan: PathBuf,
 }
 
 impl TaskPaths {
-    fn at(root: PathBuf, evidence: PathBuf) -> Self {
+    fn at(root: PathBuf, evidence: PathBuf, plan: PathBuf) -> Self {
         Self {
+            plan,
             worktree: root.join("worktree"),
             brief: root.join("brief.md"),
             skills: root.join("skills"),

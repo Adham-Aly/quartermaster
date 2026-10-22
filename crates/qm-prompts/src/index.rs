@@ -20,6 +20,16 @@ pub const PROMPTS: &[(&str, &str)] = &[
     ),
     // The secondmate prompt, before its charter.
     ("secondmate", include_str!("../../../prompts/secondmate.md")),
+    // A plan task's crewmate under normal autonomy, after the crewmate prompt.
+    (
+        "crewmate-plan-interactive",
+        include_str!("../../../prompts/crewmate-plan-interactive.md"),
+    ),
+    // A plan task's crewmate under auto autonomy, after the crewmate prompt.
+    (
+        "crewmate-plan-internal",
+        include_str!("../../../prompts/crewmate-plan-internal.md"),
+    ),
 ];
 
 /// Looks a prompt up by its name.

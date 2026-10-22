@@ -6,7 +6,7 @@
 use crate::defs;
 use crate::spec::ToolDef;
 use qm_engine::ToolDescriptor;
-use qm_types::domain::{EngineKind, Role};
+use qm_types::domain::{EngineKind, PlanMode, Role};
 
 /// Every tool definition.
 pub static TOOLS: &[ToolDef] = &[
@@ -68,35 +68,48 @@ pub static TOOLS: &[ToolDef] = &[
     ToolDef::of::<defs::JobKillTool>(),
     // Crewmates on the provider engine: helper agents.
     ToolDef::of::<defs::AgentTool>(),
+    // Plans: the planner's mode variants, and the user's approval.
+    ToolDef::of::<defs::PlanCheckInteractiveTool>(),
+    ToolDef::of::<defs::PlanCheckInternalTool>(),
+    ToolDef::of::<defs::PlanReportInteractiveTool>(),
+    ToolDef::of::<defs::PlanReportInternalTool>(),
+    ToolDef::of::<defs::AskDecisionPlanInternalTool>(),
+    ToolDef::of::<defs::ApprovePlanTool>(),
 ];
 
-/// The tools one role is offered on one engine, in registry order.
-pub fn for_role(role: Role, engine: EngineKind) -> impl Iterator<Item = &'static ToolDef> {
-    TOOLS.iter().filter(move |d| d.serves(role, engine))
+/// The tools one role is offered on one engine, in registry order. `plan` is the plan mode a plan
+/// task's crewmate's session was started in; `None` for every other caller.
+pub fn for_role(
+    role: Role,
+    engine: EngineKind,
+    plan: Option<PlanMode>,
+) -> impl Iterator<Item = &'static ToolDef> {
+    TOOLS.iter().filter(move |d| d.serves(role, engine, plan))
 }
 
-/// The tool a role calls by this name.
-pub fn find(role: Role, name: &str) -> Option<&'static ToolDef> {
+/// The tool a caller calls by this name: at most one variant of a name is offered to a caller.
+pub fn find(role: Role, plan: Option<PlanMode>, name: &str) -> Option<&'static ToolDef> {
     TOOLS
         .iter()
-        .find(|d| d.name == name && d.roles.contains(&role))
+        .find(|d| d.name == name && d.offered(role, plan))
 }
 
 /// What goes in a session spec's `tools`: the role's tools whose calls come back to the core, the
 /// same on every engine. The provider engine's file and shell tools are not among them: they run
 /// inside that engine, which offers them itself when the spec asks for
 /// `Builtins::ProviderFileTools`.
-pub fn descriptors(role: Role) -> Vec<ToolDescriptor> {
+pub fn descriptors(role: Role, plan: Option<PlanMode>) -> Vec<ToolDescriptor> {
     TOOLS
         .iter()
-        .filter(|d| d.roles.contains(&role) && d.scope == crate::EngineScope::Both)
+        .filter(|d| d.offered(role, plan) && d.scope == crate::EngineScope::Both)
         .map(ToolDef::descriptor)
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::TOOLS;
+    use super::{TOOLS, find};
+    use qm_types::domain::{PlanMode, Role};
 
     #[test]
     fn history_tools_explain_forgetting_and_reused_numbers() {
@@ -145,5 +158,74 @@ mod tests {
             );
         }
         assert!(TOOLS.iter().any(|t| t.name == "configure_project"));
+    }
+
+    const PLAN_CASES: [Option<PlanMode>; 3] =
+        [None, Some(PlanMode::Interactive), Some(PlanMode::Internal)];
+
+    /// Every registered tool, plan variants included, has a handler under its key.
+    #[test]
+    fn every_key_has_a_handler() {
+        for tool in TOOLS.iter().filter(|t| t.scope == crate::EngineScope::Both) {
+            assert!(
+                crate::handlers::HANDLERS.iter().any(|b| b.key == tool.key),
+                "{} has no handler",
+                tool.key
+            );
+        }
+    }
+
+    /// A caller is offered at most one tool of each name, whatever its plan mode.
+    #[test]
+    fn names_are_unique_per_caller() {
+        for role in [Role::Quartermaster, Role::Secondmate, Role::Crewmate] {
+            for plan in PLAN_CASES {
+                let names: Vec<&str> = TOOLS
+                    .iter()
+                    .filter(|d| d.offered(role, plan))
+                    .map(|d| d.name)
+                    .collect();
+                let mut unique = names.clone();
+                unique.sort_unstable();
+                unique.dedup();
+                assert_eq!(names.len(), unique.len(), "{role} {plan:?}: {names:?}");
+            }
+        }
+    }
+
+    /// Under normal autonomy a planner can reach the user only through its plan's page: no
+    /// `ask_decision`, and no `needs_decision` outcome on its `report`.
+    #[test]
+    fn an_interactive_planner_cannot_ask_its_supervisor() {
+        let plan = Some(PlanMode::Interactive);
+        assert!(find(Role::Crewmate, plan, "ask_decision").is_none());
+        let report = find(Role::Crewmate, plan, "report").expect("report");
+        assert_eq!(report.key, "report.plan_interactive");
+        let schema = report.input_schema().to_string();
+        assert!(!schema.contains("needs_decision"), "{schema}");
+        assert!(find(Role::Crewmate, plan, "plan_check").is_some());
+    }
+
+    /// Under auto a planner has its own `ask_decision` and `report`; other crewmates have neither
+    /// `plan_check` nor a plan variant.
+    #[test]
+    fn variants_follow_the_plan_mode() {
+        let plan = Some(PlanMode::Internal);
+        assert_eq!(
+            find(Role::Crewmate, plan, "ask_decision").map(|d| d.key),
+            Some("ask_decision.plan_internal")
+        );
+        assert_eq!(
+            find(Role::Crewmate, plan, "report").map(|d| d.key),
+            Some("report.plan_internal")
+        );
+        assert!(find(Role::Crewmate, None, "plan_check").is_none());
+        assert_eq!(
+            find(Role::Crewmate, None, "report").map(|d| d.key),
+            Some("report")
+        );
+        assert!(find(Role::Crewmate, None, "approve_plan").is_none());
+        assert!(find(Role::Quartermaster, None, "approve_plan").is_some());
+        assert!(find(Role::Secondmate, None, "approve_plan").is_some());
     }
 }

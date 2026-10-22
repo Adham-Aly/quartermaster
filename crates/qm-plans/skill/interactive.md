@@ -14,14 +14,16 @@ your `plan.md` into a page the user reads in a browser; they answer there and pa
 1. Read the code and the brief. List every decision the plan depends on.
 2. Write `plan.md` with the plan so far and a question block for each open point. Round 1 must
    ask at least one question.
-3. Call `plan_ready`. The app checks the file, renders the page and posts its card. Fix anything
-   it reports and call again.
-4. Stop and wait. The user's answers arrive as a `<plan-reply …>` block, sent on by the
-   Quartermaster or secondmate. Never guess an answer and never start the work yourself.
+3. Call `plan_check`. The app checks the file and renders the page. Fix anything it reports and
+   call again.
+4. Call `report` (done) with a short summary of the round, never the plan itself. The app posts
+   the page's card to the user. Then stop and wait: the user's answers arrive as a message holding
+   a `<plan-reply …>` block. Never guess an answer and never start the work yourself.
 5. Fold the answers into the plan, remove the answered questions, and ask the next round. Only
    when nothing is left open, and the user has answered at least one round (or told you to take
-   your recommendations), write the plan with no question blocks: that is the final plan. The user
-   approves it; the build starts only then.
+   your recommendations), write the plan with no question blocks, check it and report: that is
+   the final plan. The user approves it; the build starts only then. Changes they ask for after
+   that come as messages too: apply them and report again.
 
 Push back when an answer looks wrong for the code you have read, and say why in the next round.
 

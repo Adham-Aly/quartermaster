@@ -262,9 +262,11 @@ pub(crate) async fn start_core(
         registry,
         delivery_settling.as_ref(),
         decisions.as_ref(),
+        tasks.as_ref(),
     ));
     if let Some(tasks) = &tasks {
         parts.push(Arc::new(TasksPart::new(tasks.clone())));
+        parts.push(Arc::new(qm_core::plans::api::PlanPart::new(tasks.clone())));
 
         parts.push(Arc::new(
             SessionsPart::new(
@@ -967,6 +969,7 @@ fn registry_parts(
     (setup, projects): (SetupCheck, ProjectService),
     settling: Option<&Settling>,
     decisions: Option<&DecisionService>,
+    tasks: Option<&TaskService>,
 ) -> Vec<Arc<dyn ApiPart>> {
     held.register(
         HeldKind::AddProject,
@@ -997,7 +1000,10 @@ fn registry_parts(
     }
     let setup_part = SetupPart::new(setup, Arc::clone(conversation));
     setup_part.start();
-    let projects_part = ProjectsPart::new(projects, held.clone());
+    let mut projects_part = ProjectsPart::new(projects, held.clone());
+    if let Some(tasks) = tasks {
+        projects_part = projects_part.with_tasks(tasks.clone());
+    }
     projects_part.start(Arc::clone(conversation));
     let mut parts: Vec<Arc<dyn ApiPart>> = vec![
         Arc::new(HeldPart::new(held.clone(), Arc::clone(conversation))),

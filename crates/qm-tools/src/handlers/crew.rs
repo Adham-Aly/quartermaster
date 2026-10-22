@@ -28,6 +28,9 @@ pub const MAX_INSTRUCTION_CHARS: usize = 2_000;
 pub const MAX_CONSTRAINTS: usize = 20;
 /// The longest message to a task, in characters.
 pub const MAX_MESSAGE_CHARS: usize = 8_000;
+/// The longest message to a task that passes on a user's plan reply (one opens with
+/// `<plan-reply `), in characters: a reply can be up to 32,000 on its own.
+pub const MAX_PLAN_REPLY_MESSAGE_CHARS: usize = 40_000;
 
 /// Every override `request` carries, checked against the caller's turn. A caller without a turn is
 /// treated as an app-event turn.
@@ -146,9 +149,14 @@ impl Handle for MessageTaskTool {
                 return Err(Refusal::new("a message to a task can't be empty").into());
             }
             let n = text.chars().count();
-            if n > MAX_MESSAGE_CHARS {
+            let max = if text.contains("<plan-reply ") {
+                MAX_PLAN_REPLY_MESSAGE_CHARS
+            } else {
+                MAX_MESSAGE_CHARS
+            };
+            if n > max {
                 return Err(Refusal::new(format!(
-                    "a message to a task is at most {MAX_MESSAGE_CHARS} characters (this one is {n})"
+                    "a message to a task is at most {max} characters (this one is {n})"
                 ))
                 .into());
             }

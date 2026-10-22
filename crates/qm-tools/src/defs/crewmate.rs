@@ -15,6 +15,8 @@ tool! {
     /// names.
     ReportTool {
         name: "report",
+        key: "report",
+        plan: NotPlan,
         class: Act,
         roles: [Crewmate],
         args: ReportArgs,
@@ -82,6 +84,8 @@ tool! {
     /// watchdogs pause while it waits.
     AskDecisionTool {
         name: "ask_decision",
+        key: "ask_decision",
+        plan: NotPlan,
         class: Act,
         roles: [Crewmate],
         args: AskDecisionArgs,

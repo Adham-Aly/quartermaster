@@ -214,7 +214,7 @@ fn failed(e: &StoreError) -> ToolFailure {
 /// the tools the registry gives it, and the host refuses a caller the registry doesn't give `tool`,
 /// should a call ever reach it another way. The registry stays the one list of who may call what.
 fn offered_to(caller: &Caller, tool: &str) -> Result<(), ToolFailure> {
-    if qm_tools::registry::find(caller.role, tool).is_some() {
+    if qm_tools::registry::find(caller.role, caller.plan, tool).is_some() {
         Ok(())
     } else {
         Err(Refusal::new(format!("{tool} isn't a tool a {} has", caller.role)).into())
@@ -509,6 +509,26 @@ impl ToolHost for CoreToolHost {
         report: ReportArgs,
     ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
         Box::pin(async move { self.tasks("report")?.record_report(caller, report).await })
+    }
+
+    fn plan_check<'a>(&'a self, caller: &'a Caller) -> BoxFuture<'a, Result<String, ToolFailure>> {
+        Box::pin(async move {
+            let svc = self.tasks("plan_check")?;
+            crate::tasks::plan::plan_check(svc, caller).await
+        })
+    }
+
+    fn approve_plan<'a>(
+        &'a self,
+        caller: &'a Caller,
+        task: TaskId,
+        take_recommended: bool,
+    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
+        Box::pin(async move {
+            offered_to(caller, "approve_plan")?;
+            let svc = self.tasks("approve_plan")?;
+            crate::tasks::plan::approve_plan(svc, caller, task, take_recommended).await
+        })
     }
 
     fn ask_decision<'a>(

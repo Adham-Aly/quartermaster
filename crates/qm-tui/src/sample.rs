@@ -500,10 +500,52 @@ fn chat_conversation() -> Vec<ChatLine> {
         .collect();
     question.card = Some(card);
 
+    let plan = plan_line();
+
     let mut queued = you(7, 14, 25, "also, what is the TTL set to now?");
     queued.queued = true;
 
-    vec![asked, reply, steered, noted, nothing, question, queued]
+    vec![
+        asked, reply, steered, noted, nothing, question, plan, queued,
+    ]
+}
+
+/// An app note with a plan's card: a round's questions waiting on you.
+fn plan_line() -> ChatLine {
+    let mut plan = ChatLine::new(
+        MessageId::new(8),
+        MessageSource::App,
+        MessageKind::Message,
+        at(14, 24),
+        "T-0044's plan, round 2, has 3 questions for you",
+    );
+    let page = "/tmp/quartermaster/plans/T-0044/plan.html";
+    let mut card = Card::new(CardKind::Plan, "Plan questions");
+    card.title = Some(String::from("T-0044 plan(auth): session store"));
+    card.note = Some(String::from("· api-server · round 2"));
+    card.lines = vec![
+        CardLine::new(
+            2,
+            vec![s(
+                "3 questions open. Open the page, answer, then Copy reply on the page and paste \
+                 it here.",
+                Tone::Text,
+            )],
+        ),
+        CardLine::new(2, vec![s(page, Tone::Dim)]),
+    ];
+    card.buttons = vec![
+        CardButton::new("Open", 'o', CardAction::OpenPlan { task: task_id(44) }),
+        CardButton::new(
+            "Copy path",
+            'c',
+            CardAction::CopyPlanPath {
+                path: page.to_owned(),
+            },
+        ),
+    ];
+    plan.card = Some(card);
+    plan
 }
 
 fn tasks() -> Vec<TaskDetail> {

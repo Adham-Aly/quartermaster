@@ -109,7 +109,7 @@ impl SecondmateSeat {
             SystemPrompt::Replace { text: prompt },
         );
         spec.resume = resume;
-        spec.tools = qm_tools::registry::descriptors(Role::Secondmate);
+        spec.tools = qm_tools::registry::descriptors(Role::Secondmate, None);
         spec.builtins = Builtins::None;
         spec.skills_dir = None;
         spec.idle_shutdown = Some(SECONDMATE_IDLE_SHUTDOWN);

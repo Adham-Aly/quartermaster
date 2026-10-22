@@ -92,6 +92,14 @@ pub enum Command {
         held: HeldActionId,
         location: String,
     },
+    /// Open a plan task's page (`plan.html`) in your browser, on the Mac the app runs on.
+    OpenPlan {
+        task: TaskId,
+    },
+    /// Your Approve on a plan's card: the plan is final and a build may start on it.
+    ApprovePlan {
+        task: TaskId,
+    },
     /// Open the Diff screen for an approval card's held action, or close it with `None`: the core
     /// answers in the next snapshot's [`Snapshot::diff`].
     ShowDiff {
@@ -877,6 +885,8 @@ pub enum CardKind {
     Notice,
     /// "? …": a question from `ask_user` with one-click answers.
     Question,
+    /// "☰ Plan …": a plan task's page, with its round and what it waits on.
+    Plan,
 }
 
 /// What a card's button does.
@@ -897,6 +907,12 @@ pub enum CardAction {
     /// A project proposal's "Change location": the input box collects the folder, prefilled with
     /// `location`, and sends `Command::ChangeHeldLocation`.
     ChangeLocation { location: String },
+    /// A plan card's "Open": sends `Command::OpenPlan`.
+    OpenPlan { task: TaskId },
+    /// A plan card's "Copy path": copies `path` (the page's file) to your clipboard.
+    CopyPlanPath { path: String },
+    /// A final plan card's "Approve": sends `Command::ApprovePlan`.
+    ApprovePlan { task: TaskId },
 }
 
 /// A button on a card and the key that presses it (`a`/`d`/`r` or `1`/`2`/`3`).
