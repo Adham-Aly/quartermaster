@@ -906,11 +906,11 @@ impl ProjectService {
             crate::tasks::startup::branch_task_numbers(&git, &checkouts)
         })
         .await
-        .unwrap_or_default();
+        .unwrap_or_else(|e| Err(e.to_string()));
         self.inner
             .db
             .call(move |conn| {
-                qm_store::ids::reserve("tasks", leftovers);
+                crate::tasks::startup::reserve_scan(leftovers);
                 let tx = conn.transaction()?;
                 let id = projects::insert(&tx, &new)?;
                 events::insert(

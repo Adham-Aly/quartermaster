@@ -10,7 +10,7 @@
 //! the only thread that touches the store.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
 
 use qm_types::ids::{IdSource, RandomIds, free_number};
@@ -27,6 +27,9 @@ const ENUMERABLE: u32 = 1_000_000;
 thread_local! {
     static SOURCE: RefCell<Option<Box<dyn IdSource>>> = const { RefCell::new(None) };
     static RESERVED: RefCell<BTreeSet<(&'static str, u32)>> = const { RefCell::new(BTreeSet::new()) };
+    /// Tables whose numbers can't be issued, and why: a reservation scan that failed leaves the
+    /// numbers it would have reserved unknown.
+    static HELD: RefCell<BTreeMap<&'static str, String>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 /// Uses `source` for every fresh ID on this thread (the app's startup, and tests).
@@ -40,12 +43,23 @@ pub fn reserve(table: &'static str, numbers: impl IntoIterator<Item = u32>) {
     RESERVED.with_borrow_mut(|reserved| reserved.extend(numbers.into_iter().map(|n| (table, n))));
 }
 
+/// Stops issuing `table`'s numbers until the app restarts: the numbers its existing data names
+/// couldn't be read, so any number might be one of them. Creating a row that needs one fails.
+pub fn hold(table: &'static str, reason: String) {
+    HELD.with_borrow_mut(|held| {
+        held.entry(table).or_insert(reason);
+    });
+}
+
 /// A number from `space` that `table` doesn't hold and no reservation covers.
 pub fn fresh(
     conn: &Connection,
     table: &'static str,
     space: RangeInclusive<u32>,
 ) -> Result<u32, StoreError> {
+    if let Some(reason) = HELD.with_borrow(|held| held.get(table).cloned()) {
+        return Err(StoreError::NumbersHeld { table, reason });
+    }
     SOURCE.with_borrow_mut(|slot| {
         let source = slot.get_or_insert_with(|| Box::new(RandomIds::new()));
         draw(conn, table, &space, source.as_mut())
@@ -229,5 +243,20 @@ mod tests {
         use_source(Box::new(Scripted(VecDeque::new(), 1)));
         let n = fresh(&conn, "secondmates", qm_types::ids::space::SECONDMATE).expect("fresh");
         assert_eq!(n, 99);
+    }
+
+    #[test]
+    fn a_held_table_issues_no_number_and_the_others_still_do() {
+        let conn = memory();
+        use_source(Box::new(Scripted(VecDeque::from([9, 10]), 10)));
+        hold("tasks", "a repository couldn't be read".to_owned());
+        let refused = fresh(&conn, "tasks", qm_types::ids::space::TASK).expect_err("held");
+        assert!(
+            refused
+                .to_string()
+                .contains("a repository couldn't be read")
+        );
+        let n = fresh(&conn, "secondmates", qm_types::ids::space::SECONDMATE).expect("fresh");
+        assert_eq!(n, 9);
     }
 }

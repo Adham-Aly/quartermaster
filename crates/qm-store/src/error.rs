@@ -23,4 +23,6 @@ pub enum StoreError {
     ThreadStopped,
     #[error("a database call panicked: {0}")]
     Panicked(String),
+    #[error("new {table} numbers can't be issued until the app restarts: {reason}")]
+    NumbersHeld { table: &'static str, reason: String },
 }

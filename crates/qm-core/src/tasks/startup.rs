@@ -130,13 +130,14 @@ fn subfolders(dir: &Path) -> Vec<(String, PathBuf)> {
 
 /// The task numbers that task branches in `checkouts` name (local and remote-tracking) and that
 /// folders in `tasks_dir` name. An earlier run left them behind, and the store can't see them, so
-/// a fresh number must not take one. Blocking.
+/// a fresh number must not take one. Blocking. An `Err` means a repository couldn't be read, so
+/// the numbers it names are unknown (see [`reserve_scan`]).
 pub(crate) fn leftover_task_numbers(
     git: &Git,
     tasks_dir: &Path,
     checkouts: &[PathBuf],
-) -> Vec<u32> {
-    let mut numbers = branch_task_numbers(git, checkouts);
+) -> Result<Vec<u32>, String> {
+    let mut numbers = branch_task_numbers(git, checkouts)?;
     if let Ok(entries) = std::fs::read_dir(tasks_dir) {
         numbers.extend(
             entries
@@ -147,25 +148,37 @@ pub(crate) fn leftover_task_numbers(
     }
     numbers.sort_unstable();
     numbers.dedup();
-    numbers
+    Ok(numbers)
 }
 
-/// The task numbers that task branches in each of `checkouts` name. Blocking.
-pub(crate) fn branch_task_numbers(git: &Git, checkouts: &[PathBuf]) -> Vec<u32> {
-    checkouts
-        .iter()
-        .flat_map(|checkout| match qm_git::Repo::open(git.clone(), checkout) {
-            Ok(repo) => repo.task_numbers().unwrap_or_else(|e| {
-                tracing::warn!(checkout = %checkout.display(), error = %e, "couldn't list a project's task branches");
-                Vec::new()
-            }),
-            Err(e) => {
-                tracing::warn!(checkout = %checkout.display(), error = %e, "couldn't open a project's repository");
-                Vec::new()
-            }
-        })
-        .map(TaskId::get)
-        .collect()
+/// The task numbers that task branches in each of `checkouts` name. Blocking. A checkout that
+/// can't be read fails the whole scan: a number it names would otherwise look free.
+pub(crate) fn branch_task_numbers(git: &Git, checkouts: &[PathBuf]) -> Result<Vec<u32>, String> {
+    let mut numbers = Vec::new();
+    for checkout in checkouts {
+        let repo = qm_git::Repo::open(git.clone(), checkout)
+            .map_err(|e| format!("{} couldn't be opened: {e}", checkout.display()))?;
+        let found = repo.task_numbers().map_err(|e| {
+            format!(
+                "{} task branches couldn't be listed: {e}",
+                checkout.display()
+            )
+        })?;
+        numbers.extend(found.into_iter().map(TaskId::get));
+    }
+    Ok(numbers)
+}
+
+/// Reserves the numbers of a scan that worked, or holds task numbers when it didn't, so no task
+/// takes a number that a branch might already name. Runs on the database thread.
+pub(crate) fn reserve_scan(scan: Result<Vec<u32>, String>) {
+    match scan {
+        Ok(numbers) => qm_store::ids::reserve("tasks", numbers),
+        Err(reason) => {
+            tracing::error!(%reason, "task creation is held until the app restarts");
+            qm_store::ids::hold("tasks", reason);
+        }
+    }
 }
 
 /// Reserves the task numbers git and the `tasks/` folder already name (see
@@ -186,10 +199,10 @@ async fn reserve_leftover_task_numbers(svc: &TaskService) -> Result<(), StartupE
     let leftovers =
         tokio::task::spawn_blocking(move || leftover_task_numbers(&git, &tasks_dir, &checkouts))
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|e| Err(e.to_string()));
     svc.db()
         .call(move |_| {
-            qm_store::ids::reserve("tasks", leftovers);
+            reserve_scan(leftovers);
             Ok(())
         })
         .await?;
@@ -713,6 +726,23 @@ mod leftover_tests {
             unrelated.exists(),
             "a folder that isn't a task is left alone"
         );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_checkout_that_cant_be_read_holds_task_numbers_instead_of_reserving_none() {
+        let base = std::env::temp_dir().join(format!("qm-scan-held-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let not_a_repo = base.join("project");
+        fs::create_dir_all(&not_a_repo).expect("a folder");
+        let git = Git::with_program("git");
+        let scan = branch_task_numbers(&git, std::slice::from_ref(&not_a_repo));
+        assert!(scan.is_err(), "an unreadable checkout is not an empty scan");
+        reserve_scan(scan);
+        let mut conn = rusqlite::Connection::open_in_memory().expect("memory");
+        qm_store::schema::migrate(&mut conn).expect("schema");
+        let refused = qm_store::ids::fresh(&conn, "tasks", qm_types::ids::space::TASK);
+        assert!(refused.is_err(), "no task number is issued until restart");
         let _ = fs::remove_dir_all(&base);
     }
 }
