@@ -203,10 +203,12 @@ fn detail(task: &OpenTask, status: &str, waiting: Option<Waiting>, now: Timestam
             ));
         }
     }
-    d.rows.push(TaskRow::new(
-        Some("branch"),
-        text(format!("{} ← {}", task.branch, task.target)),
-    ));
+    if let Some(branch) = &task.branch {
+        d.rows.push(TaskRow::new(
+            Some("branch"),
+            text(format!("{branch} ← {}", task.target)),
+        ));
+    }
     d.rows.push(TaskRow::new(
         Some("verify"),
         text(verify_words(task.verification)),
@@ -321,5 +323,67 @@ impl ApiPart for CrewPart {
                 Err(e) => tracing::error!(error = %e, "couldn't read the crew for the UI"),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn crew_view_shows_null_branch_folder_tasks_alongside_git_tasks() {
+        let mut conn = Connection::open_in_memory().expect("open fixture");
+        qm_store::schema::migrate(&mut conn).expect("migrate");
+        conn.execute_batch(
+            "INSERT INTO agents (id, role, home, status, created_at)
+             VALUES (1, 'quartermaster', '/fixture/seat', 'idle', 0);
+             INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode,
+                                   merge_method, created_at)
+             VALUES (1, 'personal', '/fixture/personal', 'workspace', '', 'folder', 'squash', 0),
+                    (2, 'app', '/fixture/app', 'linked', 'main', 'branch_only', 'squash', 0);
+             INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal,
+                                delivery_mode, branch, status, created_at)
+             VALUES (1, 1, 1, 'fix', 'Folder task', 'Show folder task',
+                     'folder', NULL, 'held', 0),
+                    (2, 2, 1, 'fix', 'Git task', 'Keep git branch',
+                     'branch_only', 'qm/task-0002', 'held', 1);",
+        )
+        .expect("seed open tasks");
+
+        let data = crew_view::crew_data(&conn).expect("load crew including NULL branch");
+        assert_eq!(data.tasks.len(), 2);
+        assert_eq!(data.tasks[0].branch, None);
+        assert_eq!(data.tasks[1].branch.as_deref(), Some("qm/task-0002"));
+
+        let view = build(&data, Timestamp::UNIX_EPOCH);
+        assert_eq!(view.crew.len(), 2);
+        assert_eq!(view.tasks.len(), 2);
+        for (row, task) in view.crew.iter().zip(&data.tasks) {
+            assert_eq!(row.agent, AgentRef::Crewmate { task: task.task });
+            assert_eq!(row.status, "decide");
+        }
+        let folder = &view.tasks[0];
+        assert_eq!(folder.task, data.tasks[0].task);
+        assert_eq!(folder.title, "Folder task");
+        assert!(
+            !folder
+                .rows
+                .iter()
+                .any(|r| r.label.as_deref() == Some("branch"))
+        );
+        assert!(
+            folder.rows.iter().any(|r| {
+                r.label.as_deref() == Some("project") && r.value[0].text == "personal"
+            })
+        );
+        let git = &view.tasks[1];
+        assert_eq!(git.task, data.tasks[1].task);
+        let branch = git
+            .rows
+            .iter()
+            .find(|r| r.label.as_deref() == Some("branch"))
+            .expect("git branch row");
+        assert_eq!(branch.value[0].text, "qm/task-0002 ← main");
     }
 }

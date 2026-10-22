@@ -282,7 +282,10 @@ fn prior_facts(
     } else if kind == TaskKind::Review {
         match &head {
             Some(head) => format!("the work under review at {}", head.short()),
-            None => format!("the work under review on {}", prior.branch),
+            None => match &prior.branch {
+                Some(branch) => format!("the work under review on {branch}"),
+                None => "the work under review".to_owned(),
+            },
         }
     } else {
         let done = clear.is_some_and(|r| r.outcome == Some(ReportOutcome::Done));
@@ -314,9 +317,10 @@ fn prior_facts(
             format!("{folder}/answer.md"),
         )
     } else {
-        let mut body = match &head {
-            Some(head) => format!("Branch {} @ {}\n", prior.branch, head.short()),
-            None => format!("Branch {}\n", prior.branch),
+        let mut body = match (&prior.branch, &head) {
+            (Some(branch), Some(head)) => format!("Branch {branch} @ {}\n", head.short()),
+            (Some(branch), None) => format!("Branch {branch}\n"),
+            (None, _) => String::new(),
         };
         if let Some(report) = report {
             body.push_str(&report_text(report));
@@ -444,4 +448,49 @@ fn write_private(dir: &Path, path: &Path, text: &str) -> Result<(), BriefError> 
         .map_err(io("can't write", &tmp))?;
     drop(file);
     fs::rename(&tmp, path).map_err(io("can't save", path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prior_folder_task_loads_and_omits_branch_from_brief() {
+        let mut conn = rusqlite::Connection::open_in_memory().expect("open fixture");
+        qm_store::schema::migrate(&mut conn).expect("migrate");
+        conn.execute_batch(
+            "INSERT INTO agents (id, role, home, status, created_at)
+             VALUES (1, 'quartermaster', '/fixture/seat', 'idle', 0);
+             INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode,
+                                   merge_method, created_at)
+             VALUES (1, 'personal', '/fixture/personal', 'workspace', '', 'folder', 'squash', 0);
+             INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal,
+                                delivery_mode, branch, status, created_at)
+             VALUES (1, 1, 1, 'fix', 'Folder task', 'Prior folder work',
+                     'folder', NULL, 'reported', 0),
+                    (2, 1, 1, 'fix', 'Git task', 'Prior git work',
+                     'branch_only', 'qm/task-0002', 'reported', 1);",
+        )
+        .expect("seed prior tasks");
+
+        let folder = crew_view::prior_task(&conn, "T-0001".parse().expect("task ID"))
+            .expect("read NULL branch")
+            .expect("folder task");
+        assert_eq!(folder.branch, None);
+        let facts = prior_facts(TaskKind::Review, false, &folder, None, &[], "tasks/T-0001");
+        assert_eq!(facts.fact, "the work under review");
+        assert!(facts.body.is_empty(), "no invented branch line");
+        assert_eq!(facts.answer_path, "tasks/T-0001/");
+        let retry = prior_facts(TaskKind::Fix, true, &folder, None, &[], "tasks/T-0001");
+        assert_eq!(retry.fact, "the failed attempt this task retries");
+        assert_eq!(retry.body, "");
+
+        let git = crew_view::prior_task(&conn, "T-0002".parse().expect("task ID"))
+            .expect("read git branch")
+            .expect("git task");
+        assert_eq!(git.branch.as_deref(), Some("qm/task-0002"));
+        let facts = prior_facts(TaskKind::Review, false, &git, None, &[], "tasks/T-0002");
+        assert_eq!(facts.fact, "the work under review on qm/task-0002");
+        assert_eq!(facts.body, "Branch qm/task-0002\n");
+    }
 }
