@@ -45,6 +45,18 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 use tokio::sync::mpsc;
 
+/// The system prompt section about an agent's scratchpad, mirroring what Claude Code tells its
+/// models: use this folder for every temporary file instead of `/tmp`.
+#[must_use]
+pub fn scratchpad_section(dir: &std::path::Path) -> String {
+    format!(
+        "\n\n{}\n",
+        include_str!("scratchpad.md")
+            .trim_end()
+            .replace("{dir}", &dir.display().to_string())
+    )
+}
+
 /// What a session's file tools work with.
 #[derive(Debug, Clone)]
 pub struct FileToolsConfig {
@@ -310,4 +322,20 @@ fn thousands(n: usize) -> String {
         out.push(c);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_scratchpad_section_names_the_folder_and_puts_it_before_tmp() {
+        let section = scratchpad_section(std::path::Path::new(
+            "/tmp/quartermaster/1/a/scratchpad/T-7",
+        ));
+        assert!(section.starts_with("\n\n# Scratchpad directory\n"));
+        assert!(section.contains("`/tmp/quartermaster/1/a/scratchpad/T-7`"));
+        assert!(section.contains("instead of `/tmp`"));
+        assert!(!section.contains("{dir}"));
+    }
 }

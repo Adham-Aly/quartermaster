@@ -54,7 +54,7 @@ pub enum StartupError {
 }
 
 /// What a start deletes from the data directory and the scratch root (plan §9): the Quartermaster's
-/// and each secondmate's session folder, the folders and evidence of tasks that are no longer open
+/// and each secondmate's session folder, the folders, evidence and scratchpads of tasks no longer open
 /// (an open task keeps its folder but loses its session and its legacy answer file), and the
 /// folders of retired secondmates. Worktrees, repositories, the workspace and Claude's own files
 /// are left alone. A file that can't be removed is logged, not fatal.
@@ -120,9 +120,16 @@ fn sweep_leftovers(data: &DataDir, open: &[TaskId], live: &[SecondmateId]) {
             }
         }
     }
-    for (name, path) in subfolders(&data.scratch().join("evidence")) {
-        if !name.parse::<TaskId>().is_ok_and(|id| open.contains(&id)) {
-            remove(&path);
+    for kind in ["evidence", "scratchpad"] {
+        let dir = data.scratch().join(kind);
+        if let Err(e) = data.ensure_scratch_dir(&dir) {
+            tracing::error!(error = %e, kind, "unsafe scratch folder; its leftovers stay");
+            continue;
+        }
+        for (name, path) in subfolders(&dir) {
+            if !name.parse::<TaskId>().is_ok_and(|id| open.contains(&id)) {
+                remove(&path);
+            }
         }
     }
 }

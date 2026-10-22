@@ -191,6 +191,15 @@ mod tests {
     }
 
     #[test]
+    fn a_crewmates_own_scratchpad_inside_the_scratch_root_is_writable() {
+        let scratchpad = Path::new(APP_SCRATCH).join("1000/abc/scratchpad/T-0042");
+        let policy = WritePolicy::new(std::slice::from_ref(&scratchpad));
+        assert!(policy.check(&scratchpad.join("notes/plan.md")).is_ok());
+        let other = Path::new(APP_SCRATCH).join("1000/abc/scratchpad/T-0043/x");
+        assert!(policy.check(&other).is_err(), "another task's scratchpad");
+    }
+
+    #[test]
     fn a_dot_dot_into_the_scratch_folder_is_still_refused() {
         let policy = WritePolicy::new(&[]);
         let sneaky = Path::new("/tmp/notes/../quartermaster/1000/run.log");
