@@ -2,7 +2,7 @@
 //!
 //! Who and what; answer-only work closes; code work needs a clear done report, landed blockers,
 //! good names, the agreed head and the merge gate. Then `qm_policy::delivery::plan` decides: with
-//! autonomy off one held action is written, once, with its exact payload; with autonomy on the work
+//! autonomy normal one held action is written, once, with its exact payload; under auto the work
 //! is landed now by the same functions the performer uses.
 
 use super::in_place::merge_in_place;
@@ -559,12 +559,12 @@ pub(crate) async fn settle(
     };
     let landing = match &payload {
         HeldPayload::Merge(m @ MergePayload::PullRequest { .. }) => {
-            land_pr(svc, m, Origin::Autonomy).await
+            land_pr(svc, m, Origin::Auto).await
         }
         HeldPayload::Merge(m @ MergePayload::InPlace { .. }) => {
-            merge_in_place(svc, m, Origin::Autonomy).await
+            merge_in_place(svc, m, Origin::Auto).await
         }
-        HeldPayload::Push(p) => push_branch(svc, p, Origin::Autonomy).await,
+        HeldPayload::Push(p) => push_branch(svc, p, Origin::Auto).await,
         _ => {
             return Err(ToolFailure::Failed(format!(
                 "settling {task} planned something that isn't a merge or a push; nothing was landed"

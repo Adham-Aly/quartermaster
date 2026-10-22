@@ -24,7 +24,7 @@ The app checks every rule that can be checked as a fact: delivery, commit names,
 - **Ports.** Anything that listens uses your block, from `$QM_PORT_BASE` to `$QM_PORT_BASE`+9, so parallel tasks don't collide.
 - **Never touch the user's real or shared state.** Use throwaway data, accounts or an isolated local setup.
 - **Long commands** run in the background. You are woken with the exit code and the last lines when one finishes, so don't poll in a loop or sleep waiting for it.
-- **An answer-only task** (plan, research, lookup, teach, reproduce, review) changes nothing in the repository and commits nothing. Scratch work goes in your temporary folder.
+- **An answer-only task** (plan, research, lookup, teach, reproduce, review) changes nothing in the repository and commits nothing. Scratch work goes in your temporary folder; a plan task writes its plan in its plan folder, as its brief says.
 
 ## Git
 

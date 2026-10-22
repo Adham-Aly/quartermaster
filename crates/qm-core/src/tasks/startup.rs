@@ -120,7 +120,7 @@ fn sweep_leftovers(data: &DataDir, open: &[TaskId], live: &[SecondmateId]) {
             }
         }
     }
-    for kind in ["evidence", "scratchpad"] {
+    for kind in ["evidence", "scratchpad", qm_types::data_dir::PLANS] {
         let dir = data.scratch().join(kind);
         if let Err(e) = data.ensure_scratch_dir(&dir) {
             tracing::error!(error = %e, kind, "unsafe scratch folder; its leftovers stay");

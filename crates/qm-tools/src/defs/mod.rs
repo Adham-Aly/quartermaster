@@ -21,19 +21,47 @@ macro_rules! tool {
             output: $out:ty $(,)?
         }
     ) => {
+        tool! {
+            $(#[$meta])*
+            $marker {
+                name: $name,
+                key: $name,
+                plan: Any,
+                class: $class,
+                roles: [$($role),+],
+                args: $args,
+                output: $out,
+            }
+        }
+    };
+    (
+        $(#[$meta:meta])*
+        $marker:ident {
+            name: $name:literal,
+            key: $key:literal,
+            plan: $plan:ident $(($mode:ident))?,
+            class: $class:ident,
+            roles: [$($role:ident),+ $(,)?],
+            args: $args:ty,
+            output: $out:ty $(,)?
+        }
+    ) => {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
         pub struct $marker;
 
         impl $crate::Tool for $marker {
             const NAME: &'static str = $name;
+            const KEY: &'static str = $key;
             const DESCRIPTION: &'static str = include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/descriptions/",
-                $name,
+                $key,
                 ".md"
             ))
             .trim_ascii();
+            const PLAN: $crate::PlanGate =
+                $crate::PlanGate::$plan$((qm_types::domain::PlanMode::$mode))?;
             const CLASS: $crate::ToolClass = $crate::ToolClass::$class;
             const ROLES: &'static [qm_types::domain::Role] = &[$(qm_types::domain::Role::$role),+];
             type Args = $args;
@@ -49,6 +77,7 @@ mod crewmate;
 pub mod files;
 mod github;
 mod instructions;
+mod plans;
 mod projects;
 mod secondmates;
 
@@ -59,5 +88,6 @@ pub use crewmate::*;
 pub use files::*;
 pub use github::*;
 pub use instructions::*;
+pub use plans::*;
 pub use projects::*;
 pub use secondmates::*;

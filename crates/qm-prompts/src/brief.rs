@@ -25,7 +25,7 @@
 use std::fmt::Write as _;
 
 use qm_policy::markers::neutralise;
-use qm_types::domain::{DeliveryMode, TaskKind, VerificationLevel, VerificationSource};
+use qm_types::domain::{DeliveryMode, PlanMode, TaskKind, VerificationLevel, VerificationSource};
 use qm_types::ids::{CommitSha, PortBlock, SecondmateId, TaskId};
 
 use crate::index;
@@ -153,6 +153,7 @@ pub fn render_brief(f: &BriefFacts) -> String {
     section_instructions(&mut out, f);
     section_constraints(&mut out, f);
     section_builds_on(&mut out, f);
+    section_planning(&mut out, f);
     section_first_edit(&mut out, f);
     section_verification(&mut out, f);
     section_delivery(&mut out, f);
@@ -402,6 +403,26 @@ fn section_builds_on(out: &mut String, f: &BriefFacts) {
     } else if !body.is_empty() {
         push_block(out, &body);
     }
+    if b.kind == TaskKind::Plan {
+        out.push_str(
+            "The plan itself is your copy in $QM_PLAN_DIR: plan.md, with its images in assets/.\n\
+             Read it whole before you start, and follow it.\n",
+        );
+    }
+}
+
+/// A plan task's planning lines. They say nothing of the plan mode: the mode's own prompt and
+/// skill say how, so a mode change needs no new brief.
+fn section_planning(out: &mut String, f: &BriefFacts) {
+    if f.kind != TaskKind::Plan {
+        return;
+    }
+    out.push_str(
+        "\n## Planning\n\
+         Write the plan in $QM_PLAN_DIR/plan.md, with any images in $QM_PLAN_DIR/assets/. Your\n\
+         system prompt and the quartermaster-plan skill say how. Check it with plan_check before\n\
+         you report. The plan lives only in that folder: never paste it in a report or a message.\n",
+    );
 }
 
 fn section_first_edit(out: &mut String, f: &BriefFacts) {
@@ -503,6 +524,13 @@ fn section_delivery(out: &mut String, f: &BriefFacts) {
         );
         return;
     }
+    if f.kind == TaskKind::Plan {
+        out.push_str(
+            "This task delivers a plan, not code. Don't commit, push or open anything; the plan goes\n\
+             in its plan folder, and scratch work in your temporary folder.\n",
+        );
+        return;
+    }
     if f.kind.is_answer_only() {
         out.push_str(
             "This task delivers an answer, not code. Don't commit, push or open anything; put\n\
@@ -563,6 +591,9 @@ fn section_reporting(out: &mut String, f: &BriefFacts) {
         TaskKind::Reproduce => out.push_str(
             "Call report with your whole answer in answer, opening with reproduced: yes or\n\
              reproduced: no, and set reproduced to match.\n",
+        ),
+        TaskKind::Plan => out.push_str(
+            "Call report with a short summary of the plan in answer; the plan is plan.md.\n",
         ),
         kind if kind.is_answer_only() => {
             out.push_str("Call report with your whole answer in answer.");
@@ -675,6 +706,7 @@ pub fn crewmate_prompt(
     engine: PromptEngine,
     files: &[InstructionFile],
     skills: &[SkillEntry],
+    plan: Option<PlanMode>,
 ) -> String {
     let mut out = String::new();
     if engine == PromptEngine::Provider {
@@ -691,6 +723,19 @@ pub fn crewmate_prompt(
             .trim_end(),
     );
     out.push('\n');
+    if let Some(mode) = plan {
+        let name = match mode {
+            PlanMode::Interactive => "crewmate-plan-interactive",
+            PlanMode::Internal => "crewmate-plan-internal",
+        };
+        out.push('\n');
+        out.push_str(
+            index::get(name)
+                .expect("the plan prompts are registered")
+                .trim_end(),
+        );
+        out.push('\n');
+    }
 
     let mut ordered: Vec<&InstructionFile> = files
         .iter()

@@ -7,7 +7,7 @@ Start a task in your scope: a crewmate in its own worktree does the work and rep
 - goal: what done looks like, in plain words.
 - constraints: limits the work must respect; each has text and optional freeze paths the crewmate must not change.
 - tests_required: true if tests were asked for.
-- builds_on: the task this continues.
+- builds_on: the task this continues. Code work on a plan starts only once the plan is approved, or finished under auto.
 - instructions: one-time instructions for this task only, including the parts of a routed request meant for crewmates.
 - later_steps: models or effort the user named for later steps, each with a kind.
 - model, effort, premium, verification: only when the user asked for them on this turn.

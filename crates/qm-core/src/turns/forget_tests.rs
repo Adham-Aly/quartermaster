@@ -174,6 +174,7 @@ impl Fixture {
             task: None,
             secondmate: None,
             turn: None,
+            plan: None,
         };
         let task = qm_types::ids::TaskId::new(1).unwrap();
         let qm_tools::handler::ToolFailure::Refused(refusal) =

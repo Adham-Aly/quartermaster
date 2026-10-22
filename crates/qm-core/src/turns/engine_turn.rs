@@ -612,6 +612,7 @@ impl TurnLoop {
             }),
             task: None,
             secondmate: self.who.secondmate(),
+            plan: None,
         };
         let tool_cx = ToolCx {
             caller: &caller,

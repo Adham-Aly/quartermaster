@@ -110,7 +110,7 @@ pub async fn land_pr(
     let at = svc.delivery().clock().now();
     let held = match origin {
         Origin::Approval { held } => Some(held),
-        Origin::Autonomy => None,
+        Origin::Auto => None,
     };
     let event_payload = serde_json::json!({
         "repo": p.repo.to_string(), "pr": p.pr, "head": p.head, "base": p.base, "held": held,

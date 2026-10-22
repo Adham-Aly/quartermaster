@@ -270,7 +270,7 @@ impl Seat {
             },
         );
         spec.resume = resume;
-        spec.tools = qm_tools::registry::descriptors(Role::Quartermaster);
+        spec.tools = qm_tools::registry::descriptors(Role::Quartermaster, None);
         spec.builtins = Builtins::None;
         spec.skills_dir = None;
         spec.idle_shutdown = None;
@@ -372,7 +372,7 @@ fn why_payload(why: &OpenReason) -> serde_json::Value {
 
 /// Our tools the engine's init report doesn't list, bare or as `mcp__quartermaster__<name>`.
 fn missing_tools(init: &InitReport) -> Vec<String> {
-    qm_tools::registry::descriptors(Role::Quartermaster)
+    qm_tools::registry::descriptors(Role::Quartermaster, None)
         .into_iter()
         .map(|d| d.name)
         .filter(|name| {

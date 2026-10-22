@@ -1,7 +1,7 @@
 //! What a tool is.
 
 use qm_engine::ToolDescriptor;
-use qm_types::domain::{EngineKind, Role};
+use qm_types::domain::{EngineKind, PlanMode, Role};
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use serde::Serialize;
@@ -29,6 +29,30 @@ impl EngineScope {
     }
 }
 
+/// Which crewmates get a tool, by the plan mode their session was started in. The app picks the
+/// mode from the project's autonomy; nothing the crewmate says changes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PlanGate {
+    /// Every caller (the default).
+    Any,
+    /// Every caller except a plan task's crewmate: the tool has plan variants.
+    NotPlan,
+    /// Only a plan task's crewmate in this mode.
+    Only(PlanMode),
+}
+
+impl PlanGate {
+    /// Whether a caller whose session plans in `plan` (none for every other task and every
+    /// orchestrator) gets the tool.
+    pub fn admits(self, plan: Option<PlanMode>) -> bool {
+        match self {
+            Self::Any => true,
+            Self::NotPlan => plan.is_none(),
+            Self::Only(want) => plan == Some(want),
+        }
+    }
+}
+
 /// One tool. Implemented by a marker type (`ReplyTool`, …) in [`crate::defs`].
 pub trait Tool: 'static {
     /// The name the model calls it by.
@@ -43,6 +67,7 @@ pub trait Tool: 'static {
     /// The roles that get it.
     const ROLES: &'static [Role];
     const SCOPE: EngineScope = EngineScope::Both;
+    const PLAN: PlanGate = PlanGate::Any;
 
     type Args: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
     type Output: Serialize + DeserializeOwned + Send + 'static;
@@ -63,6 +88,7 @@ pub struct ToolDef {
     pub class: ToolClass,
     pub roles: &'static [Role],
     pub scope: EngineScope,
+    pub plan: PlanGate,
     /// Generates the argument schema.
     pub schema: fn() -> serde_json::Value,
 }
@@ -76,6 +102,7 @@ impl ToolDef {
             class: T::CLASS,
             roles: T::ROLES,
             scope: T::SCOPE,
+            plan: T::PLAN,
             schema: input_schema::<T>,
         }
     }
@@ -85,8 +112,13 @@ impl ToolDef {
         (self.schema)()
     }
 
-    pub fn serves(&self, role: Role, engine: EngineKind) -> bool {
-        self.roles.contains(&role) && self.scope.serves(engine)
+    pub fn serves(&self, role: Role, engine: EngineKind, plan: Option<PlanMode>) -> bool {
+        self.offered(role, plan) && self.scope.serves(engine)
+    }
+
+    /// Whether a caller in `role`, whose session plans in `plan`, is offered this tool.
+    pub fn offered(&self, role: Role, plan: Option<PlanMode>) -> bool {
+        self.roles.contains(&role) && self.plan.admits(plan)
     }
 
     /// What an engine needs to offer this tool.
@@ -106,6 +138,7 @@ impl fmt::Debug for ToolDef {
             .field("class", &self.class)
             .field("roles", &self.roles)
             .field("scope", &self.scope)
+            .field("plan", &self.plan)
             .finish_non_exhaustive()
     }
 }

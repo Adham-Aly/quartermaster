@@ -13,8 +13,7 @@ Progress is `PRAGMA user_version`, which counts entries in `MIGRATIONS`.
 
 - **Never edit, reorder or remove an applied migration**, and never insert one before the last:
   `user_version` counts positions, so users' databases would skip or repeat work. Only append.
-- File names are `NNNN_<what>.sql` in `crates/qm-store/migrations/`. Numbers so far: 0001, 0002,
-  0004, 0005, 0006, 0007 (0003 was never used); the next is **0008**.
+- File names are `NNNN_<what>.sql` in `crates/qm-store/migrations/`. Numbers follow the last line of `MIGRATIONS` (0003 was never used).
 - Conventions every table follows (`0001_initial.sql`): `STRICT`; `INTEGER PRIMARY KEY` ids (display
   IDs such as `T-0042` are these ids); instants as `INTEGER` milliseconds since the epoch, UTC, in
   `*_at` columns (`qm_store::time`); booleans `INTEGER` with `CHECK (x IN (0, 1))`; enums as their
@@ -30,10 +29,10 @@ Progress is `PRAGMA user_version`, which counts entries in `MIGRATIONS`.
 
 ## Steps
 
-1. Write `crates/qm-store/migrations/0007_<what>.sql`. Start with a comment saying what it adds
+1. Write `crates/qm-store/migrations/NNNN_<what>.sql`. Start with a comment saying what it adds
    and why. `ALTER TABLE … ADD COLUMN` needs a default (or must be nullable) because rows exist.
 2. Append one line to `MIGRATIONS` in `crates/qm-store/src/schema.rs`:
-   `M::up(include_str!("../migrations/0007_<what>.sql")).foreign_key_check(),`
+   `M::up(include_str!("../migrations/NNNN_<what>.sql")).foreign_key_check(),`
 3. Put the queries in the table's module in `crates/qm-store/src/` (a new module gets a `mod`
    line in `lib.rs`). Queries are plain functions over `&Connection` / `&mut Connection`, called
    inside `Db::call` by the core; nothing else opens the database.

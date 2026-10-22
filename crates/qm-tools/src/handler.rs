@@ -19,7 +19,7 @@ use crate::spec::{Tool, ToolDef};
 use qm_engine::ToolResult;
 use qm_types::BoxFuture;
 use qm_types::clock::Clock;
-use qm_types::domain::{Effort, TaskKind, VerificationLevel};
+use qm_types::domain::{Effort, PlanMode, TaskKind, VerificationLevel};
 use qm_types::domain::{MessageKind, Role, StartedBy};
 use qm_types::error::Refusal;
 use qm_types::ids::{AgentId, MessageId, SecondmateId, StandingInstructionId, TaskId, TurnId};
@@ -168,6 +168,24 @@ pub trait ToolHost: Send + Sync {
     ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
         let _ = (caller, report);
         Box::pin(async { Err(ToolFailure::not_available("record_report")) })
+    }
+
+    /// `plan_check`: checks the caller's `plan.md` under the live plan mode and, under normal
+    /// autonomy, renders its page; one line, or every problem.
+    fn plan_check<'a>(&'a self, caller: &'a Caller) -> BoxFuture<'a, Result<String, ToolFailure>> {
+        let _ = caller;
+        Box::pin(async { Err(ToolFailure::not_available("plan_check")) })
+    }
+
+    /// `approve_plan`: the user approved a plan task's plan (the handler has checked the turn).
+    fn approve_plan<'a>(
+        &'a self,
+        caller: &'a Caller,
+        task: TaskId,
+        take_recommended: bool,
+    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
+        let _ = (caller, task, take_recommended);
+        Box::pin(async { Err(ToolFailure::not_available("approve_plan")) })
     }
 
     /// A crewmate asks its supervisor for a decision.
@@ -530,6 +548,9 @@ pub struct Caller {
     pub task: Option<TaskId>,
     /// The secondmate making the call, or the secondmate a crewmate works under.
     pub secondmate: Option<SecondmateId>,
+    /// The plan mode a plan task's crewmate's session was started in, which picks its tool
+    /// variants; `None` for every other caller.
+    pub plan: Option<PlanMode>,
 }
 
 /// The orchestrator turn a call belongs to.
@@ -675,11 +696,20 @@ impl Dispatcher {
         args: serde_json::Value,
     ) -> Dispatched {
         let role = cx.caller.role;
+        let plan = cx.caller.plan;
         let Some(def) = self
             .defs
             .iter()
-            .find(|d| d.name == name && d.roles.contains(&role))
+            .find(|d| d.name == name && d.offered(role, plan))
         else {
+            if plan.is_some()
+                && self
+                    .defs
+                    .iter()
+                    .any(|d| d.name == name && d.roles.contains(&role))
+            {
+                return failed(format!("there is no tool named {name} for this task"));
+            }
             return failed(format!("there is no tool named {name} for a {role}"));
         };
         let Some(binding) = self.handlers.iter().find(|b| b.key == def.key) else {
