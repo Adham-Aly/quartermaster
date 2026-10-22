@@ -2450,10 +2450,13 @@ version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "jiff",
+ "rand 0.9.5",
  "rusqlite",
+ "rustix",
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
  "tokio",
  "toml",

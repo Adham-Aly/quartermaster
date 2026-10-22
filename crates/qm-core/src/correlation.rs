@@ -75,7 +75,7 @@ pub fn check_report_correlation(
 /// The tasks started for a request, oldest first.
 pub fn tasks_of(conn: &Connection, corr: CorrelationId) -> Result<Vec<TaskId>, StoreError> {
     let mut stmt =
-        conn.prepare("SELECT id FROM tasks WHERE secondmate_request_id = ?1 ORDER BY id")?;
+        conn.prepare("SELECT id FROM tasks WHERE secondmate_request_id = ?1 ORDER BY seq")?;
     let rows = stmt
         .query_map(params![corr], |r| r.get(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;

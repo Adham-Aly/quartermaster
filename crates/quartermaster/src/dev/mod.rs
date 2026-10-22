@@ -93,7 +93,11 @@ fn start(dir: &DataDir) -> Result<Startup, Failure> {
         }
         Err(e) => return Err(fail(format!("can't take the run lock: {e}"))),
     };
-    logging::init(&dir.logs()).map_err(|e| fail(format!("can't start logging: {e}")))?;
+    logging::init(
+        &dir.logs(),
+        std::sync::Arc::new(qm_types::clock::SystemClock),
+    )
+    .map_err(|e| fail(format!("can't start logging: {e}")))?;
     tracing::info!(data_dir = %dir.root().display(), "starting a developer command");
     let db =
         Db::open(&dir.database()).map_err(|e| fail(format!("can't open the database: {e}")))?;

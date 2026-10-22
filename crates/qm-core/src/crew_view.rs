@@ -339,15 +339,15 @@ mod tests {
             "INSERT INTO agents (id, role, home, status, created_at)
              VALUES (1, 'quartermaster', '/fixture/seat', 'idle', 0);
              INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode,
-                                   merge_method, created_at)
-             VALUES (1, 'personal', '/fixture/personal', 'workspace', '', 'folder', 'squash', 0),
-                    (2, 'app', '/fixture/app', 'linked', 'main', 'branch_only', 'squash', 0);
+                                   merge_method, created_at, seq)
+             VALUES (1, 'personal', '/fixture/personal', 'workspace', '', 'folder', 'squash', 0, 1),
+                    (2, 'app', '/fixture/app', 'linked', 'main', 'branch_only', 'squash', 0, 2);
              INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal,
-                                delivery_mode, branch, status, created_at)
+                                delivery_mode, branch, status, created_at, seq)
              VALUES (1, 1, 1, 'fix', 'Folder task', 'Show folder task',
-                     'folder', NULL, 'held', 0),
+                     'folder', NULL, 'held', 0, 1),
                     (2, 2, 1, 'fix', 'Git task', 'Keep git branch',
-                     'branch_only', 'qm/task-0002', 'held', 1);",
+                     'branch_only', 'qm/task-0002', 'held', 1, 2);",
         )
         .expect("seed open tasks");
 

@@ -97,8 +97,8 @@ pub struct ConfigureSecondmateArgs {
 }
 
 tool! {
-    /// Retires one of the Quartermaster's own secondmates once it has no open tasks; its history
-    /// and its tasks' kept work stay, and its ID is never reused.
+    /// Retires one of the Quartermaster's own secondmates once it has no open tasks;
+    /// history is not a permanent archive and numbers may be reused after restart.
     CloseSecondmateTool {
         name: "close_secondmate",
         class: Act,

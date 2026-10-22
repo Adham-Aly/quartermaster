@@ -57,7 +57,11 @@ struct Booted {
 
 /// Logging, settings and the database, after the run lock is held.
 fn boot(dir: &DataDir) -> Result<Booted, Failure> {
-    logging::init(&dir.logs()).map_err(|e| fail("can't start logging")(&e))?;
+    logging::init(
+        &dir.logs(),
+        std::sync::Arc::new(qm_types::clock::SystemClock),
+    )
+    .map_err(|e| fail("can't start logging")(&e))?;
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         data_dir = %dir.root().display(),

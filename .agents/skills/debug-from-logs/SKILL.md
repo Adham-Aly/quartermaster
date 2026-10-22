@@ -55,12 +55,15 @@ SELECT id, target_agent_id, kind, dedupe_key, delivered_turn_id, consumed_at FRO
 ## Transcripts and task folders
 
 - `tasks/T-n/`: `worktree/` (the crewmate's checkout), `brief.md` (exactly what it was told),
-  `session/`, `jobs/` (each background job's output log), `evidence/`, `answer.md`.
-- `seat/` and `secondmates/SM-n/`: each has `home/` and `session/`.
-- A Claude agent's `session/claude/` mirrors claude's own transcript (`<session id>.jsonl`, with
-  `mirror.json`) after every turn; claude's live copy is under `~/.claude/projects/`.
-- A provider-engine agent's `session/<session id>.jsonl` is the whole conversation, one entry per
-  line (messages, compactions, model changes, turn ends).
+  `jobs/` (each background job's output log), `builds-on.md` (the whole text of the task it builds
+  on). The folder goes at close, so only open tasks have one.
+- Evidence and pasted images are in the scratch root, `/tmp/quartermaster/<uid>/<hash>/`:
+  `evidence/T-n/` is removed at close; `attachments/` is swept at each start.
+- `seat/` and `secondmates/SM-n/`: `home/`; `session/` is removed at each start.
+- Conversations are not on disk. A provider-engine agent's session lives in memory, so a restart
+  ends it. Claude's transcript is Claude's own, under `~/.claude/projects/`; the app keeps no copy.
+- `state.db` holds the kept rows only (tasks, reports, events, wakes); turns and messages are not
+  there, so read them from the day's log or from a running server.
 
 ## Reading a failure
 

@@ -30,7 +30,7 @@ use qm_store::standing_instructions;
 use qm_types::BoxFuture;
 use qm_types::clock::Clock;
 use qm_types::domain::{ProjectOrigin, TaskKind, TaskStatus, Tier};
-use qm_types::ids::{AgentId, EventId, StandingInstructionId, TurnId};
+use qm_types::ids::{AgentId, StandingInstructionId, TurnId};
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -176,11 +176,10 @@ struct Gathered {
 fn gather(conn: &mut Connection, agent: AgentId, turn: TurnId) -> Result<Gathered, StoreError> {
     // One read transaction, so every section describes the same moment.
     let tx = conn.transaction()?;
-    let watermark = context::watermark(&tx, agent, turn)?;
-    let after: Option<EventId> = watermark.map(|w| w.event);
-    let before: Option<EventId> = events::turn_started_id(&tx, turn)?;
+    let range = context::range(&tx, agent, turn)?;
+    let (after, before) = (range.after, range.before);
     let gathered = Gathered {
-        watermark,
+        watermark: range.watermark,
         projects: context::projects(&tx)?,
         workers: context::workers(&tx)?,
         tasks: context::open_tasks(&tx)?,
@@ -251,5 +250,307 @@ fn tier_models(t: &TierRow) -> TierModels {
         tier: t.tier,
         models: t.models.iter().map(|m| neutralise(m.as_str())).collect(),
         note: (t.tier == Tier::Premium).then(|| PREMIUM_NOTE.to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::turn_io::ContextSource;
+    use qm_store::turns::{self, FinishedTurn, NewTurn, TurnTotals};
+    use qm_types::clock::Sleep;
+    use qm_types::domain::{StartedBy, TurnStatus};
+    use std::time::Instant as StdInstant;
+
+    /// A clock that stands still, so a render of the same state is the same bytes.
+    #[derive(Debug)]
+    struct Still(Timestamp);
+
+    impl Clock for Still {
+        fn now(&self) -> Timestamp {
+            self.0
+        }
+
+        fn instant(&self) -> StdInstant {
+            StdInstant::now()
+        }
+
+        fn sleep_until(&self, _deadline: StdInstant) -> Sleep {
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    /// The rows every block needs: a project and the Quartermaster.
+    const SETUP: &str =
+        "INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, \
+             merge_method, created_at, seq) \
+         VALUES (1, 'p', '/p', 'created', 'main', 'direct_pr', 'merge', 1, 1);
+         INSERT INTO agents (id, role, home, status, created_at, seq) \
+         VALUES (1, 'quartermaster', '/home', 'idle', 1, 1);";
+
+    /// The creation order for an event or row made at `ms` milliseconds.
+    fn seq_at(ms: i64) -> i64 {
+        qm_store::seq::next(Timestamp::from_millisecond(ms).expect("a time"))
+    }
+
+    fn begin(conn: &mut Connection, agent: AgentId, second: i64) -> Result<TurnId, StoreError> {
+        let at = Timestamp::from_second(second).expect("a time");
+        turns::start_turn(
+            conn,
+            &NewTurn {
+                agent,
+                started_by: StartedBy::AppEvent,
+                model: None,
+                at,
+            },
+        )
+    }
+
+    fn end(
+        conn: &mut Connection,
+        agent: AgentId,
+        turn: TurnId,
+        second: i64,
+    ) -> Result<(), StoreError> {
+        turns::finish_turn(
+            conn,
+            &FinishedTurn {
+                turn,
+                agent,
+                status: TurnStatus::Completed,
+                reason: None,
+                detail: None,
+                actions: Vec::new(),
+                retried: false,
+                usage: TurnTotals::default(),
+                model: None,
+                close_outs: Vec::new(),
+                limit: None,
+                release_wakes: false,
+                at: Timestamp::from_second(second).expect("a time"),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn the_block_reads_the_same_across_a_restart_and_each_line_shows_once() {
+        let dir = std::env::temp_dir().join(format!("qm-block-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let path = dir.join("state.db");
+        let clock: Arc<dyn Clock> = Arc::new(Still(
+            Timestamp::from_second(1_800_000_000).expect("a time"),
+        ));
+        let agent = AgentId::new(1);
+
+        let db = Db::open(&path).expect("a database");
+        db.call(|conn| {
+            conn.execute_batch(SETUP)?;
+            // Two open tasks, the older one first: the block lists them in creation order.
+            for (id, title, ms) in [(1, "OLD-TASK-MARK", 10), (2, "NEW-TASK-MARK", 11)] {
+                conn.execute(
+                    "INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, \
+                         delivery_mode, branch, status, created_at, seq) \
+                     VALUES (?1, 1, 1, 'build', ?2, 'g', 'direct_pr', ?3, 'running', 1, ?4)",
+                    rusqlite::params![id, title, format!("qm/task-{id}"), seq_at(ms)],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("the rows");
+
+        // Turn A ends; a line arrives between turns; turn B starts and ends after it.
+        db.call(move |conn| {
+            let a = begin(conn, agent, 2)?;
+            end(conn, agent, a, 3)?;
+            conn.execute(
+                "INSERT INTO events (at, kind, summary, payload, seq) \
+                 VALUES (4000, 'you.notice', 'LINE-MARK', '{}', ?1)",
+                [seq_at(4000)],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("turn A and a line");
+        // A line that lands during turn B belongs to the turn after it, not to B's block.
+        let turn_b = db
+            .call(move |conn| {
+                let b = begin(conn, agent, 5)?;
+                conn.execute(
+                    "INSERT INTO events (at, kind, summary, payload, seq) \
+                     VALUES (5000, 'task.status', 'AFTER-B-MARK', '{}', ?1)",
+                    [seq_at(5000)],
+                )?;
+                Ok(b)
+            })
+            .await
+            .expect("turn B");
+        let builder = ContextBuilder::new(db.clone(), Arc::clone(&clock));
+        let before = builder
+            .context_block(agent, turn_b)
+            .await
+            .expect("the block");
+        assert!(
+            before.contains("LINE-MARK"),
+            "a line since the last turn is shown"
+        );
+        let old = before.find("OLD-TASK-MARK").expect("the old task");
+        let new = before.find("NEW-TASK-MARK").expect("the new task");
+        assert!(old < new, "tasks read in creation order");
+        db.call(move |conn| end(conn, agent, turn_b, 6))
+            .await
+            .expect("turn B ends");
+        drop(builder);
+        drop(db);
+
+        // After a restart, the same turn renders the same bytes.
+        let db = Db::open(&path).expect("a restart");
+        let builder = ContextBuilder::new(db.clone(), Arc::clone(&clock));
+        let after = builder
+            .context_block(agent, turn_b)
+            .await
+            .expect("the block");
+        assert_eq!(
+            after, before,
+            "the block is byte-identical across a restart"
+        );
+
+        // The next turn's block starts after the line: it shows once.
+        let turn_c = db
+            .call(move |conn| begin(conn, agent, 7))
+            .await
+            .expect("turn C");
+        let next = builder
+            .context_block(agent, turn_c)
+            .await
+            .expect("the block");
+        assert!(!next.contains("LINE-MARK"), "a line is shown once");
+        drop(builder);
+        drop(db);
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn global_outcomes_and_each_secondmates_own_five_survive_restart() {
+        let dir = std::env::temp_dir().join(format!("qm-global-outcomes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch folder");
+        let path = dir.join("state.db");
+        let clock: Arc<dyn Clock> = Arc::new(Still(Timestamp::from_second(100).expect("time")));
+        let db = Db::open(&path).expect("database");
+        db.call(|conn| {
+            conn.execute_batch(SETUP)?;
+            conn.execute_batch(
+                "INSERT INTO secondmates (id, name, scope, created_at, seq) VALUES
+                     (1, 'first', 'p', 1, 1), (2, 'second', 'p', 1, 2);
+                 INSERT INTO agents (id, role, home, status, supervisor_id, secondmate_id, created_at, seq)
+                     VALUES (2, 'secondmate', '/sm1', 'idle', 1, 1, 1, 2),
+                            (3, 'secondmate', '/sm2', 'idle', 1, 2, 1, 3);",
+            )?;
+            // Random/non-monotonic event IDs must not decide which five are newest.
+            for (i, supervisor) in [1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3].into_iter().enumerate() {
+                let i = i64::try_from(i).expect("small index");
+                conn.execute(
+                    "INSERT INTO events (id, at, kind, summary, payload, seq)
+                     VALUES (?1, 1000, 'outcome.landed', ?2, ?3, ?4)",
+                    rusqlite::params![100 - i, format!("OUTCOME-{supervisor}-{i:02}"),
+                        serde_json::json!({"supervisor": supervisor}).to_string(), 100 + i],
+                )?;
+            }
+            Ok(())
+        }).await.expect("outcomes");
+
+        let mut original = Some(db);
+        for restart in [false, true] {
+            let current = if restart {
+                Db::open(&path).expect("restart")
+            } else {
+                original.take().expect("original database")
+            };
+            let qm = ContextBuilder::new(current.clone(), Arc::clone(&clock));
+            let facts = qm
+                .facts(AgentId::new(1), TurnId::new(1))
+                .await
+                .expect("QM facts");
+            let expected: Vec<_> = (10..15)
+                .rev()
+                .map(|i| format!("OUTCOME-3-{i:02}"))
+                .collect();
+            assert_eq!(
+                facts
+                    .recent_outcomes
+                    .iter()
+                    .map(|e| e.text.clone())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            for (sm, agent, start) in [(1, 2, 3), (2, 3, 10)] {
+                let context = crate::secondmates::context::SecondmateContext::new(
+                    current.clone(),
+                    &clock,
+                    qm_types::ids::SecondmateId::new(sm).expect("SM"),
+                );
+                let rendered = context
+                    .context_block(AgentId::new(agent), TurnId::new(1))
+                    .await
+                    .expect("SM block");
+                for i in start..start + 5 {
+                    assert!(
+                        rendered.contains(&format!("OUTCOME-{agent}-{i:02}")),
+                        "own outcome after restart={restart}"
+                    );
+                }
+                assert_eq!(rendered.matches("OUTCOME-").count(), RECENT_OUTCOMES);
+                assert!(!rendered.contains(&format!("OUTCOME-{agent}-{:02}", start - 1)));
+            }
+        }
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn a_first_turns_block_reads_the_same_across_a_restart() {
+        let dir = std::env::temp_dir().join(format!("qm-first-block-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let path = dir.join("state.db");
+        let clock: Arc<dyn Clock> = Arc::new(Still(
+            Timestamp::from_second(1_800_000_000).expect("a time"),
+        ));
+        let agent = AgentId::new(1);
+
+        let db = Db::open(&path).expect("a database");
+        // A line from before the first turn: the first turn's block shows it.
+        let turn = db
+            .call(move |conn| {
+                conn.execute_batch(SETUP)?;
+                conn.execute(
+                    "INSERT INTO events (at, kind, summary, payload, seq) \
+                     VALUES (1000, 'you.notice', 'EARLY-MARK', '{}', ?1)",
+                    [seq_at(1000)],
+                )?;
+                begin(conn, agent, 2)
+            })
+            .await
+            .expect("the first turn");
+        let builder = ContextBuilder::new(db.clone(), Arc::clone(&clock));
+        let before = builder.context_block(agent, turn).await.expect("the block");
+        assert!(
+            before.contains("EARLY-MARK"),
+            "a first turn shows what came before it"
+        );
+        drop(builder);
+        drop(db);
+
+        let db = Db::open(&path).expect("a restart");
+        let builder = ContextBuilder::new(db.clone(), Arc::clone(&clock));
+        let after = builder.context_block(agent, turn).await.expect("the block");
+        assert_eq!(
+            after, before,
+            "the first turn's block is byte-identical across a restart"
+        );
+        drop(builder);
+        drop(db);
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 }

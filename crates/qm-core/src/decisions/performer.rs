@@ -7,10 +7,10 @@
 //! | Choice | The app does |
 //! |---|---|
 //! | Retry with my guidance | Your words (required) neutralised and stored on the crewmate as a message from you; the counter behind the hold reset; `held → running`; your words delivered as an unmarked message |
-//! | Try a premium / stronger model | A new crewmate at exactly the card's tier, on your card choice's authority, with the failed attempt and your words; the old task stopped, its work kept |
-//! | Discard the work | The task discarded, a ref kept |
+//! | Try a premium / stronger model | A new crewmate at exactly the card's tier, on your card choice's authority, with the failed attempt and your words; the old task stopped |
+//! | Discard the work | The task discarded |
 //! | Continue | `stuck → running` |
-//! | Drop task | The task stopped, its work kept |
+//! | Drop task | The task stopped |
 //!
 //! The repair counter's once-per-task rerun stays used.
 
@@ -192,8 +192,7 @@ impl DecisionService {
                     .model
                     .as_ref()
                     .map_or_else(|| "waiting for a model".to_owned(), ToString::to_string);
-                let kept = self
-                    .tasks()
+                self.tasks()
                     .stop(task, Some(format!("retried as {new} on a stronger model")))
                     .await
                     .map_err(HeldError::Failed)?;
@@ -213,14 +212,10 @@ impl DecisionService {
                     })
                     .await?;
                 self.changed();
-                format!(
-                    "Started {new} at {tier} ({model}) to retry {task}; {}",
-                    kept_words(task, kept.as_deref())
-                )
+                format!("Started {new} at {tier} ({model}) to retry {task}.")
             }
             HeldChoice::Discard => {
-                let kept = self
-                    .tasks()
+                self.tasks()
                     .discard(task)
                     .await
                     .map_err(HeldError::Failed)?;
@@ -239,7 +234,7 @@ impl DecisionService {
                     })
                     .await?;
                 self.changed();
-                format!("Discarded {task}; {}", kept_words(task, kept.as_deref()))
+                format!("Discarded {task}.")
             }
             HeldChoice::Continue => {
                 self.tasks()
@@ -253,7 +248,7 @@ impl DecisionService {
                     .stop(task, Some("dropped by the user".to_owned()))
                     .await
                     .map_err(HeldError::Failed)?;
-                format!("You dropped {task}; its work is kept.")
+                format!("You dropped {task}.")
             }
             other => {
                 return Err(Refusal::new(format!(
@@ -269,13 +264,5 @@ impl DecisionService {
             summary: format!("you chose {label} on {task}'s card"),
         });
         Ok(outcome)
-    }
-}
-
-/// "its work is kept at refs/quartermaster/kept/T-0047." or "it had no work to keep."
-fn kept_words(task: TaskId, kept: Option<&str>) -> String {
-    match kept {
-        Some(r) => format!("{task}'s work is kept at {r}."),
-        None => format!("{task} had no work to keep."),
     }
 }

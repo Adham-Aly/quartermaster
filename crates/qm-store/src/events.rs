@@ -11,8 +11,11 @@
 //! it (`you.answered_notice`): [`notices`] folds them into each message's notice state.
 
 use crate::StoreError;
+use crate::ids;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, EventId, MessageId, TaskId, TurnId};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use std::collections::BTreeMap;
@@ -65,8 +68,8 @@ pub fn insert(conn: &Connection, event: &NewEvent<'_>) -> Result<EventId, StoreE
         source,
     })?;
     Ok(conn.query_row(
-        "INSERT INTO events (at, kind, agent_id, task_id, turn_id, summary, payload)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO events (at, kind, agent_id, task_id, turn_id, summary, payload, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          RETURNING id",
         params![
             to_millis(event.at),
@@ -75,7 +78,9 @@ pub fn insert(conn: &Connection, event: &NewEvent<'_>) -> Result<EventId, StoreE
             event.task,
             event.turn,
             event.summary,
-            payload
+            payload,
+            seq::next(event.at),
+            ids::fresh(conn, "events", space::ROW)?,
         ],
         |r| r.get(0),
     )?)
@@ -146,29 +151,29 @@ fn prefix_filter(prefixes: &[&str], first_param: usize) -> (String, Vec<String>)
     (format!("({})", clauses.join(" OR ")), patterns)
 }
 
-/// Events with `id` after `after` (and before `before`, when given) whose kind starts with one of
-/// `prefixes`: at most `limit`, newest first, with the count of the rest.
+/// Events after creation order `after` (and before `before`, when given; both are `seq`s, so they
+/// hold across a restart) whose kind starts with one of `prefixes`: at most `limit`, newest first,
+/// with the count of the rest.
 pub fn since(
     conn: &Connection,
-    after: Option<EventId>,
-    before: Option<EventId>,
+    after: i64,
+    before: Option<i64>,
     prefixes: &[&str],
     limit: usize,
 ) -> Result<EventPage, StoreError> {
     let (filter, patterns) = prefix_filter(prefixes, 3);
-    let after = after.map_or(0, EventId::get);
-    let before = before.map_or(i64::MAX, EventId::get);
-    let mut values: Vec<rusqlite::types::Value> = vec![after.into(), before.into()];
+    let mut values: Vec<rusqlite::types::Value> =
+        vec![after.into(), before.unwrap_or(i64::MAX).into()];
     values.extend(patterns.into_iter().map(rusqlite::types::Value::from));
 
     let total: i64 = conn.query_row(
-        &format!("SELECT count(*) FROM events WHERE id > ?1 AND id < ?2 AND {filter}"),
+        &format!("SELECT count(*) FROM events WHERE seq > ?1 AND seq < ?2 AND {filter}"),
         params_from_iter(values.iter()),
         |r| r.get(0),
     )?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM events WHERE id > ?1 AND id < ?2 AND {filter}
-         ORDER BY id DESC LIMIT {}",
+        "SELECT {COLUMNS} FROM events WHERE seq > ?1 AND seq < ?2 AND {filter}
+         ORDER BY seq DESC LIMIT {}",
         i64::try_from(limit).unwrap_or(i64::MAX)
     ))?;
     let rows = stmt
@@ -186,14 +191,38 @@ pub fn since(
 
 /// The `limit` newest events whose kind starts with `prefix`, newest first.
 pub fn latest(conn: &Connection, prefix: &str, limit: usize) -> Result<Vec<EventRow>, StoreError> {
-    Ok(since(conn, None, None, &[prefix], limit)?.rows)
+    Ok(since(conn, 0, None, &[prefix], limit)?.rows)
 }
 
-/// The `seat.turn_started` event of `turn`.
-pub fn turn_started_id(conn: &Connection, turn: TurnId) -> Result<Option<EventId>, StoreError> {
+/// The `limit` newest events whose kind starts with `prefix` and whose `payload.supervisor` is
+/// `supervisor`, newest first: an orchestrator's own outcomes (plan 5, step E).
+pub fn latest_of(
+    conn: &Connection,
+    prefix: &str,
+    supervisor: AgentId,
+    limit: usize,
+) -> Result<Vec<EventRow>, StoreError> {
+    let (filter, patterns) = prefix_filter(&[prefix], 2);
+    let mut values: Vec<rusqlite::types::Value> = vec![supervisor.get().into()];
+    values.extend(patterns.into_iter().map(rusqlite::types::Value::from));
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM events
+         WHERE json_extract(payload, '$.supervisor') = ?1 AND {filter}
+         ORDER BY seq DESC LIMIT {}",
+        i64::try_from(limit).unwrap_or(i64::MAX)
+    ))?;
+    stmt.query_map(params_from_iter(values.iter()), row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .map(RawEvent::parse)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+/// The creation order (`seq`) of the `seat.turn_started` event of `turn`.
+pub fn turn_started_seq(conn: &Connection, turn: TurnId) -> Result<Option<i64>, StoreError> {
     Ok(conn
         .query_row(
-            "SELECT id FROM events WHERE kind = ?1 AND turn_id = ?2 ORDER BY id LIMIT 1",
+            "SELECT seq FROM events WHERE kind = ?1 AND turn_id = ?2 ORDER BY seq LIMIT 1",
             params![TURN_STARTED, turn],
             |r| r.get(0),
         )
@@ -281,7 +310,7 @@ pub fn notices(
                 json_extract(payload, '$.reason'), json_extract(payload, '$.answer')
          FROM events
          WHERE kind IN (?1, ?2) AND json_extract(payload, '$.message') IN ({placeholders})
-         ORDER BY id"
+         ORDER BY seq"
     ))?;
     let rows = stmt
         .query_map(params_from_iter(values.iter()), |r| {

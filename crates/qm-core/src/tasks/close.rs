@@ -5,9 +5,10 @@
 //!    supervisor's `task_failed` wake.
 //! 2. **Stop the crewmate**: its runner interrupts a running turn, closes the session and stops
 //!    every job or setup group still open for the task.
-//! 3. **Retire the worktree**: unmerged work saved to `refs/quartermaster/kept/T-0042`, then the
-//!    worktree removed and the branch deleted, except a delivered branch-only task's branch. A
-//!    folder task has no worktree or branch: its files stay where they are, and nothing is undone.
+//! 3. **Retire the worktree**: the worktree removed (uncommitted changes with it) and the branch
+//!    deleted, except a delivered branch-only task's branch. Unmerged commits are left for git to
+//!    collect. A folder task has no worktree or branch: its files stay where they are, and nothing
+//!    is undone.
 //! 4. **Close** (one transaction): `closed` with its outcome, the crewmate retired, `task.closed`,
 //!    and `wait_over` for every task waiting on it.
 //!
@@ -20,7 +21,7 @@ use super::runner::stop_open_groups;
 use super::waits::{check_direct, load_task, release_waiters};
 use super::{TaskService, load_project, new_wake, refuse};
 use crate::inbox::Inbox;
-use qm_git::{BranchRemoval, KeptWork, Repo, RetireSpec};
+use qm_git::{BranchRemoval, Repo, RetireSpec};
 use qm_policy::delivery::close_keeps_branch;
 use qm_store::agents;
 use qm_store::tasks as task_store;
@@ -40,9 +41,6 @@ pub const CONTINUED_EVENT: &str = "task.continued";
 
 /// Delivery's hook on every retirement.
 pub trait CloseFacts: Send + Sync + std::fmt::Debug {
-    /// Where the task's landed work went (`tasks.landed_into`), added to `RetireSpec::merged_into`
-    /// after the base ref.
-    fn merged_into(&self, conn: &rusqlite::Connection, task: TaskId) -> Vec<String>;
     /// After a side exit (failed, stopped, discarded) is recorded: an open pull request is closed.
     /// Runs in the background; never blocks the retirement.
     fn on_side_exit(&self, task: TaskId) -> qm_types::BoxFuture<'_, ()>;
@@ -106,7 +104,6 @@ impl Exit {
 /// What retiring did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Retired {
-    pub kept: Option<KeptWork>,
     pub branch: BranchRemoval,
 }
 
@@ -148,7 +145,6 @@ pub(crate) async fn retire(
         .ok_or_else(|| CloseError::Refused(format!("{task} doesn't exist")))?;
     if row.status == TaskStatus::Closed {
         return Ok(Retired {
-            kept: None,
             branch: BranchRemoval::AlreadyGone,
         });
     }
@@ -186,8 +182,10 @@ pub(crate) async fn retire(
                     at,
                 )?;
                 if let Exit::Failed { reason } = &recorded {
-                    let kept = failure_kept_text(row.delivery, task);
-                    let text = format!("{task} failed before it could finish: {reason}. {kept}");
+                    let mut text = format!("{task} failed before it could finish: {reason}.");
+                    if row.delivery == DeliveryMode::Folder {
+                        text.push_str(" Its files in the folder are left as they are.");
+                    }
                     let wake = new_wake(
                         supervisor,
                         WakeKind::TaskFailed,
@@ -260,35 +258,19 @@ pub(crate) async fn retire(
         Some(project) if row.status != TaskStatus::Queued && folder_left.is_none() => {
             let git = svc.deps().git.clone();
             let paths = svc.deps().data_dir.task(task);
-            let base_commit = row.base_commit.clone();
-            let mut merged_into = close_facts(&row);
-            if let Some(hook) = svc.close_hook() {
-                let landed = svc
-                    .db()
-                    .call(move |conn| Ok(hook.merged_into(conn, task)))
-                    .await
-                    .unwrap_or_default();
-                merged_into.extend(landed);
-            }
-            let keep_branch = matches!(exit, Exit::Landed) && close_keeps_branch(row.delivery);
+            // Only a task whose base was recorded made its branch (creation records the base before
+            // it makes the branch), so only it may delete the branch: any other is kept as it is.
+            let keep_branch = row.base_commit.is_none()
+                || (matches!(exit, Exit::Landed) && close_keeps_branch(row.delivery));
             let checkout = project.path.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let repo = Repo::open(git, &checkout)?;
-                let merged: Vec<&str> = merged_into.iter().map(String::as_str).collect();
-                repo.retire(
-                    &RetireSpec::new(task, &paths)
-                        .base_commit(base_commit.as_ref())
-                        .merged_into(&merged)
-                        .keep_branch(keep_branch),
-                )
+                repo.retire(&RetireSpec::new(task, &paths).keep_branch(keep_branch))
             })
             .await
             .map_err(|e| CloseError::Failed(e.to_string()))?;
             match result {
-                Ok(r) => Retired {
-                    kept: r.kept,
-                    branch: r.branch,
-                },
+                Ok(r) => Retired { branch: r.branch },
                 Err(e) => {
                     let reason = e.to_string();
                     let at = svc.clock().now();
@@ -318,7 +300,6 @@ pub(crate) async fn retire(
         }
         // Never prepared, or its project is gone: nothing on disk to retire.
         _ => Retired {
-            kept: None,
             branch: BranchRemoval::AlreadyGone,
         },
     };
@@ -326,7 +307,6 @@ pub(crate) async fn retire(
     // 4. Close.
     let at = svc.clock().now();
     let kind = row.kind;
-    let kept = retired.kept.clone();
     svc.write(move |tx, notify| {
         let Some(now) = task_store::load(tx, task)? else {
             return Ok(());
@@ -339,12 +319,11 @@ pub(crate) async fn retire(
         if let Some(agent) = agents::crewmate_of(tx, task)? {
             agents::set_status(tx, agent.id, AgentStatus::Retired, at)?;
         }
-        let summary = match (&kept, &folder_left) {
-            (_, Some(folder)) => {
+        let summary = match &folder_left {
+            Some(folder) => {
                 format!("{task} closed: {outcome} · its files in {folder} are left as they are")
             }
-            (Some(k), None) => format!("{task} closed: {outcome} · work kept at {}", k.git_ref),
-            (None, None) => format!("{task} closed: {outcome}"),
+            None => format!("{task} closed: {outcome}"),
         };
         task_store::event(
             tx,
@@ -352,30 +331,42 @@ pub(crate) async fn retire(
             task,
             None,
             &summary,
-            serde_json::json!({ "outcome": outcome, "kept_ref": kept.as_ref().map(|k| &k.git_ref) }),
+            serde_json::json!({ "outcome": outcome }),
             at,
         )?;
         release_waiters(tx, notify, task, TaskStatus::Closed, at)
     })
     .await
     .map_err(|e| CloseError::Failed(e.to_string()))?;
-    Ok(retired)
-}
-
-/// Where the task's work landed, for the kept-ref decision: `[base_ref]`, plus what delivery
-/// recorded as where a landed task's work went.
-/// What a failed task's text says about its work: a folder task's files are left where they are, and
-/// any other task's unmerged work is saved to its kept ref.
-pub(crate) fn failure_kept_text(delivery: DeliveryMode, task: TaskId) -> String {
-    if delivery == DeliveryMode::Folder {
-        "Its files in the folder are left as they are.".to_owned()
-    } else {
-        format!("Its work, if any, is kept at {}.", task.kept_ref())
+    // The task's folder and its evidence go with the close: its outcome and answer are in the store.
+    // A failure is logged; the startup sweep removes what it leaves.
+    let paths = svc.deps().data_dir.task(task);
+    let removed = tokio::task::spawn_blocking(move || {
+        qm_types::data_dir::remove_path(&paths.root)?;
+        qm_types::data_dir::remove_path(&paths.evidence)
+    })
+    .await;
+    match removed {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!(%task, error = %e, "couldn't remove a closed task's files"),
+        Err(e) => tracing::warn!(%task, error = %e, "removing a closed task's files stopped"),
     }
-}
-
-fn close_facts(row: &task_store::TaskRow) -> Vec<String> {
-    row.base_ref.iter().cloned().collect()
+    // Closed tasks beyond the newest few hundred leave memory (Q8). A failure here doesn't undo the
+    // close; the next close tries again.
+    let forgot = svc
+        .db()
+        .call(|conn| {
+            qm_store::history::forget_closed_tasks(conn, qm_store::history::KEEP_CLOSED_TASKS)
+        })
+        .await;
+    match forgot {
+        Ok(gone) if !gone.is_empty() => {
+            tracing::info!(count = gone.len(), "forgot the oldest closed tasks");
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(%task, error = %e, "couldn't forget the oldest closed tasks"),
+    }
+    Ok(retired)
 }
 
 impl TaskService {
@@ -386,24 +377,19 @@ impl TaskService {
         }
     }
 
-    /// Stops a task and retires it, keeping its work (a decision card's "Drop task" calls this
-    /// too).
-    pub async fn stop(
-        &self,
-        task: TaskId,
-        reason: Option<String>,
-    ) -> Result<Option<String>, String> {
+    /// Stops a task and retires it (a decision card's "Drop task" calls this too).
+    pub async fn stop(&self, task: TaskId, reason: Option<String>) -> Result<(), String> {
         retire(self, task, Exit::Stopped { reason })
             .await
-            .map(|r| r.kept.map(|k| k.git_ref))
+            .map(drop)
             .map_err(|e| e.to_string())
     }
 
-    /// Discards a task's work, keeping a ref.
-    pub async fn discard(&self, task: TaskId) -> Result<Option<String>, String> {
+    /// Discards a task and retires it.
+    pub async fn discard(&self, task: TaskId) -> Result<(), String> {
         retire(self, task, Exit::Discarded)
             .await
-            .map(|r| r.kept.map(|k| k.git_ref))
+            .map(drop)
             .map_err(|e| e.to_string())
     }
 
@@ -462,15 +448,13 @@ pub(crate) async fn stop_task(
         return Ok(TaskUpdated {
             task,
             status: TaskStatus::Closed,
-            kept_ref: None,
         });
     }
     svc.supervisor_acted(task);
-    let retired = retire(svc, task, Exit::Stopped { reason }).await?;
+    retire(svc, task, Exit::Stopped { reason }).await?;
     Ok(TaskUpdated {
         task,
         status: TaskStatus::Closed,
-        kept_ref: retired.kept.map(|k| k.git_ref),
     })
 }
 
@@ -487,14 +471,13 @@ pub(crate) async fn close_task(
             return Ok(TaskUpdated {
                 task,
                 status: TaskStatus::Closed,
-                kept_ref: None,
             });
         }
         TaskStatus::Landed => Exit::Landed,
         TaskStatus::Reported if row.kind.is_answer_only() => Exit::Answered,
         TaskStatus::Reported => {
             return Err(refuse(format!(
-                "{task} has work that isn't settled: settle_task delivers it, stop_task drops it (its work is kept)"
+                "{task} has work that isn't settled: settle_task delivers it, stop_task drops it"
             )));
         }
         s if is_exiting(s) => Exit::of_status(s).unwrap_or(Exit::Stopped { reason: None }),
@@ -505,10 +488,9 @@ pub(crate) async fn close_task(
         }
     };
     svc.supervisor_acted(task);
-    let retired = retire(svc, task, exit).await.map_err(ToolFailure::from)?;
+    retire(svc, task, exit).await.map_err(ToolFailure::from)?;
     Ok(TaskUpdated {
         task,
         status: TaskStatus::Closed,
-        kept_ref: retired.kept.map(|k| k.git_ref),
     })
 }

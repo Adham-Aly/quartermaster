@@ -112,7 +112,9 @@ pub(crate) async fn task_detail(
         })
         .await
         .map_err(|e| failed(&e))?
-        .ok_or_else(|| refuse(format!("{task} doesn't exist")))??;
+        .ok_or_else(|| refuse(format!(
+            "{task}'s details are unavailable: it either closed and was forgotten or doesn't exist; use find_tasks for tasks still kept (numbers can be reused after restart)"
+        )))??;
     let mut history: Vec<HistoryEntry> = events
         .iter()
         .filter(|e| e.kind != super::runner::TOOL_EVENT)
@@ -126,9 +128,9 @@ pub(crate) async fn task_detail(
         text: report_line(r),
     }));
     history.sort_by_key(|h| h.at);
-    let answer_path = svc.deps().data_dir.task(task).answer;
+    // An answer-only task's answer is its newest report's; the database keeps it, so no file does.
     let answer = if row.kind.is_answer_only() {
-        tokio::fs::read_to_string(&answer_path).await.ok()
+        reports.iter().rev().find_map(|r| r.answer.clone())
     } else {
         None
     };

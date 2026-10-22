@@ -127,8 +127,7 @@ pub fn plan(f: &SettleFacts<'_>) -> Result<SettlePlan, Refusal> {
 }
 
 /// "Closing keeps the branch" for branch-only work (and the workspace's local branches); other
-/// modes save unmerged work to the kept ref, then remove the branch. A folder task has no branch
-/// and no kept ref: its files stay where they are.
+/// modes remove the branch. A folder task has no branch: its files stay where they are.
 pub fn close_keeps_branch(delivery: DeliveryMode) -> bool {
     delivery == DeliveryMode::BranchOnly
 }

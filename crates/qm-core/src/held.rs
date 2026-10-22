@@ -47,6 +47,7 @@ use qm_store::db::Db;
 use qm_store::events::{self, NewEvent};
 use qm_store::held::{HeldPayload, HeldRow, NewHeld, insert_held, load_held};
 use qm_store::messages::{self, MessageRow};
+use qm_store::seq;
 use qm_store::time::to_millis;
 use qm_store::wakes::{NewWake, insert_wake};
 use qm_types::BoxFuture;
@@ -332,7 +333,7 @@ impl HeldService {
             .query_row(
                 "SELECT id, source, kind FROM messages
                  WHERE agent_id = ?1 AND kind <> 'acknowledgement'
-                 ORDER BY id DESC LIMIT 1",
+                 ORDER BY seq DESC LIMIT 1",
                 params![seat_agent],
                 |r| {
                     Ok((
@@ -417,7 +418,7 @@ impl HeldService {
     /// The pending held actions of `kind`, oldest first.
     pub fn pending(conn: &Connection, kind: HeldKind) -> Result<Vec<HeldRow>, StoreError> {
         let mut stmt = conn.prepare(
-            "SELECT id FROM held_actions WHERE status = 'pending' AND kind = ?1 ORDER BY id",
+            "SELECT id FROM held_actions WHERE status = 'pending' AND kind = ?1 ORDER BY seq",
         )?;
         let ids = stmt
             .query_map(params![kind], |r| r.get::<_, HeldActionId>(0))?
@@ -954,7 +955,7 @@ fn held_event(
             .query_row(
                 "SELECT payload FROM events
                  WHERE task_id = ?1 AND kind = ?2 AND json_extract(payload, '$.held') = ?3
-                 ORDER BY id DESC LIMIT 1",
+                 ORDER BY seq DESC LIMIT 1",
                 params![task, kind, held],
                 |r| r.get(0),
             )
@@ -980,6 +981,34 @@ fn card_facts(conn: &Connection, row: &HeldRow) -> Result<CardFacts, StoreError>
         None
     };
     Ok(CardFacts { facts, superseded })
+}
+
+/// Rebuild volatile conversation anchors for durable pending actions. A restart keeps the exact
+/// held payload, but neither its `held.shown` event nor its conversation message.
+fn reanchor_pending(
+    conn: &Connection,
+    seat: AgentId,
+    at: jiff::Timestamp,
+) -> Result<(), StoreError> {
+    let missing = {
+        let mut stmt = conn.prepare(
+            "SELECT h.id, h.title FROM held_actions h
+             WHERE h.status = 'pending' AND NOT EXISTS (
+                 SELECT 1 FROM events e JOIN messages m
+                   ON m.id = json_extract(e.payload, '$.message')
+                 WHERE e.kind = ?1 AND json_extract(e.payload, '$.held') = h.id
+                   AND m.agent_id = ?2
+             ) ORDER BY h.seq",
+        )?;
+        stmt.query_map(params![HELD_SHOWN, seat], |r| {
+            Ok((r.get::<_, HeldActionId>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (held, title) in missing {
+        HeldService::anchor(conn, held, &title, seat, at)?;
+    }
+    Ok(())
 }
 
 fn held_facts(conn: &Connection, lines: &HashSet<MessageId>) -> Result<HeldFacts, StoreError> {
@@ -1009,23 +1038,37 @@ fn held_facts(conn: &Connection, lines: &HashSet<MessageId>) -> Result<HeldFacts
     }
     let mut cards = Vec::new();
     for (message, held) in linked {
-        let row = load_held(conn, held)?;
+        // Forgetting can leave historical links behind after deleting their held row.
+        let row = match load_held(conn, held) {
+            Ok(row) => row,
+            Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows)) => continue,
+            Err(e) => return Err(e),
+        };
         let facts = card_facts(conn, &row)?;
         cards.push((message, row, facts));
     }
     // A pending card keeps its line in the snapshot even when the line is older than those shown.
+    // Oldest first, by creation: message IDs are random, so the map's order says nothing.
     let mut older = Vec::new();
     for (message, held) in older_pending {
-        let row = load_held(conn, held)?;
+        // Forgetting can leave historical links behind after deleting their held row.
+        let row = match load_held(conn, held) {
+            Ok(row) => row,
+            Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows)) => continue,
+            Err(e) => return Err(e),
+        };
         if row.status != HeldStatus::Pending {
             continue;
         }
         if let Some(line) = messages::get(conn, message)? {
             let facts = card_facts(conn, &row)?;
             cards.push((message, row, facts));
-            older.push(line);
+            let seq = seq::of(conn, "messages", message.get(), 0)?;
+            older.push((seq, line));
         }
     }
+    older.sort_by_key(|(seq, _)| *seq);
+    let older = older.into_iter().map(|(_, line)| line).collect();
     Ok(HeldFacts { cards, older })
 }
 
@@ -1060,11 +1103,19 @@ impl ApiPart for HeldPart {
     fn fill<'a>(&'a self, snapshot: &'a mut Snapshot) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             let lines: HashSet<MessageId> = snapshot.conversation.iter().map(|l| l.id).collect();
+            let seat = self.conversation.agent();
+            let at = self.held.inner.clock.now();
             let facts = match self
                 .held
                 .inner
                 .db
-                .call(move |conn| held_facts(conn, &lines))
+                .call(move |conn| {
+                    let tx = conn.transaction()?;
+                    reanchor_pending(&tx, seat, at)?;
+                    let facts = held_facts(&tx, &lines)?;
+                    tx.commit()?;
+                    Ok(facts)
+                })
                 .await
             {
                 Ok(facts) => facts,
@@ -1079,16 +1130,17 @@ impl ApiPart for HeldPart {
                 .map(|(message, row, card_facts)| (*message, self.held.card(row, card_facts)))
                 .collect();
             if !facts.older.is_empty() {
+                // Older than every line shown, so they go in front, in creation order.
                 let shown: HashSet<MessageId> =
                     snapshot.conversation.iter().map(|l| l.id).collect();
-                for row in facts.older {
-                    if !shown.contains(&row.id) {
-                        snapshot.conversation.push(ChatLine::new(
-                            row.id, row.source, row.kind, row.at, row.text,
-                        ));
-                    }
-                }
-                snapshot.conversation.sort_by_key(|l| l.id);
+                let mut conversation: Vec<ChatLine> = facts
+                    .older
+                    .into_iter()
+                    .filter(|row| !shown.contains(&row.id))
+                    .map(|row| ChatLine::new(row.id, row.source, row.kind, row.at, row.text))
+                    .collect();
+                conversation.append(&mut snapshot.conversation);
+                snapshot.conversation = conversation;
             }
             for line in &mut snapshot.conversation {
                 if let Some(card) = cards.get(&line.id) {
@@ -1096,5 +1148,157 @@ impl ApiPart for HeldPart {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct NoSignal;
+
+    impl WakeSignal for NoSignal {
+        fn signal(&self, _: AgentId) {}
+    }
+
+    #[tokio::test]
+    async fn dangling_shown_does_not_block_reconstructing_unrelated_pending_card() {
+        // Exercise both the visible-link and older-link paths through held_facts.
+        for visible in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "qm-held-dangling-{}-{visible}-{}.db",
+                std::process::id(),
+                jiff::Timestamp::now().as_nanosecond()
+            ));
+            let db = Db::open(&path).expect("database");
+            let seat = AgentId::new(1);
+            let (pending, dangling) = db
+                .call(move |conn| {
+                    conn.execute_batch(
+                        "INSERT INTO agents (id, role, home, status, created_at, seq)
+                     VALUES (1, 'quartermaster', '/h', 'idle', 0, 1);",
+                    )?;
+                    let at = jiff::Timestamp::from_millisecond(1000).expect("time");
+                    let new = NewHeld {
+                        payload: HeldPayload::Secondmate(qm_store::held::SecondmatePayload {
+                            name: "Reviewer".into(),
+                            scope: "Review changes".into(),
+                            projects: vec![],
+                            base_branch: None,
+                        }),
+                        choices: vec![],
+                        title: "Create Reviewer".into(),
+                        task: None,
+                        asked_by: Some(seat),
+                        at,
+                    };
+                    let deleted = HeldService::insert(conn, &new)?;
+                    let message = HeldService::anchor(conn, deleted, "Deleted card", seat, at)?;
+                    conn.execute("DELETE FROM held_actions WHERE id = ?1", [deleted])?;
+                    // This durable card has no message or held.shown history of its own.
+                    let pending = HeldService::insert(conn, &new)?;
+                    Ok((
+                        pending,
+                        messages::get(conn, message)?.expect("dangling anchor"),
+                    ))
+                })
+                .await
+                .expect("seed dangling link and unrelated pending row");
+            let clock: Arc<dyn Clock> = Arc::new(qm_types::clock::SystemClock);
+            let conversation = Arc::new(Conversation::new(db.clone(), clock.clone(), seat));
+            let service = HeldService::new(db.clone(), clock, Arc::new(NoSignal));
+            let part = HeldPart::new(service, conversation);
+            let mut snapshot = Snapshot::default();
+            if visible {
+                snapshot.conversation.push(ChatLine::new(
+                    dangling.id,
+                    dangling.source,
+                    dangling.kind,
+                    dangling.at,
+                    dangling.text,
+                ));
+            }
+            part.fill(&mut snapshot).await;
+            let cards: Vec<_> = snapshot
+                .conversation
+                .iter()
+                .filter_map(|line| line.card.as_ref())
+                .collect();
+            assert_eq!(cards.len(), 1, "dangling link must not abort fill");
+            assert_eq!(cards[0].held, Some(pending));
+            assert_eq!(cards[0].answered, None);
+            db.call(move |conn| {
+                let facts = held_facts(conn, &HashSet::new())?;
+                assert_eq!(facts.cards.len(), 1, "reconstructed anchor was committed");
+                assert_eq!(facts.cards[0].1.id, pending);
+                Ok(())
+            })
+            .await
+            .expect("persisted reconstruction");
+            drop(part);
+            drop(db);
+            std::fs::remove_file(path).expect("remove test database");
+        }
+    }
+
+    #[test]
+    fn pending_row_without_messages_or_events_gets_an_accessible_anchor() {
+        let mut conn = Connection::open_in_memory().expect("memory");
+        qm_store::schema::migrate(&mut conn).expect("schema");
+        conn.execute_batch(
+            "INSERT INTO agents (id, role, home, status, created_at, seq)
+             VALUES (1, 'quartermaster', '/h', 'idle', 0, 1);",
+        )
+        .expect("seat");
+        let seat = AgentId::new(1);
+        let at = jiff::Timestamp::from_millisecond(1000).expect("time");
+        let payload = HeldPayload::Secondmate(qm_store::held::SecondmatePayload {
+            name: "Reviewer".into(),
+            scope: "Review changes".into(),
+            projects: vec![],
+            base_branch: None,
+        });
+        let held = HeldService::insert(
+            &conn,
+            &NewHeld {
+                payload: payload.clone(),
+                choices: vec![],
+                title: "Create Reviewer".into(),
+                task: None,
+                asked_by: Some(seat),
+                at,
+            },
+        )
+        .expect("durable pending row");
+        for table in ["events", "messages"] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0, "restart has no historical {table}");
+        }
+        reanchor_pending(&conn, seat, at).expect("reanchor");
+        let facts = held_facts(&conn, &HashSet::new()).expect("snapshot facts");
+        assert_eq!(facts.cards.len(), 1);
+        assert_eq!(
+            facts.older.len(),
+            1,
+            "the first snapshot includes the fresh anchor"
+        );
+        let (message, row, _) = &facts.cards[0];
+        assert_eq!(*message, facts.older[0].id);
+        assert_eq!(row.id, held);
+        assert_eq!(row.status, HeldStatus::Pending);
+        assert_eq!(
+            row.payload, payload,
+            "approval still uses the exact stored payload"
+        );
+        assert_eq!(facts.older[0].text, "Create Reviewer needs you");
+
+        reanchor_pending(&conn, seat, at).expect("next snapshot");
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "snapshot fills do not duplicate anchors");
     }
 }

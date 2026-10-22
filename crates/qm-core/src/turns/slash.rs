@@ -80,7 +80,7 @@ impl TurnLoop {
         let Some(agent) = self.slash_agent().await? else {
             return Ok(());
         };
-        self.close_session().await;
+        self.forget_session().await;
         self.lose_session(OpenReason::Cleared);
         let at = self.deps.clock.now();
         let summary = format!("You cleared {} context", self.who.possessive());
@@ -88,6 +88,24 @@ impl TurnLoop {
             .db
             .call(move |conn| qm_store::turns::record_cleared(conn, agent, &summary, at))
             .await?;
+        // After the marker: it records the newest turn it follows, which forgetting would erase.
+        let forget_tasks = self.who == super::LoopRole::Quartermaster;
+        let forgot = self
+            .deps
+            .db
+            .call(move |conn| {
+                qm_store::history::forget_conversation(conn, agent, i64::MAX)?;
+                if forget_tasks {
+                    qm_store::history::forget_closed_task_details(conn)?;
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(e) = forgot {
+            tracing::warn!(who = %self.who, error = %e, "couldn't forget the cleared conversation");
+        } else if forget_tasks {
+            self.notify_forgotten_outcomes().await?;
+        }
         tracing::info!(who = %self.who, "context cleared; opening a new session");
         self.slash_note(agent, CLEARED_NOTE).await;
         // A new session now, so the next message doesn't wait for it; if none can open, this
@@ -103,10 +121,13 @@ impl TurnLoop {
         if !self.ensure_session().await {
             return Ok(());
         }
+        // Snapshot the boundary before asking the engine, excluding queued inputs that its
+        // summary will not represent (including ones already stored while the last turn ran).
         let Some(live) = self.session.as_ref() else {
             return Ok(());
         };
         let agent = live.agent;
+        let before = self.compaction_boundary(agent).await?;
         if live.handle.compact().is_err() {
             // The engine let go of the session; what it said last is read below.
             tracing::debug!(who = %self.who, "the session was gone before the compaction");
@@ -115,7 +136,7 @@ impl TurnLoop {
         self.running_message = None;
         self.publish();
         self.deps.chat.changed();
-        let how = self.drive_compaction().await?;
+        let how = self.drive_compaction(before).await?;
         self.turn_running = false;
         self.publish();
         let note = match how {
@@ -134,7 +155,10 @@ impl TurnLoop {
     }
 
     /// Reads the session's events until the compaction turn ends.
-    async fn drive_compaction(&mut self) -> Result<Compaction, SeatError> {
+    async fn drive_compaction(
+        &mut self,
+        before: super::CompactionBoundary,
+    ) -> Result<Compaction, SeatError> {
         let clock = Arc::clone(&self.deps.clock);
         let limit = clock.instant() + COMPACT_LIMIT;
         let mut stopping: Option<Instant> = None;
@@ -187,8 +211,14 @@ impl TurnLoop {
                         tokens_before,
                         tokens_after,
                     } => {
-                        self.record_compacted(None, automatic, tokens_before, tokens_after)
-                            .await?;
+                        self.record_compacted_before(
+                            None,
+                            Some(before.clone()),
+                            automatic,
+                            tokens_before,
+                            tokens_after,
+                        )
+                        .await?;
                         compacted = Some((tokens_before, tokens_after));
                     }
                     EngineEvent::TurnEnded { outcome, .. } => {

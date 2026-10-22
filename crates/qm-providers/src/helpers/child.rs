@@ -11,7 +11,7 @@
 //!                        jobs running → wait for an exit (a new turn), at most HELPER_JOB_WAIT
 //!                        else → its final text is the answer
 //! TurnEnded Failed       an error answer
-//! the call dropped       Close: the child stops its jobs; drained until SessionClosed
+//! the call dropped       Forget: the child stops its jobs; drained until SessionClosed
 //! ```
 
 use super::{HELPER_JOB_WAIT, HELPER_MAX_MODEL_CALLS, lock};
@@ -256,12 +256,12 @@ impl Drive {
         self.close();
     }
 
-    /// Closes the child: it stops its turn and its jobs, then sends `SessionClosed`.
+    /// Forgets the child: it stops its turn and jobs, drops its transcript, then sends `SessionClosed`.
     fn close(&mut self) {
         if !self.closing {
             self.closing = true;
             self.waiting = None;
-            let _ = self.handle.close();
+            let _ = self.handle.forget();
         }
     }
 }
@@ -285,4 +285,70 @@ fn exit_text(job: &JobLabel, command: &str, exit_code: Option<i32>, tail: &str) 
         let _ = write!(text, "\nLast lines:\n{tail}");
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qm_engine::{CloseReason, FailureKind, SessionCommand, TurnFailure, session_channel};
+    use qm_types::clock::SystemClock;
+    use tokio::sync::Semaphore;
+
+    async fn terminal(outcome: Option<TurnOutcome>) {
+        let (handle, mut side) = session_channel();
+        let (cancel, cancelled) = oneshot::channel();
+        let (answer, _answered) = oneshot::channel();
+        let child = Child {
+            handle,
+            prompt: "helper test".into(),
+            usage: Arc::new(Mutex::new(TurnUsage::default())),
+            clock: Arc::new(SystemClock),
+            cancel: cancelled,
+            answer,
+            slot: Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap(),
+        };
+        let driver = tokio::spawn(drive(child));
+        assert!(matches!(
+            side.commands.recv().await,
+            Some(SessionCommand::StartTurn { .. })
+        ));
+        if let Some(outcome) = outcome {
+            side.events
+                .send(EngineEvent::TurnEnded {
+                    outcome,
+                    usage: TurnUsage::default(),
+                    final_text: "the answer".into(),
+                })
+                .await
+                .unwrap();
+        } else {
+            drop(cancel);
+        }
+        assert_eq!(
+            side.commands.recv().await,
+            Some(SessionCommand::Forget),
+            "every terminal helper path must erase its independently keyed transcript"
+        );
+        side.events
+            .send(EngineEvent::SessionClosed {
+                reason: CloseReason::Requested,
+            })
+            .await
+            .unwrap();
+        driver.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn helpers_forget_on_success_failure_interruption_and_cancellation() {
+        terminal(Some(TurnOutcome::Completed)).await;
+        terminal(Some(TurnOutcome::Failed {
+            failure: TurnFailure {
+                kind: FailureKind::Provider,
+                message: "test failure".into(),
+            },
+        }))
+        .await;
+        terminal(Some(TurnOutcome::Interrupted)).await;
+        terminal(None).await;
+    }
 }

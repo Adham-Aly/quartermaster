@@ -444,11 +444,7 @@ pub(crate) async fn message_task(
         .await
         .map_err(|e| failed(&e))?;
     svc.supervisor_acted(task);
-    Ok(TaskUpdated {
-        task,
-        status,
-        kept_ref: None,
-    })
+    Ok(TaskUpdated { task, status })
 }
 
 /// `link_tasks`.

@@ -493,11 +493,11 @@ fn tasks(out: &mut String, facts: &ContextFacts) {
         return;
     }
     let _ = writeln!(out, "<tasks open=\"{open}\" shown=\"{}\">", shown.len());
-    // The caps keep the newest; the list reads in task order.
-    let mut shown = shown;
-    shown.sort_by_key(|t| t.task);
+    // The facts are newest first, so the caps keep the newest; the rows then read in creation
+    // order, oldest first, like the workers and the projects.
     let rows: Vec<Vec<Cell>> = shown
         .iter()
+        .rev()
         .map(|t| {
             vec![
                 Cell::left(t.task.to_string()),

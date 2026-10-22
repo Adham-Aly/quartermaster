@@ -33,6 +33,7 @@ use qm_core::decisions::{DecisionDeps, DecisionService};
 use qm_core::delivery::ports::ParentPort;
 use qm_core::delivery::probe::GithubDeliveryProbe;
 use qm_core::delivery::{DeliveryCloseFacts, DeliveryDeps, DeliveryService};
+use qm_core::drafts::DraftsPart;
 use qm_core::held::{HeldPart, HeldService, InboxSignal};
 use qm_core::inbox::{Inbox, SeatSink, WakeSink};
 use qm_core::notifications::{DesktopNotifier, NotificationsPart};
@@ -120,6 +121,13 @@ pub(crate) async fn start_core(
     dev_script: Option<Script>,
 ) {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    // Before anything can store a message: the numbers pasted images on disk already name.
+    let attachments = Attachments::new(dir.attachments(), Arc::clone(&clock));
+    let legacy = dir.root().join("attachments");
+    attachments.reserve_numbers(&db, &legacy).await;
+    attachments
+        .migrate_legacy(&db, &legacy, &dir.root().join("drafts"))
+        .await;
     let base = foundations(&dir, &db, config, &clock, dev_script).await;
     let seat = Arc::new(Seat::new(SeatDeps {
         db: db.clone(),
@@ -225,7 +233,7 @@ pub(crate) async fn start_core(
     if let Some(delivery_settling) = &delivery_settling {
         delivery_settling.settling.recover().await;
     }
-    let mut seat_loop = spawn_seat_loop(&db, &clock, seat, &conversation, host, inbox_rx);
+    let mut seat_loop = spawn_seat_loop(&db, &clock, seat, &conversation, host, inbox_rx, &wakes);
     // Every secondmate's loop, idle until work arrives.
     start_secondmates(&secondmates);
     // Resume the crew once the seat runs.
@@ -245,7 +253,6 @@ pub(crate) async fn start_core(
     });
     let notify_config = base.config.subscribe();
     // Pasted images, and their cleanup now and every hour.
-    let attachments = Attachments::new(dir.attachments(), Arc::clone(&clock));
     attachments.clone().spawn_sweeper(db.clone());
 
     let mut parts = settings_parts(&db, &clock, &dir, base, &conversation);
@@ -275,6 +282,7 @@ pub(crate) async fn start_core(
         attachments.clone(),
     )));
     parts.push(Arc::new(updates_part(&dir, &clock, &conversation)));
+    parts.push(Arc::new(DraftsPart::new()));
     // Last, so it sees every card the other parts add.
     parts.push(Arc::new(NotificationsPart::new(
         notify_config,
@@ -486,10 +494,12 @@ fn spawn_seat_loop(
     conversation: &Arc<Conversation>,
     host: Arc<CoreToolHost>,
     inbox_rx: SeatInboxRx,
+    wakes: &Inbox,
 ) -> tokio::task::JoinHandle<()> {
     let turn_loop = TurnLoop::new(
         TurnLoopDeps {
             db: db.clone(),
+            inbox: wakes.clone(),
             clock: Arc::clone(clock),
             seat,
             context: Arc::new(ContextBuilder::new(db.clone(), Arc::clone(clock))),

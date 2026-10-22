@@ -61,6 +61,7 @@ mod bridge;
 mod chrome;
 mod convert;
 mod diff;
+mod draft_sync;
 mod hit;
 pub mod host;
 mod input;

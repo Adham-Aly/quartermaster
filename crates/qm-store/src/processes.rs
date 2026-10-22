@@ -15,9 +15,12 @@
 //! the engine layer; `qm_core::processes` converts.
 
 use crate::StoreError;
+use crate::ids;
+use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::ProcessOwnerKind;
+use qm_types::ids::space;
 use qm_types::ids::{AgentId, TaskId};
 use rusqlite::{Connection, params};
 
@@ -68,13 +71,14 @@ pub enum ProcessEnd {
 /// found by the leftover check.
 pub fn insert_started(conn: &Connection, process: &NewProcess) -> Result<(), StoreError> {
     conn.execute(
-        "INSERT INTO processes (pgid, pid, program, owner, agent_id, job_id, task_id, label, started_at)
+        "INSERT INTO processes (pgid, pid, program, owner, agent_id, job_id, task_id, label, started_at, seq,
+                                id)
          VALUES (?1, ?2, ?3, ?4,
                  CASE WHEN ?4 = 'job' THEN ?5 ELSE (SELECT id FROM agents WHERE id = ?5) END,
                  CASE WHEN ?4 = 'job'
                       THEN (SELECT id FROM jobs WHERE agent_id = ?5 AND label = ?7)
                  END,
-                 (SELECT id FROM tasks WHERE id = ?6), ?7, ?8)",
+                 (SELECT id FROM tasks WHERE id = ?6), ?7, ?8, ?9, ?10)",
         params![
             process.pgid,
             process.pid,
@@ -84,6 +88,8 @@ pub fn insert_started(conn: &Connection, process: &NewProcess) -> Result<(), Sto
             process.task,
             process.label,
             to_millis(process.started_at),
+            seq::next(process.started_at),
+            ids::fresh(conn, "processes", space::ROW)?,
         ],
     )?;
     Ok(())
@@ -128,7 +134,7 @@ pub fn open_groups(conn: &Connection) -> Result<Vec<OpenProcess>, StoreError> {
         "SELECT pgid, pid, program, owner, agent_id, task_id, label, started_at
            FROM processes
           WHERE ended_at IS NULL
-          ORDER BY started_at, id",
+          ORDER BY started_at, seq",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
@@ -174,7 +180,7 @@ pub fn closed_task_port_bases(conn: &Connection) -> Result<Vec<(TaskId, u16)>, S
           WHERE port_base IS NOT NULL
             AND (closed_at IS NOT NULL
                  OR status IN ('landed', 'closed', 'failed', 'stopped', 'discarded'))
-          ORDER BY id",
+          ORDER BY seq",
     )?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, TaskId>(0)?, r.get::<_, i64>(1)?)))?;
     let mut bases = Vec::new();

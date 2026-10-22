@@ -19,6 +19,7 @@ pub mod correlation;
 pub mod crew_view;
 pub mod decisions;
 pub mod delivery;
+pub mod drafts;
 pub mod held;
 pub mod inbox;
 pub mod jobs;

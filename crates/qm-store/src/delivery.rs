@@ -213,7 +213,7 @@ pub fn pending_settle_holds(
     let mut stmt = conn.prepare(
         "SELECT id FROM held_actions
          WHERE task_id = ?1 AND status = 'pending' AND kind IN ('merge', 'push')
-         ORDER BY id",
+         ORDER BY seq",
     )?;
     Ok(stmt
         .query_map(params![task], |r| r.get(0))?
@@ -230,7 +230,7 @@ pub fn unfinished_settle_holds(
         "SELECT id FROM held_actions
          WHERE task_id = ?1 AND status IN ('approved', 'rejected') AND answer IS NULL
            AND kind IN ('merge', 'push')
-         ORDER BY id",
+         ORDER BY seq",
     )?;
     Ok(stmt
         .query_map(params![task], |r| r.get(0))?
@@ -243,7 +243,7 @@ pub fn open_checks(conn: &Connection) -> Result<Vec<TaskId>, StoreError> {
         "SELECT id FROM tasks
          WHERE status <> 'closed' AND pushed_head IS NOT NULL AND checks_state IS NOT NULL
            AND json_extract(checks_state, '$.final') = 0
-         ORDER BY id",
+         ORDER BY seq",
     )?;
     Ok(stmt
         .query_map([], |r| r.get(0))?

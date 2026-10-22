@@ -895,9 +895,22 @@ impl ProjectService {
     /// Writes the project's row and its `project.added` event.
     async fn register(&self, new: NewProject) -> Result<ProjectId, StoreError> {
         let summary = format!("project {} added ({})", new.name, new.origin);
+        // The task numbers its branches already name are reserved before any task can take one.
+        // A folder project has no task branches, and its folder may not be a repository.
+        let checkouts = match new.delivery {
+            DeliveryMode::Folder => Vec::new(),
+            _ => vec![new.path.clone()],
+        };
+        let git = Git::with_program(self.git_program());
+        let leftovers = tokio::task::spawn_blocking(move || {
+            crate::tasks::startup::branch_task_numbers(&git, &checkouts)
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
         self.inner
             .db
             .call(move |conn| {
+                crate::tasks::startup::reserve_scan(leftovers);
                 let tx = conn.transaction()?;
                 let id = projects::insert(&tx, &new)?;
                 events::insert(

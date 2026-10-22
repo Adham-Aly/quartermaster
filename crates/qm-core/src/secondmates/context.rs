@@ -17,7 +17,7 @@ use qm_store::events;
 use qm_store::secondmates;
 use qm_types::BoxFuture;
 use qm_types::clock::Clock;
-use qm_types::ids::{AgentId, EventId, SecondmateId, TaskId, TurnId};
+use qm_types::ids::{AgentId, SecondmateId, TaskId, TurnId};
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
@@ -75,19 +75,15 @@ impl SecondmateContext {
                     .then(|| listed.into_iter().map(|(_, n)| n.to_lowercase()).collect());
                 let own_tasks: HashSet<TaskId> =
                     secondmates::tasks_of(&tx, agent)?.into_iter().collect();
-                let after: Option<EventId> =
-                    qm_store::context::watermark(&tx, agent, turn)?.map(|w| w.event);
-                let before: Option<EventId> = events::turn_started_id(&tx, turn)?;
-                let mut page = events::since(&tx, after, before, ACTIVITY, ACTIVITY_READ)?;
-                page.rows
-                    .retain(|e| e.task.is_some_and(|t| own_tasks.contains(&t)));
+                let range = qm_store::context::range(&tx, agent, turn)?;
+                let mut page =
+                    events::since(&tx, range.after, range.before, ACTIVITY, ACTIVITY_READ)?;
+                page.rows.retain(|e| supervised_by(e, agent));
                 let more = page.rows.len().saturating_sub(SINCE_LINES);
                 page.rows.truncate(SINCE_LINES);
                 page.more = more;
                 let requests = secondmates::open_requests(&tx, id)?;
-                let mut outcomes = events::since(&tx, None, None, &[OUTCOMES], ACTIVITY_READ)?.rows;
-                outcomes.retain(|e| e.task.is_some_and(|t| own_tasks.contains(&t)));
-                outcomes.truncate(RECENT_OUTCOMES);
+                let outcomes = events::latest_of(&tx, OUTCOMES, agent, RECENT_OUTCOMES)?;
                 tx.commit()?;
                 Ok(Slice {
                     scope_projects,
@@ -99,6 +95,15 @@ impl SecondmateContext {
             })
             .await?)
     }
+}
+
+/// Whether `event` belongs to `agent`'s tasks: a task event names its supervisor in its payload.
+fn supervised_by(event: &events::EventRow, agent: AgentId) -> bool {
+    event
+        .payload
+        .get("supervisor")
+        .and_then(serde_json::Value::as_i64)
+        == Some(agent.get())
 }
 
 fn cut(text: &str, max: usize) -> String {
