@@ -115,9 +115,20 @@ pub fn forget_before_turn(
     agent: AgentId,
     turn: TurnId,
 ) -> Result<usize, StoreError> {
+    forget_before_turn_except(conn, agent, turn, &[])
+}
+
+/// Forgets history before `turn`, retaining its input and any protected queued inputs even
+/// when those inputs were stored before this turn began. Returns the number of turns forgotten.
+pub fn forget_before_turn_except(
+    conn: &mut Connection,
+    agent: AgentId,
+    turn: TurnId,
+    protected: &[MessageId],
+) -> Result<usize, StoreError> {
     let before: i64 =
         conn.query_row("SELECT seq FROM turns WHERE id = ?1", [turn], |r| r.get(0))?;
-    forget_conversation(conn, agent, before)
+    forget_conversation_except(conn, agent, before, protected)
 }
 
 /// Forgets every closed task beyond the newest `keep`, with what hangs off it: reports, links,
@@ -416,6 +427,46 @@ mod tests {
         assert_eq!(forgotten, 1, "the turn before the compacting one goes");
         assert_eq!(count(&conn, "turns"), 1, "the compacting turn stays");
         assert_eq!(count(&conn, "session_lines"), 1, "its line stays");
+    }
+
+    #[test]
+    fn automatic_compaction_keeps_current_and_previously_queued_inputs() {
+        let mut conn = working();
+        conn.execute_batch(
+            "INSERT INTO messages (id, agent_id, source, kind, text, created_at, seq) VALUES
+                 (1, 1, 'you', 'message', 'A', 1, 10),
+                 (2, 1, 'you', 'message', 'B', 1, 30),
+                 (3, 1, 'you', 'message', 'C', 1, 40),
+                 (4, 1, 'agent', 'reply', 'A reply', 1, 50);
+             INSERT INTO turns (id, agent_id, started_by, message_id, started_at, ended_at, status, seq)
+                 VALUES (1, 1, 'user', 1, 1, 2, 'completed', 20);
+             INSERT INTO turns (id, agent_id, started_by, message_id, started_at, status, seq)
+                 VALUES (2, 1, 'user', 2, 3, 'running', 60);
+             INSERT INTO session_lines (agent_id, message_id, kind, text, created_at, seq) VALUES
+                 (1, 1, 'you', 'A', 1, 11),
+                 (1, 3, 'you', 'C', 1, 41),
+                 (1, 4, 'agent', 'A reply', 1, 51);
+             INSERT INTO session_lines (agent_id, turn_id, message_id, kind, text, created_at, seq)
+                 VALUES (1, 2, 2, 'you', 'B', 3, 61);",
+        ).expect("B and C queued while A was running");
+
+        assert_eq!(
+            forget_before_turn_except(
+                &mut conn,
+                AgentId::new(1),
+                TurnId::new(2),
+                &[MessageId::new(3)],
+            )
+            .expect("automatic compaction during B"),
+            1,
+        );
+        assert_eq!(count(&conn, "turns"), 1);
+        assert_eq!(count(&conn, "turns WHERE id = 2 AND message_id = 2"), 1);
+        assert_eq!(count(&conn, "messages"), 2);
+        assert_eq!(count(&conn, "messages WHERE id IN (2, 3) AND seq < 60"), 2);
+        assert_eq!(count(&conn, "session_lines"), 2);
+        assert_eq!(count(&conn, "session_lines WHERE message_id IN (2, 3)"), 2);
+        assert_eq!(count(&conn, "pragma_foreign_key_check"), 0);
     }
 
     #[test]

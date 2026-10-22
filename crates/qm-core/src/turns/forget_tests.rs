@@ -315,6 +315,109 @@ async fn explicit_compaction_forgets_old_rows_but_preserves_queued_inputs() {
 }
 
 #[tokio::test]
+async fn automatic_compaction_during_b_keeps_b_and_previously_queued_c() {
+    let mut f = Fixture::new().await;
+    f.loop_
+        .deps
+        .db
+        .call(|conn| {
+            conn.execute_batch(
+                "INSERT INTO messages (id, agent_id, source, kind, text, created_at, seq) VALUES
+                 (2, 1, 'you', 'message', 'B queued while A ran', 1, 30),
+                 (3, 1, 'you', 'message', 'C queued while A ran', 1, 40),
+                 (4, 1, 'agent', 'reply', 'A reply after B and C', 1, 50);",
+            )?;
+            qm_store::seq::observe_all(conn)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    f.loop_.queue.push_user(MessageId::new(2));
+    f.loop_.queue.push_user(MessageId::new(3));
+    let side = &mut f.side;
+    let engine = async {
+        for attempt in 0..2 {
+            // With no tool effects, the turn policy asks for one retry before its notice.
+            assert!(matches!(
+                side.commands.recv().await,
+                Some(SessionCommand::StartTurn { .. })
+            ));
+            side.events.send(EngineEvent::TurnStarted).await.unwrap();
+            if attempt == 0 {
+                side.events
+                    .send(EngineEvent::Compacted {
+                        automatic: true,
+                        tokens_before: Some(100),
+                        tokens_after: Some(10),
+                    })
+                    .await
+                    .unwrap();
+            }
+            side.events
+                .send(EngineEvent::TurnEnded {
+                    outcome: qm_engine::TurnOutcome::Completed,
+                    usage: qm_engine::TurnUsage::default(),
+                    final_text: String::new(),
+                })
+                .await
+                .unwrap();
+        }
+    };
+    let run = async {
+        f.loop_.run_turn(engine_turn::Start::User).await.unwrap();
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(run, engine);
+    })
+    .await
+    .expect("B's turn and automatic compaction finish");
+    assert_eq!(f.loop_.queue.queued(), vec![MessageId::new(3)]);
+    f.loop_
+        .deps
+        .db
+        .call(|conn| {
+            let messages: Vec<u32> = conn
+                .prepare("SELECT id FROM messages ORDER BY id")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            assert_eq!(
+                messages,
+                [2, 3],
+                "current B and unseen C stay; A and its reply go"
+            );
+            let (input, cutoff): (MessageId, i64) = conn.query_row(
+                "SELECT message_id, seq FROM turns WHERE agent_id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            assert_eq!(input, MessageId::new(2));
+            assert!(cutoff > 40, "both queued inputs predate B's turn");
+            assert_eq!(
+                qm_store::messages::waiting(conn, AgentId::new(1))?,
+                vec![MessageId::new(3)]
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM session_lines WHERE text = 'old lines'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                0
+            );
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r
+                    .get::<_, i64>(
+                    0
+                ))?,
+                0
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn clear_forgets_closed_tasks_reports_and_crew_history() {
     let mut f = Fixture::new().await;
     let side = &mut f.side;

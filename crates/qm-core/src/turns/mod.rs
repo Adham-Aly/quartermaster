@@ -523,7 +523,12 @@ impl TurnLoop {
             .db
             .call(move |conn| {
                 match turn {
-                    Some(turn) => qm_store::history::forget_before_turn(conn, agent, turn)?,
+                    Some(turn) => qm_store::history::forget_before_turn_except(
+                        conn,
+                        agent,
+                        turn,
+                        &before.protected,
+                    )?,
                     None => qm_store::history::forget_conversation_except(
                         conn,
                         agent,
