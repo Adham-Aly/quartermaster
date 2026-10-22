@@ -1,4 +1,6 @@
 use super::*;
+use crate::input::draft::Draft;
+use crate::session::SessionUi;
 use crate::settings::{Field, FieldFor};
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,12 +33,6 @@ impl Drop for Home {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
-}
-
-fn png() -> Vec<u8> {
-    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
-    bytes.extend_from_slice(&[7; 64]);
-    bytes
 }
 
 fn crew() -> AgentRef {
@@ -74,16 +70,6 @@ fn the_shared_state_survives_a_restart() {
     app.open_popup(Popup::Settings);
     app.view.help_scroll = 6;
     app.focus = Pane::Settings;
-    app.draft = Draft::new("half a thought and more");
-    app.draft.cursor = Some(4);
-    app.draft.anchor = Some(9);
-    app.view.session = Some(SessionUi::default());
-    app.view
-        .session
-        .as_mut()
-        .unwrap()
-        .drafts
-        .insert(crew(), Draft::new("tell the crew"));
     persist.flush(&app);
     drop(persist);
 
@@ -106,10 +92,6 @@ fn the_shared_state_survives_a_restart() {
         [Popup::Help, Popup::Settings]
     );
     assert_eq!(back.focus, Pane::Settings);
-    assert_eq!(back.draft.text, "half a thought and more");
-    assert_eq!(back.draft.selection(), Some((4, 9)));
-    let sessions = &back.view.session.as_ref().unwrap().drafts;
-    assert_eq!(sessions.get(&crew()).unwrap().text, "tell the crew");
 }
 
 #[test]
@@ -133,9 +115,9 @@ fn changes_are_written_a_second_after_the_last_one() {
     // Nothing changed since loading: nothing is written, however long it takes.
     persist.tick(&app, start);
     persist.tick(&app, start + DEBOUNCE * 3);
-    app.draft = Draft::new("a");
+    app.scroll_from_bottom = 1;
     persist.tick(&app, start + DEBOUNCE * 4);
-    app.draft = Draft::new("ab");
+    app.scroll_from_bottom = 2;
     persist.tick(&app, start + DEBOUNCE * 4 + Duration::from_millis(700));
     // 1.2 s after the first change, but only half a second after the last.
     persist.tick(&app, start + DEBOUNCE * 4 + Duration::from_millis(1200));
@@ -143,11 +125,12 @@ fn changes_are_written_a_second_after_the_last_one() {
     assert!(!home.file().exists());
 
     let (mut app, mut persist) = open(&home);
-    app.draft = Draft::new("abc");
+    app.scroll_from_bottom = 3;
     persist.tick(&app, start);
     persist.tick(&app, start + DEBOUNCE + Duration::from_millis(10));
     drop(persist);
-    assert!(fs::read_to_string(home.file()).unwrap().contains("abc"));
+    let value: Value = serde_json::from_str(&fs::read_to_string(home.file()).unwrap()).unwrap();
+    assert_eq!(value["scroll"]["conversation"], 3);
 }
 
 #[test]
@@ -165,7 +148,6 @@ fn loading_never_fails() {
         let (app, _persist) = open(&home);
         assert!(app.view.popups.is_empty(), "{text}");
         assert_eq!(app.focus, Pane::Input, "{text}");
-        assert!(app.draft.is_empty(), "{text}");
     }
 }
 
@@ -174,15 +156,13 @@ fn one_bad_value_spoils_only_itself() {
     let home = Home::new();
     fs::write(
         home.file(),
-        r#"{"left_width": "wide", "right_width": 9999, "bridge_draft": {"text": "kept", "cursor": "x"},
+        r#"{"left_width": "wide", "right_width": 9999,
             "scroll": {"crew": 5, "task": -1, "help": 99999999999},
             "popups": [{"popup":"Help","anchor":"Centre"}, 7, {"popup":"Help","anchor":"Centre"}],
             "routing_row": 17, "settings_tab": "Routing"}"#,
     )
     .unwrap();
     let (app, _persist) = open(&home);
-    assert_eq!(app.draft.text, "kept");
-    assert_eq!(app.draft.cursor, None);
     assert_eq!(app.view.crew_scroll, 5);
     assert_eq!(app.view.task_scroll, 0);
     assert_eq!(app.view.help_scroll, MAX_SCROLL);
@@ -240,76 +220,26 @@ fn an_api_key_being_typed_is_never_written() {
         text: "sk-secret-do-not-write".to_owned(),
         base_url: None,
     });
-    app.draft = Draft::new("hello");
     persist.flush(&app);
     let text = fs::read_to_string(home.file()).unwrap();
-    assert!(text.contains("hello"));
+    assert!(text.contains("\"version\""));
     assert!(!text.contains("sk-secret"));
 }
 
 #[test]
-fn a_draft_image_is_kept_for_a_restart_and_removed_once_nothing_names_it() {
+fn a_drafts_words_never_reach_the_ui_file() {
     let home = Home::new();
     let (mut app, mut persist) = open(&home);
-    let image = PastedImage::new(1, ImageFormat::Png, png());
-    app.draft = Draft::new(format!("look {} here", image.placeholder()));
-    app.draft.images.push(image);
-    // An image whose placeholder is gone from the text is not kept.
-    app.draft
-        .images
-        .push(PastedImage::new(2, ImageFormat::Png, png()));
-    persist.flush(&app);
-    let folder = home.dir().draft_images();
-    let files: Vec<_> = fs::read_dir(&folder).unwrap().flatten().collect();
-    assert_eq!(files.len(), 1);
-    let mode = fs::metadata(files[0].path()).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o600);
-    drop(persist);
-
-    let (mut back, mut persist) = open(&home);
-    assert_eq!(back.draft.images.len(), 1);
-    assert_eq!(back.draft.images[0].bytes.as_slice(), png().as_slice());
-    assert!(back.draft.text.contains("[Image #1]"));
-    // Sending clears the draft; the file goes with the next save.
-    back.draft = Draft::default();
-    persist.flush(&back);
-    assert_eq!(fs::read_dir(&folder).unwrap().count(), 0);
-}
-
-#[test]
-fn an_image_that_is_gone_or_not_what_it_says_is_dropped_from_the_draft() {
-    let home = Home::new();
-    let (mut app, mut persist) = open(&home);
-    let image = PastedImage::new(1, ImageFormat::Png, png());
-    app.draft = Draft::new(format!("a {}", image.placeholder()));
-    app.draft.images.push(image);
-    persist.flush(&app);
-    drop(persist);
-    let folder = home.dir().draft_images();
-    let file = fs::read_dir(&folder).unwrap().next().unwrap().unwrap();
-    fs::write(file.path(), b"not an image").unwrap();
-    let (back, _persist) = open(&home);
-    assert_eq!(back.draft.images.len(), 0);
-    assert!(back.draft.text.starts_with("a "));
-    // A token that tries to leave the folder is never opened.
-    let text = fs::read_to_string(home.file())
+    app.draft = Draft::new("a secret plan");
+    app.view.session = Some(SessionUi::default());
+    app.view
+        .session
+        .as_mut()
         .unwrap()
-        .replace(&file.file_name().to_string_lossy()[..16], "../../../etc");
-    fs::write(home.file(), text).unwrap();
-    assert_eq!(open(&home).0.draft.images.len(), 0);
-}
-
-#[test]
-fn the_parked_bridge_draft_and_the_shown_session_draft_both_come_back() {
-    let home = Home::new();
-    let (mut app, mut persist) = open(&home);
-    app.draft = Draft::new("for the quartermaster");
-    app.enter_session(crew());
-    app.draft = Draft::new("for the crew");
+        .drafts
+        .insert(crew(), Draft::new("tell the crew"));
     persist.flush(&app);
-    drop(persist);
-    let (back, _persist) = open(&home);
-    assert_eq!(back.draft.text, "for the quartermaster");
-    let sessions = &back.view.session.as_ref().unwrap().drafts;
-    assert_eq!(sessions.get(&crew()).unwrap().text, "for the crew");
+    let text = fs::read_to_string(home.file()).unwrap();
+    assert!(!text.contains("a secret plan"));
+    assert!(!text.contains("tell the crew"));
 }
