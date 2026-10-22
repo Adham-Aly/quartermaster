@@ -41,6 +41,20 @@ pub fn observe(seq: i64) {
     LAST.with(|last| last.set(last.get().max(seq)));
 }
 
+/// Records the largest `seq` of every table in `conn`. Call it on the thread that will write
+/// (the clock is per thread), before it writes anything: after a restart, a clock that has
+/// stepped back must not number a new row below a loaded one.
+pub fn observe_all(conn: &Connection) -> Result<(), crate::StoreError> {
+    for table in TABLES {
+        let newest: Option<i64> =
+            conn.query_row(&format!("SELECT MAX(seq) FROM {table}"), [], |r| r.get(0))?;
+        if let Some(seq) = newest {
+            observe(seq);
+        }
+    }
+    Ok(())
+}
+
 /// The tables that carry a `seq`, one per row kind. Every table in the schema has one.
 pub const TABLES: &[&str] = &[
     "projects",
