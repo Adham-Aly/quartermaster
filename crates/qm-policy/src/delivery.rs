@@ -11,7 +11,7 @@
 //! branch delivered and keeps it locally, where you merge or delete it. Closing keeps the branch
 //! too." A folder task has no branch, so there's nothing to keep and nothing to approve.
 //!
-//! Autonomy: "autonomy off → held action". With autonomy off, a branch-only settle is held too,
+//! Autonomy: "autonomy normal → held action". Under normal autonomy, a branch-only settle is held too,
 //! since every push to a remote is an outward action awaiting approval. A folder settle is never
 //! held: the work is already where you asked for it.
 //!
@@ -121,8 +121,8 @@ pub fn plan(f: &SettleFacts<'_>) -> Result<SettlePlan, Refusal> {
         DeliveryMode::Folder => return Ok(SettlePlan::MarkDone),
     };
     Ok(match f.autonomy {
-        Autonomy::Off => SettlePlan::Hold(Box::new(action)),
-        Autonomy::On => action,
+        Autonomy::Normal => SettlePlan::Hold(Box::new(action)),
+        Autonomy::Auto => action,
     })
 }
 

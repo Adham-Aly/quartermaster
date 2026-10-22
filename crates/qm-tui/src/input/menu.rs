@@ -21,15 +21,23 @@ const INTERRUPT: &str = "Interrupt";
 const COPY_TASK_ID: &str = "Copy task ID";
 const COPY_ID: &str = "Copy ID";
 const COPY_NAME: &str = "Copy name";
-const AUTONOMY_ON: &str = "Turn autonomy on";
-const AUTONOMY_OFF: &str = "Turn autonomy off";
+const AUTONOMY_NORMAL: &str = "Autonomy: normal";
+const AUTONOMY_AUTO: &str = "Autonomy: auto";
 
-/// The menu item that flips `autonomy`.
-fn autonomy_item(autonomy: Autonomy) -> &'static str {
+/// The menu item that sets `autonomy`.
+const fn autonomy_item(autonomy: Autonomy) -> &'static str {
     match autonomy {
-        Autonomy::Off => AUTONOMY_ON,
-        Autonomy::On => AUTONOMY_OFF,
+        Autonomy::Normal => AUTONOMY_NORMAL,
+        Autonomy::Auto => AUTONOMY_AUTO,
     }
+}
+
+/// The autonomy a menu item sets, if it is one of the two.
+fn item_autonomy(item: &str) -> Option<Autonomy> {
+    Autonomy::ALL
+        .iter()
+        .copied()
+        .find(|&a| autonomy_item(a) == item)
 }
 
 /// The items a menu on `target` offers, given the latest snapshot (whether the Quartermaster's
@@ -44,7 +52,7 @@ pub(crate) fn items(target: MenuTarget, snapshot: &Snapshot) -> Vec<&'static str
         MenuTarget::Crew(AgentRef::Quartermaster) if turn_running => vec![INTERRUPT],
         MenuTarget::Crew(AgentRef::Quartermaster) => Vec::new(),
         MenuTarget::Project(i) => match snapshot.projects.get(i) {
-            Some(project) => vec![autonomy_item(project.autonomy), COPY_NAME],
+            Some(_) => vec![AUTONOMY_NORMAL, AUTONOMY_AUTO, COPY_NAME],
             None => Vec::new(),
         },
         MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_) => {
@@ -64,6 +72,11 @@ fn rows<'a>(app: &App, menu: &'a Menu) -> Vec<Item<'a>> {
                     .hint(entry.key())
                     .badge(app.entry_badge(entry))
             }),
+            // The project's current autonomy is marked; choosing it changes nothing.
+            MenuTarget::Project(i) => match (item_autonomy(label), app.snapshot.projects.get(i)) {
+                (Some(a), Some(project)) if project.autonomy == a => Item::new(label).hint("✓"),
+                _ => Item::new(label),
+            },
             _ => Item::new(label),
         })
         .collect()
@@ -176,13 +189,13 @@ impl App {
             (COPY_ID, MenuTarget::Crew(AgentRef::Secondmate { id })) => {
                 self.copy(&id.to_string(), now);
             }
-            (AUTONOMY_ON | AUTONOMY_OFF, MenuTarget::Project(i)) => {
-                let autonomy = if item == AUTONOMY_ON {
-                    Autonomy::On
-                } else {
-                    Autonomy::Off
-                };
-                self.set_project_autonomy(i, autonomy);
+            (AUTONOMY_NORMAL | AUTONOMY_AUTO, MenuTarget::Project(i)) => {
+                let current = self.snapshot.projects.get(i).map(|p| p.autonomy);
+                if let Some(autonomy) = item_autonomy(item)
+                    && current != Some(autonomy)
+                {
+                    self.set_project_autonomy(i, autonomy);
+                }
             }
             (COPY_NAME, MenuTarget::Project(i)) => {
                 if let Some(name) = self.snapshot.projects.get(i).map(|p| p.name.clone()) {
@@ -225,17 +238,23 @@ mod tests {
     }
 
     #[test]
-    fn a_projects_menu_offers_the_autonomy_switch_that_flips_it() {
-        let app = app_with(Autonomy::Off);
-        assert_eq!(
-            items(MenuTarget::Project(0), &app.snapshot),
-            [AUTONOMY_ON, COPY_NAME]
-        );
-        let app = app_with(Autonomy::On);
-        assert_eq!(
-            items(MenuTarget::Project(0), &app.snapshot),
-            [AUTONOMY_OFF, COPY_NAME]
-        );
+    fn a_projects_menu_offers_both_modes_and_marks_the_current_one() {
+        for autonomy in Autonomy::ALL.iter().copied() {
+            let mut app = app_with(autonomy);
+            assert_eq!(
+                items(MenuTarget::Project(0), &app.snapshot),
+                [AUTONOMY_NORMAL, AUTONOMY_AUTO, COPY_NAME]
+            );
+            app.open_menu_for_row(MenuTarget::Project(0));
+            let menu = app.view.menu.take().expect("the menu is open");
+            let marked: Vec<&str> = rows(&app, &menu)
+                .iter()
+                .filter(|item| item.hint == "✓")
+                .map(|item| item.label)
+                .collect();
+            assert_eq!(marked, [autonomy_item(autonomy)]);
+        }
+        let app = app_with(Autonomy::Normal);
         assert_eq!(
             items(MenuTarget::Project(5), &app.snapshot),
             [] as [&str; 0]
@@ -243,20 +262,26 @@ mod tests {
     }
 
     #[test]
-    fn choosing_the_switch_sends_the_users_autonomy_command() {
-        let mut app = app_with(Autonomy::Off);
+    fn choosing_a_mode_sends_the_users_autonomy_command_only_when_it_changes() {
+        let mut app = app_with(Autonomy::Normal);
         app.open_menu_for_row(MenuTarget::Project(0));
-        app.choose_menu_item(0, Instant::now());
+        app.choose_menu_item(1, Instant::now());
         assert_eq!(
             sent_autonomy(&mut app),
-            [("web-app".to_owned(), Autonomy::On)]
+            [("web-app".to_owned(), Autonomy::Auto)]
         );
-        let mut app = app_with(Autonomy::On);
+        let mut app = app_with(Autonomy::Auto);
         app.open_menu_for_row(MenuTarget::Project(0));
         app.choose_menu_item(0, Instant::now());
         assert_eq!(
             sent_autonomy(&mut app),
-            [("web-app".to_owned(), Autonomy::Off)]
+            [("web-app".to_owned(), Autonomy::Normal)]
+        );
+        app.open_menu_for_row(MenuTarget::Project(0));
+        app.choose_menu_item(1, Instant::now());
+        assert!(
+            sent_autonomy(&mut app).is_empty(),
+            "the current mode changes nothing"
         );
     }
 }

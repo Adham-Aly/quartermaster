@@ -232,7 +232,7 @@ pub(crate) fn branch_checks_final(
         task,
         head,
         &reason,
-        Origin::Autonomy,
+        Origin::Auto,
         Some(text),
         at,
     )?;

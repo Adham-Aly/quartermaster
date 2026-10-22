@@ -342,8 +342,8 @@ impl App {
         };
         self.settings_set(|s| &mut s.project_row, i);
         let next = match current {
-            Autonomy::On => Autonomy::Off,
-            Autonomy::Off => Autonomy::On,
+            Autonomy::Auto => Autonomy::Normal,
+            Autonomy::Normal => Autonomy::Auto,
         };
         self.set_project_autonomy(i, next);
     }
@@ -549,7 +549,12 @@ impl App {
                 self.toggle_pin();
             }
             SettingsHit::NotificationsSwitch => self.toggle_notifications(),
-            SettingsHit::ProjectAutonomy(i) => self.toggle_project_autonomy(i),
+            SettingsHit::ProjectAutonomy(i, autonomy) => {
+                self.settings_set(|s| &mut s.project_row, i);
+                if self.snapshot.projects.get(i).map(|p| p.autonomy) != Some(autonomy) {
+                    self.set_project_autonomy(i, autonomy);
+                }
+            }
             SettingsHit::SetupCheck => self.show(Screen::Setup),
             SettingsHit::PinModel => self.open_picker(PickFor::PinModel, hit),
             SettingsHit::PinFallback => self.open_picker(PickFor::PinFallback, hit),

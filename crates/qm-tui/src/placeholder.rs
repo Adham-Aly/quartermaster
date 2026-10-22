@@ -191,7 +191,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("− +", "routing: autocompact window, for every agent"),
             (
                 "a · space",
-                "projects: turn the selected project's autonomy on or off",
+                "projects: flip the selected project between normal and auto",
             ),
             ("n s", "system: notifications, the setup check"),
         ],
@@ -260,10 +260,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("click the Projects box", "how to add a project"),
             ("click outside · ✕", "close the popup"),
             ("double-click", "open a crewmate"),
-            (
-                "right-click",
-                "a row's menu (a project's: its autonomy switch)",
-            ),
+            ("right-click", "a row's menu (a project's: normal or auto)"),
             ("drag a border", "resize the columns beside it"),
             ("drag over text", "select and copy it"),
             ("wheel", "scroll the pane under the pointer"),

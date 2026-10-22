@@ -21,6 +21,7 @@ const SQL: &[&str] = &[
     include_str!("../migrations/0010_parent_cursor.sql"),
     include_str!("../migrations/0011_supervisor_payload.sql"),
     include_str!("../migrations/0012_forgotten_parent_facts.sql"),
+    include_str!("../migrations/0013_autonomy_modes.sql"),
 ];
 
 /// Every migration, in order.
@@ -36,6 +37,7 @@ pub static MIGRATIONS: &[M<'static>] = &[
     M::up(SQL[8]).foreign_key_check(),
     M::up(SQL[9]).foreign_key_check(),
     M::up(SQL[10]).foreign_key_check(),
+    M::up(SQL[11]).foreign_key_check(),
 ];
 
 /// Upgrades an intentionally incomplete mirror. Its foreign keys are repaired and validated only
@@ -108,6 +110,7 @@ mod tests {
 
     #[test]
     fn an_upgrade_names_the_supervisor_on_pre_upgrade_task_events_only() {
+        // Foreign keys off, as `state.db` is migrated (`connection::open_disk`).
         let mut conn = Connection::open_in_memory().expect("memory database");
         conn.pragma_update(None, "foreign_keys", true)
             .expect("foreign keys");
@@ -193,5 +196,76 @@ mod tests {
             )
             .expect("the table list");
         assert_eq!(watermarks, 1);
+    }
+
+    #[test]
+    fn autonomy_off_becomes_normal_and_on_becomes_auto() {
+        // Foreign keys off, as `state.db` is migrated (`connection::open_disk`); the per-migration
+        // `foreign_key_check` still runs.
+        let mut conn = Connection::open_in_memory().expect("memory database");
+        conn.pragma_update(None, "foreign_keys", false)
+            .expect("foreign keys off");
+        // Every migration up to 0011: autonomy was still off or on.
+        Migrations::from_slice(&MIGRATIONS[..10])
+            .to_latest(&mut conn)
+            .expect("the old schema");
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, \
+                 merge_method, autonomy, created_at, seq) VALUES \
+                 (1, 'a', '/a', 'created', 'main', 'direct_pr', 'merge', 'off', 1, 1), \
+                 (2, 'b', '/b', 'created', 'main', 'direct_pr', 'merge', 'on', 2, 2);
+             INSERT INTO agents (id, role, home, status, created_at, seq) \
+             VALUES (1, 'quartermaster', '/home', 'idle', 1, 1);
+             INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, delivery_mode, \
+                 branch, status, created_at, seq) \
+             VALUES (1, 2, 1, 'build', 't', 'g', 'direct_pr', 'qm/task-1', 'running', 1, 3);",
+        )
+        .expect("the old rows");
+
+        migrate(&mut conn).expect("the upgrade");
+
+        let rows: Vec<(i64, String, i64)> = conn
+            .prepare("SELECT id, autonomy, seq FROM projects ORDER BY id")
+            .expect("query")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("rows")
+            .collect::<rusqlite::Result<_>>()
+            .expect("values");
+        assert_eq!(
+            rows,
+            vec![(1, "normal".to_owned(), 1), (2, "auto".to_owned(), 2)]
+        );
+        let task_project: i64 = conn
+            .query_row("SELECT project_id FROM tasks WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .expect("the task");
+        assert_eq!(task_project, 2, "tasks still point at their project");
+        assert!(
+            conn.execute("UPDATE projects SET autonomy = 'on' WHERE id = 1", [])
+                .is_err(),
+            "the old values are refused"
+        );
+        conn.execute(
+            "INSERT INTO projects (name, path, origin, default_branch, delivery_mode, \
+                 merge_method, created_at, seq) \
+             VALUES ('c', '/c', 'created', 'main', 'direct_pr', 'merge', 3, 9)",
+            [],
+        )
+        .expect("a new project");
+        let default: String = conn
+            .query_row("SELECT autonomy FROM projects WHERE name = 'c'", [], |r| {
+                r.get(0)
+            })
+            .expect("the new row");
+        assert_eq!(default, "normal");
+        let indexes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_index_list('projects') WHERE origin = 'c'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the indexes");
+        assert_eq!(indexes, 4, "name, path, workspace and seq indexes are back");
     }
 }

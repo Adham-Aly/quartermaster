@@ -8,8 +8,8 @@
 //!   until the review passes; names checked." "Pushing a fix without declaring a diagnosis
 //!   is refused by `pr_open`" ([`crate::repair::RepairState::on_push`]).
 //! - `settle_task`: "Answer-only tasks can't land; review must have passed for `reviewed`;
-//!   autonomy off → held action; only the approved commit is merged."
-//! - Merging with autonomy off: "The app checks that the PR head is still `a1b2c3d`
+//!   autonomy normal → held action; only the approved commit is merged."
+//! - Merging under normal autonomy: "The app checks that the PR head is still `a1b2c3d`
 //!   and that every required check passed on exactly that commit."
 //! - Changing the level on a running task: "Raising it means the missing validation or
 //!   review must happen before the next push or merge, even if a pull request is already open."
