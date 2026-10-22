@@ -339,17 +339,17 @@ mod tests {
         .expect("insert");
         let autonomy =
             |conn: &Connection| crate::context::projects(conn).expect("read")[0].autonomy;
-        assert_eq!(autonomy(&conn), Autonomy::Off, "off by default");
-        assert!(set_autonomy(&conn, id, Autonomy::On).expect("set"));
-        assert_eq!(autonomy(&conn), Autonomy::On);
+        assert_eq!(autonomy(&conn), Autonomy::Normal, "normal by default");
+        assert!(set_autonomy(&conn, id, Autonomy::Auto).expect("set"));
+        assert_eq!(autonomy(&conn), Autonomy::Auto);
         assert!(
-            !set_autonomy(&conn, id, Autonomy::On).expect("set"),
+            !set_autonomy(&conn, id, Autonomy::Auto).expect("set"),
             "no change"
         );
-        assert!(set_autonomy(&conn, id, Autonomy::Off).expect("set"));
+        assert!(set_autonomy(&conn, id, Autonomy::Normal).expect("set"));
         assert_eq!(
             load(&conn, id).expect("load").expect("row").autonomy,
-            Autonomy::Off
+            Autonomy::Normal
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

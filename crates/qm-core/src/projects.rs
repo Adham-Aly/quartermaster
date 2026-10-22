@@ -71,7 +71,7 @@ pub mod event_kind {
     pub const CONFIGURED: &str = "project.configured";
     pub const REMOVED: &str = "project.removed";
     pub const ADDED: &str = "project.added";
-    /// You turned a project's autonomy on or off (never an agent).
+    /// You set a project's autonomy to normal or auto (never an agent).
     pub const AUTONOMY: &str = "project.autonomy";
 }
 
@@ -1222,7 +1222,7 @@ impl ProjectService {
                             agent: None,
                             task: None,
                             turn: None,
-                            summary: &format!("you turned autonomy {autonomy} for {name}"),
+                            summary: &format!("you set autonomy for {name} to {autonomy}"),
                             payload: serde_json::json!({ "project": name, "autonomy": autonomy }),
                             at,
                         },
@@ -1500,11 +1500,24 @@ impl ProjectService {
 pub struct ProjectsPart {
     projects: ProjectService,
     held: HeldService,
+    /// The tasks, told when autonomy changes so open plans follow it.
+    tasks: Option<crate::tasks::TaskService>,
 }
 
 impl ProjectsPart {
     pub fn new(projects: ProjectService, held: HeldService) -> Self {
-        Self { projects, held }
+        Self {
+            projects,
+            held,
+            tasks: None,
+        }
+    }
+
+    /// Tells `tasks` of each autonomy change, so open plans follow it.
+    #[must_use]
+    pub fn with_tasks(mut self, tasks: crate::tasks::TaskService) -> Self {
+        self.tasks = Some(tasks);
+        self
     }
 
     /// Registers the personal workspace in the background, then asks for a fresh snapshot.
@@ -1525,7 +1538,12 @@ impl ApiPart for ProjectsPart {
         if let qm_types::api::Command::SetProjectAutonomy { project, autonomy } = command {
             return Some(Box::pin(async move {
                 match self.projects.set_autonomy(project, *autonomy).await {
-                    Ok(true) => Handled::Changed,
+                    Ok(true) => {
+                        if let Some(tasks) = &self.tasks {
+                            tasks.autonomy_changed(project).await;
+                        }
+                        Handled::Changed
+                    }
                     Ok(false) => Handled::Unchanged,
                     Err(e) => {
                         tracing::error!(error = %e, "couldn't change the project's autonomy");

@@ -309,7 +309,18 @@ pub(crate) async fn record(
         row.delivery,
         &args,
     )?;
+    // A plan task: `plan.md` is checked for the live mode, and a round under normal autonomy goes
+    // to the user (waiting on them, no supervisor wake) rather than to the supervisor.
+    let plan = if row.kind == TaskKind::Plan {
+        super::plan::before_report(svc, caller, args.outcome).await?
+    } else {
+        None
+    };
+    let to_user = plan
+        .as_ref()
+        .is_some_and(|p| p.to_user && p.state.stage != crate::plans::Stage::Approved);
     let event = match args.outcome {
+        _ if to_user => TaskEvent::NeedsDecision,
         ReportOutcome::Done | ReportOutcome::Blocked => TaskEvent::Reported,
         ReportOutcome::NeedsDecision => TaskEvent::NeedsDecision,
     };
@@ -396,6 +407,22 @@ pub(crate) async fn record(
     let at = svc.clock().now();
     let agent = caller.agent;
     let mut text = wake_text(task, &row, &args);
+    if let Some(plan) = plan
+        .as_ref()
+        .filter(|p| p.state.stage == crate::plans::Stage::Approved)
+    {
+        text.push(' ');
+        text.push_str(&super::plan::ready_text(
+            task,
+            &row,
+            match plan.mode {
+                qm_types::domain::PlanMode::Internal => "is finished under auto autonomy",
+                qm_types::domain::PlanMode::Interactive => {
+                    "is final and approved, with the planner's recommendations"
+                }
+            },
+        ));
+    }
     // A re-report replaces the report that stood.
     let again = matches!(row.status, TaskStatus::Reported | TaskStatus::Settling);
     if again {
@@ -409,11 +436,14 @@ pub(crate) async fn record(
     let from = row.status;
     let supervisor = row.supervisor;
     let outcome = args.outcome;
-    let ack = if outcome == ReportOutcome::NeedsDecision {
+    let ack = if to_user {
+        "Reported. The user has your plan's page; end your turn and wait for their reply."
+    } else if outcome == ReportOutcome::NeedsDecision {
         "Reported. Your supervisor has it; wait for its decision."
     } else {
         "Reported. Your supervisor has it."
     };
+    let round = plan.as_ref().map_or(0, |p| p.state.round);
     svc.write(move |tx, notify| {
         let review = args.review.as_ref();
         let report = reports::insert(
@@ -469,7 +499,18 @@ pub(crate) async fn record(
             }
         }
         task_store::set_status(tx, task, from, to, at)?;
-        if to == TaskStatus::Waiting {
+        if to_user {
+            task_store::set_waiting_on(tx, task, Some(&serde_json::json!({ "plan": round })))?;
+            task_store::event(
+                tx,
+                super::plan::ROUND_EVENT,
+                task,
+                Some(agent),
+                &format!("{task}'s plan round {round} went to the user"),
+                serde_json::json!({ "report": report, "round": round }),
+                at,
+            )?;
+        } else if to == TaskStatus::Waiting {
             task_store::set_waiting_on(
                 tx,
                 task,
@@ -491,6 +532,10 @@ pub(crate) async fn record(
         {
             text.push(' ');
             text.push_str(&note);
+        }
+        if to_user {
+            // The round is the user's: the app posts its card, and the supervisor isn't woken.
+            return Ok(());
         }
         let (kind, key, short) = if outcome == ReportOutcome::NeedsDecision {
             (
@@ -523,6 +568,9 @@ pub(crate) async fn record(
     })
     .await
     .map_err(|e| failed(&e))?;
+    if let Some(plan) = plan {
+        super::plan::after_report(svc, task, plan).await;
+    }
     Ok(Ack {
         note: ack.to_owned(),
     })

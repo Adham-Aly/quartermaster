@@ -100,7 +100,7 @@ fn outcome(o: FileToolOutcome) -> BuiltinOutcome {
 
 impl BuiltinTools for SessionFileTools {
     fn descriptors(&self) -> Vec<ToolDescriptor> {
-        qm_tools::registry::for_role(Role::Crewmate, EngineKind::Provider)
+        qm_tools::registry::for_role(Role::Crewmate, EngineKind::Provider, None)
             .filter(|d| d.scope == EngineScope::ProviderOnly && self.tools.handles(d.name))
             .map(qm_tools::ToolDef::descriptor)
             .collect()

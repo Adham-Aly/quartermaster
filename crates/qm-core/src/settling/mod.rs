@@ -59,8 +59,8 @@ pub const MERGE_CONCLUDED_EVENT: &str = "settle.merge_concluded";
 /// Who asked for the landing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
-    /// `settle_task` with the project's autonomy on at that moment.
-    Autonomy,
+    /// `settle_task` with the project's autonomy auto at that moment.
+    Auto,
     /// Your Approve on the card.
     Approval { held: HeldActionId },
 }
@@ -172,7 +172,7 @@ pub(crate) fn refuse_in(
     }
     let held = match origin {
         Origin::Approval { held } => Some(held),
-        Origin::Autonomy => None,
+        Origin::Auto => None,
     };
     let event = task_store::event(
         tx,
@@ -183,7 +183,7 @@ pub(crate) fn refuse_in(
         serde_json::json!({ "reason": reason, "head": head, "held": held }),
         at,
     )?;
-    if origin == Origin::Autonomy || wake_text.is_some() {
+    if origin == Origin::Auto || wake_text.is_some() {
         let text = wake_text.unwrap_or_else(|| {
             format!("Settling {task} failed: {reason}. Nothing was merged; it's back to reported.")
         });
@@ -208,7 +208,7 @@ pub(crate) fn refuse_in(
 impl fmt::Display for Origin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Autonomy => f.write_str("autonomy"),
+            Self::Auto => f.write_str("auto"),
             Self::Approval { held } => write!(f, "approval of {held}"),
         }
     }

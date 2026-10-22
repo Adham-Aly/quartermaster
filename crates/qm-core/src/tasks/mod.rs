@@ -23,6 +23,7 @@ pub mod env;
 pub mod input;
 pub mod lifecycle;
 pub mod lookup;
+pub mod plan;
 pub mod ports;
 pub mod report;
 pub mod runner;

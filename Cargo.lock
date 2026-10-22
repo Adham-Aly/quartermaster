@@ -2271,12 +2271,14 @@ dependencies = [
  "qm-engine",
  "qm-git",
  "qm-github",
+ "qm-plans",
  "qm-policy",
  "qm-prompts",
  "qm-routing",
  "qm-store",
  "qm-tools",
  "qm-types",
+ "rand 0.9.5",
  "rusqlite",
  "serde",
  "serde_ignored",
@@ -2340,6 +2342,22 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "qm-plans"
+version = "0.2.0"
+dependencies = [
+ "base64 0.22.1",
+ "pulldown-cmark",
+ "qm-types",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "sha2",
+ "syntect",
+ "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]
@@ -2857,6 +2875,15 @@ dependencies = [
  "libc",
  "untrusted 0.9.0",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "roxmltree"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

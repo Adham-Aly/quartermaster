@@ -1,6 +1,6 @@
 //! The projects pane: `●` accent when active, `○` dim otherwise, the name, then the delivery mode
 //! and autonomy dim, aligned on the longest name. Right-click (or `Space`) a row for its menu,
-//! which switches its autonomy.
+//! which sets its autonomy (normal or auto).
 
 use crate::app::App;
 use crate::bridge::{ListRow, draw_list, empty_lines, pane_block, pane_style};
@@ -8,7 +8,7 @@ use crate::hit::{FrameMap, Hit, Pane};
 use crate::text::{truncate, width};
 use crate::theme;
 use qm_types::api::ProjectRow;
-use qm_types::domain::{Autonomy, DeliveryMode};
+use qm_types::domain::DeliveryMode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -59,7 +59,7 @@ pub(crate) fn rows(app: &App, inner_width: u16) -> Vec<ListRow> {
         .collect()
 }
 
-/// One project: `● api-server  PR · auto off` (or `branch · auto on`, `in place · auto off`).
+/// One project: `● api-server  PR · normal` (or `branch · auto`, `in place · normal`).
 /// The name is cut with `…` when the row is narrower than `inner_width`, so the status fits.
 fn line(project: &ProjectRow, name_width: usize, inner_width: u16, hovered: bool) -> Line<'static> {
     let (dot, dot_style) = if project.active {
@@ -73,11 +73,7 @@ fn line(project: &ProjectRow, name_width: usize, inner_width: u16, hovered: bool
         DeliveryMode::BuildInPlace => "in place",
         DeliveryMode::Folder => "folder",
     };
-    let auto = match project.autonomy {
-        Autonomy::Off => "auto off",
-        Autonomy::On => "auto on",
-    };
-    let delivery = format!("{mode} · {auto}");
+    let delivery = format!("{mode} · {}", project.autonomy);
     // The dot and its space, then two cells before the status.
     let room = usize::from(inner_width).saturating_sub(width(&delivery) + 4);
     let name = truncate(&project.name, room.max(1));

@@ -19,6 +19,7 @@ use super::session::{RoutedSession, crewmate_spec};
 use super::start::{PrepareError, gather_for, prepare, routed_session, workplace};
 use super::{TaskService, new_wake};
 use crate::inbox::Inbox;
+use crate::plans;
 use crate::skills::Gathered;
 use crate::turns::{CLAIM_LIMIT, INTERRUPT_GRACE, WAKE_MAX_HOLD, WAKE_QUIET};
 use crate::watchdogs::{SIGNS_RECHECK, TurnEndKind, Watch, perform, signs_of_life};
@@ -37,7 +38,7 @@ use qm_store::turns::REASON_APP_QUIT;
 use qm_store::wakes::{self, ClaimedWake};
 use qm_tools::handler::{Caller, ToolCx, TurnCx};
 use qm_types::domain::{
-    AgentStatus, EngineKind, Role, StartedBy, TaskStatus, TurnStatus, WakeKind,
+    AgentStatus, EngineKind, PlanMode, Role, StartedBy, TaskStatus, TurnStatus, WakeKind,
 };
 use qm_types::ids::{AgentId, MessageId, ModelId, PortBlock, SecondmateId, TaskId, TurnId};
 use std::collections::VecDeque;
@@ -290,6 +291,8 @@ pub(crate) struct CrewRunner {
     stopped_mid_turn: bool,
     /// The signs of life last read, and when.
     signs: Option<(Instant, SignsOfLife)>,
+    /// A plan task's: the plan mode the open session was started in.
+    plan: Option<PlanMode>,
 }
 
 impl CrewRunner {
@@ -325,6 +328,7 @@ impl CrewRunner {
             ending: None,
             stopped_mid_turn: false,
             signs: None,
+            plan: None,
         }
     }
 
@@ -721,6 +725,41 @@ impl CrewRunner {
     // Turns
     // -----------------------------------------------------------------------------------------
 
+    /// A plan task's plan mode from its project's autonomy now; `None` for any other task.
+    async fn live_plan_mode(&self) -> Result<Option<PlanMode>, String> {
+        let task = self.task;
+        let row = self
+            .svc
+            .db()
+            .call(move |conn| task_store::load(conn, task))
+            .await
+            .map_err(|e| e.to_string())?;
+        match row {
+            Some(row) => self.svc.live_plan_mode(&row).await.map_err(|e| e.render()),
+            None => Ok(None),
+        }
+    }
+
+    /// Before a turn: a plan task's session started in another mode than the live one ends, and
+    /// the turn opens a fresh one in the new mode, with its tools, prompt and skill.
+    async fn check_plan_mode(&mut self) {
+        let Some(running) = self.plan else {
+            return;
+        };
+        if self.session.is_none() {
+            return;
+        }
+        let Ok(Some(live)) = self.live_plan_mode().await else {
+            return;
+        };
+        if live == running {
+            return;
+        }
+        tracing::info!(task = %self.task, from = %running, to = %live, "restarting a planner in its new plan mode");
+        self.end_session().await;
+        self.reopen = Some(mode_changed_note(live));
+    }
+
     /// Opens the session if none is open: resuming the stored one unless a new one is needed.
     async fn ensure_session(&mut self) -> Result<(), String> {
         if self.session.is_some() {
@@ -747,6 +786,23 @@ impl CrewRunner {
             .await
             .map_err(|e| e.to_string())?
             .and_then(|a| a.session_ref);
+        // A plan task's session runs in the mode the project's autonomy gives now; a session
+        // started in another mode (the app was down when it changed) is not resumed.
+        let plan = self.live_plan_mode().await?;
+        if let Some(mode) = plan {
+            let dir = self.svc.plan_dir(self.task);
+            let before = tokio::task::spawn_blocking(move || {
+                plans::update(&dir, |s| s.session_mode.replace(mode))
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?
+            .and_then(|(_, before)| before);
+            if before.is_some_and(|b| b != mode) && self.reopen.is_none() {
+                self.reopen = Some(mode_changed_note(mode));
+            }
+        }
+        self.plan = plan;
         let fresh = self.reopen.is_some();
         let resume = if fresh { None } else { stored };
         if fresh {
@@ -765,7 +821,17 @@ impl CrewRunner {
         let place = workplace(&self.svc, self.task)
             .await
             .map_err(|e| e.to_string())?;
-        let spec = crewmate_spec(agent, routed, &paths, &place, *ports, gathered, resume);
+        let with_skill;
+        let gathered = match plan {
+            Some(mode) => {
+                with_skill = crate::skills::with_plan_skill(gathered, &paths.skills, mode)
+                    .map_err(|e| e.to_string())?;
+                &with_skill
+            }
+            None => gathered,
+        };
+        let told = super::session::Told { gathered, plan };
+        let spec = crewmate_spec(agent, routed, &paths, &place, *ports, told, resume);
         let engine =
             self.svc.deps().engines.get(&routed.engine).ok_or_else(|| {
                 format!("the {} engine isn't available on this Mac", routed.engine)
@@ -825,6 +891,7 @@ impl CrewRunner {
 
     /// Runs one turn.
     async fn turn(&mut self, next: NextTurn) {
+        self.check_plan_mode().await;
         if let Err(reason) = self.ensure_session().await {
             self.ending = Some(Ending::Failed(format!(
                 "the crewmate's session couldn't be opened: {reason}"
@@ -1442,9 +1509,11 @@ impl CrewRunner {
         };
         // While a helper agent of the crewmate runs, only its read-only tools work; a helper can
         // call them as the crewmate, and neither acts for the task until it's done.
-        let changes_state = qm_tools::registry::find(Role::Crewmate, name).is_some_and(|d| {
-            d.class != qm_types::rules::ToolClass::Read && d.scope == qm_tools::EngineScope::Both
-        });
+        let changes_state =
+            qm_tools::registry::find(Role::Crewmate, self.plan, name).is_some_and(|d| {
+                d.class != qm_types::rules::ToolClass::Read
+                    && d.scope == qm_tools::EngineScope::Both
+            });
         if changes_state {
             let task = self.task;
             let tool = name.to_owned();
@@ -1476,6 +1545,7 @@ impl CrewRunner {
             turn: Some(TurnCx { turn, started_by }),
             task: Some(self.task),
             secondmate: self.secondmate,
+            plan: self.plan,
         };
         let clock = self.clock();
         let cx = ToolCx {
@@ -1493,7 +1563,7 @@ impl CrewRunner {
 
     /// Our tools the session doesn't offer, bare or prefixed.
     async fn check_tools(&self, offered: &[String]) {
-        let missing: Vec<String> = qm_tools::registry::descriptors(Role::Crewmate)
+        let missing: Vec<String> = qm_tools::registry::descriptors(Role::Crewmate, self.plan)
             .into_iter()
             .map(|d| d.name)
             .filter(|name| {
@@ -1847,6 +1917,22 @@ fn saturating_decrement(n: &AtomicU32) {
             Ok(_) => return,
             Err(actual) => current = actual,
         }
+    }
+}
+
+/// The note a planner's fresh session opens with after its project's autonomy changed.
+fn mode_changed_note(mode: PlanMode) -> String {
+    match mode {
+        PlanMode::Internal => "The project's autonomy changed to auto, so you're in a fresh session \
+             in the new mode. Your plan so far is in $QM_PLAN_DIR/plan.md: continue from it, decide \
+             every open point yourself, and record each choice under \"Decisions made without the \
+             user\"."
+            .to_owned(),
+        PlanMode::Interactive => "The project's autonomy changed to normal, so you're in a fresh \
+             session in the new mode. Your plan so far is in $QM_PLAN_DIR/plan.md: continue from \
+             it, and turn the decisions you made alone, and anything not crystal clear, into \
+             questions for the user."
+            .to_owned(),
     }
 }
 

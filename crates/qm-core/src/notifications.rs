@@ -193,6 +193,11 @@ pub fn waiting(line: &ChatLine) -> Option<Notification> {
             CardKind::Approval => AttentionKind::Approval,
             CardKind::Decision => AttentionKind::Decision,
             CardKind::Question => AttentionKind::Question,
+            CardKind::Plan => match card.heading.as_str() {
+                crate::plans::api::QUESTIONS_HEADING => AttentionKind::Question,
+                crate::plans::api::FINAL_HEADING => AttentionKind::Approval,
+                _ => return None,
+            },
             _ => return None,
         },
         None if line.kind == MessageKind::Question => AttentionKind::Question,

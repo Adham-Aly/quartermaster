@@ -32,6 +32,7 @@ pub(crate) fn rows(card: &Card, message: MessageId, width: u16, hover: Option<Hi
     let glyph = match card.kind {
         CardKind::Notice => "⚠",
         CardKind::Question => "?",
+        CardKind::Plan => "☰",
         _ => "⚑",
     };
     let mut heading = vec![(format!("{glyph} {}", card.heading), colour)];

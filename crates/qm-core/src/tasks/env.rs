@@ -4,6 +4,8 @@
 //!
 //! - `QM_EVIDENCE_DIR`: the task's evidence folder, outside the worktree.
 //! - `QM_PORT_BASE`: the first of the task's ports.
+//! - `QM_PLAN_DIR`: the task's plan folder in the scratch root, when it has one: the plan a
+//!   planner writes, or the copy of the plan a build builds on.
 //! - `GH_CONFIG_DIR`: an empty folder, so `gh` is logged out.
 //! - The push fence, `qm_github::fence::apply`, in layers (see there): every https, http and ssh
 //!   push URL and `origin`'s push URL go to `/dev/null/pushes go through pr_open/…`, which isn't a
@@ -14,7 +16,7 @@
 
 use qm_github::fence;
 use qm_types::data_dir::TaskPaths;
-use qm_types::env::{NEVER_PASSED_TO_AGENTS, QM_EVIDENCE_DIR, QM_PORT_BASE};
+use qm_types::env::{NEVER_PASSED_TO_AGENTS, QM_EVIDENCE_DIR, QM_PLAN_DIR, QM_PORT_BASE};
 use qm_types::ids::PortBlock;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -38,6 +40,12 @@ pub fn crewmate_env(paths: &TaskPaths, ports: PortBlock) -> BTreeMap<String, Str
         absolute(&paths.evidence).to_string_lossy().into_owned(),
     );
     env.insert(QM_PORT_BASE.to_owned(), ports.base.to_string());
+    if paths.plan.is_dir() {
+        env.insert(
+            QM_PLAN_DIR.to_owned(),
+            absolute(&paths.plan).to_string_lossy().into_owned(),
+        );
+    }
     // The GitHub fence: its layers are `qm_github::fence`'s, and the result is held to them before
     // any crewmate process gets it.
     fence::apply(&mut env, &absolute(&gh_dir(paths)).to_string_lossy());

@@ -21,6 +21,8 @@ pub mod secondmates;
 pub mod parent;
 pub mod schedules;
 
+pub mod plans;
+
 /// Every bound handler, e.g. `bind::<ReplyTool>()`.
 pub static HANDLERS: &[Binding] = &[
     bind::<crate::defs::ReplyTool>(),
@@ -62,4 +64,10 @@ pub static HANDLERS: &[Binding] = &[
     bind::<crate::defs::SetVerificationTool>(),
     bind::<crate::defs::ScheduleTool>(),
     bind::<crate::defs::CancelScheduleTool>(),
+    bind::<crate::defs::PlanCheckInteractiveTool>(),
+    bind::<crate::defs::PlanCheckInternalTool>(),
+    bind::<crate::defs::PlanReportInteractiveTool>(),
+    bind::<crate::defs::PlanReportInternalTool>(),
+    bind::<crate::defs::AskDecisionPlanInternalTool>(),
+    bind::<crate::defs::ApprovePlanTool>(),
 ];
