@@ -113,7 +113,6 @@ mod tests {
     use qm_store::wakes::{self, NewWake};
     use qm_tools::handler::ToolFailure;
     use qm_types::data_dir::DataDir;
-    use qm_types::data_dir::DataDir;
     use qm_types::domain::WakeKind;
     use qm_types::ids::{AgentId, SecondmateId};
     use rusqlite::{Connection, params};
