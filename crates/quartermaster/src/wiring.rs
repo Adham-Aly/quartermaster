@@ -27,6 +27,7 @@ use qm_core::attachments::Attachments;
 use qm_core::context_block::ContextBuilder;
 use qm_core::crew_view::CrewPart;
 use qm_core::decisions::cards::DecisionCards;
+use qm_core::drafts::DraftsPart;
 use qm_core::decisions::diff::{DiffPart, GitDiffReader};
 use qm_core::decisions::performer::DecisionPerformer;
 use qm_core::decisions::{DecisionDeps, DecisionService};
@@ -281,6 +282,7 @@ pub(crate) async fn start_core(
         attachments.clone(),
     )));
     parts.push(Arc::new(updates_part(&dir, &clock, &conversation)));
+    parts.push(Arc::new(DraftsPart::new()));
     // Last, so it sees every card the other parts add.
     parts.push(Arc::new(NotificationsPart::new(
         notify_config,

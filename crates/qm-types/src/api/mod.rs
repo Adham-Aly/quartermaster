@@ -23,7 +23,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use tokio::sync::mpsc;
 
+mod draft;
 mod image;
+pub use draft::{DraftImage, DraftTarget, SavedDraft};
 pub use image::{
     ImageBytes, ImageFormat, MAX_IMAGE_BYTES, PastedImage, placeholder as image_placeholder,
 };
@@ -226,6 +228,12 @@ pub enum Command {
     SetWorkspaceFolder {
         folder: String,
     },
+    // ---- Drafts. ----
+    /// Your unsent draft for one prompt, as it now stands. An empty one forgets the draft. The core
+    /// keeps it for the server's run and gives it back in the snapshot; it is never written to disk.
+    SaveDraft {
+        draft: SavedDraft,
+    },
     // ---- Worker sessions. ----
     /// Open a worker's session (the core then fills [`Snapshot::session`]), or close it with
     /// `None` (back to the Bridge).
@@ -406,6 +414,9 @@ pub struct Snapshot {
     /// The app's own updates: the menu's update entry, its popup and the status bar's notice.
     #[serde(default)]
     pub update: UpdateView,
+    /// Your unsent drafts, held by the core. The UI restores them from its first snapshot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drafts: Vec<SavedDraft>,
 }
 
 /// The app's own updates, display-ready. `UpdateView::default()` says nothing at all.
