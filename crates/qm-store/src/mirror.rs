@@ -20,6 +20,9 @@ pub struct Mirror {
     disk: Connection,
     /// Set when a flush failed: the next flush rewrites every kept table, not only the dirty ones.
     stale: bool,
+    /// Set when a rewrite left old contents in the WAL and the checkpoint that erases them was
+    /// busy: the next flush tries again, even with nothing new to write.
+    erasing: bool,
 }
 
 impl Mirror {
@@ -32,7 +35,11 @@ impl Mirror {
         load(&mut mem, path)?;
         disk.execute_batch(&format!("DELETE FROM {}", VOLATILE.join("; DELETE FROM ")))?;
         install_dirty_marks(&mem)?;
-        let mut mirror = Mirror { disk, stale: true };
+        let mut mirror = Mirror {
+            disk,
+            stale: true,
+            erasing: false,
+        };
         mirror.flush(&mem)?;
         mirror.disk.execute_batch("VACUUM")?;
         mirror.checkpoint()?;
@@ -44,23 +51,26 @@ impl Mirror {
     pub fn flush(&mut self, mem: &Connection) -> Result<(), StoreError> {
         let dirty: i64 =
             mem.query_row("SELECT COUNT(*) FROM temp.mirror_dirty", [], |r| r.get(0))?;
-        if dirty == 0 && !self.stale {
+        if dirty == 0 && !self.stale && !self.erasing {
             return Ok(());
         }
-        mem.execute("DELETE FROM temp.mirror_dirty", [])?;
-        match self.sync(mem) {
-            Ok(rewrote) => {
-                self.stale = false;
-                if rewrote {
-                    self.checkpoint()?;
+        if dirty > 0 || self.stale {
+            mem.execute("DELETE FROM temp.mirror_dirty", [])?;
+            match self.sync(mem) {
+                Ok(rewrote) => {
+                    self.stale = false;
+                    self.erasing |= rewrote;
                 }
-                Ok(())
-            }
-            Err(e) => {
-                self.stale = true;
-                Err(e)
+                Err(e) => {
+                    self.stale = true;
+                    return Err(e);
+                }
             }
         }
+        if self.erasing {
+            self.checkpoint()?;
+        }
+        Ok(())
     }
 
     /// Writes the difference for every kept table in one transaction. Returns whether any row was
@@ -76,9 +86,13 @@ impl Mirror {
     }
 
     /// Folds the WAL back into the file and empties it, so the old contents are gone from disk.
-    fn checkpoint(&self) -> Result<(), StoreError> {
-        self.disk
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+    /// The pragma reports whether it could: a reader in the way leaves it busy, and the erasure
+    /// stays pending until a checkpoint completes.
+    fn checkpoint(&mut self) -> Result<(), StoreError> {
+        let busy: i64 = self
+            .disk
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+        self.erasing = busy != 0;
         Ok(())
     }
 }
@@ -454,6 +468,39 @@ mod tests {
             (None, None),
             "an unconsumed wake is delivered again"
         );
+    }
+
+    #[test]
+    fn a_busy_checkpoint_keeps_the_erasure_pending_until_one_completes() {
+        let scratch = Scratch::new("busy-checkpoint");
+        let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
+        mem.execute(
+            "INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, \
+                 merge_method, created_at, seq) \
+             VALUES (2, 'p', '/p', 'created', 'main', 'direct_pr', 'merge', 1, 2)",
+            [],
+        )
+        .expect("a project");
+        mirror.flush(&mem).expect("the project is written");
+
+        // A reader holding its snapshot keeps the checkpoint from finishing.
+        let reader = Connection::open(scratch.state()).expect("a reader");
+        reader.execute_batch("BEGIN").expect("a read transaction");
+        let _: i64 = reader
+            .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+            .expect("the snapshot");
+        mem.execute("DELETE FROM projects WHERE id = 2", [])
+            .expect("the removal");
+        mirror.flush(&mem).expect("the removal is written");
+        assert!(
+            mirror.erasing,
+            "a busy checkpoint leaves the old row in the WAL, so the erasure is pending"
+        );
+
+        reader.execute_batch("COMMIT").expect("the reader lets go");
+        drop(reader);
+        mirror.flush(&mem).expect("the retry needs no new rows");
+        assert!(!mirror.erasing, "the checkpoint completed");
     }
 
     /// Everything `state.db` holds, the WAL included: what a reader of the folder would find.
