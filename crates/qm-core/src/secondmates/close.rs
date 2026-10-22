@@ -34,6 +34,12 @@ impl SecondmateService {
             .await
             .map_err(|e| failed(&e))??;
         self.stop_loop(id);
+        // The folders go now, not at the next start: the loop is stopped and no turn runs.
+        let data = self.inner.deps.data_dir.clone();
+        let removed = tokio::task::spawn_blocking(move || remove_retired_folders(&data, id)).await;
+        if let Ok(Err(e)) = removed {
+            tracing::warn!(error = %e, "couldn't remove a retired secondmate's folders; the next start will");
+        }
         Ok(Ack {
             note: format!(
                 "{id} is retired: its session is closed and it has left the workers list. Its \
@@ -41,6 +47,14 @@ impl SecondmateService {
             ),
         })
     }
+}
+
+/// Removes a retired secondmate's folders: its home, its session and its plugin folder.
+pub(crate) fn remove_retired_folders(
+    data: &qm_types::data_dir::DataDir,
+    id: SecondmateId,
+) -> std::io::Result<()> {
+    qm_types::data_dir::remove_path(&data.secondmate(id).root)
 }
 
 /// [`SecondmateService::close`]'s transaction.
@@ -324,5 +338,25 @@ mod tests {
             rows(&conn, "SELECT COUNT(*) FROM secondmates WHERE id = ?1", id),
             1
         );
+    }
+
+    #[test]
+    fn retiring_removes_the_secondmates_folders_at_once() {
+        let base = std::env::temp_dir().join(format!("qm-retire-folders-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let data = qm_types::data_dir::DataDir::new(base.join("home"));
+        let id: SecondmateId = "SM-3".parse().expect("a secondmate");
+        let home = data.secondmate(id).home;
+        std::fs::create_dir_all(&home).expect("the home");
+        std::fs::write(home.join("note.txt"), "x").expect("a file");
+        let other: SecondmateId = "SM-4".parse().expect("a secondmate");
+        std::fs::create_dir_all(data.secondmate(other).home).expect("another home");
+
+        super::remove_retired_folders(&data, id).expect("removed");
+        let gone = !data.secondmate(id).root.exists();
+        let kept = data.secondmate(other).root.exists();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(gone, "a retired secondmate's folders go at retirement");
+        assert!(kept, "another secondmate's folders stay");
     }
 }
