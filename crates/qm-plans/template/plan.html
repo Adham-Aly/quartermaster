@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+{{head}}
+</head>
+<body>
+<header class="page-head">
+{{header}}
+<div class="page-actions">
+<button type="button" id="theme-toggle" class="tool" aria-label="Switch light or dark">◐ Theme</button>
+<button type="button" id="print" class="tool">Print</button>
+</div>
+{{banner}}
+</header>
+<div class="layout">
+{{outline}}
+<main class="plan">
+{{body}}
+</main>
+</div>
+<footer class="reply-bar" id="reply-bar">
+<span id="reply-count" class="count" aria-live="polite"></span>
+<button type="button" id="take-recommended" class="tool">Take recommended for the rest</button>
+<button type="button" id="clear" class="tool">Clear</button>
+<button type="button" id="copy" class="primary">Copy reply</button>
+<span id="copy-status" class="copy-status" aria-live="polite"></span>
+</footer>
+<dialog id="copy-fallback"><p>Copying isn't allowed here. Select the text below, copy it, and paste it into the chat.</p><textarea id="copy-text" rows="14" readonly></textarea><button type="button" id="copy-close" class="tool">Close</button></dialog>
+<script type="application/json" id="plan-meta">{{meta_json}}</script>
+{{runtime}}
+</body>
+</html>

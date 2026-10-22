@@ -20,6 +20,7 @@ members = [
     "crates/qm-providers",
     "crates/qm-auth",
     "crates/qm-tui",
+    "crates/qm-plans",
     "xtask",
 ]
 
@@ -46,6 +47,7 @@ qm-store = { path = "crates/qm-store" }
 qm-tools = { path = "crates/qm-tools" }
 qm-tui = { path = "crates/qm-tui" }
 qm-types = { path = "crates/qm-types" }
+qm-plans = { path = "crates/qm-plans" }
 
 # Serialisation and schemas.
 schemars = "1.2.3"
@@ -100,6 +102,8 @@ unicode-width = "0.2.2"
 # The setup check's embedded terminal pane.
 portable-pty = "0.9.0"
 vt100 = "0.18.1"
+# Plan pages: the SVG allow-list cleaner's parser.
+roxmltree = "0.21.1"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
