@@ -18,6 +18,7 @@ pub static MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../migrations/0007_tier_entries.sql")).foreign_key_check(),
     M::up(include_str!("../migrations/0008_folder.sql")).foreign_key_check(),
     M::up(include_str!("../migrations/0009_creation_order.sql")).foreign_key_check(),
+    M::up(include_str!("../migrations/0010_parent_cursor.sql")).foreign_key_check(),
 ];
 
 /// The migration set.

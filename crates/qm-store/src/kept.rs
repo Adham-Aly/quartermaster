@@ -63,8 +63,12 @@ pub const KEPT: &[Kept] = &[
                     WHERE removed_at IS NULL OR id IN (SELECT project_id FROM tasks WHERE status <> 'closed'))",
     },
     Kept {
+        // A closed task stays while the pump hasn't read an event of it: its request is
+        // what the fact is sent under.
         table: "tasks",
-        predicate: "status <> 'closed'",
+        predicate: "status <> 'closed' \
+                    OR id IN (SELECT task_id FROM events WHERE task_id IS NOT NULL \
+                              AND seq > (SELECT COALESCE(MAX(event_seq), 0) FROM parent_channel_cursor))",
     },
     Kept {
         table: "task_links",
@@ -94,14 +98,29 @@ pub const KEPT: &[Kept] = &[
         predicate: "dropped_at IS NULL",
     },
     Kept {
+        // Evaluated on the running store too, where closed tasks are still present: so the task
+        // side repeats `tasks`' own predicate, and matches the same requests either way.
         table: "secondmate_requests",
-        predicate: "secondmate_id IN (SELECT id FROM secondmates WHERE retired_at IS NULL) \
-                    AND (status = 'open' \
-                         OR id IN (SELECT secondmate_request_id FROM tasks WHERE status <> 'closed'))",
+        predicate: "(secondmate_id IN (SELECT id FROM secondmates WHERE retired_at IS NULL) \
+                     AND status = 'open') \
+                    OR id IN (SELECT secondmate_request_id FROM tasks \
+                              WHERE status <> 'closed' \
+                                 OR id IN (SELECT task_id FROM events WHERE task_id IS NOT NULL \
+                                           AND seq > (SELECT COALESCE(MAX(event_seq), 0) \
+                                                      FROM parent_channel_cursor)))",
     },
     Kept {
+        // The requests this table keeps (see `secondmate_requests`): the rows follow their request
+        // on disk too, not only at load.
         table: "parent_channel",
-        predicate: "correlation_id IN (SELECT id FROM secondmate_requests)",
+        predicate: "correlation_id IN (SELECT id FROM secondmate_requests \
+                                       WHERE (secondmate_id IN (SELECT id FROM secondmates WHERE retired_at IS NULL) \
+                                              AND status = 'open') \
+                                          OR id IN (SELECT secondmate_request_id FROM tasks \
+                                                    WHERE status <> 'closed' \
+                                                       OR id IN (SELECT task_id FROM events WHERE task_id IS NOT NULL \
+                                                                 AND seq > (SELECT COALESCE(MAX(event_seq), 0) \
+                                                                            FROM parent_channel_cursor))))",
     },
     Kept {
         table: "jobs",
@@ -120,6 +139,10 @@ pub const KEPT: &[Kept] = &[
         predicate: "agent_id IN (SELECT id FROM agents)",
     },
     Kept {
+        table: "parent_channel_cursor",
+        predicate: "1",
+    },
+    Kept {
         table: "events",
         // Block lines not yet seen by the oldest live orchestrator (from the lower of its watermark
         // and the one before it, so a turn that is rolled back still finds its lines); the newest
@@ -136,6 +159,8 @@ pub const KEPT: &[Kept] = &[
                                    ORDER BY seq DESC) AS rank \
                                FROM events WHERE kind LIKE 'outcome.%') WHERE rank <= 5) \
                     OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed') \
+                    OR (task_id IN (SELECT id FROM tasks) \
+                        AND seq > (SELECT COALESCE(MAX(event_seq), 0) FROM parent_channel_cursor)) \
                     OR kind IN ('starter_tiers_seeded', 'settings.model_listed')",
     },
 ];
