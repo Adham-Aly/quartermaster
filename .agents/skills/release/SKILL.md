@@ -14,14 +14,18 @@ Pushing a tag is a GitHub write: do it only when the user asks for this release.
 
 ## Steps
 
-1. Bump `version` under `[workspace.package]` in the root `Cargo.toml`. Every crate inherits it,
-   so that is the only edit.
-2. `cargo build` (not `--locked`) to refresh `Cargo.lock`; `git diff` shows only version lines.
+1. Bump `version` under `[workspace.package]` in the root `Cargo.toml`. Every crate inherits it.
+   Update `.github/release-notes.md` with changes since the last tag, keeping the install command
+   and asset warning first. This is the release history; never hand-edit a `CHANGELOG.md`.
+2. `cargo build` (not `--locked`) to refresh `Cargo.lock`; its diff should contain only version lines.
 3. `cargo xtask ci`.
-4. Commit `chore(release): vX.Y.Z` (no co-author trailer) and `git push origin main`.
-5. Wait for CI on that commit to go green: `gh run list --branch main --limit 3`, `gh run watch <id>`.
-6. `git tag -a vX.Y.Z -m "vX.Y.Z"` and `git push origin vX.Y.Z`. The tag must equal `v` + the
-   workspace version, or dist refuses to build.
+4. Commit `chore(release): vX.Y.Z` (no co-author trailer), open the release PR through `pr_open`,
+   and wait for its checks to pass and the approved PR to merge. Never push directly to main.
+5. After merge, fetch main and confirm CI is green on the release merge commit.
+6. The user tags that merge commit with `git tag -a vX.Y.Z <merge-sha> -m "vX.Y.Z"` and
+   `git push origin vX.Y.Z`. Crewmates cannot push tags: hand off these exact commands rather
+   than bypassing the push fence. The tag must equal `v` + the workspace version, or dist refuses
+   to build.
 7. Watch the Release workflow: `gh run list --workflow release.yml --limit 1`, `gh run watch <id>`.
 8. `gh release view vX.Y.Z` must list, for each target, `quartermaster-<triple>.tar.xz` and its
    `.sha256`, plus `sha256.sum`, `source.tar.gz` and `quartermaster-installer.sh`. The release
