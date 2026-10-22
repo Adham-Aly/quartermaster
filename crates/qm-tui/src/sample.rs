@@ -320,15 +320,15 @@ pub fn snapshot() -> Snapshot {
 }
 
 fn projects() -> Vec<ProjectRow> {
-    let mut api = ProjectRow::new("api-server", DeliveryMode::DirectPr, Autonomy::Off);
+    let mut api = ProjectRow::new("api-server", DeliveryMode::DirectPr, Autonomy::Normal);
     api.active = true;
-    let mut web = ProjectRow::new("web-app", DeliveryMode::DirectPr, Autonomy::On);
+    let mut web = ProjectRow::new("web-app", DeliveryMode::DirectPr, Autonomy::Auto);
     web.active = true;
     vec![
         api,
         web,
-        ProjectRow::new("dotfiles", DeliveryMode::BranchOnly, Autonomy::Off),
-        ProjectRow::new("personal", DeliveryMode::BranchOnly, Autonomy::Off),
+        ProjectRow::new("dotfiles", DeliveryMode::BranchOnly, Autonomy::Normal),
+        ProjectRow::new("personal", DeliveryMode::BranchOnly, Autonomy::Normal),
     ]
 }
 

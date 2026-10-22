@@ -196,7 +196,7 @@ pub struct TaskUpdated {
 
 tool! {
     /// Lands, merges or closes finished work. Answer-only tasks can't land; review must have passed
-    /// for `reviewed`; autonomy off means a held action; only the approved commit is merged.
+    /// for `reviewed`; normal autonomy means a held action; only the approved commit is merged.
     SettleTaskTool {
         name: "settle_task",
         class: Act,

@@ -281,10 +281,33 @@ string_enum! {
 }
 
 string_enum! {
-    /// A project's autonomy switch, off by default; only you change it.
+    /// A project's autonomy, `normal` by default; only you change it. Normal: you approve plans
+    /// in their page, and pull requests, pushes and merges on cards. Auto: the crew decides and
+    /// goes ahead, and asks you only when it can't go on.
     pub enum Autonomy ("autonomy") {
-        Off = "off",
-        On = "on",
+        Normal = "normal",
+        Auto = "auto",
+    }
+}
+
+string_enum! {
+    /// How a plan task plans, chosen by the app from the project's autonomy when the planner's
+    /// session starts; never by the planner. Interactive: the planner questions you through the
+    /// plan's page. Internal: the plan is for the crew, and the planner decides open points itself.
+    pub enum PlanMode ("plan mode") {
+        Interactive = "interactive",
+        Internal = "internal",
+    }
+}
+
+impl PlanMode {
+    /// The plan mode a project's autonomy gives.
+    #[must_use]
+    pub const fn for_autonomy(autonomy: Autonomy) -> Self {
+        match autonomy {
+            Autonomy::Normal => Self::Interactive,
+            Autonomy::Auto => Self::Internal,
+        }
     }
 }
 
@@ -489,7 +512,7 @@ string_enum! {
         AddProject = "add_project",
         Secondmate = "secondmate",
         Decision = "decision",
-        /// A branch-only push to the remote, held when autonomy is off.
+        /// A branch-only push to the remote, held under normal autonomy.
         Push = "push",
     }
 }

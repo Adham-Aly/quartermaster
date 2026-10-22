@@ -147,8 +147,8 @@ pub(crate) enum SettingsHit {
     QuartermasterEffort,
     AutocompactDown,
     AutocompactUp,
-    /// Projects: a project's autonomy switch.
-    ProjectAutonomy(usize),
+    /// Projects: one of a project's two autonomy buttons (normal, auto).
+    ProjectAutonomy(usize, qm_types::domain::Autonomy),
     /// System: the notifications switch and the setup check's "Open".
     NotificationsSwitch,
     SetupCheck,
@@ -499,7 +499,7 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
         ),
         Tab::Projects => (
             "click to change",
-            "a autonomy · f personal folder · esc close",
+            "a normal or auto · f personal folder · esc close",
         ),
     }
 }

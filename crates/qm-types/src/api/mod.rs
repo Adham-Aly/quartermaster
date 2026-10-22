@@ -217,7 +217,7 @@ pub enum Command {
     SetAutocompactWindow {
         tokens: u32,
     },
-    /// Turn a registered project's autonomy on or off (from its menu in the Projects pane, or in
+    /// Set a registered project's autonomy to normal or auto (from its menu in the Projects pane, or in
     /// Settings). Only you send this: no agent tool reaches it.
     SetProjectAutonomy {
         project: String,

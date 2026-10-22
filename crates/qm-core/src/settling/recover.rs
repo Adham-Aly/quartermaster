@@ -367,7 +367,7 @@ async fn conclude(svc: &SettlingService, task: TaskId) -> Result<(), StoreError>
                             task,
                             &head,
                             "the app stopped while settling it",
-                            Origin::Autonomy,
+                            Origin::Auto,
                             Some(text),
                             at,
                         )?;
@@ -528,7 +528,7 @@ async fn read_back(
     };
     let origin = watch
         .held
-        .map_or(Origin::Autonomy, |held| Origin::Approval { held });
+        .map_or(Origin::Auto, |held| Origin::Approval { held });
     svc.tasks()
         .write(move |tx, notify| {
             let Some(row) = task_store::load(tx, task)? else {

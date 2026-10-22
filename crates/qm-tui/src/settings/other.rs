@@ -1,5 +1,5 @@
 //! The Projects and System tabs. Projects shows your projects and how they deliver, with each
-//! one's autonomy switch (yours alone: no agent can change it); System shows this Mac, the notifications switch and the entry
+//! one's autonomy, normal or auto (yours alone: no agent can change it); System shows this Mac, the notifications switch and the entry
 //! to the setup check, with what it found wrong and how to fix it.
 
 use super::paint::Painter;
@@ -39,12 +39,12 @@ pub(super) fn draw_projects(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
         .min(projects.len().saturating_sub(1));
     for (i, project) in projects.iter().enumerate() {
         let y = inner.y + cells(i);
-        let switch = if project.autonomy == Autonomy::On {
-            "● On"
-        } else {
-            "○ Off"
-        };
-        let left = p.button_left_of(right, y, switch, SettingsHit::ProjectAutonomy(i));
+        // `autonomy  ● normal  ○ auto`: one button per mode, the current one filled.
+        let mut left = right;
+        for &mode in Autonomy::ALL.iter().rev() {
+            let label = mode_label(mode, project.autonomy == mode);
+            left = p.button_left_of(left, y, &label, SettingsHit::ProjectAutonomy(i, mode));
+        }
         let label = p.text_left_of(left.saturating_sub(1), y, "autonomy", theme::text());
         let room = usize::from(label.saturating_sub(x + 2));
         p.text(x, y, &truncate(&project.name, room), theme::strong());
@@ -84,7 +84,7 @@ pub(super) fn draw_projects(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
         x,
         y,
         &truncate(
-            "Ask the Quartermaster to add a project or change how it delivers. Only you switch autonomy.",
+            "Ask the Quartermaster to add a project or change how it delivers. Only you set autonomy: normal asks you to approve plans and merges; auto doesn't.",
             room,
         ),
         theme::dim(),
@@ -187,6 +187,11 @@ pub(super) fn draw_system(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     }
 }
 
+/// A mode's button text: `● normal` when it is the project's, `○ auto` when it isn't.
+fn mode_label(mode: Autonomy, current: bool) -> String {
+    format!("{} {mode}", if current { "●" } else { "○" })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,8 +208,8 @@ mod tests {
         app.view.settings.loaded = true;
         app.view.settings.tab = Tab::Projects;
         app.snapshot.projects = vec![
-            ProjectRow::new("api-server", DeliveryMode::DirectPr, Autonomy::Off),
-            ProjectRow::new("web-app", DeliveryMode::DirectPr, Autonomy::On),
+            ProjectRow::new("api-server", DeliveryMode::DirectPr, Autonomy::Normal),
+            ProjectRow::new("web-app", DeliveryMode::DirectPr, Autonomy::Auto),
         ];
         app
     }
@@ -224,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn keys_select_a_project_and_switch_its_autonomy() {
+    fn keys_select_a_project_and_flip_its_autonomy() {
         let mut app = app();
         press(&mut app, KeyCode::Char('a'));
         press(&mut app, KeyCode::Down);
@@ -233,14 +238,14 @@ mod tests {
         assert_eq!(
             sent(&mut app),
             [
-                ("api-server".to_owned(), Autonomy::On),
-                ("web-app".to_owned(), Autonomy::Off),
+                ("api-server".to_owned(), Autonomy::Auto),
+                ("web-app".to_owned(), Autonomy::Normal),
             ]
         );
     }
 
     #[test]
-    fn each_project_row_draws_a_switch_that_a_click_flips() {
+    fn each_project_row_draws_both_modes_and_a_click_sets_one() {
         let mut app = app();
         let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
         let mut hits = Hits::default();
@@ -253,15 +258,42 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let row = |y: u16| -> String { (0..100).map(|x| buffer[(x, y)].symbol()).collect() };
-        let off = hits
-            .rect_of(Hit::Settings(SettingsHit::ProjectAutonomy(0)))
-            .expect("a switch on the first row");
-        let on = hits
-            .rect_of(Hit::Settings(SettingsHit::ProjectAutonomy(1)))
-            .expect("a switch on the second row");
-        assert!(row(off.y).contains("autonomy  ○ Off "), "{}", row(off.y));
-        assert!(row(on.y).contains("autonomy  ● On "), "{}", row(on.y));
-        app.settings_click(SettingsHit::ProjectAutonomy(1), false, Instant::now());
-        assert_eq!(sent(&mut app), [("web-app".to_owned(), Autonomy::Off)]);
+        let normal = hits
+            .rect_of(Hit::Settings(SettingsHit::ProjectAutonomy(
+                0,
+                Autonomy::Normal,
+            )))
+            .expect("normal on the first row");
+        let auto = hits
+            .rect_of(Hit::Settings(SettingsHit::ProjectAutonomy(
+                1,
+                Autonomy::Auto,
+            )))
+            .expect("auto on the second row");
+        assert!(
+            row(normal.y).contains("autonomy  ● normal  ○ auto "),
+            "{}",
+            row(normal.y)
+        );
+        assert!(
+            row(auto.y).contains("autonomy  ○ normal  ● auto "),
+            "{}",
+            row(auto.y)
+        );
+        app.settings_click(
+            SettingsHit::ProjectAutonomy(1, Autonomy::Normal),
+            false,
+            Instant::now(),
+        );
+        app.settings_click(
+            SettingsHit::ProjectAutonomy(0, Autonomy::Normal),
+            false,
+            Instant::now(),
+        );
+        assert_eq!(
+            sent(&mut app),
+            [("web-app".to_owned(), Autonomy::Normal)],
+            "the current mode changes nothing"
+        );
     }
 }

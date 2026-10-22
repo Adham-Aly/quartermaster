@@ -71,7 +71,7 @@ pub mod event_kind {
     pub const CONFIGURED: &str = "project.configured";
     pub const REMOVED: &str = "project.removed";
     pub const ADDED: &str = "project.added";
-    /// You turned a project's autonomy on or off (never an agent).
+    /// You set a project's autonomy to normal or auto (never an agent).
     pub const AUTONOMY: &str = "project.autonomy";
 }
 
@@ -1222,7 +1222,7 @@ impl ProjectService {
                             agent: None,
                             task: None,
                             turn: None,
-                            summary: &format!("you turned autonomy {autonomy} for {name}"),
+                            summary: &format!("you set autonomy for {name} to {autonomy}"),
                             payload: serde_json::json!({ "project": name, "autonomy": autonomy }),
                             at,
                         },
