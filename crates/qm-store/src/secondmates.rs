@@ -219,11 +219,18 @@ pub fn name_taken(conn: &Connection, name: &str) -> Result<bool, StoreError> {
 
 /// Retires secondmate `id` and its agent row, in the caller's transaction. Nothing is deleted:
 /// its history, requests and tasks stay, and its ID is never handed out again (rows are never
-/// removed, so SQLite's next ID is always higher). Returns whether it was active.
+/// removed, so SQLite's next ID is always higher). Its pending schedules are cancelled, since
+/// its loop is stopped and nothing would ever fire them. Returns whether it was active.
 pub fn retire(conn: &Connection, id: SecondmateId, at: Timestamp) -> Result<bool, StoreError> {
     let n = conn.execute(
         "UPDATE secondmates SET retired_at = ?2 WHERE id = ?1 AND retired_at IS NULL",
         params![id, to_millis(at)],
+    )?;
+    conn.execute(
+        "UPDATE schedules SET status = 'cancelled'
+         WHERE status = 'pending'
+           AND owner_agent_id IN (SELECT id FROM agents WHERE secondmate_id = ?1)",
+        params![id],
     )?;
     conn.execute(
         "UPDATE agents SET status = 'retired', retired_at = COALESCE(retired_at, ?2)
