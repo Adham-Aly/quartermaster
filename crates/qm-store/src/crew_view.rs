@@ -97,7 +97,8 @@ pub struct PriorTask {
     pub task: TaskId,
     pub kind: TaskKind,
     pub status: TaskStatus,
-    pub branch: String,
+    /// The task's branch, absent for folder tasks.
+    pub branch: Option<String>,
     /// Where its branch started (`tasks.base_commit`).
     pub base_commit: Option<CommitSha>,
     pub head_commit: Option<CommitSha>,
@@ -283,7 +284,7 @@ pub fn prior_task(conn: &Connection, task: TaskId) -> Result<Option<PriorTask>, 
                 Ok((
                     r.get::<_, TaskKind>(0)?,
                     r.get::<_, TaskStatus>(1)?,
-                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(2)?,
                     r.get::<_, Option<CommitSha>>(3)?,
                     r.get::<_, Option<CommitSha>>(4)?,
                     r.get::<_, String>(5)?,
