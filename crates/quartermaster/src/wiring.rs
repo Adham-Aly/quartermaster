@@ -120,6 +120,9 @@ pub(crate) async fn start_core(
     dev_script: Option<Script>,
 ) {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    // Before anything can store a message: the numbers pasted images on disk already name.
+    let attachments = Attachments::new(dir.attachments(), Arc::clone(&clock));
+    attachments.reserve_numbers(&db).await;
     let base = foundations(&dir, &db, config, &clock, dev_script).await;
     let seat = Arc::new(Seat::new(SeatDeps {
         db: db.clone(),
@@ -245,7 +248,6 @@ pub(crate) async fn start_core(
     });
     let notify_config = base.config.subscribe();
     // Pasted images, and their cleanup now and every hour.
-    let attachments = Attachments::new(dir.attachments(), Arc::clone(&clock));
     attachments.clone().spawn_sweeper(db.clone());
 
     let mut parts = settings_parts(&db, &clock, &dir, base, &conversation);

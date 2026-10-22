@@ -131,6 +131,37 @@ impl Attachments {
         }
     }
 
+    /// Keeps the message numbers the folders here already name out of new messages. Messages live
+    /// in memory, so after a restart a folder can outlive its message while open work still
+    /// names it; a new message with that number would otherwise take the folder. Runs on the
+    /// database thread before anything can store a message (`qm-store` `ids::reserve`).
+    pub async fn reserve_numbers(&self, db: &Db) {
+        let root = self.root.clone();
+        let numbers = match tokio::task::spawn_blocking(move || message_numbers(&root)).await {
+            Ok(Ok(numbers)) => numbers,
+            Ok(Err(e)) if e.kind() == io::ErrorKind::NotFound => return,
+            Ok(Err(e)) => {
+                // Without the list, a new message may take a folder; `move_to` refuses to replace
+                // one, so the image fails instead of the folder going.
+                tracing::error!(error = %e, "couldn't list the attachments folder to reserve its numbers");
+                return;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "couldn't list the attachments folder to reserve its numbers");
+                return;
+            }
+        };
+        let reserved = db
+            .call(move |_| {
+                qm_store::ids::reserve("messages", numbers);
+                Ok(())
+            })
+            .await;
+        if let Err(e) = reserved {
+            tracing::error!(error = %e, "couldn't reserve the attachments' message numbers");
+        }
+    }
+
     /// Runs the startup pass, then [`Attachments::sweep`] every [`SWEEP_EVERY`], for as long as the
     /// runtime runs.
     pub fn spawn_sweeper(self, db: Db) {
@@ -310,14 +341,33 @@ impl Drop for Staged {
     }
 }
 
-/// Renames the staging folder to the message's, replacing a leftover of the same name.
+/// Renames the staging folder to the message's. An existing folder of that name is never
+/// replaced: its images may belong to open work whose message is gone.
 fn move_to(dir: &Path, folder: &Path) -> io::Result<()> {
-    match fs::remove_dir_all(folder) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
+    if fs::symlink_metadata(folder).is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "a folder of that name is already here",
+        ));
     }
     fs::rename(dir, folder)
+}
+
+/// The message numbers named by the `message-<id>` folders in `root`.
+fn message_numbers(root: &Path) -> io::Result<Vec<u32>> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let name = entry?.file_name();
+        let Some(id) = name.to_str().and_then(|n| n.strip_prefix(FOLDER_PREFIX)) else {
+            continue;
+        };
+        if let Ok(n) = id.parse::<u32>()
+            && n.to_string() == id
+        {
+            out.push(n);
+        }
+    }
+    Ok(out)
 }
 
 /// Writes `images` into `root/name/`, each `image-N.<ext>`, private to you (0600).
@@ -547,5 +597,79 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].message, Some(MessageId::new(5)));
+    }
+
+    /// A scratch attachments folder for one test, removed on drop.
+    struct Root(PathBuf);
+
+    impl Root {
+        fn new(name: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "qm-attachments-{name}-{}-{}",
+                std::process::id(),
+                NEXT_STAGING.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&root).expect("a scratch folder");
+            Self(root)
+        }
+    }
+
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_folder_is_never_replaced_by_a_new_message() {
+        let root = Root::new("replace");
+        let folder = root.0.join(folder_name(MessageId::new(7)));
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("image-1.png"), b"open work's").unwrap();
+        let staging = root.0.join(format!("{STAGING_PREFIX}1"));
+        fs::create_dir_all(&staging).unwrap();
+
+        assert!(move_to(&staging, &folder).is_err(), "the folder is taken");
+        assert_eq!(
+            fs::read(folder.join("image-1.png")).unwrap(),
+            b"open work's",
+            "the folder's images are untouched"
+        );
+    }
+
+    #[test]
+    fn the_message_numbers_on_disk_are_the_folders_that_name_one() {
+        let root = Root::new("numbers");
+        for name in [
+            "message-7",
+            "message-42",
+            "message-07",
+            "message-x",
+            ".staging-1",
+        ] {
+            fs::create_dir_all(root.0.join(name)).unwrap();
+        }
+        let mut numbers = message_numbers(&root.0).unwrap();
+        numbers.sort_unstable();
+        assert_eq!(numbers, vec![7, 42]);
+    }
+
+    #[tokio::test]
+    async fn a_number_named_on_disk_is_never_issued_to_a_new_message() {
+        let root = Root::new("reserve");
+        fs::create_dir_all(root.0.join("message-8")).unwrap();
+        let db_path = root.0.join("state.db");
+        let db = Db::open(&db_path).expect("a database");
+        let attachments = Attachments::new(root.0.clone(), Arc::new(qm_types::clock::SystemClock));
+        attachments.reserve_numbers(&db).await;
+        db.call(|conn| {
+            for _ in 0..50 {
+                let n = qm_store::ids::fresh(conn, "messages", 8..=9)?;
+                assert_eq!(n, 9, "8 belongs to a folder on disk");
+            }
+            Ok(())
+        })
+        .await
+        .expect("the numbers");
     }
 }
