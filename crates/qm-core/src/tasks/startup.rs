@@ -788,4 +788,17 @@ mod leftover_tests {
         assert!(refused.is_err(), "no task number is issued until restart");
         let _ = fs::remove_dir_all(&base);
     }
+
+    #[test]
+    fn a_task_folder_an_earlier_run_left_holds_its_number() {
+        let base = std::env::temp_dir().join(format!("qm-folder-held-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let tasks_dir = base.join("tasks");
+        fs::create_dir_all(tasks_dir.join("T-0042")).expect("a leftover folder");
+        fs::create_dir_all(tasks_dir.join("not-a-task")).expect("another folder");
+        let git = Git::with_program("git");
+        let numbers = leftover_task_numbers(&git, &tasks_dir, &[]);
+        assert_eq!(numbers, Ok(vec![42]), "only a task's folder names a number");
+        let _ = fs::remove_dir_all(&base);
+    }
 }
