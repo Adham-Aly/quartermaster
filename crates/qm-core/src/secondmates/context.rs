@@ -75,9 +75,9 @@ impl SecondmateContext {
                     .then(|| listed.into_iter().map(|(_, n)| n.to_lowercase()).collect());
                 let own_tasks: HashSet<TaskId> =
                     secondmates::tasks_of(&tx, agent)?.into_iter().collect();
-                let after = qm_store::context::watermark(&tx, agent, turn)?.map_or(0, |w| w.seq);
-                let before = events::turn_started_seq(&tx, turn)?;
-                let mut page = events::since(&tx, after, before, ACTIVITY, ACTIVITY_READ)?;
+                let range = qm_store::context::range(&tx, agent, turn)?;
+                let mut page =
+                    events::since(&tx, range.after, range.before, ACTIVITY, ACTIVITY_READ)?;
                 page.rows.retain(|e| supervised_by(e, agent));
                 let more = page.rows.len().saturating_sub(SINCE_LINES);
                 page.rows.truncate(SINCE_LINES);

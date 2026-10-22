@@ -176,11 +176,10 @@ struct Gathered {
 fn gather(conn: &mut Connection, agent: AgentId, turn: TurnId) -> Result<Gathered, StoreError> {
     // One read transaction, so every section describes the same moment.
     let tx = conn.transaction()?;
-    let watermark = context::watermark(&tx, agent, turn)?;
-    let after = watermark.map_or(0, |w| w.seq);
-    let before = events::turn_started_seq(&tx, turn)?;
+    let range = context::range(&tx, agent, turn)?;
+    let (after, before) = (range.after, range.before);
     let gathered = Gathered {
-        watermark,
+        watermark: range.watermark,
         projects: context::projects(&tx)?,
         workers: context::workers(&tx)?,
         tasks: context::open_tasks(&tx)?,
@@ -374,8 +373,17 @@ mod tests {
         })
         .await
         .expect("turn A and a line");
+        // A line that lands during turn B belongs to the turn after it, not to B's block.
         let turn_b = db
-            .call(move |conn| begin(conn, agent, 5))
+            .call(move |conn| {
+                let b = begin(conn, agent, 5)?;
+                conn.execute(
+                    "INSERT INTO events (at, kind, summary, payload, seq) \
+                     VALUES (5000, 'task.status', 'AFTER-B-MARK', '{}', ?1)",
+                    [seq_at(5000)],
+                )?;
+                Ok(b)
+            })
             .await
             .expect("turn B");
         let builder = ContextBuilder::new(db.clone(), Arc::clone(&clock));
@@ -418,6 +426,52 @@ mod tests {
             .await
             .expect("the block");
         assert!(!next.contains("LINE-MARK"), "a line is shown once");
+        drop(builder);
+        drop(db);
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn a_first_turns_block_reads_the_same_across_a_restart() {
+        let dir = std::env::temp_dir().join(format!("qm-first-block-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let path = dir.join("state.db");
+        let clock: Arc<dyn Clock> = Arc::new(Still(
+            Timestamp::from_second(1_800_000_000).expect("a time"),
+        ));
+        let agent = AgentId::new(1);
+
+        let db = Db::open(&path).expect("a database");
+        // A line from before the first turn: the first turn's block shows it.
+        let turn = db
+            .call(move |conn| {
+                conn.execute_batch(SETUP)?;
+                conn.execute(
+                    "INSERT INTO events (at, kind, summary, payload, seq) \
+                     VALUES (1000, 'you.notice', 'EARLY-MARK', '{}', ?1)",
+                    [seq_at(1000)],
+                )?;
+                begin(conn, agent, 2)
+            })
+            .await
+            .expect("the first turn");
+        let builder = ContextBuilder::new(db.clone(), Arc::clone(&clock));
+        let before = builder.context_block(agent, turn).await.expect("the block");
+        assert!(
+            before.contains("EARLY-MARK"),
+            "a first turn shows what came before it"
+        );
+        drop(builder);
+        drop(db);
+
+        let db = Db::open(&path).expect("a restart");
+        let builder = ContextBuilder::new(db.clone(), Arc::clone(&clock));
+        let after = builder.context_block(agent, turn).await.expect("the block");
+        assert_eq!(
+            after, before,
+            "the first turn's block is byte-identical across a restart"
+        );
         drop(builder);
         drop(db);
         std::fs::remove_dir_all(&dir).expect("cleanup");
