@@ -112,7 +112,7 @@ mod tests {
     fn an_upgrade_names_the_supervisor_on_pre_upgrade_task_events_only() {
         // Foreign keys off, as `state.db` is migrated (`connection::open_disk`).
         let mut conn = Connection::open_in_memory().expect("memory database");
-        conn.pragma_update(None, "foreign_keys", true)
+        conn.pragma_update(None, "foreign_keys", false)
             .expect("foreign keys");
         // Through 0010, before 0011 added supervisors to event payloads.
         Migrations::from_slice(&MIGRATIONS[..9])
