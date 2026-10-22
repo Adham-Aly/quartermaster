@@ -13,11 +13,18 @@ use std::path::{Component, Path, PathBuf};
 /// temporary folder is otherwise a write root.
 const APP_SCRATCH: &str = "/tmp/quartermaster";
 
+/// A write root inside the app's scratch root grants writes there only when it names one caller's
+/// own subtree: `<uid>/<data directory>/<kind>/<name>` and deeper. A broader root (the scratch root,
+/// a user's or a data directory's folder, or `/tmp` itself) grants nothing inside it.
+const SCRATCH_SUBTREE_DEPTH: usize = 4;
+
 /// The folders writes may go to, canonicalised: the explicit write roots, then the temporary
-/// folders, minus the app's scratch root.
+/// folders, minus the app's scratch root, which only a caller's own subtree (see
+/// [`SCRATCH_SUBTREE_DEPTH`]) can reopen.
 #[derive(Debug, Clone)]
 pub(super) struct WritePolicy {
     roots: Vec<PathBuf>,
+    scratch_roots: Vec<PathBuf>,
     temp: Vec<PathBuf>,
     denied: PathBuf,
 }
@@ -33,8 +40,17 @@ impl WritePolicy {
         let roots = canonical(&mut write_roots.iter().cloned());
         let temp = canonical(&mut [std::env::temp_dir(), PathBuf::from("/tmp")].into_iter());
         let denied = real_path(&normalize(Path::new(APP_SCRATCH)));
+        let scratch_roots = roots
+            .iter()
+            .filter(|root| {
+                root.strip_prefix(&denied)
+                    .is_ok_and(|rest| rest.components().count() >= SCRATCH_SUBTREE_DEPTH)
+            })
+            .cloned()
+            .collect();
         Self {
             roots,
+            scratch_roots,
             temp,
             denied,
         }
@@ -43,13 +59,23 @@ impl WritePolicy {
     /// The real path to write for `path`, or the refusal.
     pub(super) fn check(&self, path: &Path) -> Result<PathBuf, String> {
         let target = real_path(&normalize(path));
-        if self.roots.iter().any(|root| target.starts_with(root)) {
-            Ok(target)
-        } else if target.starts_with(&self.denied) {
-            Err(format!(
+        // The deny comes first: an ancestor root (`/tmp`, a folder above the scratch root) must not
+        // reach into it.
+        if target.starts_with(&self.denied) {
+            if self
+                .scratch_roots
+                .iter()
+                .any(|root| target.starts_with(root))
+            {
+                return Ok(target);
+            }
+            return Err(format!(
                 "refused: {} is inside the app's own scratch folder, which no agent writes to",
                 path.display()
-            ))
+            ));
+        }
+        if self.roots.iter().any(|root| target.starts_with(root)) {
+            Ok(target)
         } else if self.temp.iter().any(|root| target.starts_with(root)) {
             Ok(target)
         } else {
@@ -140,6 +166,25 @@ mod tests {
                 .check(&Path::new(APP_SCRATCH).join("1000/abc/attachments/x.png"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_broad_root_never_reaches_into_the_scratch_folder() {
+        let inside = Path::new(APP_SCRATCH).join("1000/abc/evidence/T-0042/run.log");
+        for root in [
+            PathBuf::from("/tmp"),
+            PathBuf::from(APP_SCRATCH),
+            Path::new(APP_SCRATCH).join("1000"),
+            Path::new(APP_SCRATCH).join("1000/abc"),
+            Path::new(APP_SCRATCH).join("1000/abc/evidence"),
+        ] {
+            let policy = WritePolicy::new(std::slice::from_ref(&root));
+            assert!(
+                policy.check(&inside).is_err(),
+                "{} grants nothing inside the scratch folder",
+                root.display()
+            );
+        }
     }
 
     #[test]
