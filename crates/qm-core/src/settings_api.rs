@@ -8,7 +8,7 @@
 //!   Claude is detected from your `claude` login instead. API keys are checked with
 //!   `qm_auth::api_key` before anything is stored. A new account's credential goes into the
 //!   credential store first, then its `accounts` row, then its models are read and its provider's
-//!   starter tiers seeded (`routing::detect_account`), so the login screen can say what it found.
+//!   existing tiers preserved (`routing::detect_account`), so the login screen can say what it found.
 //! - **Reconnecting an account.** A login or key that reconnects an account whose login broke
 //!   replaces its credential **in place**: the new credential is saved under the account's existing
 //!   key (`TokenKeeper::save_in_place`, which clears its `LoginHealth` problem, so routing uses it
@@ -957,7 +957,7 @@ impl Inner {
         self.db.call(move |conn| insert_unique(conn, new)).await
     }
 
-    /// Reads a new account's models and seeds its provider's starter tiers.
+    /// Reads a new account's models without changing tier placements.
     async fn detect(&self, row: &AccountRow) -> Result<(u32, bool), String> {
         let engine = self.engines.get(&row.engine).ok_or_else(|| {
             format!(

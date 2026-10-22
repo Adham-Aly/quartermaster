@@ -127,6 +127,9 @@ impl App {
             }
             _ => {}
         }
+        if self.on_model_setup_key(key.code) {
+            return;
+        }
         if self.focus == Pane::Input {
             // A closed session takes no text.
             if self.shown_session().is_none() || self.session_open() {
@@ -152,6 +155,22 @@ impl App {
             // Popups' panes: their keys are theirs.
             Pane::Settings | Pane::Help | Pane::Input => {}
         }
+    }
+
+    fn on_model_setup_key(&mut self, code: KeyCode) -> bool {
+        if self.snapshot.model_setup_notice.is_none() || self.shown_session().is_some() {
+            return false;
+        }
+        let entry = match code {
+            KeyCode::Char(',') => Some(MenuEntry::Settings),
+            KeyCode::Char('?') => Some(MenuEntry::Help),
+            _ => None,
+        };
+        if let Some(entry) = entry {
+            self.choose_entry(entry);
+            return true;
+        }
+        self.focus == Pane::Input
     }
 
     fn on_menu_key(&mut self, code: KeyCode, now: Instant) {

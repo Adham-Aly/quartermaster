@@ -5,16 +5,16 @@
 //!   with what's stored.
 //! - **New models are never used automatically.** A model that newly appears is marked new and
 //!   starts "not in use": [`pool`] leaves it out until a placement made after it appeared puts it
-//!   in a tier. The first list read for an account isn't "new" (the starter set covers it), nor is
+//!   in a tier. The first list read for an account isn't marked "new", nor is
 //!   a model you already have through another account.
 //! - **Announcements happen once.** A model's appearance and disappearance are each announced by
 //!   one `events` row (`model.new`, `model.gone`; the announcement line is the row's `summary`),
 //!   written at the moment of the change in the caller's transaction, so a repeat read never
 //!   announces again.
 //! - **Gone models keep their placement** in case they return; they just drop out of the pool.
-//! - **Starter tiers are seeded once per provider** ([`seed_starter_placements`]): an
-//!   `events` row (`starter_tiers_seeded`) records it, and the inserts never touch an existing
-//!   placement, so your later changes are never overwritten.
+//! - **Legacy starter presets** ([`seed_starter_placements`]) can record a once-per-provider
+//!   `starter_tiers_seeded` event without overwriting placements. Account detection no longer
+//!   invokes this helper: model levels start empty until the user configures them.
 //!
 //! `models.capabilities` holds `{image_input, context_window, generation, known, source}`: `known =
 //! false` means the catalog didn't know the model and cautious defaults apply; `source` is

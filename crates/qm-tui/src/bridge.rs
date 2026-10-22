@@ -140,6 +140,30 @@ pub(crate) fn draw_body(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut 
 /// The middle column's Quartermaster: the conversation above your input, and the slash-command
 /// menu while it shows.
 fn draw_conversation(frame: &mut Frame<'_>, middle: Rect, app: &App, map: &mut FrameMap) {
+    if let Some(notice) = &app.snapshot.model_setup_notice {
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(theme::dim())
+            .title(" Quartermaster ");
+        let inside = block.inner(middle);
+        frame.render_widget(block, middle);
+        let lines = wrap(notice, inside.width.saturating_sub(2) as usize);
+        let height = u16::try_from(lines.len())
+            .unwrap_or(u16::MAX)
+            .min(inside.height);
+        let area = Rect {
+            y: inside.y + inside.height.saturating_sub(height) / 2,
+            height,
+            ..inside
+        };
+        frame.render_widget(
+            Paragraph::new(lines.join("\n"))
+                .style(theme::dim())
+                .alignment(ratatui::layout::Alignment::Center),
+            area,
+        );
+        return;
+    }
     let input_height = input_box::height(app, middle.width).min(middle.height / 2);
     let input_area = Rect {
         y: middle.bottom() - input_height,
@@ -244,5 +268,109 @@ pub(crate) fn draw_list(
         if let Some(hit) = row.hit {
             map.hits.add(wide, hit);
         }
+    }
+}
+
+#[cfg(test)]
+mod model_setup_notice_tests {
+    use super::*;
+    use crate::input::draft::Draft;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use qm_types::api::{AgentRef, Command, Update};
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::time::Instant;
+
+    const NOTICE: &str =
+        "Choose a model in Settings before sending a message to the Quartermaster.";
+
+    fn blocked(text: &str) -> App {
+        let mut app = App::new();
+        app.snapshot.model_setup_notice = Some(NOTICE.to_owned());
+        app.focus = Pane::Input;
+        app.draft = Draft::new(text.to_owned());
+        app.take_commands();
+        app
+    }
+
+    #[test]
+    fn model_setup_notice_is_centered_dim_and_wraps_at_narrow_widths() {
+        for width in [80, 36, 20] {
+            let app = blocked("unsent draft");
+            let area = Rect::new(0, 0, width, 18);
+            let mut terminal = Terminal::new(TestBackend::new(width, area.height)).unwrap();
+            let mut map = FrameMap::default();
+            terminal
+                .draw(|frame| draw_conversation(frame, area, &app, &mut map))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let lines = wrap(NOTICE, usize::from(width - 4));
+            let first_y = 1 + (16 - u16::try_from(lines.len()).unwrap()) / 2;
+            for (offset, line) in lines.iter().enumerate() {
+                let y = first_y + u16::try_from(offset).unwrap();
+                let row: String = (1..width - 1).map(|x| buffer[(x, y)].symbol()).collect();
+                assert_eq!(row.trim(), line);
+                let x = 1 + (width - 2 - u16::try_from(line.len()).unwrap()).div_ceil(2);
+                assert_eq!(row.find(line).unwrap(), usize::from(x - 1));
+                for column in x..x + u16::try_from(line.len()).unwrap() {
+                    assert_eq!(buffer[(column, y)].fg, theme::dim().fg.unwrap());
+                }
+            }
+            assert!(map.hits.rect_of(Hit::Pane(Pane::Input)).is_none());
+            assert_eq!(map.scroll_areas, [] as [(Rect, Pane); 0]);
+        }
+    }
+
+    #[test]
+    fn model_setup_notice_blocks_enter_ctrl_shortcuts_and_slash_dispatch() {
+        for text in ["keep this draft", "/clear", "/compact"] {
+            for (code, modifiers) in [
+                (KeyCode::Enter, KeyModifiers::NONE),
+                (KeyCode::Enter, KeyModifiers::CONTROL),
+                (KeyCode::Char('j'), KeyModifiers::CONTROL),
+                (KeyCode::Char('d'), KeyModifiers::CONTROL),
+                (KeyCode::Char('/'), KeyModifiers::NONE),
+            ] {
+                let mut app = blocked(text);
+                app.on_key(KeyEvent::new(code, modifiers), Instant::now());
+                assert!(app.take_commands().is_empty(), "{text}: {code:?}");
+                assert_eq!(app.draft.text, text, "{code:?}");
+                app.send_input();
+                assert_eq!(app.take_commands(), [] as [Command; 0]);
+                assert_eq!(app.draft.text, text);
+            }
+        }
+    }
+
+    #[test]
+    fn model_setup_notice_comma_opens_settings_with_input_focused() {
+        let mut app = blocked("keep this draft");
+        app.on_key(
+            KeyEvent::new(KeyCode::Char(','), KeyModifiers::NONE),
+            Instant::now(),
+        );
+        assert_eq!(app.popup(), Some(crate::popups::Popup::Settings));
+        assert_eq!(app.draft.text, "keep this draft");
+        assert_eq!(app.focus, Pane::Input);
+    }
+
+    #[test]
+    fn model_setup_notice_unblocking_snapshot_preserves_draft_and_allows_send() {
+        let mut app = blocked("keep this draft");
+        app.on_update(Update::Snapshot(Box::default()));
+        assert!(app.snapshot.model_setup_notice.is_none());
+        assert_eq!(app.draft.text, "keep this draft");
+        app.on_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            Instant::now(),
+        );
+        assert_eq!(
+            app.take_commands(),
+            [Command::Send {
+                to: AgentRef::Quartermaster,
+                text: "keep this draft".to_owned(),
+                images: Vec::new(),
+            }]
+        );
+        assert_eq!(app.draft.text, "");
     }
 }
