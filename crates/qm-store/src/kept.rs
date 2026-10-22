@@ -4,7 +4,9 @@
 //! satisfy each table's predicate here. Every table is in exactly one of [`KEPT`] or [`VOLATILE`],
 //! and a test holds that. A predicate may look at other tables, so the order of [`KEPT`] matters
 //! when rows are pruned at load: a table's predicate sees the tables before it, already pruned.
-//! That is why `agents` comes before `block_watermarks`, and `events` last.
+//! That is why `agents` comes before `secondmates` (a retired secondmate's row stays while
+//! anything still points at its agent, so `null_dangling` never has to null that link) and
+//! `block_watermarks`, and `events` comes last.
 //!
 //! The predicates use `COALESCE(…, 0)` in SQL: a NULL result keeps nothing.
 
@@ -35,16 +37,6 @@ pub const KEPT: &[Kept] = &[
         predicate: "removed_at IS NULL OR id IN (SELECT project_id FROM tasks WHERE status <> 'closed')",
     },
     Kept {
-        table: "secondmates",
-        predicate: "retired_at IS NULL",
-    },
-    Kept {
-        table: "secondmate_projects",
-        predicate: "secondmate_id IN (SELECT id FROM secondmates WHERE retired_at IS NULL) \
-                    AND project_id IN (SELECT id FROM projects \
-                    WHERE removed_at IS NULL OR id IN (SELECT project_id FROM tasks WHERE status <> 'closed'))",
-    },
-    Kept {
         table: "agents",
         predicate: "retired_at IS NULL \
                     OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed') \
@@ -58,6 +50,17 @@ pub const KEPT: &[Kept] = &[
                               WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed')) \
                     OR id IN (SELECT agent_id FROM jobs \
                               WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed'))",
+    },
+    Kept {
+        table: "secondmates",
+        predicate: "retired_at IS NULL \
+                    OR id IN (SELECT secondmate_id FROM agents WHERE secondmate_id IS NOT NULL)",
+    },
+    Kept {
+        table: "secondmate_projects",
+        predicate: "secondmate_id IN (SELECT id FROM secondmates WHERE retired_at IS NULL) \
+                    AND project_id IN (SELECT id FROM projects \
+                    WHERE removed_at IS NULL OR id IN (SELECT project_id FROM tasks WHERE status <> 'closed'))",
     },
     Kept {
         table: "tasks",

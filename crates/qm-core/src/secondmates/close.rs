@@ -94,9 +94,12 @@ pub(crate) fn close_in(
 mod tests {
     use super::close_in;
     use qm_store::context::{WorkerRow, workers};
+    use qm_store::schedules::{self, NewSchedule};
     use qm_store::secondmates::{self, NewSecondmate};
+    use qm_store::wakes::{self, NewWake};
     use qm_tools::handler::ToolFailure;
     use qm_types::data_dir::DataDir;
+    use qm_types::domain::WakeKind;
     use qm_types::ids::{AgentId, SecondmateId};
     use rusqlite::{Connection, params};
     use std::path::PathBuf;
@@ -240,5 +243,86 @@ mod tests {
         let (_, other) = f.secondmate("Api");
         assert!(refusal(f.close(other, id)).contains("isn't your secondmate"));
         assert!(f.listed(id));
+    }
+
+    /// Loads `state.db` the way a restart does: the kept rows, pruned, in a fresh connection.
+    fn restart(f: &Fixture) -> Connection {
+        let (conn, _mirror) =
+            qm_store::mirror::Mirror::open(&f.dir.join("state.db")).expect("restart");
+        conn
+    }
+
+    fn rows(conn: &Connection, sql: &str, id: SecondmateId) -> i64 {
+        conn.query_row(sql, params![id], |r| r.get(0))
+            .expect("count")
+    }
+
+    #[test]
+    fn a_retired_secondmate_with_a_pending_schedule_survives_a_restart() {
+        let mut f = Fixture::new("schedule");
+        let (id, agent) = f.secondmate("Web");
+        let now = jiff::Timestamp::now();
+        schedules::insert(
+            &f.conn,
+            &NewSchedule {
+                owner: agent,
+                due_at: now,
+                tz: "UTC",
+                what: "check the build",
+                turn: None,
+                at: now,
+            },
+        )
+        .expect("schedule");
+        f.close(f.qm, id).expect("retired");
+        assert_eq!(schedules::pending(&f.conn).expect("pending").len(), 0);
+        // Retiring cancelled the schedule, so nothing keeps the agent: its parent goes with it.
+        let conn = restart(&f);
+        assert_eq!(
+            rows(
+                &conn,
+                "SELECT COUNT(*) FROM agents WHERE secondmate_id = ?1",
+                id
+            ),
+            0
+        );
+        assert_eq!(
+            rows(&conn, "SELECT COUNT(*) FROM secondmates WHERE id = ?1", id),
+            0
+        );
+    }
+
+    #[test]
+    fn a_retired_secondmate_still_wanted_by_a_wake_survives_a_restart() {
+        let mut f = Fixture::new("wake");
+        let (id, agent) = f.secondmate("Web");
+        wakes::insert_wake(
+            &f.conn,
+            &NewWake {
+                target: agent,
+                kind: WakeKind::Checks,
+                payload: serde_json::json!({}),
+                dedupe_key: "checks-1".into(),
+                task: None,
+                at: jiff::Timestamp::now(),
+            },
+        )
+        .expect("wake");
+        f.close(f.qm, id).expect("retired");
+        // The unconsumed wake keeps the agent row, so its parent row is kept with it, and the
+        // restart links them the same way.
+        let conn = restart(&f);
+        assert_eq!(
+            rows(
+                &conn,
+                "SELECT COUNT(*) FROM agents WHERE secondmate_id = ?1",
+                id
+            ),
+            1
+        );
+        assert_eq!(
+            rows(&conn, "SELECT COUNT(*) FROM secondmates WHERE id = ?1", id),
+            1
+        );
     }
 }
