@@ -258,7 +258,10 @@ pub(crate) async fn retire(
         Some(project) if row.status != TaskStatus::Queued && folder_left.is_none() => {
             let git = svc.deps().git.clone();
             let paths = svc.deps().data_dir.task(task);
-            let keep_branch = matches!(exit, Exit::Landed) && close_keeps_branch(row.delivery);
+            // Only a task whose base was recorded made its branch (creation records the base before
+            // it makes the branch), so only it may delete the branch: any other is kept as it is.
+            let keep_branch = row.base_commit.is_none()
+                || (matches!(exit, Exit::Landed) && close_keeps_branch(row.delivery));
             let checkout = project.path.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let repo = Repo::open(git, &checkout)?;
