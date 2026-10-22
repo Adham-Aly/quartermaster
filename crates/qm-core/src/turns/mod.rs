@@ -39,7 +39,7 @@ pub use recover::{QUIT_REASON, RERUN_USER_TURNS_AFTER_QUIT};
 use crate::turn_io::{
     ChatLog, ContextSource, OpenReason, SeatError, SeatInboxRx, SeatInput, SeatSession, SeatStatus,
 };
-use qm_engine::{CloseReason, EngineEvent, SessionHandle};
+use qm_engine::{CloseReason, EngineError, EngineEvent, SessionHandle};
 use qm_store::db::Db;
 use qm_tools::handler::{Dispatcher, ToolHost};
 use qm_types::BoxFuture;
@@ -254,7 +254,8 @@ impl TurnLoop {
         }
         loop {
             if self.shutting_down {
-                self.close_session().await;
+                // Retired, or the app is quitting: either way the conversation is over.
+                self.forget_session().await;
                 self.publish();
                 return Ok(());
             }
@@ -545,10 +546,20 @@ impl TurnLoop {
 
     /// Closes the session (`Close`, then up to [`INTERRUPT_GRACE`] for `SessionClosed`).
     async fn close_session(&mut self) {
+        self.end_session(SessionHandle::close).await;
+    }
+
+    /// Ends the session for good (`Forget`): its transcript goes too, so the next session starts
+    /// without it.
+    async fn forget_session(&mut self) {
+        self.end_session(SessionHandle::forget).await;
+    }
+
+    async fn end_session(&mut self, how: fn(&SessionHandle) -> Result<(), EngineError>) {
         let Some(mut live) = self.session.take() else {
             return;
         };
-        if live.handle.close().is_err() {
+        if how(&live.handle).is_err() {
             return;
         }
         let clock = Arc::clone(&self.deps.clock);

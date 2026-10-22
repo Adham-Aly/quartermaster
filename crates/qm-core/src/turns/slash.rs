@@ -80,7 +80,7 @@ impl TurnLoop {
         let Some(agent) = self.slash_agent().await? else {
             return Ok(());
         };
-        self.close_session().await;
+        self.forget_session().await;
         self.lose_session(OpenReason::Cleared);
         let at = self.deps.clock.now();
         let summary = format!("You cleared {} context", self.who.possessive());

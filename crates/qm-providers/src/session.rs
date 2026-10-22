@@ -89,6 +89,8 @@ pub(crate) struct Session {
     /// Results the core sent for our pending tool calls, by call ID.
     pub(crate) pending_results: HashMap<String, Option<ToolResult>>,
     close_requested: bool,
+    /// The session ends for good: its transcript goes with it.
+    forget_requested: bool,
     pub(crate) in_turn: bool,
     /// The last rate-limit status reported per window, so only changes are reported.
     pub(crate) rate_limits: HashMap<String, RateLimitStatus>,
@@ -294,6 +296,7 @@ impl Session {
             steering: Vec::new(),
             pending_results: HashMap::new(),
             close_requested: false,
+            forget_requested: false,
             in_turn: false,
             rate_limits: HashMap::new(),
             spec,
@@ -370,6 +373,10 @@ impl Session {
     fn idle_command(&mut self, command: Option<SessionCommand>) {
         match command {
             None | Some(SessionCommand::Close) => self.close_requested = true,
+            Some(SessionCommand::Forget) => {
+                self.forget_requested = true;
+                self.close_requested = true;
+            }
             Some(SessionCommand::StartTurn { input } | SessionCommand::Inject { input }) => {
                 self.queued_turns.push_back(Queued::Turn(input));
             }
@@ -395,6 +402,11 @@ impl Session {
     pub(crate) fn turn_command(&mut self, command: Option<SessionCommand>) -> Option<Cancel> {
         match command {
             None | Some(SessionCommand::Close) => {
+                self.close_requested = true;
+                Some(Cancel::Close)
+            }
+            Some(SessionCommand::Forget) => {
+                self.forget_requested = true;
                 self.close_requested = true;
                 Some(Cancel::Close)
             }
@@ -476,6 +488,9 @@ impl Session {
 
     /// Closes the session: jobs stopped and reported, then `SessionClosed`.
     async fn close(&mut self) {
+        if self.forget_requested {
+            SessionStore::forget(&self.id);
+        }
         if let Some(tools) = self.builtins.clone() {
             tools.shutdown().await;
             let deadline = self.shared.clock.instant() + JOB_SHUTDOWN_WAIT;

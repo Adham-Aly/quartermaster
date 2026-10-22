@@ -36,6 +36,9 @@ pub enum SessionCommand {
     Compact,
     /// End the session.
     Close,
+    /// End the session and drop what the engine kept of it: a later resume of it can't find it.
+    /// Sent when the conversation is cleared, a secondmate retires, or a task closes.
+    Forget,
 }
 
 /// A turn's input: the core assembles it (context block, wakes, your message, markers) and the
@@ -132,5 +135,9 @@ impl SessionHandle {
 
     pub fn close(&self) -> Result<(), EngineError> {
         self.send(SessionCommand::Close)
+    }
+
+    pub fn forget(&self) -> Result<(), EngineError> {
+        self.send(SessionCommand::Forget)
     }
 }
