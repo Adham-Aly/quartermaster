@@ -185,6 +185,9 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits
         (Some(Popup::ProjectsHint), _) => PROJECTS_HINT_HINTS.to_owned(),
         (None, Screen::Bridge) if app.slash_menu().is_some() => SLASH_HINTS.to_owned(),
         (None, Screen::Bridge) if app.shown_session().is_some() => SESSION_HINTS.to_owned(),
+        (None, Screen::Bridge) if app.snapshot.model_setup_notice.is_some() => {
+            ", settings · ? help".to_owned()
+        }
         (None, Screen::Bridge) => BRIDGE_HINTS.to_owned(),
         (None, Screen::Setup) => crate::setup::hints(app),
         (None, Screen::Diff) => crate::diff::HINTS.to_owned(),

@@ -1,8 +1,7 @@
 //! Starter tier sets.
 //!
-//! "Seeded the first time a provider is connected, so routing works with no setup. Your later
-//! changes are never overwritten." Seeding once, and never again, is the core's
-//! (`qm_core::routing::seed_starter_tiers`); this module only says what each set is.
+//! Legacy preset definitions, retained for explicit callers. Account detection no longer seeds
+//! these sets: new installs start with empty tiers and saved placements are preserved.
 //!
 //! Placements name canonical model ids, so the same model reached through two accounts (Opus 5.5
 //! through your `claude` and through OpenRouter) shares one placement. Every starter placement
