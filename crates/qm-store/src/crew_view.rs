@@ -418,7 +418,8 @@ pub struct OpenTask {
     /// The branch the task's work goes back to: the typed base branch, else the project's
     /// default.
     pub target: String,
-    pub branch: String,
+    /// The task's branch, absent for folder tasks.
+    pub branch: Option<String>,
     pub verification: Option<VerificationLevel>,
     pub created_at: Timestamp,
     pub started_at: Option<Timestamp>,
@@ -557,7 +558,7 @@ struct TaskBase {
     supervisor: AgentId,
     project: String,
     target: String,
-    branch: String,
+    branch: Option<String>,
     verification: Option<VerificationLevel>,
     created_at: i64,
     started_at: Option<i64>,
