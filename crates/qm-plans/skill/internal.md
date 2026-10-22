@@ -14,8 +14,9 @@ make, such as a step that would lose data, spend money or break a stated constra
 
 1. Read the code and the brief. List every decision the work depends on, and decide each one.
 2. Write `plan.md`.
-3. Call `plan_ready`. The app checks the file and starts the build from it. Fix anything it
-   reports and call again.
+3. Call `plan_check`. The app checks the file. Fix anything it reports and call again.
+4. Call `report` (done) with a short summary, never the plan itself. The build starts from the
+   plan.
 
 ## Format
 

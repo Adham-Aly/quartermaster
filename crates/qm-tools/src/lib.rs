@@ -24,4 +24,4 @@ pub mod handlers;
 pub mod registry;
 mod spec;
 
-pub use spec::{EngineScope, Tool, ToolClass, ToolDef, input_schema};
+pub use spec::{EngineScope, PlanGate, Tool, ToolClass, ToolDef, input_schema};

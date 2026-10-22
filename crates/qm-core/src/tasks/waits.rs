@@ -374,6 +374,7 @@ pub(crate) async fn message_task(
             row.status
         )));
     }
+    let plan_note = plan_replies(svc, caller, &row, &text).await?;
     let text = neutralise(text.trim());
     let at = svc.clock().now();
     let supervisor = caller.agent;
@@ -398,11 +399,12 @@ pub(crate) async fn message_task(
                     at,
                 },
             )?;
+            // A crewmate waiting on a decision, or a planner on the user's reply to its page.
             let waiting_on_decision = row.status == TaskStatus::Waiting
                 && row
                     .waiting_on
                     .as_ref()
-                    .is_some_and(|w| w.get("decision").is_some());
+                    .is_some_and(|w| w.get("decision").is_some() || w.get("plan").is_some());
             let mut status = row.status;
             if waiting_on_decision || row.status == TaskStatus::Reported {
                 task_store::set_status(tx, task, row.status, TaskStatus::Running, at)?;
@@ -444,7 +446,46 @@ pub(crate) async fn message_task(
         .await
         .map_err(|e| failed(&e))?;
     svc.supervisor_acted(task);
+    if let Some(note) = plan_note {
+        tracing::info!(%task, "{note}");
+    }
     Ok(TaskUpdated { task, status })
+}
+
+/// The user's plan replies in a message to a task, checked and recorded; a message without one
+/// passes untouched.
+async fn plan_replies(
+    svc: &TaskService,
+    caller: &Caller,
+    row: &TaskRow,
+    text: &str,
+) -> Result<Option<String>, ToolFailure> {
+    if !text.contains(qm_plans::reply::OPEN) {
+        return Ok(None);
+    }
+    let (replies, malformed) = qm_plans::reply::find(text);
+    if let Some(bad) = malformed.first() {
+        return Err(refuse(match bad {
+            qm_plans::reply::Malformed::Unclosed => {
+                "that plan reply has no closing line; tell the user to copy it again from the page"
+                    .to_owned()
+            }
+            qm_plans::reply::Malformed::TooLong => format!(
+                "that plan reply is over {} characters; tell the user to shorten it",
+                qm_plans::reply::MAX_REPLY_CHARS
+            ),
+        }));
+    }
+    let user_text = match caller.turn.and_then(|t| t.started_by.message()) {
+        Some(message) => svc
+            .db()
+            .call(move |conn| messages::text(conn, message))
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    super::plan::record_replies(svc, row, &replies, user_text.as_deref()).await
 }
 
 /// `link_tasks`.

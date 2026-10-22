@@ -242,7 +242,7 @@ fn failed(summary: String, text: String) -> BuiltinOutcome {
 impl BuiltinTools for HelperTools {
     fn descriptors(&self) -> Vec<ToolDescriptor> {
         let mut tools = self.inner.descriptors();
-        if let Some(def) = qm_tools::registry::find(Role::Crewmate, HELPER_TOOL) {
+        if let Some(def) = qm_tools::registry::find(Role::Crewmate, None, HELPER_TOOL) {
             tools.push(def.descriptor());
         }
         tools

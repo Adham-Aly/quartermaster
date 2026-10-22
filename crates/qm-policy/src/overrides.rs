@@ -47,6 +47,8 @@ pub enum OverrideKind {
     SaveInstruction,
     /// Dropping a standing instruction.
     DropInstruction,
+    /// Approving a plan for the user (`approve_plan`).
+    PlanApproval,
 }
 
 impl OverrideKind {
@@ -61,6 +63,7 @@ impl OverrideKind {
         Self::VerificationLevel,
         Self::SaveInstruction,
         Self::DropInstruction,
+        Self::PlanApproval,
     ];
 
     /// The override in a few words, as the refusal names it.
@@ -76,6 +79,7 @@ impl OverrideKind {
             Self::VerificationLevel => "a task's verification level",
             Self::SaveInstruction => "saving a standing instruction",
             Self::DropInstruction => "dropping a standing instruction",
+            Self::PlanApproval => "approving a plan",
         }
     }
 }

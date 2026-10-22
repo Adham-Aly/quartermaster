@@ -66,24 +66,30 @@ impl Handle for AskDecisionTool {
         cx: &'a ToolCx<'a>,
         args: AskDecisionArgs,
     ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
-        Box::pin(async move {
-            let question = args.question.trim();
-            if question.is_empty() {
-                return Err(Refusal::new("a decision question can't be empty").into());
-            }
-            let n = question.chars().count();
-            if n > MAX_QUESTION_CHARS {
-                return Err(Refusal::new(format!(
-                    "a decision question is at most {MAX_QUESTION_CHARS} characters (this one is {n})"
-                ))
-                .into());
-            }
-            let options = check_decision_options(args.options)?;
-            cx.host
-                .ask_decision(cx.caller, question.to_owned(), options)
-                .await
-        })
+        Box::pin(ask_decision(cx, args))
     }
+}
+
+/// `ask_decision` and its plan variant: checks the question and options, then asks the host.
+pub(crate) async fn ask_decision(
+    cx: &ToolCx<'_>,
+    args: AskDecisionArgs,
+) -> Result<Ack, ToolFailure> {
+    let question = args.question.trim();
+    if question.is_empty() {
+        return Err(Refusal::new("a decision question can't be empty").into());
+    }
+    let n = question.chars().count();
+    if n > MAX_QUESTION_CHARS {
+        return Err(Refusal::new(format!(
+            "a decision question is at most {MAX_QUESTION_CHARS} characters (this one is {n})"
+        ))
+        .into());
+    }
+    let options = check_decision_options(args.options)?;
+    cx.host
+        .ask_decision(cx.caller, question.to_owned(), options)
+        .await
 }
 
 impl Handle for DeclareWaitTool {

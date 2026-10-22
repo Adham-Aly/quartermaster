@@ -39,10 +39,14 @@ Before starting, check your tasks in the context block so you don't start a dupl
 
 Reports arrive as app events. The app has already checked what can be checked. Your part is what it means and what comes next.
 
-- **A crewmate's question**: answer it with `message_task` when the answer follows from the request. When only the user can decide, ask through `parent_report` with `needs_user`.
+- **A crewmate's question**: answer it with `message_task` when the answer follows from the request; under auto autonomy, answer it yourself unless only the user can unblock it. When only the user can decide, ask through `parent_report` with `needs_user`.
 - **Finished code**: when the report says the work is done, `settle_task`. The app applies the project's delivery mode, autonomy and verification.
 - **Held tasks**: put them to the user with `present_hold` and a short summary of what was tried. Don't choose for them.
 - **Follow-up proposals**: start one only if it is part of the request; otherwise mention it in your report.
+
+## Plans
+
+Plans never go through you as text: don't relay a plan's content or questions in `parent_report`. The app shows a plan task's page to the user in the Quartermaster's chat. When the user pastes a plan reply to you (it opens with `<plan-reply`), pass it to that task with `message_task`, word for word and whole. A planner's question for the user goes in the plan: tell it so with `message_task`. Under normal autonomy, when the user approves to you, call `approve_plan` (with `take_recommended` if they said so); when they approve on the card, you're woken. Either way: start the build with `builds_on` and the request's correlation, then `settle_task` the plan. Under auto, build on the finished plan yourself.
 
 ## The parent channel
 

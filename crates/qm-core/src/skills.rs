@@ -104,6 +104,38 @@ pub fn gather(home: &Path, worktree: &Path, task_skills: &Path) -> Result<Gather
     })
 }
 
+/// The app's plan-format skill's name, which wins over any skill of the same name.
+pub const PLAN_SKILL: &str = "quartermaster-plan";
+
+/// `gathered` with the app's plan-format skill for `mode` written into `task_skills`, replacing a
+/// gathered skill of the same name and any earlier mode's text. A plan task's session gets it.
+pub fn with_plan_skill(
+    gathered: &Gathered,
+    task_skills: &Path,
+    mode: qm_types::domain::PlanMode,
+) -> Result<Gathered, SkillsError> {
+    let dest = task_skills.join(PLAN_SKILL);
+    replace_dir(&dest)?;
+    let file = dest.join(SKILL_FILE);
+    let text = qm_plans::skill(mode);
+    fs::write(&file, text).map_err(io_err("can't write", &file))?;
+    let description = text
+        .lines()
+        .find_map(|l| l.strip_prefix("description:"))
+        .map(|d| d.trim().to_owned())
+        .unwrap_or_default();
+    let mut out = gathered.clone();
+    out.skills.retain(|s| s.name != PLAN_SKILL);
+    out.skills.push(SkillEntry {
+        name: PLAN_SKILL.to_owned(),
+        description,
+        path: file.to_string_lossy().into_owned(),
+    });
+    out.skills.sort_by(|a, b| a.name.cmp(&b.name));
+    out.skills_dir = Some(task_skills.to_owned());
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Instruction files.
 

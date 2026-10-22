@@ -338,11 +338,12 @@ pub(crate) async fn retire(
     })
     .await
     .map_err(|e| CloseError::Failed(e.to_string()))?;
-    // The task's folder, evidence and scratchpad go with the close: its outcome and answer are in the store.
+    // The task's folder, its plan folder, evidence and scratchpad go with the close: its outcome and answer are in the store.
     // A failure is logged; the startup sweep removes what it leaves.
     let paths = svc.deps().data_dir.task(task);
     let removed = tokio::task::spawn_blocking(move || {
         qm_types::data_dir::remove_path(&paths.root)?;
+        qm_types::data_dir::remove_path(&paths.plan)?;
         qm_types::data_dir::remove_path(&paths.evidence)?;
         qm_types::data_dir::remove_path(&paths.scratchpad)
     })

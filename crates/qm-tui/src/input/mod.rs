@@ -149,6 +149,9 @@ impl App {
                 }
             }
             CardAction::ShowDiff => self.show_diff(held, now),
+            CardAction::OpenPlan { task } => self.command(Command::OpenPlan { task }),
+            CardAction::CopyPlanPath { path } => self.copy(&path, now),
+            CardAction::ApprovePlan { task } => self.command(Command::ApprovePlan { task }),
             // Any action this build doesn't know.
             _ => self.flash(NOT_BUILT, now),
         }

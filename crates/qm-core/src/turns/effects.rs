@@ -28,7 +28,7 @@ pub fn effect_of(tool: &str, args: &serde_json::Value, result: &ToolResult) -> O
     if result.is_error {
         return None;
     }
-    if registry::find(Role::Quartermaster, tool).is_some_and(|d| d.class == ToolClass::Read) {
+    if registry::find(Role::Quartermaster, None, tool).is_some_and(|d| d.class == ToolClass::Read) {
         return None;
     }
     let output = || serde_json::from_str::<serde_json::Value>(&result.text).ok();
