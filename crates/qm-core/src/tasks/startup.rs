@@ -102,17 +102,48 @@ fn sweep_leftovers(data: &DataDir, open: &[TaskId], live: &[SecondmateId]) {
             continue;
         };
         let paths = data.task(id);
+        // Evidence lives in the scratch root now: an open task's old copy moves there, and a
+        // closed task's goes.
+        let legacy = paths.root.join("evidence");
         if open.contains(&id) {
+            move_legacy_evidence(&legacy, &paths.evidence);
             remove(&paths.session);
             remove(&paths.root.join("answer.md"));
-        } else if !paths.worktree.exists() {
-            remove(&paths.root);
+        } else {
+            remove(&legacy);
+            if !paths.worktree.exists() {
+                remove(&paths.root);
+            }
         }
     }
     for (name, path) in subfolders(&data.scratch().join("evidence")) {
         if !name.parse::<TaskId>().is_ok_and(|id| open.contains(&id)) {
             remove(&path);
         }
+    }
+}
+
+/// Moves an open task's evidence from its folder in the data directory to `evidence`, in the
+/// scratch root. A copy already there is kept, and the old one goes either way.
+fn move_legacy_evidence(legacy: &Path, evidence: &Path) {
+    if std::fs::symlink_metadata(legacy).is_err() {
+        return;
+    }
+    if !evidence.exists() {
+        let moved = evidence
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::rename(legacy, evidence));
+        match moved {
+            Ok(()) => return,
+            Err(e) => {
+                tracing::error!(error = %e, "couldn't move a task's evidence into the scratch root");
+                return;
+            }
+        }
+    }
+    if let Err(e) = remove_path(legacy) {
+        tracing::warn!(path = %legacy.display(), error = %e, "couldn't remove a leftover file");
     }
 }
 
@@ -696,8 +727,20 @@ mod leftover_tests {
         let stuck = data.task(task(3));
         folder(stuck.worktree.clone());
         let unrelated = folder(data.tasks_dir().join("notes"));
+        // An open task's evidence from the data directory moves to the scratch root.
+        let moved = data.task(task(4));
+        file(moved.root.join("evidence").join("shot.png"));
 
-        sweep_leftovers(&data, &[task(1)], &[live]);
+        sweep_leftovers(&data, &[task(1), task(4)], &[live]);
+
+        assert!(
+            moved.evidence.join("shot.png").exists(),
+            "an open task's old evidence moves to the scratch root"
+        );
+        assert!(
+            !moved.root.join("evidence").exists(),
+            "and its old copy goes"
+        );
 
         assert!(!seat_session.exists(), "the Quartermaster's session folder");
         assert!(!live_session.exists(), "a live secondmate's session folder");
