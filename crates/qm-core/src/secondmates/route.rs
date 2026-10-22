@@ -17,7 +17,7 @@ use qm_store::secondmates::{self, NewRequest, RequestOverrides, StoredLaterStep}
 use qm_store::wakes::NewWake;
 use qm_tools::defs::Routed;
 use qm_tools::handler::{Caller, RouteRequest, ToolFailure};
-use qm_types::domain::{StartedBy, WakeKind};
+use qm_types::domain::{DeliveryMode, StartedBy, WakeKind};
 use qm_types::ids::CorrelationId;
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -203,6 +203,13 @@ impl SecondmateService {
     /// Whether `branch` can be a base on `project`'s remote (fetched; at most
     /// [`BRANCH_CHECK_TIMEOUT`]), refused with the reason a task start would give.
     async fn check_branch(&self, project: &ProjectRow, branch: &str) -> Result<(), ToolFailure> {
+        // A plain folder has no branches, so this refuses before any git runs in it; the task start
+        // gives the same reason.
+        if project.delivery == DeliveryMode::Folder {
+            return Err(refuse(
+                "the personal folder has no branches, so a base branch can't be named",
+            ));
+        }
         let git = self.git().clone();
         let path = project.path.clone();
         let delivery = project.delivery;
