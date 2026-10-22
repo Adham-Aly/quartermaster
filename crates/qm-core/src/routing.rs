@@ -1,4 +1,4 @@
-//! Routing in the core: model detection, starter tiers, and the routed choice for every crewmate.
+//! Routing in the core: model detection and the routed choice for every crewmate.
 //!
 //! The rules themselves are plain functions in `qm-routing` and `qm-policy`; this module feeds
 //! them from the store and records what they decide. Four entry points:
@@ -18,8 +18,8 @@
 //! 3. a failed or timed-out read falls back to **the last list read** (left as stored), or, when
 //!    there is none, to **the built-in catalog's list** (recorded as a stand-in that announces
 //!    nothing);
-//! 4. the provider's **starter tier set** is seeded if it never was ([`seed_starter_tiers`]):
-//!    once per provider, never overwriting a placement.
+//!
+//! Detection never assigns tiers: new installs start empty, and saved placements stay unchanged.
 //!
 //! # 2. Routing a crewmate — [`route_crewmate`] (for `tasks.rs`)
 //!
@@ -176,7 +176,7 @@ pub struct DetectionOutcome {
     pub source: DetectionSource,
     /// What was recorded and announced (`None` when the last list stayed in use).
     pub recorded: Option<Recorded>,
-    /// Starter placements added (0 once the provider was seeded before).
+    /// Starter placements added (always 0; detection no longer seeds presets).
     pub seeded: usize,
     /// Why the read failed, in plain words, when it did.
     pub read_error: Option<String>,
@@ -224,8 +224,7 @@ pub fn spawn_detection(
     })
 }
 
-/// Reads one account's list, with the fallbacks, records it and seeds its provider's starter set
-/// once.
+/// Reads and records one account's list, with fallbacks, without changing tier placements.
 pub async fn detect_account(
     db: &Db,
     engine: &dyn Engine,
@@ -242,7 +241,6 @@ pub async fn detect_account(
     };
     let provider = account.provider;
     let id = account.id;
-    let starter = catalog.starter_set(provider);
     let (list, read_error) = match read {
         Ok(detected) => (
             Some((
@@ -292,13 +290,12 @@ pub async fn detect_account(
                 )
             }
         };
-        let seeded = seed_starter_tiers(&tx, provider, &starter, at)?;
         tx.commit()?;
         Ok(DetectionOutcome {
             account: id,
             source,
             recorded,
-            seeded,
+            seeded: 0,
             read_error,
         })
     })
@@ -810,4 +807,113 @@ pub fn quartermaster_choice(
             provider: row.provider,
             choice: choice.clone(),
         }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qm_engine::scripted::{Script, ScriptedEngine};
+    use qm_store::accounts::NewAccount;
+    use qm_types::clock::SystemClock;
+    use qm_types::domain::AccountKind;
+
+    #[derive(Debug)]
+    struct Catalog;
+
+    impl ModelCatalog for Catalog {
+        fn resolve(&self, _: Provider, detected: &DetectedModel) -> ModelFacts {
+            ModelFacts {
+                model: detected.id.clone(),
+                canonical: detected.id.clone(),
+                display_name: None,
+                family: "test".into(),
+                generation: 1,
+                image_input: false,
+                context_window: 8192,
+                efforts: Vec::new(),
+                known: true,
+            }
+        }
+
+        fn catalog_list(&self, _: Provider) -> Vec<DetectedModel> {
+            Vec::new()
+        }
+
+        fn starter_set(&self, _: Provider) -> StarterTiers {
+            panic!("detection must not request starter presets")
+        }
+    }
+
+    #[tokio::test]
+    async fn detection_leaves_empty_and_partial_tiers_unchanged() {
+        let root = std::env::temp_dir().join(format!(
+            "qm-detection-tiers-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = Db::open(&root.join("state.db")).unwrap();
+        let account = db
+            .call(|conn| {
+                let id = accounts::insert_account(
+                    conn,
+                    &NewAccount {
+                        provider: Provider::Claude,
+                        label: "test".into(),
+                        kind: AccountKind::Subscription,
+                        credential_ref: None,
+                        base_url: None,
+                        at: Timestamp::UNIX_EPOCH,
+                    },
+                )?;
+                Ok(accounts::load_account(conn, id)?.unwrap())
+            })
+            .await
+            .unwrap();
+        let clock = SystemClock;
+        let engine = ScriptedEngine::new(
+            Script::from_toml("name = 'tiers'\nmodels = ['test-model']").unwrap(),
+            Arc::new(clock),
+        );
+        let first = detect_account(&db, &engine, &account, &Catalog, &clock)
+            .await
+            .unwrap();
+        assert_eq!(first.seeded, 0);
+        db.call(move |conn| {
+            assert_eq!(models::list_placements(conn)?, Vec::new());
+            assert!(!models::starter_seeded(conn, Provider::Claude)?);
+            assert_eq!(models::list_models(conn, account.id)?.len(), 1);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let saved = db
+            .call(|conn| {
+                models::place_model(
+                    conn,
+                    &ModelId::new("test-model").unwrap(),
+                    None,
+                    None,
+                    Tier::Low,
+                    Timestamp::UNIX_EPOCH,
+                )
+                .unwrap();
+                models::list_placements(conn)
+            })
+            .await
+            .unwrap();
+        let again = detect_account(&db, &engine, &account, &Catalog, &clock)
+            .await
+            .unwrap();
+        assert_eq!(again.seeded, 0);
+        db.call(move |conn| {
+            assert_eq!(models::list_placements(conn)?, saved);
+            assert!(!models::starter_seeded(conn, Provider::Claude)?);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

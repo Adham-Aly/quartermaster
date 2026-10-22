@@ -50,6 +50,30 @@ pub const QUESTION_HEADING: &str = "Pick an answer, or type your own";
 /// The Quartermaster's crew row while a turn runs, and otherwise.
 pub const WORKING: &str = "working";
 pub const READY: &str = "ready";
+/// Setup instruction when no model level is configured.
+pub const MODEL_SETUP_NOTICE: &str =
+    "Configure at least one model level in Settings to start chatting.";
+
+async fn models_configured(conversation: &Conversation) -> bool {
+    conversation
+        .db
+        .call(|conn| Ok(!qm_store::models::list_placements(conn)?.is_empty()))
+        .await
+        .unwrap_or(false)
+}
+
+fn needs_models(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Send {
+            to: AgentRef::Quartermaster,
+            ..
+        } | Command::AnswerNotice {
+            answer: NoticeAnswer::AskAgain,
+            ..
+        } | Command::RunSlashCommand { .. }
+    )
+}
 
 /// The chat: what the loop and the tool host write, and what the snapshot shows.
 pub struct Conversation {
@@ -584,6 +608,8 @@ pub async fn serve(mut server: CoreServer, deps: ApiDeps) {
             for part in &parts {
                 part.fill(&mut snap).await;
             }
+            snap.model_setup_notice =
+                (!models_configured(&conversation).await).then(|| MODEL_SETUP_NOTICE.to_owned());
             if server.send(Update::Snapshot(Box::new(snap))).is_err() {
                 let _ = inbox.send(SeatInput::Shutdown);
                 return;
@@ -628,6 +654,11 @@ async fn handle(
     (conversation, attachments): (&Conversation, &Attachments),
     parts: &[Arc<dyn ApiPart>],
 ) -> Handled {
+    // Re-read persisted placements, not the UI snapshot: every seat submission path,
+    // including card replies, retries and slash shortcuts, must obey setup.
+    if needs_models(&command) && !models_configured(conversation).await {
+        return Handled::Changed;
+    }
     // The quit reaches the parts first: crewmates stop before the seat's `Shutdown`.
     if matches!(command, Command::RequestQuit | Command::Quit) {
         for part in parts {
@@ -746,5 +777,222 @@ async fn to_parts(command: Command, parts: &[Arc<dyn ApiPart>]) -> Handled {
 fn send(inbox: &SeatInbox, input: SeatInput) {
     if inbox.send(input).is_err() {
         tracing::warn!(?input, "the Quartermaster's turn loop has stopped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::turn_io::{SeatInboxRx, seat_inbox};
+    use qm_types::clock::SystemClock;
+
+    struct Fixture {
+        conversation: Conversation,
+        attachments: Attachments,
+        inbox: SeatInbox,
+        rx: SeatInboxRx,
+        dir: std::path::PathBuf,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    impl Fixture {
+        async fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "api-gate-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let db = Db::open(&dir.join("state.db")).unwrap();
+            db.call(|conn| {
+                conn.execute_batch("INSERT INTO agents (id, role, home, status, created_at, seq) VALUES (1, 'quartermaster', '/h', 'idle', 1, 1);")?;
+                qm_store::seq::observe_all(conn)?;
+                Ok(())
+            }).await.unwrap();
+            let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+            let (inbox, rx) = seat_inbox();
+            Self {
+                conversation: Conversation::new(db, Arc::clone(&clock), AgentId::new(1)),
+                attachments: Attachments::new(dir.join("images"), clock),
+                inbox,
+                rx,
+                dir,
+            }
+        }
+
+        async fn handle(&self, command: Command) -> Handled {
+            handle(
+                command,
+                &self.inbox,
+                (&self.conversation, &self.attachments),
+                &[],
+            )
+            .await
+        }
+
+        async fn placement(&self, present: bool) {
+            self.conversation.db.call(move |conn| {
+                if present {
+                    conn.execute_batch("INSERT INTO placements (id, canonical, tier, created_at, seq) VALUES (1, 'test-model', 'low', 1, 1);")?;
+                } else {
+                    conn.execute_batch("DELETE FROM placements;")?;
+                }
+                Ok(())
+            }).await.unwrap();
+        }
+
+        async fn store_message(&self, text: &str) -> MessageId {
+            self.conversation
+                .store_your_message(text, self.attachments.stage(text, &[]).await)
+                .await
+                .unwrap()
+                .unwrap()
+        }
+
+        async fn assert_allowed(&mut self, message: MessageId) {
+            assert_eq!(self.handle(send_command()).await, Handled::Changed);
+            assert!(matches!(
+                self.rx.inputs.try_recv().unwrap(),
+                SeatInput::User { .. }
+            ));
+            assert_eq!(self.conversation.load().await.unwrap().rows.len(), 2);
+            assert_eq!(
+                self.handle(Command::AnswerNotice {
+                    message,
+                    answer: NoticeAnswer::AskAgain
+                })
+                .await,
+                Handled::Changed
+            );
+            assert!(
+                matches!(self.rx.inputs.try_recv().unwrap(), SeatInput::User { message: id } if id == message)
+            );
+            for slash in [SlashCommand::Clear, SlashCommand::Compact] {
+                assert_eq!(
+                    self.handle(Command::RunSlashCommand { slash }).await,
+                    Handled::Changed
+                );
+                assert!(
+                    matches!(self.rx.inputs.try_recv().unwrap(), SeatInput::Slash(actual) if actual == slash)
+                );
+            }
+        }
+
+        async fn assert_blocked(&mut self, message: MessageId) {
+            let before = self.conversation.load().await.unwrap().rows.len();
+            for command in [
+                send_command(),
+                Command::AnswerNotice {
+                    message,
+                    answer: NoticeAnswer::AskAgain,
+                },
+                Command::RunSlashCommand {
+                    slash: SlashCommand::Clear,
+                },
+                Command::RunSlashCommand {
+                    slash: SlashCommand::Compact,
+                },
+            ] {
+                assert_eq!(self.handle(command).await, Handled::Changed);
+                assert!(matches!(
+                    self.rx.inputs.try_recv(),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                ));
+                assert_eq!(self.conversation.load().await.unwrap().rows.len(), before);
+            }
+            let notices = self.conversation.load().await.unwrap().notices;
+            assert!(notices.values().all(|notice| notice.answer.is_none()));
+        }
+    }
+
+    fn send_command() -> Command {
+        Command::Send {
+            to: AgentRef::Quartermaster,
+            text: "hello".into(),
+            images: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn model_gate_tracks_persisted_placements_and_blocks_all_submission_paths() {
+        let mut f = Fixture::new().await;
+        // A real unanswered notice ensures Ask again would otherwise mutate state and enqueue.
+        let message = f.store_message("retry me").await;
+        f.conversation.db.call(move |conn| {
+            conn.execute("INSERT INTO turns (id, agent_id, started_by, message_id, started_at, ended_at, status, seq) VALUES (1, 1, 'user', ?1, 1, 2, 'completed', 2)", [message])?;
+            Ok(())
+        }).await.unwrap();
+        f.conversation
+            .notice(
+                f.conversation.agent(),
+                TurnId::new(1),
+                message,
+                Notice::NoAction,
+            )
+            .await
+            .unwrap();
+        assert!(!models_configured(&f.conversation).await);
+        // Exercise the busy slash branch too: blocked shortcuts must not store a queued note.
+        f.rx.status
+            .send(SeatStatus {
+                turn_running: true,
+                ..SeatStatus::default()
+            })
+            .unwrap();
+        f.assert_blocked(message).await;
+
+        f.placement(true).await;
+        assert!(models_configured(&f.conversation).await);
+        f.assert_allowed(message).await;
+        f.placement(false).await;
+        assert!(!models_configured(&f.conversation).await);
+        // Use a fresh notice so removal tests retry gating, not an already answered notice.
+        let message = f.store_message("retry after removal").await;
+        f.conversation
+            .notice(
+                f.conversation.agent(),
+                TurnId::new(1),
+                message,
+                Notice::NoAction,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            f.handle(Command::AnswerNotice {
+                message,
+                answer: NoticeAnswer::AskAgain
+            })
+            .await,
+            Handled::Changed
+        );
+        assert!(
+            f.conversation.load().await.unwrap().notices[&message]
+                .answer
+                .is_none()
+        );
+        // The original notice is now answered; the blocked commands must still store nothing.
+        let before = f.conversation.load().await.unwrap().rows.len();
+        for command in [
+            send_command(),
+            Command::RunSlashCommand {
+                slash: SlashCommand::Clear,
+            },
+            Command::RunSlashCommand {
+                slash: SlashCommand::Compact,
+            },
+        ] {
+            assert_eq!(f.handle(command).await, Handled::Changed);
+        }
+        assert_eq!(f.conversation.load().await.unwrap().rows.len(), before);
+        assert!(matches!(
+            f.rx.inputs.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
     }
 }

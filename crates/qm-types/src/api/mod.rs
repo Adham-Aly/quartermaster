@@ -382,6 +382,9 @@ pub enum Update {
 #[serde(default)]
 #[non_exhaustive]
 pub struct Snapshot {
+    /// Setup instruction while no model level is configured; sending to the seat is blocked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_setup_notice: Option<String>,
     /// This Mac's name, shown in the top bar.
     pub machine: String,
     /// One badge per account in the top bar ("Claude Max 7d 35%", "ChatGPT Pro ?").

@@ -35,6 +35,11 @@ Levels are pools **you control**, not fixed model names:
 | Medium | Work implementing finished thinking | Medium |
 | Low | Lookups | Medium |
 
+Levels start empty on a new installation. Configure at least one model entry in
+**Settings ▸ Model levels** before messaging the Quartermaster; you do not need to
+fill every level. Removing the last entry blocks chatting again. Existing saved
+model levels are preserved, and connecting an account never fills levels for you.
+
 Add providers in **Settings ▸ Accounts**, then open **Settings ▸ Model levels**:
 
 - Move model entries between levels by dragging, or select one and press `m`.

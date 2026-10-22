@@ -85,6 +85,7 @@ impl App {
     /// focused and starting with `/` and a part of a command's name.
     pub(crate) fn slash_menu(&self) -> Option<SlashMenu> {
         if self.screen != Screen::Bridge
+            || self.snapshot.model_setup_notice.is_some()
             || self.shown_session().is_some()
             || self.focus != Pane::Input
             || self.view.guidance_for.is_some()
@@ -169,6 +170,9 @@ impl App {
 
     /// Runs `entry`: your message box empties and the core runs the command.
     pub(crate) fn run_slash(&mut self, entry: &SlashEntry) {
+        if self.snapshot.model_setup_notice.is_some() {
+            return;
+        }
         self.draft = crate::input::draft::Draft::default();
         self.view.slash = SlashUi::default();
         self.scroll_from_bottom = 0;
