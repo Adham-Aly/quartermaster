@@ -110,11 +110,7 @@ impl DataDir {
     pub fn ensure_scratch(&self) -> io::Result<()> {
         let base = Path::new(SCRATCH_BASE);
         if self.scratch.starts_with(base) {
-            if !base.exists() {
-                fs::DirBuilder::new().mode(0o1777).create(base)?;
-                // `create` applies the umask, which would strip the world-write bit.
-                fs::set_permissions(base, fs::Permissions::from_mode(0o1777))?;
-            }
+            shared_base(base)?;
             if let Some(user) = self.scratch.parent() {
                 private_folder(user)?;
             }
@@ -228,6 +224,42 @@ pub fn private_folder(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The shared folder above every user's scratch: created sticky and world-writable when missing,
+/// and checked on every use. It must be a plain folder (not a link), sticky, and owned by root or by
+/// this user: the sticky bit keeps other users from renaming or removing what is inside it, and
+/// the owner check stops a folder another user made from receiving our files.
+fn shared_base(base: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(base).is_err() {
+        match fs::DirBuilder::new().mode(0o1777).create(base) {
+            Ok(()) => {
+                // `create` applies the umask, which would strip the world-write bit.
+                fs::set_permissions(base, fs::Permissions::from_mode(0o1777))?;
+            }
+            // Another process made it first: check that one like any other.
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    check_shared_base(base)
+}
+
+fn check_shared_base(base: &Path) -> io::Result<()> {
+    let meta = fs::symlink_metadata(base)?;
+    let me = rustix::process::getuid().as_raw();
+    let trusted_owner = meta.uid() == 0 || meta.uid() == me;
+    if !meta.is_dir()
+        || meta.file_type().is_symlink()
+        || !trusted_owner
+        || meta.mode() & 0o1000 == 0
+    {
+        return Err(io::Error::other(format!(
+            "{} isn't a plain sticky folder owned by you or root, so nothing is written under it",
+            base.display()
+        )));
+    }
+    Ok(())
+}
+
 /// The scratch root for a data directory: `<base>/<uid>/<first 12 hex digits of SHA-256(root)>`.
 fn scratch_for(base: &Path, uid: u32, root: &Path) -> PathBuf {
     let digest = Sha256::digest(root.as_os_str().as_encoded_bytes());
@@ -306,6 +338,47 @@ pub fn remove_path(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A throwaway folder for the checks, removed when dropped.
+    struct Folder(PathBuf);
+
+    impl Folder {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("qm-base-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("a folder");
+            Self(path)
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_shared_base_must_be_a_sticky_folder_that_is_not_a_link() {
+        let folder = Folder::new("sticky");
+        let base = folder.0.join("quartermaster");
+        fs::create_dir(&base).expect("a base");
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o777)).expect("world-writable");
+        assert!(
+            check_shared_base(&base).is_err(),
+            "without the sticky bit, other users can rename what is inside"
+        );
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o1777)).expect("sticky");
+        check_shared_base(&base).expect("a sticky folder we own");
+
+        let target = folder.0.join("elsewhere");
+        fs::create_dir(&target).expect("a target");
+        let link = folder.0.join("linked");
+        std::os::unix::fs::symlink(&target, &link).expect("a link");
+        assert!(
+            check_shared_base(&link).is_err(),
+            "a link is never the base"
+        );
+    }
 
     #[test]
     fn the_scratch_root_is_per_user_and_per_data_directory() {
