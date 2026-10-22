@@ -8,9 +8,9 @@
 //!   other image is dropped. A restored draft never replaces one you have typed since.
 //! - **Sending.** [`DraftSync::tick`] sends a draft at once when it changes; an emptied draft is sent
 //!   empty, which the core forgets. A draft's image tokens (a hash of the bytes and their length) are
-//!   computed only when its set of images changes.
-//! - **Files.** A new image is written once, to `<token>.<ext>`. After each write, files that no
-//!   sent draft names are removed. Nothing is written or removed before the restore, so the files
+//!   computed from content, even when image numbers and lengths are unchanged.
+//! - **Files.** An image is written when missing or different, to `<token>.<ext>`. Files that no
+//!   sent draft names are then removed. Nothing is written or removed before the restore, so the files
 //!   the restore reads are never taken for unnamed.
 //! - **Never logged.** A draft is your unsent words; errors are dropped, not reported.
 
@@ -22,11 +22,11 @@ use qm_types::api::{
     AgentRef, Command, DraftImage, DraftTarget, ImageFormat, MAX_IMAGE_BYTES, PastedImage,
     SavedDraft, image_placeholder,
 };
-use qm_types::data_dir::DataDir;
+use qm_types::data_dir::{DataDir, private_folder};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
@@ -39,15 +39,14 @@ struct Job {
 /// Sends the drafts to the core and keeps their image files.
 #[derive(Debug)]
 pub(crate) struct DraftSync {
-    dir: PathBuf,
+    dir: DataDir,
+    results: mpsc::Receiver<bool>,
     jobs: Option<mpsc::Sender<Job>>,
     writer: Option<JoinHandle<()>>,
     /// Whether the first snapshot has brought the drafts back. Nothing is sent before that.
     restored: bool,
     /// What the core was last sent for each prompt.
     sent: HashMap<DraftTarget, SavedDraft>,
-    /// The image files in the folder: written this run, or found there at the restore.
-    on_disk: HashSet<String>,
     /// Set by the restore: the next tick writes a cleanup even if no draft changed, so a file
     /// that no draft names any more is removed.
     cleanup_due: bool,
@@ -56,7 +55,8 @@ pub(crate) struct DraftSync {
 impl DraftSync {
     /// Starts the writer for `dir`'s image folder.
     pub(crate) fn open(dir: &DataDir) -> Self {
-        let folder = dir.draft_images();
+        let folder = dir.clone();
+        let (finished, results) = mpsc::channel();
         let (jobs, queue) = mpsc::channel::<Job>();
         let writer = {
             let folder = folder.clone();
@@ -64,18 +64,18 @@ impl DraftSync {
                 .name("draft-images".to_owned())
                 .spawn(move || {
                     for job in queue {
-                        write_job(&folder, &job);
+                        let _ = finished.send(write_job(&folder, &job).is_ok());
                     }
                 })
                 .ok()
         };
         Self {
             dir: folder,
+            results,
             jobs: writer.is_some().then_some(jobs),
             writer,
             restored: false,
             sent: HashMap::new(),
-            on_disk: HashSet::new(),
             cleanup_due: false,
         }
     }
@@ -87,8 +87,7 @@ impl DraftSync {
             return;
         }
         for draft in saved {
-            let (restored, names) = self.read(draft);
-            self.on_disk.extend(names);
+            let restored = self.read(draft);
             place(app, draft.target, restored);
         }
         // Everything is sent again on the next tick, so the core holds exactly what is shown.
@@ -102,6 +101,10 @@ impl DraftSync {
         if !self.restored || app.view.sample {
             return;
         }
+        // Failed writes/cleanup are retried even when the draft itself has not changed.
+        for success in self.results.try_iter() {
+            self.cleanup_due |= !success;
+        }
         let mut changes = Vec::new();
         let mut files = Vec::new();
         let mut live = HashSet::new();
@@ -110,11 +113,11 @@ impl DraftSync {
                 continue;
             }
             live.insert(target);
-            let (saved, new_files) = self.build(target, draft);
+            let (saved, new_files) = Self::build(target, draft);
+            files.extend(new_files);
             if self.sent.get(&target) != Some(&saved) {
                 self.sent.insert(target, saved.clone());
                 changes.push(saved);
-                files.extend(new_files);
             }
         }
         let gone: Vec<DraftTarget> = self
@@ -137,37 +140,19 @@ impl DraftSync {
         }
     }
 
-    /// The draft as the core should hold it, and the image files it needs that aren't on disk. An
-    /// image keeps its token while the set of images is unchanged: the bytes don't change.
-    fn build(&self, target: DraftTarget, draft: &Draft) -> (SavedDraft, Vec<(String, Vec<u8>)>) {
-        let shown: Vec<&PastedImage> = draft
+    /// Build tokens from content, not image numbers or byte lengths: a number can be reused
+    /// between ticks for entirely different bytes. Include all live files so retries and cleanup
+    /// never depend on a speculative "on disk" cache.
+    fn build(target: DraftTarget, draft: &Draft) -> (SavedDraft, Vec<(String, Vec<u8>)>) {
+        let mut files = Vec::new();
+        let images: Vec<DraftImage> = draft
             .images
             .iter()
             .filter(|image| draft.text.contains(&image.placeholder()))
-            .collect();
-        let previous = self.sent.get(&target);
-        let same_images = previous.is_some_and(|p| {
-            p.images.len() == shown.len()
-                && p.images.iter().zip(&shown).all(|(sent, image)| {
-                    sent.number == image.number
-                        && sent.format == image.format
-                        && sent.len == image.bytes.as_slice().len()
-                })
-        });
-        let mut files = Vec::new();
-        let images: Vec<DraftImage> = shown
-            .iter()
-            .enumerate()
-            .map(|(i, image)| {
+            .map(|image| {
                 let bytes = image.bytes.as_slice();
-                let token = match previous {
-                    Some(p) if same_images => p.images[i].token.clone(),
-                    _ => token_of(bytes),
-                };
-                let name = file_name(&token, image.format);
-                if !same_images && !self.on_disk.contains(&name) {
-                    files.push((name, bytes.to_vec()));
-                }
+                let token = token_of(bytes);
+                files.push((file_name(&token, image.format), bytes.to_vec()));
                 DraftImage::new(image.number, image.format, bytes.len(), token)
             })
             .collect();
@@ -178,20 +163,25 @@ impl DraftSync {
         (saved, files)
     }
 
-    /// The draft a saved one holds, with each image whose file is there and is what it says, and
-    /// the names of the files it uses.
-    fn read(&self, saved: &SavedDraft) -> (Draft, Vec<String>) {
+    /// The saved draft, with only images whose files are safe and match their metadata.
+    fn read(&self, saved: &SavedDraft) -> Draft {
         let mut draft = Draft::new(saved.text.clone());
         draft.cursor = saved.cursor;
         draft.anchor = saved.anchor;
-        let mut names = Vec::new();
+        if safe_folder(&self.dir).is_err() {
+            return draft;
+        }
         for image in &saved.images {
             if !token_ok(&image.token) || !draft.text.contains(&image_placeholder(image.number)) {
                 continue;
             }
             let name = file_name(&image.token, image.format);
-            let path = self.dir.join(&name);
-            let small_enough = fs::metadata(&path).is_ok_and(|m| m.len() <= MAX_IMAGE_BYTES as u64);
+            let path = self.dir.draft_images().join(&name);
+            if safe_folder(&self.dir).is_err() {
+                break;
+            }
+            let small_enough = fs::symlink_metadata(&path)
+                .is_ok_and(|m| m.is_file() && m.len() <= MAX_IMAGE_BYTES as u64);
             let Some(bytes) = small_enough.then(|| fs::read(&path).ok()).flatten() else {
                 continue;
             };
@@ -201,9 +191,8 @@ impl DraftSync {
             draft
                 .images
                 .push(PastedImage::new(image.number, image.format, bytes));
-            names.push(name);
         }
-        (draft, names)
+        draft
     }
 
     /// Hands the new image files to the writer, with the names every sent draft still needs.
@@ -217,11 +206,10 @@ impl DraftSync {
             .flat_map(|draft| &draft.images)
             .map(|image| file_name(&image.token, image.format))
             .collect();
-        let images: Vec<(String, Vec<u8>)> = files
-            .into_iter()
-            .filter(|(name, _)| self.on_disk.insert(name.clone()))
-            .collect();
-        let _ = jobs.send(Job { images, keep });
+        let _ = jobs.send(Job {
+            images: files,
+            keep,
+        });
     }
 }
 
@@ -319,37 +307,51 @@ fn token_ok(token: &str) -> bool {
 }
 
 /// Writes the job's new images, then removes the files in the folder that no sent draft names.
-fn write_job(folder: &Path, job: &Job) {
-    if !job.images.is_empty() && make_dir(folder).is_ok() {
-        for (name, bytes) in &job.images {
-            let path = folder.join(name);
-            if !path.exists() {
-                let _ = write_atomic(&path, bytes);
-            }
+fn write_job(dir: &DataDir, job: &Job) -> io::Result<()> {
+    safe_folder(dir)?;
+    let folder = dir.draft_images();
+    for (name, bytes) in &job.images {
+        safe_folder(dir)?;
+        let path = folder.join(name);
+        safe_file(&path)?;
+        safe_file(&folder.join(format!("{name}.tmp")))?;
+        if fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
+            write_atomic(&path, bytes)?;
         }
     }
-    remove_unnamed(folder, &job.keep);
+    remove_unnamed(dir, &job.keep)
 }
 
-fn make_dir(dir: &Path) -> io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt as _;
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
+/// Validate the hierarchy on every operation, including cleanup with no new images. The shared
+/// ancestors are owned by `DataDir`'s validator; the drafts leaf must also be a private real folder.
+fn safe_folder(dir: &DataDir) -> io::Result<()> {
+    dir.ensure_scratch()?;
+    private_folder(&dir.draft_images())
 }
 
-/// Removes the files in `dir` that `keep` doesn't name.
-fn remove_unnamed(dir: &Path, keep: &HashSet<String>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
+/// Refuse symlinks (including dangling links), directories and special files at image/temp leaves.
+fn safe_file(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+        Ok(_) => Err(io::Error::other("draft image is not a plain file")),
+    }
+}
+
+/// Removes only ordinary unnamed files, never following a drafts-directory or image symlink.
+fn remove_unnamed(dir: &DataDir, keep: &HashSet<String>) -> io::Result<()> {
+    safe_folder(dir)?;
+    for entry in fs::read_dir(dir.draft_images())? {
+        let entry = entry?;
         let named = entry.file_name().to_str().is_some_and(|n| keep.contains(n));
-        if !named && entry.file_type().is_ok_and(|t| t.is_file()) {
-            let _ = fs::remove_file(entry.path());
+        if !named && entry.file_type()?.is_file() {
+            safe_folder(dir)?;
+            safe_file(&entry.path())?;
+            fs::remove_file(entry.path())?;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

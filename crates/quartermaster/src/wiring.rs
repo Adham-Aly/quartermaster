@@ -233,7 +233,7 @@ pub(crate) async fn start_core(
     if let Some(delivery_settling) = &delivery_settling {
         delivery_settling.settling.recover().await;
     }
-    let mut seat_loop = spawn_seat_loop(&db, &clock, seat, &conversation, host, inbox_rx);
+    let mut seat_loop = spawn_seat_loop(&db, &clock, seat, &conversation, host, inbox_rx, &wakes);
     // Every secondmate's loop, idle until work arrives.
     start_secondmates(&secondmates);
     // Resume the crew once the seat runs.
@@ -494,10 +494,12 @@ fn spawn_seat_loop(
     conversation: &Arc<Conversation>,
     host: Arc<CoreToolHost>,
     inbox_rx: SeatInboxRx,
+    wakes: &Inbox,
 ) -> tokio::task::JoinHandle<()> {
     let turn_loop = TurnLoop::new(
         TurnLoopDeps {
             db: db.clone(),
+            inbox: wakes.clone(),
             clock: Arc::clone(clock),
             seat,
             context: Arc::new(ContextBuilder::new(db.clone(), Arc::clone(clock))),

@@ -522,10 +522,9 @@ impl CrewRunner {
     /// Stops the crewmate and answers whoever asked.
     async fn finish(mut self) {
         let interrupted = self.stopped_mid_turn;
-        // A stopped task is closing, and a shut-down app keeps no transcripts either way: neither
-        // resumes. A failed session may still be retried, so its transcript stays.
-        let forget = matches!(self.ending, Some(Ending::Stop(_) | Ending::Shutdown));
-        self.end_session(forget).await;
+        // Every runner exit is terminal, including failure: fail() retires the task after this
+        // runner unregisters, when no live handle remains to forget its transcript.
+        self.end_session().await;
         let task = self.task;
         let agent = self.agent;
         self.svc.runner_ended(task, agent);
@@ -545,16 +544,12 @@ impl CrewRunner {
         }
     }
 
-    /// Closes the session (waiting for it; `forget` drops its transcript too), stops every job or
+    /// Forgets the session (waiting for it), stops every job or
     /// setup group still open for the task, and marks the crewmate stopped.
-    async fn end_session(&mut self, forget: bool) {
+    async fn end_session(&mut self) {
         let clock = self.clock();
         if let Some(mut handle) = self.session.take() {
-            let _ = if forget {
-                handle.forget()
-            } else {
-                handle.close()
-            };
+            let _ = handle.forget();
             let deadline = clock.instant() + INTERRUPT_GRACE;
             loop {
                 tokio::select! {
@@ -1222,7 +1217,7 @@ impl CrewRunner {
                     if interrupt_deadline.is_some_and(|d| clock.instant() >= d) {
                         // The interrupt went unanswered: the session counts as lost.
                         if let Some(h) = self.session.take() {
-                            let _ = h.close();
+                            let _ = h.forget();
                         }
                         self.set_agent(AgentStatus::Crashed).await;
                         let mut result = failed_turn("the crewmate's session didn't answer the interrupt");
@@ -1852,5 +1847,53 @@ fn saturating_decrement(n: &AtomicU32) {
             Ok(_) => return,
             Err(actual) => current = actual,
         }
+    }
+}
+
+#[cfg(test)]
+mod forgetting_tests {
+    use super::*;
+    use qm_engine::{SessionCommand, session_channel};
+
+    #[tokio::test]
+    async fn failed_runner_forgets_before_unregistering_and_retiring() {
+        let fixture = crate::turns::forget_tests::Fixture::new().await;
+        let (svc, scheduler) = fixture.task_service();
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let (activity, _) = broadcast::channel(8);
+        // No task row: the asynchronous retirement exits without touching a repository or home.
+        let task = TaskId::new(999).unwrap();
+        let mut runner = CrewRunner::new(
+            task,
+            AgentId::new(2),
+            svc.clone(),
+            rx,
+            Arc::new(RunnerState::new(activity)),
+            RunnerStart::Resume,
+        );
+        let (handle, mut side) = session_channel();
+        runner.session = Some(handle);
+        runner.ending = Some(Ending::Failed(
+            "counterexample: failed with a live provider session".into(),
+        ));
+        let engine = async {
+            assert_eq!(
+                side.commands.recv().await,
+                Some(SessionCommand::Forget),
+                "failure must not issue resumable Close and then unregister the only handle"
+            );
+            side.events
+                .send(EngineEvent::SessionClosed {
+                    reason: CloseReason::Requested,
+                })
+                .await
+                .unwrap();
+        };
+        tokio::join!(runner.finish(), engine);
+        // A barrier lets the spawned retirement finish its read of the absent task.
+        svc.db().call(|_| Ok(())).await.unwrap();
+        drop(svc);
+        scheduler.abort();
+        let _ = scheduler.await;
     }
 }

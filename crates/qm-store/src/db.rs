@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn each_orchestrators_newest_five_outcomes_survive_a_restart() {
+    async fn global_newest_five_and_secondmates_own_outcomes_survive_a_restart() {
         use jiff::Timestamp;
         use qm_types::ids::{AgentId, TaskId};
         let dir = std::env::temp_dir().join(format!("qm-outcomes-{}", std::process::id()));
@@ -223,7 +223,6 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("a scratch folder");
         let scratch = Scratch(dir.clone());
         let path = dir.join("state.db");
-        let quartermaster = AgentId::new(1);
         let secondmate = AgentId::new(2);
 
         let db = Db::open(&path).expect("a database");
@@ -251,7 +250,7 @@ mod tests {
         let before = db
             .call(move |conn| {
                 Ok((
-                    crate::events::latest_of(conn, "outcome.", quartermaster, 5)?,
+                    crate::events::latest(conn, "outcome.", 5)?,
                     crate::events::latest_of(conn, "outcome.", secondmate, 5)?,
                 ))
             })
@@ -262,8 +261,8 @@ mod tests {
         };
         assert_eq!(
             summaries(&before.0),
-            ["OUT-6", "OUT-5", "OUT-4", "OUT-3", "OUT-2"],
-            "the Quartermaster's five newest outcomes"
+            ["OUT-9", "OUT-8", "OUT-7", "OUT-6", "OUT-5"],
+            "the five newest global outcomes"
         );
         assert_eq!(before.1.len(), 3, "the secondmate's three outcomes");
         assert_eq!(
@@ -271,7 +270,7 @@ mod tests {
                 .payload
                 .get("supervisor")
                 .and_then(serde_json::Value::as_i64),
-            Some(1),
+            Some(2),
             "a task event names its supervisor"
         );
         // The pump has read every event, so no task is waiting on one (kept.rs).
@@ -290,15 +289,15 @@ mod tests {
                 )?;
                 Ok((
                     total,
-                    crate::events::latest_of(conn, "outcome.", quartermaster, 5)?,
+                    crate::events::latest(conn, "outcome.", 5)?,
                     crate::events::latest_of(conn, "outcome.", secondmate, 5)?,
                 ))
             })
             .await
             .expect("the outcomes after a restart");
         assert_eq!(
-            kept.0, 8,
-            "five of the Quartermaster's and all three of the secondmate's are kept"
+            kept.0, 5,
+            "the secondmate's three outcomes overlap the global five"
         );
         assert_eq!(
             summaries(&kept.1),

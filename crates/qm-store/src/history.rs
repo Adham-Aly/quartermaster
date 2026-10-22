@@ -11,11 +11,15 @@
 use crate::kept;
 use crate::mirror::with_guards_lifted;
 use crate::{StoreError, ids};
-use qm_types::ids::{AgentId, TurnId};
+use qm_types::ids::{AgentId, MessageId, TurnId};
 use rusqlite::{Connection, Transaction, params};
 
 /// How many closed tasks stay in memory. Older ones are forgotten (Q8).
 pub const KEEP_CLOSED_TASKS: usize = 200;
+
+#[cfg(test)]
+mod explicit_tests;
+mod parent;
 
 /// Forgets `agent`'s conversation before the turn with sequence `before` (`i64::MAX` for all of it):
 /// its turns, messages and session lines. Returns the number of turns forgotten.
@@ -24,10 +28,35 @@ pub fn forget_conversation(
     agent: AgentId,
     before: i64,
 ) -> Result<usize, StoreError> {
+    forget_conversation_except(conn, agent, before, &[])
+}
+
+/// Forgets the captured conversation while retaining queued inputs, even when they precede
+/// summarized output in sequence order. Rows at or after `before` also stay.
+pub fn forget_conversation_except(
+    conn: &mut Connection,
+    agent: AgentId,
+    before: i64,
+    protected: &[MessageId],
+) -> Result<usize, StoreError> {
     const TURNS: &str = "SELECT id FROM turns WHERE agent_id = ?1 AND seq < ?2";
-    const MESSAGES: &str = "SELECT id FROM messages WHERE agent_id = ?1 AND seq < ?2";
+    // A user's message precedes the turn it starts. Keep inputs of every retained turn, even
+    // when the input's own sequence is below the compaction cutoff.
+    const MESSAGES: &str = "SELECT id FROM messages WHERE agent_id = ?1 AND seq < ?2 \
+        AND id NOT IN (SELECT id FROM temp.protected_messages) \
+        AND id NOT IN (SELECT message_id FROM turns WHERE message_id IS NOT NULL \
+                       AND NOT (agent_id = ?1 AND seq < ?2))";
     with_guards_lifted(conn, |tx| {
-        tx.execute_batch("PRAGMA defer_foreign_keys = ON;")?;
+        tx.execute_batch(
+            "PRAGMA defer_foreign_keys = ON;
+            CREATE TEMP TABLE protected_messages (id INTEGER PRIMARY KEY);",
+        )?;
+        for message in protected {
+            tx.execute(
+                "INSERT OR IGNORE INTO temp.protected_messages VALUES (?1)",
+                [message],
+            )?;
+        }
         let p = params![agent, before];
         tx.execute(
             &format!("UPDATE events SET turn_id = NULL WHERE turn_id IN ({TURNS})"),
@@ -65,7 +94,8 @@ pub fn forget_conversation(
         )?;
         tx.execute(
             &format!(
-                "DELETE FROM session_lines WHERE (agent_id = ?1 AND seq < ?2) \
+                "DELETE FROM session_lines WHERE (agent_id = ?1 AND seq < ?2 \
+                     AND (message_id IS NULL OR message_id NOT IN (SELECT id FROM temp.protected_messages))) \
                  OR turn_id IN ({TURNS}) OR message_id IN ({MESSAGES})"
             ),
             p,
@@ -73,6 +103,7 @@ pub fn forget_conversation(
         let turns = tx.execute(&format!("DELETE FROM turns WHERE id IN ({TURNS})"), p)?;
         tx.execute(&format!("DELETE FROM messages WHERE id IN ({MESSAGES})"), p)?;
         forget_seen_events(tx)?;
+        tx.execute_batch("DROP TABLE temp.protected_messages;")?;
         Ok(turns)
     })
 }
@@ -91,16 +122,36 @@ pub fn forget_before_turn(
 
 /// Forgets every closed task beyond the newest `keep`, with what hangs off it: reports, links,
 /// jobs, processes, routing decisions, wakes and held actions, and the crewmates that worked on it
-/// with their conversations. Returns the forgotten task numbers.
+/// with their conversations. Tasks with unread parent-channel facts stay even beyond the cap,
+/// until the pump advances its durable cursor. Returns the forgotten task numbers.
 pub fn forget_closed_tasks(conn: &mut Connection, keep: usize) -> Result<Vec<u32>, StoreError> {
+    forget_closed(conn, keep, false)
+}
+
+/// Explicit clear/compaction: discards every closed task's details, even with unread facts.
+/// Minimal pending parent outcomes are delivered to durable, task-independent wakes first.
+/// Unlike cap eviction, this never waits for the parent pump or block watermarks.
+pub fn forget_closed_task_details(conn: &mut Connection) -> Result<Vec<u32>, StoreError> {
+    forget_closed(conn, 0, true)
+}
+
+fn forget_closed(
+    conn: &mut Connection,
+    keep: usize,
+    explicit: bool,
+) -> Result<Vec<u32>, StoreError> {
     let keep = i64::try_from(keep).unwrap_or(i64::MAX);
     let forgotten = with_guards_lifted(conn, |tx| {
         tx.execute_batch("PRAGMA defer_foreign_keys = ON;")?;
         let ids: Vec<i64> = tx
             .prepare(
-                "SELECT id FROM tasks WHERE status = 'closed' ORDER BY seq DESC LIMIT -1 OFFSET ?1",
+                "SELECT id FROM (SELECT id FROM tasks WHERE status = 'closed' \
+                 ORDER BY seq DESC LIMIT -1 OFFSET ?1) \
+                 WHERE (?2 OR id NOT IN (SELECT task_id FROM events WHERE task_id IS NOT NULL \
+                                  AND seq > (SELECT COALESCE(MAX(event_seq), 0) \
+                                             FROM parent_channel_cursor)))",
             )?
-            .query_map([keep], |r| r.get(0))?
+            .query_map(params![keep, explicit], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -116,6 +167,28 @@ pub fn forget_closed_tasks(conn: &mut Connection, keep: usize) -> Result<Vec<u32
             "INSERT INTO temp.forgetting_agents (id) \
              SELECT id FROM agents WHERE task_id IN (SELECT id FROM temp.forgetting_tasks)",
             [],
+        )?;
+        // Even cap eviction must not leave request/report history orphaned in RAM.
+        parent::deliver_and_forget(tx)?;
+        // Delete detail events while their ownership is still known; nulling first would make
+        // cap-evicted details impossible for a later explicit clear to identify.
+        tx.execute_batch(
+            "UPDATE events SET
+                     summary = CASE WHEN task_id IS NULL THEN kind
+                                    ELSE printf('T-%04d %s', task_id, substr(kind, 9)) END,
+                     payload = json_object('supervisor', COALESCE(
+                         json_extract(payload, '$.supervisor'),
+                         (SELECT supervisor_id FROM tasks WHERE id = events.task_id)))
+                 WHERE kind LIKE 'outcome.%' AND
+                     (task_id IN (SELECT id FROM temp.forgetting_tasks)
+                      OR agent_id IN (SELECT id FROM temp.forgetting_agents)
+                      OR turn_id IN (SELECT id FROM turns WHERE agent_id IN
+                                     (SELECT id FROM temp.forgetting_agents)));
+                 DELETE FROM events WHERE kind NOT LIKE 'outcome.%' AND
+                     (task_id IN (SELECT id FROM temp.forgetting_tasks)
+                      OR agent_id IN (SELECT id FROM temp.forgetting_agents)
+                      OR turn_id IN (SELECT id FROM turns WHERE agent_id IN
+                                     (SELECT id FROM temp.forgetting_agents)));",
         )?;
         forget_tasks(tx)?;
         forget_seen_events(tx)?;
@@ -192,6 +265,11 @@ fn forget_tasks(tx: &Transaction<'_>) -> Result<(), StoreError> {
             "DELETE FROM routing_decisions WHERE task_id IN ({TASKS}) OR agent_id IN ({AGENTS})"
         ),
         format!("DELETE FROM wakes WHERE task_id IN ({TASKS}) OR target_agent_id IN ({AGENTS})"),
+        // Card anchors have no task/agent FK: their ownership is the held action itself.
+        format!(
+            "DELETE FROM events WHERE kind = 'held.shown' AND json_extract(payload, '$.held') IN \
+             (SELECT id FROM held_actions WHERE task_id IN ({TASKS}) OR asked_by IN ({AGENTS}))"
+        ),
         format!("DELETE FROM held_actions WHERE task_id IN ({TASKS}) OR asked_by IN ({AGENTS})"),
         format!(
             "DELETE FROM session_lines WHERE agent_id IN ({AGENTS}) OR task_id IN ({TASKS}) \
@@ -227,7 +305,7 @@ mod tests {
     use super::*;
     use crate::{connection, schema};
 
-    fn working() -> Connection {
+    pub(super) fn working() -> Connection {
         let mut conn = connection::open_memory().expect("memory database");
         schema::migrate(&mut conn).expect("the schema");
         conn.execute(
@@ -246,7 +324,7 @@ mod tests {
         conn
     }
 
-    fn count(conn: &Connection, table: &str) -> i64 {
+    pub(super) fn count(conn: &Connection, table: &str) -> i64 {
         conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
             .expect("a count")
     }
@@ -288,6 +366,38 @@ mod tests {
     }
 
     #[test]
+    fn captured_compaction_boundary_removes_output_after_a_protected_queued_input() {
+        let mut conn = working();
+        conn.execute_batch(
+            "INSERT INTO messages (id, agent_id, source, kind, text, created_at, seq) VALUES
+                 (1, 1, 'you', 'message', 'old input', 1, 10),
+                 (2, 1, 'you', 'message', 'queued input', 1, 30),
+                 (3, 1, 'agent', 'reply', 'old reply', 1, 40);
+             INSERT INTO turns (id, agent_id, started_by, message_id, started_at, ended_at, status, seq)
+                 VALUES (1, 1, 'user', 1, 1, 2, 'completed', 20);
+             INSERT INTO session_lines (agent_id, message_id, kind, text, created_at, seq) VALUES
+                 (1, 1, 'you', 'old input', 1, 11),
+                 (1, 2, 'you', 'queued input', 1, 31),
+                 (1, 3, 'agent', 'old reply', 1, 41);",
+        ).expect("an input queued before the preceding turn's final reply");
+        assert_eq!(
+            forget_conversation_except(&mut conn, AgentId::new(1), 50, &[MessageId::new(2)])
+                .expect("forget captured conversation"),
+            1
+        );
+        assert_eq!(count(&conn, "turns"), 0);
+        assert_eq!(count(&conn, "messages"), 1);
+        assert_eq!(count(&conn, "messages WHERE id = 2 AND seq = 30"), 1);
+        assert_eq!(count(&conn, "session_lines"), 1);
+        assert_eq!(count(&conn, "session_lines WHERE message_id = 2"), 1);
+        assert_eq!(count(&conn, "pragma_foreign_key_check"), 0);
+        // The temporary protection set is per call, not sticky across later clear/compaction.
+        forget_conversation(&mut conn, AgentId::new(1), i64::MAX).expect("clear");
+        assert_eq!(count(&conn, "messages"), 0);
+        assert_eq!(count(&conn, "session_lines"), 0);
+    }
+
+    #[test]
     fn a_compaction_forgets_the_turns_before_its_own_turn() {
         let mut conn = working();
         conn.execute_batch(
@@ -306,6 +416,71 @@ mod tests {
         assert_eq!(forgotten, 1, "the turn before the compacting one goes");
         assert_eq!(count(&conn, "turns"), 1, "the compacting turn stays");
         assert_eq!(count(&conn, "session_lines"), 1, "its line stays");
+    }
+
+    #[test]
+    fn user_started_compaction_keeps_its_input_but_forgets_prior_history() {
+        let mut conn = working();
+        conn.execute_batch(
+            "INSERT INTO messages (id, agent_id, source, kind, text, created_at, seq) VALUES \
+                 (1, 1, 'you', 'message', 'old input', 1, 1), \
+                 (2, 1, 'you', 'message', 'current turn input', 1, 100);
+             INSERT INTO turns (id, agent_id, started_by, message_id, status, started_at, ended_at, seq) \
+                 VALUES (1, 1, 'user', 1, 'completed', 1, 2, 2);
+             INSERT INTO turns (id, agent_id, started_by, message_id, status, started_at, seq) \
+                 VALUES (3, 1, 'user', 2, 'running', 1, 101);
+             INSERT INTO session_lines (agent_id, turn_id, message_id, kind, text, created_at, seq) \
+                 VALUES (1, 1, 1, 'you', 'old input', 1, 3), \
+                        (1, 3, 2, 'you', 'current turn input', 1, 102);",
+        ).expect("user-started conversation");
+        assert_eq!(
+            forget_before_turn(&mut conn, AgentId::new(1), TurnId::new(3)).expect("compact"),
+            1,
+        );
+        assert_eq!(count(&conn, "messages WHERE id = 2"), 1);
+        assert_eq!(count(&conn, "messages WHERE id = 1"), 0);
+        assert_eq!(count(&conn, "turns"), 1);
+        assert_eq!(count(&conn, "session_lines"), 1);
+        assert_eq!(count(&conn, "pragma_foreign_key_check"), 0);
+        forget_conversation(&mut conn, AgentId::new(1), i64::MAX).expect("clear everything");
+        assert_eq!(count(&conn, "messages"), 0);
+        assert_eq!(count(&conn, "turns"), 0);
+    }
+
+    #[test]
+    fn the_cap_keeps_old_tasks_with_unread_facts_until_delivery() {
+        let mut conn = working();
+        for id in 1..=201 {
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, delivery_mode, \
+                 status, outcome, created_at, closed_at, seq) \
+                 VALUES (?1, 1, 1, 'build', 't', 'g', 'folder', 'closed', 'answered', 1, 2, ?1)",
+                [id],
+            ).expect("closed task");
+        }
+        conn.execute_batch(
+            "INSERT INTO parent_channel_cursor (seq, event_seq) VALUES (1, 0);
+             INSERT INTO events (id, at, kind, summary, payload, task_id, seq) \
+                 VALUES (1, 1, 'task.closed', 'unread fact', '{}', 1, 999);",
+        )
+        .expect("unread fact");
+        assert_eq!(
+            forget_closed_tasks(&mut conn, 200).expect("cap"),
+            Vec::<u32>::new()
+        );
+        assert_eq!(count(&conn, "tasks"), 201);
+        let task: Option<i64> = conn
+            .query_row("SELECT task_id FROM events WHERE id = 1", [], |r| r.get(0))
+            .expect("unread fact keeps its task reference");
+        assert_eq!(task, Some(1));
+        conn.execute("UPDATE parent_channel_cursor SET event_seq = 999", [])
+            .expect("delivery");
+        assert_eq!(
+            forget_closed_tasks(&mut conn, 200).expect("cap after delivery"),
+            vec![1]
+        );
+        assert_eq!(count(&conn, "tasks"), 200);
+        assert_eq!(count(&conn, "pragma_foreign_key_check"), 0);
     }
 
     #[test]

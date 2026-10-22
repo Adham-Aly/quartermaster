@@ -9,6 +9,8 @@ Always use a throwaway data directory; never the real `~/.quartermaster`:
 
 ```sh
 export QUARTERMASTER_HOME=$(mktemp -d)
+# Debug binaries only: isolate scratch too, without accessing /tmp/quartermaster.
+export QM_DEV=1 QM_DEV_SCRATCH="$(mktemp -d)/scratch"
 cargo run -p quartermaster -- --foreground  # one process; or build and run target/debug/quartermaster
 ```
 
@@ -89,7 +91,9 @@ reproducing turn-loop and UI behaviour.
 ## After the run
 
 Read the day's log in `$QUARTERMASTER_HOME/logs/` (skill `debug-from-logs`). Delete the
-throwaway directory when done. A run also makes its scratch root, `/tmp/quartermaster/<uid>/<hash>/`
-(attachments, drafts, evidence; the hash is of the data directory path). Remove it with the
-directory, and check the `<hash>` folder matches the run's. Never paste credentials from it into a
-report.
+throwaway directory when done. With `QM_DEV_SCRATCH`, remove its unique parent directory too.
+The override requires a debug binary, `QM_DEV=1`, and an explicit non-default home; unsafe overrides
+fail instead of falling back to shared scratch. Without the override, a run makes its scratch root,
+`/tmp/quartermaster/<uid>/<hash>/` (attachments, drafts, evidence; the hash is of the data directory
+path). Remove only that run's `<hash>` folder, never the shared ancestors. Never paste credentials
+from it into a report.

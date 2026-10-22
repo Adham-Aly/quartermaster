@@ -89,8 +89,13 @@ fn is_free(conn: &Connection, table: &'static str, n: u32) -> Result<bool, Store
     if RESERVED.with_borrow(|reserved| reserved.contains(&(table, n))) {
         return Ok(false);
     }
+    let extra = if table == "events" {
+        " OR EXISTS (SELECT 1 FROM forgotten_parent_facts WHERE id = ?1)"
+    } else {
+        ""
+    };
     let held: bool = conn.query_row(
-        &format!("SELECT EXISTS (SELECT 1 FROM {table} WHERE id = ?1)"),
+        &format!("SELECT EXISTS (SELECT 1 FROM {table} WHERE id = ?1){extra}"),
         params![n],
         |r| r.get(0),
     )?;
@@ -103,8 +108,13 @@ fn taken_in(
     table: &'static str,
     space: &RangeInclusive<u32>,
 ) -> Result<BTreeSet<u32>, StoreError> {
+    let extra = if table == "events" {
+        " UNION SELECT id FROM forgotten_parent_facts WHERE id BETWEEN ?1 AND ?2"
+    } else {
+        ""
+    };
     let mut stmt = conn.prepare(&format!(
-        "SELECT id FROM {table} WHERE id BETWEEN ?1 AND ?2"
+        "SELECT id FROM {table} WHERE id BETWEEN ?1 AND ?2{extra}"
     ))?;
     let mut taken = stmt
         .query_map(params![space.start(), space.end()], |r| r.get::<_, u32>(0))?

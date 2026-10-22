@@ -14,6 +14,9 @@
 //! them finished, and closes the session `Crashed`. Other sessions never notice.
 
 use crate::adapters::{self, WireApi};
+
+#[cfg(test)]
+mod forget_tests;
 use crate::agent_loop::CompactError;
 use crate::builtin::{BuiltinTools, JobNotice};
 use crate::compaction::Context;
@@ -226,6 +229,21 @@ async fn run(
     session.serve().await;
 }
 
+impl Drop for Session {
+    fn drop(&mut self) {
+        // A panic/aborted task cannot receive a later Forget. Only an orderly Close is
+        // resumable (for example an effort change); terminal and abandoned sessions are not.
+        let closed = self
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed;
+        if self.forget_requested || !closed {
+            SessionStore::forget(&self.id);
+        }
+    }
+}
+
 impl Session {
     #[allow(clippy::too_many_arguments)] // The parts of a session, each needed once.
     fn start(
@@ -372,11 +390,11 @@ impl Session {
     /// A command between turns.
     fn idle_command(&mut self, command: Option<SessionCommand>) {
         match command {
-            None | Some(SessionCommand::Close) => self.close_requested = true,
-            Some(SessionCommand::Forget) => {
+            None | Some(SessionCommand::Forget) => {
                 self.forget_requested = true;
                 self.close_requested = true;
             }
+            Some(SessionCommand::Close) => self.close_requested = true,
             Some(SessionCommand::StartTurn { input } | SessionCommand::Inject { input }) => {
                 self.queued_turns.push_back(Queued::Turn(input));
             }
@@ -401,11 +419,11 @@ impl Session {
     /// A command during a turn. Returns why the turn must stop, if it must.
     pub(crate) fn turn_command(&mut self, command: Option<SessionCommand>) -> Option<Cancel> {
         match command {
-            None | Some(SessionCommand::Close) => {
+            Some(SessionCommand::Close) => {
                 self.close_requested = true;
                 Some(Cancel::Close)
             }
-            Some(SessionCommand::Forget) => {
+            None | Some(SessionCommand::Forget) => {
                 self.forget_requested = true;
                 self.close_requested = true;
                 Some(Cancel::Close)

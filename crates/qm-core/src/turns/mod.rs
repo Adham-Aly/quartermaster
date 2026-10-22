@@ -25,6 +25,8 @@
 mod dispatch;
 mod end;
 mod engine_turn;
+#[cfg(test)]
+pub(crate) mod forget_tests;
 mod recover;
 mod slash;
 
@@ -64,6 +66,7 @@ pub const INTERRUPT_GRACE: Duration = Duration::from_secs(15);
 /// What the loop is built from.
 pub struct TurnLoopDeps {
     pub db: Db,
+    pub inbox: crate::inbox::Inbox,
     pub clock: Arc<dyn Clock>,
     pub seat: Arc<dyn SeatSession>,
     pub context: Arc<dyn ContextSource>,
@@ -170,6 +173,13 @@ impl fmt::Debug for TurnLoop {
             .field("shutting_down", &self.shutting_down)
             .finish_non_exhaustive()
     }
+}
+
+/// The summarized sequence range and inputs the engine has not seen.
+#[derive(Clone, Debug)]
+struct CompactionBoundary {
+    before: i64,
+    protected: Vec<MessageId>,
 }
 
 /// Where opening the session stands.
@@ -452,8 +462,42 @@ impl TurnLoop {
         tokens_before: Option<u64>,
         tokens_after: Option<u64>,
     ) -> Result<(), SeatError> {
+        self.record_compacted_before(turn, None, automatic, tokens_before, tokens_after)
+            .await
+    }
+
+    /// Capture the summarized range separately from queued inputs: a reply from the preceding
+    /// turn can have a later sequence than an input queued behind `/compact`.
+    async fn compaction_boundary(&self, agent: AgentId) -> Result<CompactionBoundary, SeatError> {
+        let at = self.deps.clock.now();
+        let mut protected = self.queue.queued();
+        Ok(self
+            .deps
+            .db
+            .call(move |conn| {
+                let before = qm_store::seq::next(at);
+                protected.extend(qm_store::messages::waiting(conn, agent)?);
+                Ok(CompactionBoundary { before, protected })
+            })
+            .await?)
+    }
+
+    /// `before` is captured before an explicit compaction starts: queued messages arriving while
+    /// it runs are not part of the engine's summary and must stay in the database.
+    async fn record_compacted_before(
+        &self,
+        turn: Option<TurnId>,
+        before: Option<CompactionBoundary>,
+        automatic: bool,
+        tokens_before: Option<u64>,
+        tokens_after: Option<u64>,
+    ) -> Result<(), SeatError> {
         let Some(agent) = self.agent else {
             return Ok(());
+        };
+        let before = match before {
+            Some(before) => before,
+            None => self.compaction_boundary(agent).await?,
         };
         let event = qm_store::turns::SeatEvent {
             kind: qm_store::turns::kind::COMPACTED,
@@ -473,16 +517,53 @@ impl TurnLoop {
             .await?;
         // The engine's summary replaces what came before this turn, so the stored lines before it
         // go too (plan section 3.3, forgetting).
-        if let Some(turn) = turn {
-            let forgot = self
-                .deps
-                .db
-                .call(move |conn| qm_store::history::forget_before_turn(conn, agent, turn))
-                .await;
-            if let Err(e) = forgot {
-                tracing::warn!(who = %self.who, error = %e, "couldn't forget the compacted conversation");
-            }
+        let forget_tasks = self.who == LoopRole::Quartermaster;
+        let forgot = self
+            .deps
+            .db
+            .call(move |conn| {
+                match turn {
+                    Some(turn) => qm_store::history::forget_before_turn(conn, agent, turn)?,
+                    None => qm_store::history::forget_conversation_except(
+                        conn,
+                        agent,
+                        before.before,
+                        &before.protected,
+                    )?,
+                };
+                if forget_tasks {
+                    qm_store::history::forget_closed_task_details(conn)?;
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(e) = forgot {
+            tracing::warn!(who = %self.who, error = %e, "couldn't forget the compacted history");
+        } else if forget_tasks {
+            self.notify_forgotten_outcomes().await?;
         }
+        Ok(())
+    }
+
+    /// Forgetting can write minimal outcomes directly. Catch up all pending recipients after
+    /// its commit, including secondmates; a durable wake alone does not wake an idle loop.
+    async fn notify_forgotten_outcomes(&self) -> Result<(), SeatError> {
+        let notify = self
+            .deps
+            .db
+            .call(|conn| {
+                let mut notify = crate::inbox::Notify::new();
+                let mut stmt = conn.prepare(
+                    "SELECT DISTINCT target_agent_id FROM wakes \
+                WHERE delivered_at IS NULL AND consumed_at IS NULL",
+                )?;
+                for target in stmt.query_map([], |r| r.get::<_, AgentId>(0))? {
+                    notify.add(target?);
+                }
+                Ok(notify)
+            })
+            .await?;
+        self.deps.inbox.notify(&notify);
         Ok(())
     }
 

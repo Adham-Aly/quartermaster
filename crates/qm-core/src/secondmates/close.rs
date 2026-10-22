@@ -2,9 +2,8 @@
 //!
 //! The safer of the two behaviours: a secondmate with any open task is refused, never retired
 //! with work still running, so nothing it supervises is dropped silently. Retiring marks its
-//! `secondmates` and `agents` rows retired (nothing is deleted: its conversation, events and
-//! routed requests stay) and stops its loop, which closes its session. Rows are
-//! kept, so its ID stays taken and is not handed out again.
+//! `secondmates` and `agents` rows retired and stops its loop, closing its session. History
+//! remains only in memory until forgotten or restarted; numbers can be reused after restart.
 
 use super::{SecondmateService, event_kind, failed, refuse};
 use qm_policy::scope::check_own_secondmate;
@@ -41,12 +40,16 @@ impl SecondmateService {
             tracing::warn!(error = %e, "couldn't remove a retired secondmate's folders; the next start will");
         }
         Ok(Ack {
-            note: format!(
-                "{id} is retired: its session is closed and it has left the workers list. Its \
-                 history is kept."
-            ),
+            note: retired_note(id),
         })
     }
+}
+
+fn retired_note(id: SecondmateId) -> String {
+    format!(
+        "{id} is retired: its session is closed and it has left the workers list. Its \
+         chat history is memory-only and is lost after restart; numbers can then be reused."
+    )
 }
 
 /// Removes a retired secondmate's folders: its home, its session and its plugin folder.
@@ -203,6 +206,17 @@ mod tests {
     }
 
     #[test]
+    fn retirement_notice_does_not_promise_a_permanent_archive() {
+        let id = "SM-02".parse().expect("secondmate");
+        let note = super::retired_note(id);
+        assert!(note.contains("SM-02 is retired"));
+        assert!(note.contains("memory-only"));
+        assert!(note.contains("lost after restart"));
+        assert!(note.contains("numbers can then be reused"));
+        assert!(!note.contains("history is kept"));
+    }
+
+    #[test]
     fn an_idle_secondmate_is_retired_and_leaves_the_workers_list() {
         let mut f = Fixture::new("idle");
         let (id, agent) = f.secondmate("Web");
@@ -213,7 +227,7 @@ mod tests {
             "the worker is gone from the context block's source"
         );
         assert!(secondmates::load(&f.conn, id).expect("load").is_none());
-        // History is kept: the rows and the event are still there.
+        // History is still in memory, not promised across restart.
         let kept: i64 = f
             .conn
             .query_row(

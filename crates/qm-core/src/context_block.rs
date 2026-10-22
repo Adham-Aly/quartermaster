@@ -186,7 +186,7 @@ fn gather(conn: &mut Connection, agent: AgentId, turn: TurnId) -> Result<Gathere
         you: events::since(&tx, after, before, YOU, SINCE_LINES)?,
         activity: events::since(&tx, after, before, ACTIVITY, SINCE_LINES)?,
         model_changes: events::since(&tx, after, before, MODEL_CHANGES, SINCE_LINES)?,
-        outcomes: events::latest_of(&tx, OUTCOMES, agent, RECENT_OUTCOMES)?,
+        outcomes: events::latest(&tx, OUTCOMES, RECENT_OUTCOMES)?,
         standing: standing_instructions::active(&tx)?,
         tiers: context::tier_models(&tx)?,
     };
@@ -429,6 +429,83 @@ mod tests {
         drop(builder);
         drop(db);
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn global_outcomes_and_each_secondmates_own_five_survive_restart() {
+        let dir = std::env::temp_dir().join(format!("qm-global-outcomes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch folder");
+        let path = dir.join("state.db");
+        let clock: Arc<dyn Clock> = Arc::new(Still(Timestamp::from_second(100).expect("time")));
+        let db = Db::open(&path).expect("database");
+        db.call(|conn| {
+            conn.execute_batch(SETUP)?;
+            conn.execute_batch(
+                "INSERT INTO secondmates (id, name, scope, created_at, seq) VALUES
+                     (1, 'first', 'p', 1, 1), (2, 'second', 'p', 1, 2);
+                 INSERT INTO agents (id, role, home, status, supervisor_id, secondmate_id, created_at, seq)
+                     VALUES (2, 'secondmate', '/sm1', 'idle', 1, 1, 1, 2),
+                            (3, 'secondmate', '/sm2', 'idle', 1, 2, 1, 3);",
+            )?;
+            // Random/non-monotonic event IDs must not decide which five are newest.
+            for (i, supervisor) in [1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3].into_iter().enumerate() {
+                let i = i64::try_from(i).expect("small index");
+                conn.execute(
+                    "INSERT INTO events (id, at, kind, summary, payload, seq)
+                     VALUES (?1, 1000, 'outcome.landed', ?2, ?3, ?4)",
+                    rusqlite::params![100 - i, format!("OUTCOME-{supervisor}-{i:02}"),
+                        serde_json::json!({"supervisor": supervisor}).to_string(), 100 + i],
+                )?;
+            }
+            Ok(())
+        }).await.expect("outcomes");
+
+        let mut original = Some(db);
+        for restart in [false, true] {
+            let current = if restart {
+                Db::open(&path).expect("restart")
+            } else {
+                original.take().expect("original database")
+            };
+            let qm = ContextBuilder::new(current.clone(), Arc::clone(&clock));
+            let facts = qm
+                .facts(AgentId::new(1), TurnId::new(1))
+                .await
+                .expect("QM facts");
+            let expected: Vec<_> = (10..15)
+                .rev()
+                .map(|i| format!("OUTCOME-3-{i:02}"))
+                .collect();
+            assert_eq!(
+                facts
+                    .recent_outcomes
+                    .iter()
+                    .map(|e| e.text.clone())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            for (sm, agent, start) in [(1, 2, 3), (2, 3, 10)] {
+                let context = crate::secondmates::context::SecondmateContext::new(
+                    current.clone(),
+                    &clock,
+                    qm_types::ids::SecondmateId::new(sm).expect("SM"),
+                );
+                let rendered = context
+                    .context_block(AgentId::new(agent), TurnId::new(1))
+                    .await
+                    .expect("SM block");
+                for i in start..start + 5 {
+                    assert!(
+                        rendered.contains(&format!("OUTCOME-{agent}-{i:02}")),
+                        "own outcome after restart={restart}"
+                    );
+                }
+                assert_eq!(rendered.matches("OUTCOME-").count(), RECENT_OUTCOMES);
+                assert!(!rendered.contains(&format!("OUTCOME-{agent}-{:02}", start - 1)));
+            }
+        }
+        std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
     #[tokio::test]

@@ -167,11 +167,13 @@ pub fn watermark(conn: &Connection) -> Result<Option<EventId>, StoreError> {
         .optional()?)
 }
 
-/// Whether some row was already written for `event` (the pump's replay guard).
+/// Whether `event` already has a channel row or an explicit-forgetting delivery marker.
+/// The latter also protects batches read by the pump before their tasks were forgotten.
 pub fn has_source_event(conn: &Connection, event: EventId) -> Result<bool, StoreError> {
     Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM parent_channel
-                        WHERE json_extract(facts, '$.source_event') = ?1)",
+                        WHERE json_extract(facts, '$.source_event') = ?1) \
+         OR EXISTS (SELECT 1 FROM forgotten_parent_facts WHERE id = ?1)",
         params![event],
         |r| r.get(0),
     )?)

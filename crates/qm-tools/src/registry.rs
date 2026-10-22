@@ -98,6 +98,24 @@ pub fn descriptors(role: Role) -> Vec<ToolDescriptor> {
 mod tests {
     use super::TOOLS;
 
+    #[test]
+    fn history_tools_explain_forgetting_and_reused_numbers() {
+        for name in ["close_secondmate", "task_status", "find_tasks"] {
+            let tool = TOOLS.iter().find(|t| t.name == name).expect("tool");
+            let text = tool.descriptor().description;
+            assert!(text.contains("reused after restart"), "{name}");
+            assert!(!text.contains("never reused"), "{name}");
+            assert!(!text.contains("history is kept"), "{name}");
+            assert!(text.len() <= 1_900, "{name}");
+            if name == "find_tasks" {
+                assert!(text.contains("not yet forgotten"));
+            } else {
+                assert!(text.contains("memory-only"));
+                assert!(text.contains("lost after restart"));
+            }
+        }
+    }
+
     /// Every key anywhere in `value`, lowercased.
     fn keys(value: &serde_json::Value, out: &mut Vec<String>) {
         match value {

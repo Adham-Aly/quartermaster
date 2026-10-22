@@ -8,19 +8,43 @@ use crate::StoreError;
 use rusqlite::Connection;
 use rusqlite_migration::{M, Migrations};
 
+/// The SQL is shared by the checked working-database migrations and the incomplete disk mirror.
+const SQL: &[&str] = &[
+    include_str!("../migrations/0001_initial.sql"),
+    include_str!("../migrations/0002_crew.sql"),
+    include_str!("../migrations/0004_delivery.sql"),
+    include_str!("../migrations/0005_verification.sql"),
+    include_str!("../migrations/0006_sessions.sql"),
+    include_str!("../migrations/0007_tier_entries.sql"),
+    include_str!("../migrations/0008_folder.sql"),
+    include_str!("../migrations/0009_creation_order.sql"),
+    include_str!("../migrations/0010_parent_cursor.sql"),
+    include_str!("../migrations/0011_supervisor_payload.sql"),
+    include_str!("../migrations/0012_forgotten_parent_facts.sql"),
+];
+
 /// Every migration, in order.
 pub static MIGRATIONS: &[M<'static>] = &[
-    M::up(include_str!("../migrations/0001_initial.sql")).foreign_key_check(),
-    M::up(include_str!("../migrations/0002_crew.sql")).foreign_key_check(),
-    M::up(include_str!("../migrations/0004_delivery.sql")).foreign_key_check(),
-    M::up(include_str!("../migrations/0005_verification.sql")).foreign_key_check(),
-    M::up(include_str!("../migrations/0006_sessions.sql")).foreign_key_check(),
-    M::up(include_str!("../migrations/0007_tier_entries.sql")).foreign_key_check(),
-    M::up(include_str!("../migrations/0008_folder.sql")).foreign_key_check(),
-    M::up(include_str!("../migrations/0009_creation_order.sql")).foreign_key_check(),
-    M::up(include_str!("../migrations/0010_parent_cursor.sql")).foreign_key_check(),
-    M::up(include_str!("../migrations/0011_supervisor_payload.sql")).foreign_key_check(),
+    M::up(SQL[0]).foreign_key_check(),
+    M::up(SQL[1]).foreign_key_check(),
+    M::up(SQL[2]).foreign_key_check(),
+    M::up(SQL[3]).foreign_key_check(),
+    M::up(SQL[4]).foreign_key_check(),
+    M::up(SQL[5]).foreign_key_check(),
+    M::up(SQL[6]).foreign_key_check(),
+    M::up(SQL[7]).foreign_key_check(),
+    M::up(SQL[8]).foreign_key_check(),
+    M::up(SQL[9]).foreign_key_check(),
+    M::up(SQL[10]).foreign_key_check(),
 ];
+
+/// Upgrades an intentionally incomplete mirror. Its foreign keys are repaired and validated only
+/// after kept rows have been loaded into the working database (`mirror::load`). Checking them
+/// during a disk migration would reject references to deliberately unmirrored conversation rows.
+pub(crate) fn migrate_mirror(conn: &mut Connection) -> Result<(), StoreError> {
+    Migrations::new(SQL.iter().map(|sql| M::up(sql)).collect()).to_latest(conn)?;
+    Ok(())
+}
 
 /// The migration set.
 pub fn migrations() -> Migrations<'static> {
@@ -87,8 +111,8 @@ mod tests {
         let mut conn = Connection::open_in_memory().expect("memory database");
         conn.pragma_update(None, "foreign_keys", true)
             .expect("foreign keys");
-        // Every migration but the newest: the schema these events were written under.
-        Migrations::from_slice(&MIGRATIONS[..MIGRATIONS.len() - 1])
+        // Through 0010, before 0011 added supervisors to event payloads.
+        Migrations::from_slice(&MIGRATIONS[..9])
             .to_latest(&mut conn)
             .expect("the old schema");
         conn.execute_batch(

@@ -112,7 +112,9 @@ pub(crate) async fn task_detail(
         })
         .await
         .map_err(|e| failed(&e))?
-        .ok_or_else(|| refuse(format!("{task} doesn't exist")))??;
+        .ok_or_else(|| refuse(format!(
+            "{task}'s details are unavailable: it either closed and was forgotten or doesn't exist; use find_tasks for tasks still kept (numbers can be reused after restart)"
+        )))??;
     let mut history: Vec<HistoryEntry> = events
         .iter()
         .filter(|e| e.kind != super::runner::TOOL_EVENT)

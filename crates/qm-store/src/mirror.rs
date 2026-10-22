@@ -29,7 +29,7 @@ impl Mirror {
     /// Migrates `state.db`, loads the kept rows into a new working database, and returns both.
     pub fn open(path: &Path) -> Result<(Connection, Mirror), StoreError> {
         let mut disk = connection::open_disk(path)?;
-        schema::migrate(&mut disk)?;
+        schema::migrate_mirror(&mut disk)?;
         let mut mem = connection::open_memory()?;
         schema::migrate(&mut mem)?;
         load(&mut mem, path)?;
@@ -468,6 +468,119 @@ mod tests {
             (None, None),
             "an unconsumed wake is delivered again"
         );
+    }
+
+    #[test]
+    fn previous_mirrors_upgrade_before_dangling_turn_references_are_checked() {
+        // Versions 8 and 9 exercise migrations 0010 and 0011 respectively. Both mirrors are
+        // valid disk shapes: their event survives, but its volatile turn does not.
+        for version in [8, 9] {
+            let scratch = Scratch::new(&format!("incomplete-upgrade-{version}"));
+            {
+                let mut old = connection::open_disk(&scratch.state()).expect("old mirror");
+                rusqlite_migration::Migrations::from_slice(&schema::MIGRATIONS[..version])
+                    .to_latest(&mut old)
+                    .expect("old schema");
+                quartermaster(&old);
+                old.execute_batch(
+                    "INSERT INTO events (id, at, kind, summary, payload, turn_id, seq) \
+                     VALUES (7, 1, 'secondmate.routed', 'mirror retained event', '{}', 999, 7);",
+                )
+                .expect("incomplete mirror event");
+            }
+            let (mem, mirror) = Mirror::open(&scratch.state()).expect("upgrade incomplete mirror");
+            let turn: Option<i64> = mem
+                .query_row("SELECT turn_id FROM events WHERE id = 7", [], |r| r.get(0))
+                .expect("retained event");
+            assert_eq!(turn, None);
+            assert_eq!(count(&mem, "pragma_foreign_key_check"), 0);
+            assert!(
+                mem.execute("UPDATE events SET summary = 'bad'", [])
+                    .is_err()
+            );
+            assert!(
+                mem.execute(
+                    "INSERT INTO turns (id, agent_id, started_by, started_at, seq) \
+                 VALUES (999, 999, 'app_event', 1, 999)",
+                    [],
+                )
+                .is_err(),
+                "working writes still enforce foreign keys"
+            );
+            drop((mem, mirror));
+            Mirror::open(&scratch.state()).expect("second start");
+        }
+    }
+
+    #[test]
+    fn mirror_upgrade_still_rejects_missing_required_working_dependencies() {
+        let scratch = Scratch::new("invalid-required-reference");
+        {
+            let mut old = connection::open_disk(&scratch.state()).expect("old mirror");
+            rusqlite_migration::Migrations::from_slice(&schema::MIGRATIONS[..8])
+                .to_latest(&mut old)
+                .expect("old schema");
+            quartermaster(&old);
+            old.execute_batch(
+                "INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, \
+                     delivery_mode, status, created_at, seq) \
+                 VALUES (3, 999, 1, 'build', 'task', 'goal', 'folder', 'queued', 1, 3);",
+            )
+            .expect("corrupt mirror missing its required project");
+        }
+        let error =
+            Mirror::open(&scratch.state()).expect_err("required dependency is not repairable");
+        assert!(error.to_string().contains("tasks.project_id"), "{error}");
+    }
+
+    #[test]
+    fn unread_closed_tasks_keep_removed_projects_and_retired_supervisors() {
+        let scratch = Scratch::new("closed-task-dependencies");
+        {
+            let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("mirror");
+            quartermaster(&mem);
+            mem.execute_batch(
+                "INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, \
+                     merge_method, created_at, removed_at, seq) \
+                     VALUES (2, 'gone', '/gone', 'created', 'main', 'folder', 'merge', 1, 2, 2);
+                 INSERT INTO secondmates (id, name, scope, created_at, retired_at, seq) \
+                     VALUES (11, 'old', 'scope', 1, 2, 11), (21, 'request owner', 'scope', 1, 2, 21);
+                 INSERT INTO agents (id, role, supervisor_id, secondmate_id, home, status, \
+                     created_at, retired_at, seq) \
+                     VALUES (12, 'secondmate', 1, 11, '/sm', 'retired', 1, 2, 12);
+                 INSERT INTO secondmate_requests (id, secondmate_id, request, status, created_at, seq) \
+                     VALUES (13, 21, 'request', 'closed', 1, 13);
+                 INSERT INTO tasks (id, project_id, supervisor_id, secondmate_request_id, kind, \
+                     title, goal, delivery_mode, status, outcome, created_at, closed_at, seq) \
+                     VALUES (3, 2, 12, 13, 'build', 'closed', 'fixture', 'folder', 'closed', \
+                             'answered', 1, 2, 3);
+                 INSERT INTO events (id, at, kind, summary, payload, task_id, seq) \
+                     VALUES (4, 1, 'task.closed', 'unread fact', '{}', 3, 4);
+                 INSERT INTO parent_channel_cursor (seq, event_seq) VALUES (1, 0);",
+            ).expect("reviewer fixture with retired dependencies");
+            mirror
+                .flush(&mem)
+                .expect("mirror closed task dependency closure");
+        }
+        let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("restart with unread task");
+        for table in ["projects", "tasks", "secondmate_requests"] {
+            assert_eq!(
+                count(&mem, table),
+                1,
+                "{table} survives with the unread task"
+            );
+        }
+        assert_eq!(count(&mem, "agents"), 2);
+        assert_eq!(count(&mem, "secondmates"), 2);
+        assert_eq!(count(&mem, "pragma_foreign_key_check"), 0);
+        mem.execute("UPDATE parent_channel_cursor SET event_seq = 4", [])
+            .expect("delivered");
+        mirror.flush(&mem).expect("flush delivery");
+        drop((mem, mirror));
+        let (mem, _) = Mirror::open(&scratch.state()).expect("restart after delivery");
+        assert_eq!(count(&mem, "tasks"), 0);
+        assert_eq!(count(&mem, "projects"), 0);
+        assert_eq!(count(&mem, "secondmates"), 0);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use super::*;
 use std::os::unix::fs::PermissionsExt as _;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A fresh data directory and scratch folder under the system's temporary folder.
@@ -284,4 +285,171 @@ fn an_image_is_removed_once_the_draft_no_longer_names_it() {
     sync.tick(&mut app);
     drop(sync);
     assert_eq!(home.image_files(), Vec::<PathBuf>::new());
+}
+
+/// Wait for the queued job without stopping/reopening the synchronizer.
+fn finish(sync: &mut DraftSync) -> bool {
+    let success = sync
+        .results
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    sync.cleanup_due |= !success;
+    success
+}
+
+#[test]
+fn paste_clear_paste_same_image_recreates_the_deleted_file_and_restores() {
+    let home = Home::new();
+    let (mut app, mut sync) = restored(&home, &[]);
+    app.draft = with_image("look");
+    sync.tick(&mut app);
+    sent(&mut app);
+    assert!(finish(&mut sync));
+    app.draft = Draft::default();
+    sync.tick(&mut app);
+    sent(&mut app);
+    assert!(finish(&mut sync));
+    assert_eq!(home.image_files(), Vec::<PathBuf>::new());
+
+    app.draft = with_image("look again");
+    sync.tick(&mut app);
+    let saved = sent(&mut app).remove(0);
+    assert!(finish(&mut sync));
+    drop(sync);
+    let (back, _sync) = restored(&home, &[saved]);
+    assert_eq!(back.draft.images[0].bytes.as_slice(), png());
+}
+
+#[test]
+fn failed_write_is_retried_without_changing_the_draft() {
+    let home = Home::new();
+    let (mut app, mut sync) = restored(&home, &[]);
+    safe_folder(&home.dir()).unwrap();
+    let blocked = home
+        .images()
+        .join(file_name(&token_of(&png()), ImageFormat::Png));
+    fs::create_dir(&blocked).unwrap();
+    app.draft = with_image("look");
+    sync.tick(&mut app);
+    let saved = sent(&mut app).remove(0);
+    assert!(!finish(&mut sync));
+    fs::remove_dir(blocked).unwrap();
+    sync.tick(&mut app);
+    assert_eq!(sent(&mut app), Vec::<SavedDraft>::new());
+    assert!(finish(&mut sync));
+    drop(sync);
+    let (back, _sync) = restored(&home, &[saved]);
+    assert_eq!(back.draft.images[0].bytes.as_slice(), png());
+}
+
+#[test]
+fn same_number_format_and_length_with_different_bytes_gets_a_new_token() {
+    let home = Home::new();
+    let (mut app, mut sync) = restored(&home, &[]);
+    app.draft = with_image("look");
+    sync.tick(&mut app);
+    let first = sent(&mut app).remove(0);
+    assert!(finish(&mut sync));
+    let mut replacement = png();
+    *replacement.last_mut().unwrap() ^= 1;
+    app.draft.images[0] = PastedImage::new(1, ImageFormat::Png, replacement.clone());
+    sync.tick(&mut app);
+    let second = sent(&mut app).remove(0);
+    assert_ne!(first.images[0].token, second.images[0].token);
+    assert!(finish(&mut sync));
+    drop(sync);
+    let (back, _sync) = restored(&home, &[second]);
+    assert_eq!(back.draft.images[0].bytes.as_slice(), replacement);
+    assert_eq!(home.image_files().len(), 1);
+}
+
+#[test]
+fn symlinked_drafts_or_scratch_cannot_read_write_or_clean_a_victim() {
+    use std::os::unix::fs::symlink;
+    for scratch_link in [false, true] {
+        let home = Home::new();
+        safe_folder(&home.dir()).unwrap();
+        let victim = home.0.join("victim");
+        fs::create_dir(&victim).unwrap();
+        let name = file_name(&token_of(&png()), ImageFormat::Png);
+        fs::write(victim.join(&name), png()).unwrap();
+        fs::write(victim.join("unrelated"), b"keep").unwrap();
+        let link = if scratch_link {
+            home.dir().scratch().to_path_buf()
+        } else {
+            home.images()
+        };
+        fs::remove_dir_all(&link).unwrap();
+        symlink(&victim, &link).unwrap();
+        let mut saved = SavedDraft::new(DraftTarget::Bridge, image_placeholder(1));
+        saved.images.push(DraftImage::new(
+            1,
+            ImageFormat::Png,
+            png().len(),
+            token_of(&png()),
+        ));
+        let (app, sync) = restored(&home, &[saved]);
+        assert_eq!(app.draft.images, Vec::<PastedImage>::new());
+        drop(sync);
+        let job = Job {
+            images: vec![("new.png".into(), png())],
+            keep: HashSet::new(),
+        };
+        assert!(write_job(&home.dir(), &job).is_err());
+        assert!(remove_unnamed(&home.dir(), &HashSet::new()).is_err());
+        assert_eq!(fs::read(victim.join("unrelated")).unwrap(), b"keep");
+        assert_eq!(fs::read(victim.join(name)).unwrap(), png());
+        assert!(!victim.join("new.png").exists());
+    }
+}
+
+#[test]
+fn image_and_temp_symlinks_are_refused_and_cleanup_leaves_links_alone() {
+    use std::os::unix::fs::symlink;
+    for temp in [false, true] {
+        let home = Home::new();
+        safe_folder(&home.dir()).unwrap();
+        let victim = home.0.join("victim");
+        fs::write(&victim, png()).unwrap();
+        let name = file_name(&token_of(&png()), ImageFormat::Png);
+        let leaf = home.images().join(if temp {
+            format!("{name}.tmp")
+        } else {
+            name.clone()
+        });
+        symlink(&victim, &leaf).unwrap();
+        let mut saved = SavedDraft::new(DraftTarget::Bridge, image_placeholder(1));
+        saved.images.push(DraftImage::new(
+            1,
+            ImageFormat::Png,
+            png().len(),
+            token_of(&png()),
+        ));
+        let (app, sync) = restored(&home, &[saved]);
+        assert_eq!(app.draft.images, Vec::<PastedImage>::new());
+        drop(sync);
+        let job = Job {
+            images: vec![(name, png())],
+            keep: HashSet::new(),
+        };
+        assert!(write_job(&home.dir(), &job).is_err());
+        remove_unnamed(&home.dir(), &HashSet::new()).unwrap();
+        assert!(fs::symlink_metadata(leaf).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(victim).unwrap(), png());
+    }
+}
+
+#[test]
+fn hierarchy_is_revalidated_after_open_before_cleanup_or_write() {
+    let home = Home::new();
+    let (mut app, mut sync) = restored(&home, &[]);
+    safe_folder(&home.dir()).unwrap();
+    let victim = home.images().join("unrelated");
+    fs::write(&victim, b"keep").unwrap();
+    fs::set_permissions(home.dir().scratch(), fs::Permissions::from_mode(0o755)).unwrap();
+    app.draft = with_image("look");
+    sync.tick(&mut app);
+    assert!(!finish(&mut sync));
+    assert_eq!(fs::read(victim).unwrap(), b"keep");
+    assert_eq!(home.image_files().len(), 1);
 }

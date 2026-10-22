@@ -1,2 +1,2 @@
-Look up one task's full history: its brief, routing, reports, checks and every step since it started. Read only.
+Look up one task's available history: its brief, routing, reports and checks. Read only. Closed details are memory-only until forgotten by clear, compaction, the cap or restart; a missing task may have been forgotten or may never have existed. Use find_tasks for tasks still kept. Numbers can be reused after restart: verify the current task's title and project before acting on an old number. Chat is also lost after restart; do not assume an old conversation is available.
 - task: the task ID, e.g. T-0042.

@@ -52,6 +52,18 @@ pub fn observe_all(conn: &Connection) -> Result<(), crate::StoreError> {
             observe(seq);
         }
     }
+    // The events at these positions may already have been pruned. Their durable cursors still
+    // order future events, even when the clock has moved backwards.
+    let position: Option<i64> = conn.query_row(
+        "SELECT MAX(position) FROM (SELECT event_seq AS position FROM block_watermarks \
+         UNION ALL SELECT prev_event_seq FROM block_watermarks \
+         UNION ALL SELECT event_seq FROM parent_channel_cursor)",
+        [],
+        |r| r.get(0),
+    )?;
+    if let Some(seq) = position {
+        observe(seq);
+    }
     Ok(())
 }
 
@@ -80,6 +92,9 @@ pub const TABLES: &[&str] = &[
     "jobs",
     "processes",
     "session_lines",
+    "block_watermarks",
+    "parent_channel_cursor",
+    "forgotten_parent_facts",
 ];
 
 /// The `seq` of the row `id` in `table`. A cursor names its row by ID and is compared by position,
@@ -105,6 +120,37 @@ mod tests {
         let stepped_back = next_micros(4_000_000);
         let later = next_micros(4_000_000);
         assert!(first < stepped_back && stepped_back < later);
+    }
+
+    #[test]
+    fn startup_observes_durable_positions_even_when_the_events_are_gone() {
+        // Isolate each maximum so forgetting any one durable column breaks the regression.
+        for column in ["seq", "event_seq", "prev_event_seq", "cursor"] {
+            LAST.with(|last| last.set(0));
+            let mut conn = crate::connection::open_memory().expect("memory");
+            crate::schema::migrate(&mut conn).expect("schema");
+            conn.execute_batch(
+                "INSERT INTO agents (id, role, home, status, created_at, seq) \
+                     VALUES (1, 'quartermaster', '/unused', 'idle', 1, 1);
+                 INSERT INTO block_watermarks (agent_id, event_seq, prev_event_seq, seq) \
+                     VALUES (1, 10000000, 9999999, 10000001);
+                 INSERT INTO parent_channel_cursor (seq, event_seq) VALUES (1, 10000002);",
+            )
+            .expect("reviewer fixture");
+            let high = 20_000_000;
+            if column == "cursor" {
+                conn.execute("UPDATE parent_channel_cursor SET event_seq = ?1", [high])
+                    .expect("cursor maximum");
+            } else {
+                conn.execute(
+                    &format!("UPDATE block_watermarks SET {column} = ?1"),
+                    [high],
+                )
+                .expect("watermark maximum");
+            }
+            observe_all(&conn).expect("startup observation");
+            assert!(next_millis(1) > high, "must observe {column}");
+        }
     }
 
     #[test]

@@ -18,6 +18,15 @@ pub struct Kept {
     pub predicate: &'static str,
 }
 
+// Keep task dependencies under exactly the same rule as the task itself. This is expanded in
+// SQL subqueries too, since a live working database still contains delivered closed tasks.
+macro_rules! retained_task {
+    () => {
+        "status <> 'closed' OR id IN (SELECT task_id FROM events WHERE task_id IS NOT NULL \
+         AND seq > (SELECT COALESCE(MAX(event_seq), 0) FROM parent_channel_cursor))"
+    };
+}
+
 /// The tables `state.db` mirrors, in prune order.
 pub const KEPT: &[Kept] = &[
     Kept {
@@ -34,13 +43,22 @@ pub const KEPT: &[Kept] = &[
     },
     Kept {
         table: "projects",
-        predicate: "removed_at IS NULL OR id IN (SELECT project_id FROM tasks WHERE status <> 'closed')",
+        predicate: concat!(
+            "removed_at IS NULL OR id IN (SELECT project_id FROM tasks WHERE ",
+            retained_task!(),
+            ")"
+        ),
     },
     Kept {
         table: "agents",
-        predicate: "retired_at IS NULL \
-                    OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed') \
-                    OR id IN (SELECT supervisor_id FROM tasks WHERE status <> 'closed') \
+        predicate: concat!(
+            "retired_at IS NULL \
+                    OR task_id IN (SELECT id FROM tasks WHERE ",
+            retained_task!(),
+            ") \
+                    OR id IN (SELECT supervisor_id FROM tasks WHERE ",
+            retained_task!(),
+            ") \
                     OR id IN (SELECT target_agent_id FROM wakes WHERE consumed_at IS NULL) \
                     OR id IN (SELECT agent_id FROM reports \
                               WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed')) \
@@ -49,12 +67,19 @@ pub const KEPT: &[Kept] = &[
                     OR id IN (SELECT agent_id FROM routing_decisions \
                               WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed')) \
                     OR id IN (SELECT agent_id FROM jobs \
-                              WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed'))",
+                              WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed'))"
+        ),
     },
     Kept {
         table: "secondmates",
-        predicate: "retired_at IS NULL \
-                    OR id IN (SELECT secondmate_id FROM agents WHERE secondmate_id IS NOT NULL)",
+        predicate: concat!(
+            "retired_at IS NULL \
+                    OR id IN (SELECT secondmate_id FROM agents WHERE secondmate_id IS NOT NULL) \
+                    OR id IN (SELECT secondmate_id FROM secondmate_requests WHERE id IN \
+                              (SELECT secondmate_request_id FROM tasks WHERE ",
+            retained_task!(),
+            "))"
+        ),
     },
     Kept {
         table: "secondmate_projects",
@@ -66,9 +91,7 @@ pub const KEPT: &[Kept] = &[
         // A closed task stays while the pump hasn't read an event of it: its request is
         // what the fact is sent under.
         table: "tasks",
-        predicate: "status <> 'closed' \
-                    OR id IN (SELECT task_id FROM events WHERE task_id IS NOT NULL \
-                              AND seq > (SELECT COALESCE(MAX(event_seq), 0) FROM parent_channel_cursor))",
+        predicate: retained_task!(),
     },
     Kept {
         table: "task_links",
@@ -143,22 +166,30 @@ pub const KEPT: &[Kept] = &[
         predicate: "1",
     },
     Kept {
+        table: "forgotten_parent_facts",
+        predicate: "wake_id IN (SELECT id FROM wakes WHERE consumed_at IS NULL)",
+    },
+    Kept {
         table: "events",
         // Block lines not yet seen by the oldest live orchestrator (from the lower of its watermark
         // and the one before it, 0 for a first turn, so a turn that is rolled back still finds its
         // lines and a reload shows what a first turn showed); the newest
-        // five outcomes of each orchestrator (`payload.supervisor`); everything of an open task;
-        // and the two facts the app keeps for good.
+        // five global outcomes plus each secondmate's own five (`payload.supervisor`);
+        // everything of an open task; and the two facts the app keeps for good.
         predicate: "(kind LIKE 'you.%' OR kind LIKE 'task.%' OR kind LIKE 'pr.%' \
                      OR kind LIKE 'checks.%' OR kind LIKE 'secondmate.%' OR kind LIKE 'model.%' \
                      OR kind IN ('model_new', 'model_gone')) \
                     AND seq > (SELECT COALESCE(MIN(floor), 0) FROM \
                                (SELECT MIN(event_seq, COALESCE(prev_event_seq, 0)) AS floor \
                                 FROM block_watermarks)) \
+                    OR seq IN (SELECT seq FROM events WHERE kind LIKE 'outcome.%' \
+                               ORDER BY seq DESC LIMIT 5) \
                     OR seq IN (SELECT seq FROM (SELECT seq, ROW_NUMBER() OVER ( \
-                                   PARTITION BY COALESCE(json_extract(payload, '$.supervisor'), 0) \
+                                   PARTITION BY json_extract(payload, '$.supervisor') \
                                    ORDER BY seq DESC) AS rank \
-                               FROM events WHERE kind LIKE 'outcome.%') WHERE rank <= 5) \
+                               FROM events WHERE kind LIKE 'outcome.%' \
+                               AND json_extract(payload, '$.supervisor') IN \
+                                   (SELECT id FROM agents WHERE role = 'secondmate')) WHERE rank <= 5) \
                     OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed') \
                     OR (task_id IN (SELECT id FROM tasks) \
                         AND seq > (SELECT COALESCE(MAX(event_seq), 0) FROM parent_channel_cursor)) \
@@ -221,6 +252,45 @@ mod tests {
         assert_eq!(classified, all, "a new table is listed in KEPT or VOLATILE");
         let unique: std::collections::BTreeSet<_> = classified.iter().collect();
         assert_eq!(unique.len(), classified.len(), "a table is listed once");
+    }
+
+    #[test]
+    fn outcomes_keep_global_five_plus_secondmate_five_not_quartermasters_own_five() {
+        let conn = migrated();
+        conn.execute_batch(
+            "INSERT INTO secondmates (id, name, scope, created_at, seq)
+                 VALUES (1, 'SM', 'all', 1, 1);
+             INSERT INTO agents (id, role, home, status, created_at, seq, supervisor_id, secondmate_id) VALUES
+                 (1, 'quartermaster', '/qm', 'idle', 1, 1, NULL, NULL),
+                 (2, 'secondmate', '/sm', 'idle', 1, 2, 1, 1);",
+        )
+        .expect("agents");
+        for i in 1..=16 {
+            let supervisor = if i <= 7 {
+                Some(2)
+            } else if i <= 14 {
+                Some(1)
+            } else {
+                None
+            };
+            conn.execute(
+                "INSERT INTO events (at, kind, summary, payload, seq)
+                 VALUES (1, 'outcome.landed', 'outcome', ?1, ?2)",
+                rusqlite::params![serde_json::json!({"supervisor": supervisor}).to_string(), i],
+            )
+            .expect("outcome");
+        }
+        let kept: Vec<i64> = conn
+            .prepare(&format!(
+                "SELECT seq FROM events WHERE {} ORDER BY seq",
+                predicate("events")
+            ))
+            .expect("predicate")
+            .query_map([], |r| r.get(0))
+            .expect("rows")
+            .collect::<rusqlite::Result<_>>()
+            .expect("sequences");
+        assert_eq!(kept, [3, 4, 5, 6, 7, 12, 13, 14, 15, 16]);
     }
 
     #[test]

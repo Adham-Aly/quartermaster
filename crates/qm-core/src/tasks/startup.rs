@@ -84,6 +84,10 @@ async fn remove_leftover_files(svc: &TaskService) -> Result<(), StartupError> {
 /// The blocking half of [`remove_leftover_files`]; `open` are the open tasks, `live` the active
 /// secondmates.
 fn sweep_leftovers(data: &DataDir, open: &[TaskId], live: &[SecondmateId]) {
+    if let Err(e) = data.ensure_scratch_dir(&data.scratch().join("evidence")) {
+        tracing::error!(error = %e, "unsafe scratch hierarchy; no startup file cleanup performed");
+        return;
+    }
     let remove = |path: &Path| {
         if let Err(e) = remove_path(path) {
             tracing::warn!(path = %path.display(), error = %e, "couldn't remove a leftover file");
@@ -123,27 +127,10 @@ fn sweep_leftovers(data: &DataDir, open: &[TaskId], live: &[SecondmateId]) {
     }
 }
 
-/// Moves an open task's evidence from its folder in the data directory to `evidence`, in the
-/// scratch root. A copy already there is kept, and the old one goes either way.
+/// Preserve conflicting sources; successful moves leave an old-path compatibility link.
 fn move_legacy_evidence(legacy: &Path, evidence: &Path) {
-    if std::fs::symlink_metadata(legacy).is_err() {
-        return;
-    }
-    if !evidence.exists() {
-        let moved = evidence
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::rename(legacy, evidence));
-        match moved {
-            Ok(()) => return,
-            Err(e) => {
-                tracing::error!(error = %e, "couldn't move a task's evidence into the scratch root");
-                return;
-            }
-        }
-    }
-    if let Err(e) = remove_path(legacy) {
-        tracing::warn!(path = %legacy.display(), error = %e, "couldn't remove a leftover file");
+    if let Err(e) = qm_types::data_dir::migrate_scratch_directory(legacy, evidence) {
+        tracing::error!(error = %e, "task evidence preserved after migration failure");
     }
 }
 
@@ -240,6 +227,52 @@ async fn reserve_leftover_task_numbers(svc: &TaskService) -> Result<(), StartupE
     Ok(())
 }
 
+/// Scan after best-effort cleanup: even a pruned retired row can still have a folder, and that
+/// folder must never become a new secondmate's home. Include every named entry, not just folders.
+fn leftover_secondmate_numbers(dir: &Path) -> Result<Vec<u32>, String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{} couldn't be read: {e}", dir.display())),
+    };
+    let mut numbers = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{} couldn't be read: {e}", dir.display()))?;
+        if let Some(id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<SecondmateId>().ok())
+        {
+            numbers.push(id.get());
+        }
+    }
+    Ok(numbers)
+}
+
+fn reserve_secondmate_scan(scan: Result<Vec<u32>, String>) {
+    match scan {
+        Ok(numbers) => qm_store::ids::reserve("secondmates", numbers),
+        Err(reason) => {
+            tracing::error!(%reason, "secondmate creation is held until the app restarts");
+            qm_store::ids::hold("secondmates", reason);
+        }
+    }
+}
+
+async fn reserve_leftover_secondmate_numbers(svc: &TaskService) -> Result<(), StartupError> {
+    let dir = svc.deps().data_dir.secondmates_dir();
+    let scan = tokio::task::spawn_blocking(move || leftover_secondmate_numbers(&dir))
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+    svc.db()
+        .call(move |_| {
+            reserve_secondmate_scan(scan);
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 /// Step 4 (before the seat opens). Deletes only the leftover files [`remove_leftover_files`] names.
 pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupError> {
     let at = svc.clock().now();
@@ -255,6 +288,7 @@ pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupErr
     // Before anything can be numbered: a new task never takes a number an earlier run left behind.
     reserve_leftover_task_numbers(svc).await?;
     remove_leftover_files(svc).await?;
+    reserve_leftover_secondmate_numbers(svc).await?;
 
     let report = worktree_report(svc).await?;
 
@@ -690,6 +724,7 @@ async fn not_resumed(svc: &TaskService, task: TaskId, branch: &str, branch_exist
 mod leftover_tests {
     use super::*;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
 
     #[test]
     fn a_start_removes_the_leftovers_plan_nine_names_and_nothing_else() {
@@ -731,6 +766,12 @@ mod leftover_tests {
         let moved = data.task(task(4));
         file(moved.root.join("evidence").join("shot.png"));
 
+        for path in [
+            data.scratch().to_path_buf(),
+            data.scratch().join("evidence"),
+        ] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
         sweep_leftovers(&data, &[task(1), task(4)], &[live]);
 
         assert!(
@@ -738,8 +779,8 @@ mod leftover_tests {
             "an open task's old evidence moves to the scratch root"
         );
         assert!(
-            !moved.root.join("evidence").exists(),
-            "and its old copy goes"
+            moved.root.join("evidence/shot.png").exists(),
+            "saved old paths remain usable"
         );
 
         assert!(!seat_session.exists(), "the Quartermaster's session folder");
@@ -786,6 +827,45 @@ mod leftover_tests {
         qm_store::schema::migrate(&mut conn).expect("schema");
         let refused = qm_store::ids::fresh(&conn, "tasks", qm_types::ids::space::TASK);
         assert!(refused.is_err(), "no task number is issued until restart");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_surviving_secondmate_folder_reserves_its_pruned_rows_number() {
+        struct DrawRetired;
+        impl qm_types::ids::IdSource for DrawRetired {
+            fn number(&mut self, min: u32, max: u32) -> u32 {
+                42_u32.clamp(min, max)
+            }
+        }
+
+        let base = std::env::temp_dir().join(format!("qm-sm-held-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let data = DataDir::with_scratch(base.join("home"), base.join("scratch"));
+        let retired = data.secondmates_dir().join("SM-42");
+        fs::create_dir_all(&retired).expect("retired folder");
+        fs::create_dir_all(data.scratch()).expect("scratch");
+        // Cleanup is best effort. An unsafe scratch root makes it leave the folders alone.
+        fs::set_permissions(data.scratch(), fs::Permissions::from_mode(0o755)).unwrap();
+        sweep_leftovers(&data, &[], &[]);
+        assert!(retired.exists(), "the retired folder survived cleanup");
+        let scan = leftover_secondmate_numbers(&data.secondmates_dir());
+        assert_eq!(scan, Ok(vec![42]));
+        reserve_secondmate_scan(scan);
+
+        let mut conn = rusqlite::Connection::open_in_memory().expect("memory");
+        qm_store::schema::migrate(&mut conn).expect("schema");
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM secondmates", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "the retired row was pruned");
+        qm_store::ids::use_source(Box::new(DrawRetired));
+        let fresh = qm_store::ids::fresh(&conn, "secondmates", qm_types::ids::space::SECONDMATE)
+            .expect("another number is available");
+        assert_ne!(
+            fresh, 42,
+            "even repeated draws cannot reuse a surviving folder"
+        );
         let _ = fs::remove_dir_all(&base);
     }
 

@@ -242,7 +242,9 @@ fn validate(
         None => None,
         Some(target) => {
             let Some(row) = task_store::load(conn, target)? else {
-                return Ok(Err(Refusal::new(format!("{target} doesn't exist"))));
+                return Ok(Err(Refusal::new(format!(
+                    "can't build on {target}: its details are unavailable because it closed and was forgotten or doesn't exist; use find_tasks to choose a task still kept, or include the needed facts in a new task"
+                ))));
             };
             let report = reports::latest_clear(conn, target)?;
             let fact = match (row.kind, &report) {
