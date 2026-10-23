@@ -60,7 +60,8 @@ pub use event::{
 pub use lines::LineBuffer;
 pub use meter::{TurnCounters, TurnMeter};
 pub use session::{
-    EVENT_BUFFER, EngineSide, EventTap, InputBlock, SessionCommand, SessionHandle, TurnInput, session_channel,
+    EVENT_BUFFER, EngineSide, EventTap, InputBlock, SessionCommand, SessionHandle, TurnInput,
+    session_channel,
 };
 pub use spec::{AccountRef, Builtins, SessionLimits, SessionSpec, SystemPrompt};
 pub use tool::{ToolCallId, ToolDescriptor, ToolResult};
