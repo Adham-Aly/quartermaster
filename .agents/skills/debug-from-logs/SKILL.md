@@ -62,8 +62,10 @@ SELECT id, target_agent_id, kind, dedupe_key, delivered_turn_id, consumed_at FRO
 - `seat/` and `secondmates/SM-n/`: `home/`; `session/` is removed at each start.
 - A provider-engine agent's session is `<owner>/transcript/<session>.jsonl` (header line, then one
   line per message; replaced whole on compaction, removed on `/clear` or retire), so a restart resumes it. Claude's transcript is Claude's own, under `~/.claude/projects/`; the app keeps no copy.
-- `state.db` holds the kept rows only (tasks, reports, events, wakes); turns and messages are not
-  there, so read them from the day's log or from a running server.
+- `state.db` holds the kept rows only (tasks, reports, events, wakes). Turns, messages and session
+  lines are there only for live agents on the provider engine, from `agents.chat_kept_from` on (the
+  current chat: compaction and `/clear` trim it, retiring removes it); a Claude agent's are not,
+  so read them from the day's log or from a running server.
 
 ## Reading a failure
 

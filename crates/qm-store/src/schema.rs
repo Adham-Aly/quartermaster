@@ -24,6 +24,7 @@ const SQL: &[&str] = &[
     include_str!("../migrations/0013_autonomy_modes.sql"),
     include_str!("../migrations/0014_release_launches.sql"),
     include_str!("../migrations/0015_attachment_uses.sql"),
+    include_str!("../migrations/0016_chat_kept_from.sql"),
 ];
 
 /// Every migration, in order.
@@ -42,6 +43,7 @@ pub static MIGRATIONS: &[M<'static>] = &[
     M::up(SQL[11]).foreign_key_check(),
     M::up(SQL[12]).foreign_key_check(),
     M::up(SQL[13]).foreign_key_check(),
+    M::up(SQL[14]).foreign_key_check(),
 ];
 
 /// Upgrades an intentionally incomplete mirror. Its foreign keys are repaired and validated only

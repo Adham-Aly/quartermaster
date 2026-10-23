@@ -112,9 +112,9 @@ These override anything else. Security comes first.
   body; the core host re-checks the caller's role against the registry.
 - **One database thread, in memory.** Only `qm_store::db::Db::call` touches SQLite. The working
   database is in memory; `kept.rs` decides what reaches disk (every table has `seq` and a KEPT or
-  VOLATILE entry; conversations are VOLATILE). Migrations are append-only; tables are `STRICT`;
-  events are append-only; rows retire with `*_at`. Upserts on a mirrored table fail under the
-  dirty-mark trigger: use UPDATE, then INSERT.
+  VOLATILE entry; of the chat, only in-house agents' current one is kept). Migrations are
+  append-only; tables are `STRICT`; events are append-only; rows retire with `*_at`. Upserts on a
+  mirrored table fail under the dirty-mark trigger: use UPDATE, then INSERT.
 - **IDs are random; `seq` orders.** Task, secondmate and message numbers are drawn at random and
   reused; no counter is stored. Creation order is `seq`, never the ID.
 - **Secrets stay in `qm-auth`.** `Secret` redacts `Debug`, has no `Display`, and neither it nor

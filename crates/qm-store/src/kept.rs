@@ -8,6 +8,10 @@
 //! anything still points at its agent, so `null_dangling` never has to null that link) and
 //! `block_watermarks`, and `events` comes last.
 //!
+//! The chat tables ([`CHAT`]) keep only a live in-house agent's current chat: a Claude agent's chat
+//! is Claude Code's to keep, and a compaction, a `/clear` or a retirement leaves no copy of what it
+//! dropped on disk.
+//!
 //! The predicates use `COALESCE(…, 0)` in SQL: a NULL result keeps nothing.
 
 /// One mirrored table and the predicate that decides which of its rows are kept.
@@ -26,6 +30,28 @@ macro_rules! retained_task {
          AND seq > (SELECT COALESCE(MAX(event_seq), 0) FROM parent_channel_cursor))"
     };
 }
+
+// An in-house agent's current chat: the rows of a live agent on the provider engine from where its
+// kept chat starts (`agents.chat_kept_from`). A Claude agent's chat never reaches the file; neither
+// does a retired agent's. The table's own name qualifies `agent_id` and `seq`, since `agents` has a
+// `seq` too. The mirror writes these tables row by row (`mirror.rs`), so this predicate must only
+// read the row itself and its agent.
+macro_rules! current_chat {
+    ($table:literal) => {
+        concat!(
+            "EXISTS (SELECT 1 FROM agents AS a WHERE a.id = ",
+            $table,
+            ".agent_id AND a.retired_at IS NULL AND a.engine = 'provider' AND ",
+            $table,
+            ".seq >= a.chat_kept_from)"
+        )
+    };
+}
+
+/// The tables whose kept rows follow `current_chat!`: an in-house agent's visible chat. The mirror
+/// writes only their changed rows, plus every row of an agent whose chat started or stopped being
+/// kept.
+pub const CHAT: &[&str] = &["messages", "turns", "session_lines"];
 
 /// The tables `state.db` mirrors, in prune order.
 pub const KEPT: &[Kept] = &[
@@ -69,6 +95,19 @@ pub const KEPT: &[Kept] = &[
                     OR id IN (SELECT agent_id FROM jobs \
                               WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed'))"
         ),
+    },
+    // The current chat of each live in-house agent: after `agents`, which they read.
+    Kept {
+        table: "messages",
+        predicate: current_chat!("messages"),
+    },
+    Kept {
+        table: "turns",
+        predicate: current_chat!("turns"),
+    },
+    Kept {
+        table: "session_lines",
+        predicate: current_chat!("session_lines"),
     },
     // A chat image's use lasts as long as the agent's conversation can: while it isn't retired.
     Kept {
@@ -220,9 +259,9 @@ pub fn predicate(table: &str) -> &'static str {
         .map_or_else(|| panic!("{table} is not a kept table"), |k| k.predicate)
 }
 
-/// The tables that live only in memory: a restart starts them empty. The conversation and what
-/// the block shows since a turn are here; they leave `state.db` at load.
-pub const VOLATILE: &[&str] = &["messages", "session_lines", "turns"];
+/// The tables that live only in memory: a restart starts them empty, and they leave `state.db` at
+/// load. None today: a Claude agent's chat is memory-only through `current_chat!` instead.
+pub const VOLATILE: &[&str] = &[];
 
 #[cfg(test)]
 mod tests {

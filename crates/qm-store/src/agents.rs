@@ -129,7 +129,23 @@ pub fn role_of(
         .optional()?)
 }
 
-/// Stores the routed engine, account, model and effort.
+/// Where an agent's kept chat starts, written with every engine change: `?2` is the new engine and
+/// `?6` the next `seq` ([`chat_start`]). On the provider engine the chat is kept from the agent's
+/// first row when it never ran on another engine, from now when it switches to it, and from where
+/// it was when it stays; on any other engine nothing is kept. SET expressions read the row as it
+/// was before the update.
+pub(crate) const CHAT_KEPT_FROM: &str = "chat_kept_from = CASE \
+     WHEN ?2 <> 'provider' THEN NULL \
+     WHEN engine = 'provider' AND chat_kept_from IS NOT NULL THEN chat_kept_from \
+     WHEN engine IS NULL THEN seq \
+     ELSE ?6 END";
+
+/// The `seq` a chat kept from now starts at: every row written after it sorts at or after it.
+pub(crate) fn chat_start() -> i64 {
+    seq::next_millis(0)
+}
+
+/// Stores the routed engine, account, model and effort (and where its kept chat starts).
 pub fn set_routed(
     conn: &Connection,
     agent: AgentId,
@@ -139,8 +155,11 @@ pub fn set_routed(
     effort: Effort,
 ) -> Result<(), StoreError> {
     conn.execute(
-        "UPDATE agents SET engine = ?2, account_id = ?3, model = ?4, effort = ?5 WHERE id = ?1",
-        params![agent, engine, account, model, effort],
+        &format!(
+            "UPDATE agents SET engine = ?2, account_id = ?3, model = ?4, effort = ?5, \
+             {CHAT_KEPT_FROM} WHERE id = ?1"
+        ),
+        params![agent, engine, account, model, effort, chat_start()],
     )?;
     Ok(())
 }
@@ -331,22 +350,24 @@ pub fn finish_crew_turn(
     Ok(report)
 }
 
-/// A crewmate turn startup found running.
+/// A turn startup found running: a crewmate's names its task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct InterruptedCrewTurn {
+pub struct InterruptedTurn {
     pub agent: AgentId,
-    pub task: TaskId,
+    pub task: Option<TaskId>,
     pub turn: TurnId,
 }
 
-/// Startup: every crewmate turn still `running` becomes `interrupted` with reason `app_stopped`,
-/// and its wakes go back in the inbox. One transaction.
-pub fn interrupt_running_crew_turns(
+/// Startup, before any loop runs: every turn still `running` (the app stopped in the middle of it)
+/// becomes `interrupted` with reason `app_stopped`, and its wakes go back in the inbox, whatever
+/// the agent's role. A crewmate's turn gets `task.turn_ended`; the Quartermaster's and a
+/// secondmate's get `seat.turn_ended`, as their own loop's recovery would write. One transaction.
+pub fn interrupt_running_turns(
     conn: &mut Connection,
     at: Timestamp,
-) -> Result<Vec<InterruptedCrewTurn>, StoreError> {
+) -> Result<Vec<InterruptedTurn>, StoreError> {
     let tx = conn.transaction()?;
-    let rows = {
+    let crew = {
         let mut stmt = tx.prepare(
             "UPDATE turns SET status = 'interrupted', outcome_reason = ?1, ended_at = ?2
              WHERE status = 'running'
@@ -355,26 +376,21 @@ pub fn interrupt_running_crew_turns(
         )?;
         stmt.query_map(
             params![crate::turns::REASON_APP_STOPPED, to_millis(at)],
-            |r| {
-                Ok(InterruptedCrewTurn {
-                    turn: r.get(0)?,
-                    agent: r.get(1)?,
-                    task: r.get(2)?,
-                })
-            },
+            |r| Ok((r.get::<_, TurnId>(0)?, r.get(1)?, r.get::<_, TaskId>(2)?)),
         )?
-        .collect::<rusqlite::Result<Vec<_>>>()?
+        .collect::<rusqlite::Result<Vec<(TurnId, AgentId, TaskId)>>>()?
     };
-    for t in &rows {
-        wakes::release_unconsumed(&tx, t.turn)?;
+    let mut rows = Vec::with_capacity(crew.len());
+    for (turn, agent, task) in crew {
+        wakes::release_unconsumed(&tx, turn)?;
         events::insert(
             &tx,
             &NewEvent {
                 kind: TURN_ENDED,
-                agent: Some(t.agent),
-                task: Some(t.task),
-                turn: Some(t.turn),
-                summary: &format!("{} turn interrupted: app_stopped", t.task),
+                agent: Some(agent),
+                task: Some(task),
+                turn: Some(turn),
+                summary: &format!("{task} turn interrupted: app_stopped"),
                 payload: serde_json::json!({
                     "status": "interrupted",
                     "reason": crate::turns::REASON_APP_STOPPED,
@@ -382,6 +398,28 @@ pub fn interrupt_running_crew_turns(
                 at,
             },
         )?;
+        rows.push(InterruptedTurn {
+            agent,
+            task: Some(task),
+            turn,
+        });
+    }
+    let orchestrators: Vec<AgentId> = tx
+        .prepare(
+            "SELECT DISTINCT agent_id FROM turns WHERE status = 'running'
+               AND agent_id IN (SELECT id FROM agents WHERE role <> 'crewmate')
+             ORDER BY agent_id",
+        )?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for agent in orchestrators {
+        for t in crate::turns::interrupt_running_in(&tx, agent, at)? {
+            rows.push(InterruptedTurn {
+                agent,
+                task: None,
+                turn: t.turn,
+            });
+        }
     }
     tx.commit()?;
     Ok(rows)

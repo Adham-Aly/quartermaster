@@ -1,7 +1,8 @@
 //! Startup and resume.
 //!
-//! [`reconcile`] runs before the seat opens (step 4) and deletes nothing: crewmate turns still
-//! running become interrupted with their wakes released, live crewmates are marked stopped, task
+//! [`reconcile`] runs before the seat opens (step 4) and deletes nothing: turns still running, of
+//! every role, become interrupted with their wakes released (the seat's and secondmates' loops
+//! then recover theirs as cut short), live crewmates are marked stopped, task
 //! worktrees are matched against tasks, and anything that needs a look is one event each and one
 //! note in the Bridge. [`catch_up`] runs once the seat is open (step 6): side exits finish their
 //! retirement, queued tasks go back to the re-route tick, preparing tasks redo phase C,
@@ -19,7 +20,7 @@ use jiff::tz::TimeZone;
 use qm_git::Git;
 use qm_git::{MissingWorktree, ReconcileProject, ReconcileReport, reconcile as git_reconcile};
 use qm_store::StoreError;
-use qm_store::agents::{self, InterruptedCrewTurn};
+use qm_store::agents::{self, InterruptedTurn};
 use qm_store::events::{self, NewEvent};
 use qm_store::tasks::{self as task_store, TaskRow};
 use qm_store::turns::{cut_short, mark_recovered};
@@ -40,7 +41,7 @@ pub const PORTS_CHECKED: usize = 50;
 /// What reconcile found, for catch-up.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReconcileOutcome {
-    pub interrupted: Vec<InterruptedCrewTurn>,
+    pub interrupted: Vec<InterruptedTurn>,
     pub missing: Vec<MissingWorktree>,
 }
 
@@ -273,7 +274,7 @@ pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupErr
     let interrupted = svc
         .db()
         .call(move |conn| {
-            let interrupted = agents::interrupt_running_crew_turns(conn, at)?;
+            let interrupted = agents::interrupt_running_turns(conn, at)?;
             agents::stop_live_crewmates(conn)?;
             Ok(interrupted)
         })

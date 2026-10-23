@@ -321,7 +321,8 @@ pub fn session_row(
         .optional()?)
 }
 
-/// Records what its session runs on.
+/// Records what its session runs on (and where its kept chat starts,
+/// `agents::CHAT_KEPT_FROM`).
 pub fn update_session(
     conn: &Connection,
     agent: AgentId,
@@ -331,9 +332,19 @@ pub fn update_session(
     effort: Effort,
 ) -> Result<(), StoreError> {
     conn.execute(
-        "UPDATE agents SET engine = ?2, account_id = ?3, model = ?4, effort = ?5
-         WHERE id = ?1 AND role = 'secondmate'",
-        params![agent, engine, account, model, effort],
+        &format!(
+            "UPDATE agents SET engine = ?2, account_id = ?3, model = ?4, effort = ?5, {}
+             WHERE id = ?1 AND role = 'secondmate'",
+            crate::agents::CHAT_KEPT_FROM
+        ),
+        params![
+            agent,
+            engine,
+            account,
+            model,
+            effort,
+            crate::agents::chat_start()
+        ],
     )?;
     Ok(())
 }
