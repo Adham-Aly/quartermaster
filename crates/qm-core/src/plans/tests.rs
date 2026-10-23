@@ -3,14 +3,14 @@ use qm_types::domain::Role;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 
-/// A fresh folder under the system's temporary folder, removed when dropped.
+/// A fresh private folder under the system's temporary folder, removed when dropped.
 struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(name: &str) -> Self {
         let dir = std::env::temp_dir().join(format!("qm-plans-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        private_folder(&dir).unwrap();
         Self(dir)
     }
 }
