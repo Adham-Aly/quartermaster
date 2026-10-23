@@ -8,8 +8,8 @@ use qm_routing::quartermaster_model::{self, SeatChoice};
 use qm_routing::rank::{Candidate, Needs, Usage};
 use qm_routing::record::{FallbackStep, RoutingRecord, UserChoices};
 use qm_routing::rules::RuleTable;
-use qm_types::config::{AlwaysUse, QuartermasterModel, TierEfforts};
-use qm_types::domain::{AccountKind, Effort, TaskKind, Tier};
+use qm_types::config::{AlwaysUse, KindTiers, QuartermasterModel, TierEfforts};
+use qm_types::domain::{AccountKind, Effort, KindRow, TaskKind, Tier};
 use qm_types::ids::{AccountId, ModelId, TaskId};
 
 const EFFORTS: [Effort; 5] = [
@@ -66,14 +66,11 @@ fn request(tiers: &TierEfforts, landed: Tier) -> RouteRequest<'_> {
 
 fn run(req: &RouteRequest<'_>, placed: &[Candidate], pinned: &[Candidate]) -> RoutingRecord {
     // Test effort selection, not the separately maintained task-kind mapping.
-    let table = RuleTable::parse(
-        r#"rules = [
-            { kind = "lookup", tier = "low" },
-            { kind = "build", tier = "medium" },
-            { kind = "*", tier = "high" },
-        ]"#,
-    )
-    .unwrap();
+    let mut kinds = KindTiers::default();
+    kinds.set(KindRow::Lookup, Some(Tier::Low));
+    kinds.set(KindRow::Build, Some(Tier::Medium));
+    kinds.set(KindRow::Unclear, Some(Tier::High));
+    let table = RuleTable::from_kinds(&kinds);
     route(&table, req, Pool { placed, pinned })
 }
 
@@ -322,6 +319,50 @@ fn premium_request_runs_its_selected_combo() {
     let record = run(&req, &[premium], &[]);
     assert_eq!(record.choice.unwrap().effort, Effort::Max);
     assert_eq!(record.why, "You asked for premium");
+}
+
+#[test]
+fn configured_premium_kind_runs_selected_or_fallback_combo_at_its_effort() {
+    let tiers = TierEfforts::default();
+    let mut kinds = KindTiers::default();
+    kinds.set(KindRow::Build, Some(Tier::Premium));
+    let table = RuleTable::from_kinds(&kinds);
+    let mut req = request(&tiers, Tier::Medium);
+    // Premium comes only from the configured kind, not a user/later-step override.
+    assert!(!req.user.premium);
+    req.quick_verification = true;
+    for &used in fallback::order(Tier::Premium) {
+        for effort in EFFORTS {
+            let placed = [candidate(used, Some(effort))];
+            let record = route(
+                &table,
+                &req,
+                Pool {
+                    placed: &placed,
+                    pinned: &[],
+                },
+            );
+            assert_eq!(record.tier_landed, Tier::Premium);
+            let choice = record.choice.unwrap();
+            assert_eq!((choice.tier, choice.effort), (used, effort));
+            assert_eq!(record.rule, "kind = \"build\" → premium (your setting)");
+            assert!(
+                record
+                    .why
+                    .starts_with("You set build work to route premium")
+            );
+            if used == Tier::Premium {
+                assert_eq!(record.fallbacks, Vec::<FallbackStep>::new());
+            } else {
+                assert_eq!(record.fallbacks.last().unwrap().to, used);
+                assert!(
+                    record
+                        .why
+                        .contains(&fallback::runs_on_line(Tier::Premium, used))
+                );
+            }
+        }
+    }
 }
 
 #[test]

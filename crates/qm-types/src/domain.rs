@@ -208,7 +208,7 @@ string_enum! {
 
 impl Tier {
     /// The tiers to try for a request, starting with its own tier. Prefer stronger ordinary
-    /// tiers before weaker ones; Premium is only tried when explicitly requested.
+    /// tiers before weaker ones; Premium is only tried when the request landed in Premium.
     pub const fn fallback_order(self) -> &'static [Self] {
         match self {
             Self::Low => &[Self::Low, Self::Medium, Self::High],

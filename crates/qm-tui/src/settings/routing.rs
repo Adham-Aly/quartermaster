@@ -694,7 +694,7 @@ mod tests {
         let mut app = app_with_review(Tier::High);
         app.settings_click(SettingsHit::KindTier(KindRow::Teach), false, Instant::now());
         assert_eq!(
-            app.view.settings.picker.as_ref().map(|p| p.purpose),
+            app.view.settings.picker.as_ref().map(|p| p.purpose.clone()),
             Some(super::super::PickFor::KindTier(KindRow::Teach))
         );
         assert_eq!(app.view.settings.routing_row, KIND_ROWS_FROM + 7);

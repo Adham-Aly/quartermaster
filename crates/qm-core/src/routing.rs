@@ -939,19 +939,13 @@ mod tests {
 
     #[test]
     fn stored_and_migrated_combos_reach_core_decisions_and_session_specs() {
-        let table = RuleTable::parse(
-            r#"rules = [
-                { kind = "lookup", tier = "low" },
-                { kind = "build", tier = "medium" },
-                { kind = "*", tier = "high" },
-            ]"#,
-        )
-        .unwrap();
         for legacy in [false, true] {
             let (mut conn, account, model) = routing_fixture();
             // Non-default settings prove migration uses loaded config, not built-in defaults.
-            let mut config: Config =
-                toml::from_str("[tiers]\nhigh = 'max'\nmedium = 'high'").unwrap();
+            let mut config: Config = toml::from_str(
+                "[tiers]\nhigh = 'max'\nmedium = 'high'\n[routing.kinds]\nlookup = 'low'\nbuild = 'medium'\nunclear = 'high'",
+            )
+            .unwrap();
             let tx = conn.transaction().unwrap();
             for (tier, effort) in [(Tier::High, Effort::Max), (Tier::Medium, Effort::High)] {
                 models::place_model(
@@ -1009,8 +1003,7 @@ mod tests {
                 };
                 let tx = conn.transaction().unwrap();
                 let RouteOutcome::Routed(routed) =
-                    route_crewmate(&tx, &table, &config, &facts, &health, Timestamp::UNIX_EPOCH)
-                        .unwrap()
+                    route_crewmate(&tx, &config, &facts, &health, Timestamp::UNIX_EPOCH).unwrap()
                 else {
                     panic!("combo must route: legacy={legacy}, kind={kind}")
                 };
@@ -1039,6 +1032,104 @@ mod tests {
                 );
                 assert_session_choice(&routed, &account, &model);
             }
+            assert_eq!(models::list_placements(&conn).unwrap(), saved);
+        }
+    }
+
+    #[test]
+    fn configured_premium_kind_persists_selected_and_fallback_combo_in_session_spec() {
+        for (used, effort) in [
+            (Tier::Premium, Effort::Max),
+            (Tier::High, Effort::High),
+            (Tier::Medium, Effort::Medium),
+            (Tier::Low, Effort::High),
+        ] {
+            let (mut conn, account, model) = routing_fixture();
+            let config: Config = toml::from_str(
+                "[routing.kinds]\nbuild = 'premium'\n[tiers]\npremium = 'low'\nhigh = 'low'\nmedium = 'low'\nlow = 'low'",
+            )
+            .unwrap();
+            models::place_model(
+                &conn,
+                &model.canonical,
+                None,
+                Some(effort),
+                used,
+                Timestamp::UNIX_EPOCH,
+            )
+            .unwrap();
+            let saved = models::list_placements(&conn).unwrap();
+            let facts = CrewmateFacts {
+                task: TaskId::new(1).unwrap(),
+                agent: None,
+                // Configured Premium is not a user override and works on app-event turns.
+                authority: Authority::Turn(qm_types::domain::StartedBy::AppEvent),
+                kind: Decided::Answer {
+                    value: TaskKind::Build,
+                    by: DecidedBy::Declared,
+                },
+                decider: DecidedBy::Declared,
+                builds_on: None,
+                needs: Needs::default(),
+                quick_verification: true,
+                named_model: None,
+                named_effort: None,
+                premium: false,
+                stronger_retry: None,
+                later_step: None,
+                prefer_provider_other_than: None,
+            };
+            let tx = conn.transaction().unwrap();
+            let RouteOutcome::Routed(routed) = route_crewmate(
+                &tx,
+                &config,
+                &facts,
+                &LoginHealth::default(),
+                Timestamp::UNIX_EPOCH,
+            )
+            .unwrap() else {
+                panic!("configured premium must route on {used}")
+            };
+            tx.commit().unwrap();
+            assert_eq!(routed.record.tier_landed, Tier::Premium);
+            let choice = routed.record.choice.as_ref().unwrap();
+            assert_eq!((choice.tier, choice.effort), (used, effort));
+            assert_eq!(
+                routed.record.rule,
+                "kind = \"build\" → premium (your setting)"
+            );
+            assert!(
+                routed
+                    .record
+                    .why
+                    .starts_with("You set build work to route premium")
+            );
+            if used == Tier::Premium {
+                assert_eq!(routed.record.fallbacks, Vec::<FallbackStep>::new());
+            } else {
+                assert_eq!(routed.record.fallbacks.last().unwrap().to, used);
+                assert!(
+                    routed
+                        .record
+                        .why
+                        .contains(&format!("premium runs on {used}"))
+                );
+            }
+            let decisions = routing_decisions::decisions_for_task(&conn, facts.task).unwrap();
+            let (id, decision) = decisions.last().unwrap();
+            assert_eq!(*id, routed.decision);
+            assert_eq!(decision.tier_landed, Tier::Premium);
+            assert_eq!(decision.rule, routed.record.rule);
+            assert_eq!(
+                decision.choice,
+                Some(DecisionChoice {
+                    tier: used,
+                    model: model.canonical.clone(),
+                    account: account.id,
+                    effort,
+                })
+            );
+            assert_session_choice(&routed, &account, &model);
             assert_eq!(models::list_placements(&conn).unwrap(), saved);
         }
     }

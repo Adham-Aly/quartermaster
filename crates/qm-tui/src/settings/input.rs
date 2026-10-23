@@ -1185,26 +1185,7 @@ impl App {
             PickFor::QuartermasterEffort => {
                 return effort_options(settings, &purpose);
             }
-            PickFor::AddTo { model, effort } => {
-                let m = settings.model(&model)?;
-                if !match effort {
-                    Some(e) => m.supported.contains(&e),
-                    None => m.supported.is_empty(),
-                } {
-                    return None;
-                }
-                let options = BOARD
-                    .into_iter()
-                    .filter(|&t| m.placement(t, effort).is_none())
-                    .map(|t| {
-                        (
-                            format!("Add to {}", tier_label(t)),
-                            PickValue::Zone(Zone::Tier(t)),
-                        )
-                    })
-                    .collect();
-                (options, None)
-            }
+            PickFor::AddTo { model, effort } => (add_options(settings, &model, effort)?, None),
             PickFor::MoveTo(item) => {
                 let mut options: Vec<(String, PickValue)> = BOARD
                     .into_iter()
@@ -1382,6 +1363,33 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// Destinations that can still accept this catalogue combination after a snapshot refresh.
+fn add_options(
+    settings: &super::model::Settings,
+    model: &ModelId,
+    effort: Option<Effort>,
+) -> Option<Vec<PickOption>> {
+    let m = settings.model(model)?;
+    if !match effort {
+        Some(e) => m.supported.contains(&e),
+        None => m.supported.is_empty(),
+    } {
+        return None;
+    }
+    Some(
+        BOARD
+            .into_iter()
+            .filter(|&t| m.placement(t, effort).is_none())
+            .map(|t| {
+                (
+                    format!("Add to {}", tier_label(t)),
+                    PickValue::Zone(Zone::Tier(t)),
+                )
+            })
+            .collect(),
+    )
 }
 
 /// Stable catalogue: never filter by listed/unused or existing placements.
