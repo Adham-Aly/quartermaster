@@ -176,7 +176,7 @@ pub(crate) async fn start_core(
     let gh = gh_program(registry.0.facts());
     let github = GithubClient::new(Arc::new(GhCli::following(Arc::clone(&gh))));
     let verification = verification_service(&db, &clock, &dir, &base.health, &wakes, &conversation);
-    let tasks = Some(crew_tasks(
+    let tasks = crew_tasks(
         CrewInputs {
             dir: &dir,
             db: &db,
@@ -192,25 +192,20 @@ pub(crate) async fn start_core(
         Arc::clone(&conversation),
         agent,
         verification_hooks(&verification),
-    ));
+    );
     // Every crewmate's session is recorded from its first turn.
-    let recorder = tasks.as_ref().map(|tasks| {
-        let recorder = Recorder::spawn(db.clone(), Arc::clone(&clock), conversation.clone());
-        tasks.set_session_sink(Arc::new(recorder.clone()));
-        recorder
-    });
+    let recorder = Recorder::spawn(db.clone(), Arc::clone(&clock), conversation.clone());
+    tasks.set_session_sink(Arc::new(recorder.clone()));
 
     // The parent channel; settling nudges it when a secondmate's task lands.
     let parent_channel = ParentChannel::new(db.clone(), Arc::clone(&clock), wakes.clone());
-    let delivery_settling = tasks.as_ref().map(|t| {
-        settling_services(
-            t,
-            github,
-            gh,
-            &verification,
-            Arc::new(parent_channel.clone()),
-        )
-    });
+    let delivery_settling = settling_services(
+        &tasks,
+        github,
+        gh,
+        &verification,
+        Arc::new(parent_channel.clone()),
+    );
     // The one held-action service. Every held action's wake reaches its target's loop through
     // the wake inbox: the seat's, a crewmate's runner (a held GitHub write answers the
     // crewmate) or a secondmate's loop.
@@ -222,17 +217,15 @@ pub(crate) async fn start_core(
     // The secondmates, after the task service and the held actions.
     let secondmates = secondmate_service(&db, &clock, &dir, &base, (&wakes, &held), &conversation);
     // Decisions (cards, stuck notices, diffs) over the task service.
-    let decisions = tasks
-        .as_ref()
-        .map(|tasks| decision_service(&db, &clock, &wakes, &conversation, tasks));
+    let decisions = decision_service(&db, &clock, &wakes, &conversation, &tasks);
     let host = tool_host(
         CoreToolHost::new(db.clone(), Arc::clone(&clock), Arc::clone(&conversation))
             .with_parent_channel(parent_channel.clone()),
         &registry.1,
-        tasks.as_ref(),
-        delivery_settling.as_ref(),
+        &tasks,
+        &delivery_settling,
         &secondmates,
-        (&verification, decisions.as_ref()),
+        (&verification, &decisions),
     );
     // Schedules, on their own scheduler, behind `schedule` and `cancel_schedule`.
     let schedules = ScheduleService::new(ScheduleDeps {
@@ -248,35 +241,26 @@ pub(crate) async fn start_core(
         &(Arc::new(SeatSink(inbox.clone())) as Arc<dyn WakeSink>),
     );
     // Reconcile the crew's turns, agents and worktrees before the seat opens.
-    let reconciled = crew_reconcile(tasks.as_ref()).await;
+    let reconciled = crew_reconcile(&tasks).await;
     // Settles left half-done are concluded before the seat runs or any card
     // can be answered.
-    if let Some(delivery_settling) = &delivery_settling {
-        delivery_settling.settling.recover().await;
-        // Release tags: a card claimed mid-push gets its answer, and every tag whose push isn't
-        // settled is read back from GitHub.
-        if let Err(e) = release::recover(&delivery_settling.delivery, &held).await {
-            tracing::error!(error = %e, "couldn't recover the release tags left by the last run");
-        }
+    delivery_settling.settling.recover().await;
+    // Release tags: a card claimed mid-push gets its answer, and every tag whose push isn't
+    // settled is read back from GitHub.
+    if let Err(e) = release::recover(&delivery_settling.delivery, &held).await {
+        tracing::error!(error = %e, "couldn't recover the release tags left by the last run");
     }
     // Plan replies sent from a page just before the last run stopped are settled, then the
     // pages' endpoint listens (on its saved port, so pages rendered before still send).
-    let plan_endpoint = match &tasks {
-        Some(tasks) => {
-            qm_core::plans::submit::recover(tasks).await;
-            qm_core::plans::endpoint::Endpoint::start(tasks.clone()).await
-        }
-        None => None,
-    };
+    qm_core::plans::submit::recover(&tasks).await;
+    let plan_endpoint = qm_core::plans::endpoint::Endpoint::start(tasks.clone()).await;
     let mut seat_loop = spawn_seat_loop(&db, &clock, seat, &conversation, host, inbox_rx, &wakes);
     // Every secondmate's loop, idle until work arrives.
     start_secondmates(&secondmates);
     // Resume the crew once the seat runs.
-    if let Some(tasks) = &tasks {
-        let crew = tasks.clone();
-        tokio::spawn(async move { catch_up(&crew, reconciled).await });
-    }
-    spawn_settle_recovery(delivery_settling.as_ref());
+    let crew = tasks.clone();
+    tokio::spawn(async move { catch_up(&crew, reconciled).await });
+    spawn_settle_recovery(&delivery_settling);
     // The parent channel's pump, next to the scheduler, until quitting.
     let (pump_stop, pump_rx) = watch::channel(false);
     tokio::spawn(parent_channel.run(pump_rx));
@@ -298,25 +282,22 @@ pub(crate) async fn start_core(
         &held,
         &conversation,
         registry,
-        delivery_settling.as_ref(),
-        decisions.as_ref(),
-        tasks.as_ref(),
+        &delivery_settling,
+        &decisions,
+        &tasks,
     ));
-    if let Some(tasks) = &tasks {
-        parts.push(Arc::new(TasksPart::new(tasks.clone())));
-        parts.push(Arc::new(qm_core::plans::api::PlanPart::new(tasks.clone())));
-
-        parts.push(Arc::new(
-            SessionsPart::new(
-                db.clone(),
-                Arc::clone(&clock),
-                ReconcileService::new(tasks.clone()),
-                recorder,
-                attachments.clone(),
-            )
-            .with_secondmates(secondmates.clone()),
-        ));
-    }
+    parts.push(Arc::new(TasksPart::new(tasks.clone())));
+    parts.push(Arc::new(qm_core::plans::api::PlanPart::new(tasks.clone())));
+    parts.push(Arc::new(
+        SessionsPart::new(
+            db.clone(),
+            Arc::clone(&clock),
+            ReconcileService::new(tasks.clone()),
+            Some(recorder),
+            attachments.clone(),
+        )
+        .with_secondmates(secondmates.clone()),
+    ));
     parts.push(Arc::new(SecondmatesPart::new(
         secondmates.clone(),
         attachments.clone(),
@@ -325,12 +306,11 @@ pub(crate) async fn start_core(
     parts.push(Arc::new(updates_part(&dir, &clock, &conversation)));
     parts.push(Arc::new(DraftsPart::new()));
     // After every other part, so it sees the setup findings, the settings and the model notice.
-    // Always wired, so held approvals stay answerable when crewmates are off.
     parts.push(Arc::new(qm_core::actions::ActionsPart::new(
         held.clone(),
         (db.clone(), Arc::clone(&clock), dir.clone()),
         agent,
-        tasks.clone(),
+        Some(tasks.clone()),
     )));
     // Last, after the Actions list it reads.
     parts.push(Arc::new(NotificationsPart::new(
@@ -351,12 +331,10 @@ pub(crate) async fn start_core(
 
     // No more plan replies from pages, then the crew stops too when the UI went away without
     // quitting (idempotent after a quit).
-    if let (Some(endpoint), Some(tasks)) = (plan_endpoint, &tasks) {
-        endpoint.stop(tasks).await;
+    if let Some(endpoint) = plan_endpoint {
+        endpoint.stop(&tasks).await;
     }
-    if let Some(tasks) = &tasks {
-        tasks.shutdown().await;
-    }
+    tasks.shutdown().await;
     secondmates.shutdown().await;
     pump_stop.send_replace(true);
     // `serve` has told the loop to shut down (and dropped its inbox).
@@ -466,31 +444,22 @@ async fn foundations(
 fn tool_host(
     base: CoreToolHost,
     projects: &ProjectService,
-    tasks: Option<&TaskService>,
-    settling: Option<&Settling>,
+    tasks: &TaskService,
+    settling: &Settling,
     secondmates: &SecondmateService,
-    (verification, decisions): (&VerificationService, Option<&DecisionService>),
+    (verification, decisions): (&VerificationService, &DecisionService),
 ) -> Arc<CoreToolHost> {
-    let mut host = base
-        .with_projects(projects.clone())
-        .with_secondmates(secondmates.clone())
-        .with_verification(verification.clone());
-    if let Some(decisions) = decisions {
-        host = host.with_decisions(decisions.clone());
-    }
-    if let Some(tasks) = tasks {
-        host = host.with_tasks(tasks.clone());
-    }
-    if let Some(delivery_settling) = settling {
-        host = host
-            .with_delivery(delivery_settling.delivery.clone())
-            .with_settling(delivery_settling.settling.clone());
-    }
-    let host = Arc::new(host);
+    let host = Arc::new(
+        base.with_projects(projects.clone())
+            .with_secondmates(secondmates.clone())
+            .with_verification(verification.clone())
+            .with_decisions(decisions.clone())
+            .with_tasks(tasks.clone())
+            .with_delivery(settling.delivery.clone())
+            .with_settling(settling.settling.clone()),
+    );
     let dyn_host: Arc<dyn ToolHost> = host.clone();
-    if let Some(tasks) = tasks {
-        tasks.set_tool_host(Arc::downgrade(&dyn_host));
-    }
+    tasks.set_tool_host(Arc::downgrade(&dyn_host));
     secondmates.set_tool_host(Arc::downgrade(&dyn_host));
     host
 }
@@ -535,10 +504,7 @@ fn start_secondmates(secondmates: &SecondmateService) {
 }
 
 /// Startup reconciliation for the crew; nothing is deleted.
-async fn crew_reconcile(tasks: Option<&TaskService>) -> ReconcileOutcome {
-    let Some(tasks) = tasks else {
-        return ReconcileOutcome::default();
-    };
+async fn crew_reconcile(tasks: &TaskService) -> ReconcileOutcome {
     reconcile(tasks).await.unwrap_or_else(|e| {
         tracing::error!(error = %e, "the crew's startup check failed");
         ReconcileOutcome::default()
@@ -1036,54 +1002,42 @@ fn registry_parts(
     held: &HeldService,
     conversation: &Arc<Conversation>,
     (setup, projects): (SetupCheck, ProjectService),
-    settling: Option<&Settling>,
-    decisions: Option<&DecisionService>,
-    tasks: Option<&TaskService>,
+    settling: &Settling,
+    decisions: &DecisionService,
+    tasks: &TaskService,
 ) -> Vec<Arc<dyn ApiPart>> {
     // Merges, pushes and GitHub writes, with their cards.
-    if let Some(delivery_settling) = settling {
-        let merges = Arc::new(MergePerformer::new(delivery_settling.settling.clone()));
-        held.register(HeldKind::Merge, merges.clone());
-        held.register(HeldKind::Push, merges);
-        held.register(
-            HeldKind::GithubWrite,
-            Arc::new(GithubWritePerformer::new(
-                delivery_settling.delivery.clone(),
-            )),
-        );
-        held.register_card(HeldKind::Merge, Arc::new(MergeCards));
-        held.register_card(HeldKind::Push, Arc::new(MergeCards));
-        held.register_card(HeldKind::GithubWrite, Arc::new(GithubWriteCards));
-        // Release tags: always held, carried out only on your Approve.
-        held.register(
-            HeldKind::ReleaseTag,
-            Arc::new(ReleaseTagPerformer::new(delivery_settling.delivery.clone())),
-        );
-        held.register_card(HeldKind::ReleaseTag, Arc::new(ReleaseTagCards));
-    }
+    let merges = Arc::new(MergePerformer::new(settling.settling.clone()));
+    held.register(HeldKind::Merge, merges.clone());
+    held.register(HeldKind::Push, merges);
+    held.register(
+        HeldKind::GithubWrite,
+        Arc::new(GithubWritePerformer::new(settling.delivery.clone())),
+    );
+    held.register_card(HeldKind::Merge, Arc::new(MergeCards));
+    held.register_card(HeldKind::Push, Arc::new(MergeCards));
+    held.register_card(HeldKind::GithubWrite, Arc::new(GithubWriteCards));
+    // Release tags: always held, carried out only on your Approve.
+    held.register(
+        HeldKind::ReleaseTag,
+        Arc::new(ReleaseTagPerformer::new(settling.delivery.clone())),
+    );
+    held.register_card(HeldKind::ReleaseTag, Arc::new(ReleaseTagCards));
     // Decision cards and stuck notices, carried out exactly.
-    if let Some(decisions) = decisions {
-        held.register(
-            HeldKind::Decision,
-            Arc::new(DecisionPerformer::new(decisions.clone())),
-        );
-        held.register_card(HeldKind::Decision, Arc::new(DecisionCards));
-    }
+    held.register(
+        HeldKind::Decision,
+        Arc::new(DecisionPerformer::new(decisions.clone())),
+    );
+    held.register_card(HeldKind::Decision, Arc::new(DecisionCards));
     let setup_part = SetupPart::new(setup, Arc::clone(conversation));
     setup_part.start();
-    let mut projects_part = ProjectsPart::new(projects);
-    if let Some(tasks) = tasks {
-        projects_part = projects_part.with_tasks(tasks.clone());
-    }
-    let mut parts: Vec<Arc<dyn ApiPart>> = vec![
+    let projects_part = ProjectsPart::new(projects).with_tasks(tasks.clone());
+    vec![
         Arc::new(HeldPart::new(held.clone(), Arc::clone(conversation))),
         Arc::new(projects_part),
         Arc::new(setup_part),
-    ];
-    if let Some(decisions) = decisions {
-        parts.push(Arc::new(DiffPart::new(decisions.clone())));
-    }
-    parts
+        Arc::new(DiffPart::new(decisions.clone())),
+    ]
 }
 
 /// Delivery (pull requests, checks, the GitHub tools) and settling.
@@ -1109,11 +1063,8 @@ fn gh_program(facts: watch::Receiver<SetupFacts>) -> GhProgram {
 
 /// At startup: the CI poller is re-armed for every pushed head still pending (the
 /// settles the last run left half-done were concluded before the seat started).
-fn spawn_settle_recovery(settling: Option<&Settling>) {
-    let Some(delivery_settling) = settling else {
-        return;
-    };
-    let delivery = delivery_settling.delivery.clone();
+fn spawn_settle_recovery(settling: &Settling) {
+    let delivery = settling.delivery.clone();
     tokio::spawn(async move {
         if let Err(e) = delivery.recover().await {
             tracing::error!(error = %e, "couldn't re-arm the CI poller");
