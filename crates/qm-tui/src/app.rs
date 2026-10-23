@@ -87,6 +87,10 @@ pub(crate) struct App {
     pub(crate) spin: usize,
     /// The frame being drawn, or the last one, shows a busy indicator, so ticks advance it.
     pub(crate) spinning: Cell<bool>,
+    /// The frame shows an age or a running count of seconds, so ticks redraw it once a second.
+    pub(crate) ages_shown: Cell<bool>,
+    /// The second (since `started`) the last age redraw was for.
+    ages_second: u64,
 }
 
 impl App {
@@ -113,6 +117,8 @@ impl App {
             started: Instant::now(),
             spin: 0,
             spinning: Cell::new(false),
+            ages_shown: Cell::new(false),
+            ages_second: 0,
         }
     }
 
@@ -181,6 +187,7 @@ impl App {
         let area = frame.area();
         self.term.size = (area.width, area.height);
         self.spinning.set(false);
+        self.ages_shown.set(false);
         let mut map = FrameMap::default();
         if let Some(body) = chrome::draw(frame, self, &mut map.hits) {
             router::draw(frame, body, self, &mut map);
@@ -322,6 +329,10 @@ impl App {
             let step =
                 crate::widgets::spinner::step_at(now.saturating_duration_since(self.started));
             self.change(|app| &mut app.spin, step);
+        }
+        if self.ages_shown.get() {
+            let second = now.saturating_duration_since(self.started).as_secs();
+            self.change(|app| &mut app.ages_second, second);
         }
         self.settings_tick(now);
         self.after_press(now);

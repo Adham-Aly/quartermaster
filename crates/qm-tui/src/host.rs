@@ -194,7 +194,13 @@ pub struct Commands(mpsc::UnboundedReceiver<Ctl>);
 /// # Errors
 /// As [`run`].
 pub async fn serve(client: CoreClient, windows: Windows, control: Commands) -> io::Result<()> {
-    Box::pin(drive(client, windows, Some(control), DataDir::resolve().ok())).await
+    Box::pin(drive(
+        client,
+        windows,
+        Some(control),
+        DataDir::resolve().ok(),
+    ))
+    .await
 }
 
 /// Runs the UI for the windows that arrive on `windows`, until the user quits, the core closes, or
