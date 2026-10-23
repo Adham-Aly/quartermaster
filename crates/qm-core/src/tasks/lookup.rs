@@ -190,20 +190,10 @@ pub(crate) async fn find_tasks(
         .await
         .map_err(|e| failed(&e))?;
     let project_filter = query.project.as_deref().map(str::trim);
-    if let Some(name) = project_filter {
-        let Some(project) = projects
-            .values()
-            .find(|p| p.name.eq_ignore_ascii_case(name))
-        else {
-            return Err(refuse(format!("There's no project called {name}")));
-        };
-        let (scoped, id, project_name) = (*caller, project.id, project.name.clone());
-        svc.db()
-            .call(move |conn| {
-                crate::secondmates::scope::check_project_in(conn, &scoped, id, &project_name)
-            })
-            .await
-            .map_err(|e| failed(&e))??;
+    if let Some(name) = project_filter
+        && !projects.values().any(|p| p.name.eq_ignore_ascii_case(name))
+    {
+        return Err(refuse(format!("There's no project called {name}")));
     }
     let text = query.text.as_deref().map(|t| t.trim().to_lowercase());
     let mut matching: Vec<&TaskRow> = rows

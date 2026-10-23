@@ -19,7 +19,6 @@ use qm_store::StoreError;
 use qm_store::events::{self, NewEvent};
 use qm_store::held::{HeldPayload, NewHeld, SecondmatePayload};
 use qm_store::messages::{self, NewMessage};
-use qm_store::projects;
 use qm_store::secondmates::{self, NewSecondmate, SecondmateRecord};
 use qm_store::wakes::NewWake;
 use qm_tools::defs::{Ack, Held};
@@ -28,7 +27,6 @@ use qm_types::BoxFuture;
 use qm_types::api::{CardLine, HeldAnswer, Styled, Tone};
 use qm_types::domain::{MessageKind, MessageSource, WakeKind};
 use qm_types::error::Refusal;
-use qm_types::ids::ProjectId;
 use rusqlite::Connection;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -45,42 +43,10 @@ pub fn charter_text(record: &SecondmateRecord) -> String {
     })
 }
 
-/// Resolves project names to registered projects, refusing the first unknown one.
-fn resolve_projects(
-    conn: &Connection,
-    names: &[String],
-) -> Result<Result<Vec<(ProjectId, String)>, Refusal>, StoreError> {
-    let mut out = Vec::with_capacity(names.len());
-    for name in names {
-        match projects::active_by_name(conn, name)? {
-            Some(p) => {
-                if !out.iter().any(|(id, _)| *id == p.id) {
-                    out.push((p.id, p.name));
-                }
-            }
-            None => {
-                return Ok(Err(Refusal::new(format!(
-                    "There's no project called {name}; use find_project_folder and propose_project"
-                ))));
-            }
-        }
-    }
-    Ok(Ok(out))
-}
-
 /// "There's already a secondmate called web-app (SM-02)".
 fn name_refusal(conn: &Connection, name: &str) -> Result<Option<Refusal>, StoreError> {
     Ok(secondmates::by_name(conn, name)?
         .map(|id| Refusal::new(format!("There's already a secondmate called {name} ({id})"))))
-}
-
-/// The card's and the event's words for a project list.
-fn projects_words(names: &[String]) -> String {
-    if names.is_empty() {
-        "any registered project".to_owned()
-    } else {
-        names.join(", ")
-    }
 }
 
 impl SecondmateService {
@@ -94,15 +60,10 @@ impl SecondmateService {
     ) -> Result<Held, ToolFailure> {
         check_reserved(caller.role, ReservedAction::StartSecondmate)?;
         let message = caller.turn.and_then(|t| t.started_by.message());
-        let names = proposal.projects.clone();
         let name = proposal.name.clone();
-        let (resolved, user_words) = self
+        let user_words = self
             .db()
             .call(move |conn| {
-                let resolved = match resolve_projects(conn, &names)? {
-                    Ok(r) => r,
-                    Err(r) => return Ok(Err(r)),
-                };
                 if let Some(r) = name_refusal(conn, &name)? {
                     return Ok(Err(r));
                 }
@@ -110,7 +71,7 @@ impl SecondmateService {
                     Some(m) => messages::text(conn, m)?.unwrap_or_default(),
                     None => String::new(),
                 };
-                Ok(Ok((resolved, words)))
+                Ok(Ok(words))
             })
             .await
             .map_err(|e| failed(&e))??;
@@ -140,14 +101,11 @@ impl SecondmateService {
         let payload = SecondmatePayload {
             name: proposal.name.clone(),
             scope: proposal.scope.clone(),
-            projects: resolved.iter().map(|(_, n)| n.clone()).collect(),
             base_branch: proposal.base_branch.clone(),
         };
         let mut summary = format!(
-            "Proposed secondmate {} · scope \"{}\" · projects {}",
-            payload.name,
-            payload.scope,
-            projects_words(&payload.projects)
+            "Proposed secondmate {} · scope \"{}\"",
+            payload.name, payload.scope
         );
         if let Some(b) = &payload.base_branch {
             let _ = write!(summary, " · base {b}");
@@ -159,7 +117,6 @@ impl SecondmateService {
         let event_payload = serde_json::json!({
             "name": payload.name,
             "scope": payload.scope,
-            "projects": payload.projects,
             "base_branch": payload.base_branch,
             "decided_by": decided_by,
         });
@@ -262,42 +219,10 @@ fn configure_in(
     if let Err(r) = check_own_secondmate(caller, id, before.parent) {
         return Ok(Err(r.into()));
     }
-    let projects = match &change.projects {
-        Some(names) => match resolve_projects(&tx, names)? {
-            Ok(p) => Some(p),
-            Err(r) => return Ok(Err(r.into())),
-        },
-        None => None,
-    };
-
     let mut said: Vec<String> = Vec::new();
     if let Some(scope) = &change.scope {
         secondmates::set_scope(&tx, id, scope)?;
         said.push(format!("scope \"{}\" → \"{scope}\"", before.scope));
-    }
-    if let Some(list) = &projects {
-        let ids: Vec<ProjectId> = list.iter().map(|(p, _)| *p).collect();
-        secondmates::set_projects(&tx, id, &ids)?;
-        let names: Vec<String> = list.iter().map(|(_, n)| n.clone()).collect();
-        said.push(format!("projects {}", projects_words(&names)));
-        // Open tasks in a project no longer listed keep running.
-        if !ids.is_empty()
-            && let Some(agent) = secondmates::agent_of(&tx, id)?
-        {
-            for (task, project, _) in secondmates::open_tasks_of(&tx, agent)? {
-                if !ids.contains(&project) {
-                    let name = before
-                        .projects
-                        .iter()
-                        .find(|(p, _)| *p == project)
-                        .map_or_else(
-                            || "a project no longer listed".to_owned(),
-                            |(_, n)| n.clone(),
-                        );
-                    said.push(format!("{task} keeps running in {name}"));
-                }
-            }
-        }
     }
     if let Some(branch) = &change.standing_branch {
         secondmates::set_standing_branch(&tx, id, branch.as_deref())?;
@@ -405,15 +330,6 @@ impl HeldPerformer for SecondmatePerformer {
                 .call(move |conn| {
                     let tx = conn.transaction()?;
                     // What may have moved since the proposal.
-                    let mut ids = Vec::with_capacity(payload.projects.len());
-                    for name in &payload.projects {
-                        match projects::active_by_name(&tx, name)? {
-                            Some(p) => ids.push(p.id),
-                            None => {
-                                return Ok(Err(format!("{name} was removed since the proposal")));
-                            }
-                        }
-                    }
                     if let Some(id) = secondmates::by_name(&tx, &payload.name)? {
                         return Ok(Err(format!(
                             "There's already a secondmate called {} ({id})",
@@ -427,7 +343,7 @@ impl HeldPerformer for SecondmatePerformer {
                         &NewSecondmate {
                             name: &payload.name,
                             scope: &payload.scope,
-                            projects: &ids,
+                            projects: &[],
                             standing_branch: payload.base_branch.as_deref(),
                             parent,
                             data_dir: &data_dir,
@@ -449,7 +365,6 @@ impl HeldPerformer for SecondmatePerformer {
                                 "secondmate": record.id,
                                 "name": record.name,
                                 "scope": record.scope,
-                                "projects": payload.projects,
                                 "standing_branch": record.standing_branch,
                             }),
                             at,
@@ -484,7 +399,6 @@ impl HeldPerformer for SecondmatePerformer {
             lines: vec![
                 line("Name ", p.name.clone()),
                 line("Scope ", p.scope.clone()),
-                line("Projects ", projects_words(&p.projects)),
                 line(
                     "Standing base branch ",
                     p.base_branch.clone().unwrap_or_else(|| "none".to_owned()),

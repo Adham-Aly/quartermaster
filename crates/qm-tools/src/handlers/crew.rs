@@ -8,9 +8,9 @@
 use super::conversation::started_by;
 use crate::defs::{
     CloseTaskArgs, CloseTaskTool, FindTasksArgs, FindTasksTool, FoundTasks, LinkTasksArgs,
-    LinkTasksTool, Linked, MessageTaskArgs, MessageTaskTool, StartCrewmateArgs, StartCrewmateTool,
-    StopTaskArgs, StopTaskTool, TaskDetail, TaskStarted, TaskStatusArgs, TaskStatusTool,
-    TaskUpdated,
+    LinkTasksTool, Linked, MessageTaskArgs, MessageTaskTool, SetTaskProjectArgs,
+    SetTaskProjectTool, StartCrewmateArgs, StartCrewmateTool, StopTaskArgs, StopTaskTool,
+    TaskDetail, TaskStarted, TaskStatusArgs, TaskStatusTool, TaskUpdated,
 };
 use crate::handler::{Handle, StartRequest, ToolCx, ToolFailure};
 use qm_policy::names::check_task_title;
@@ -190,6 +190,24 @@ impl Handle for StopTaskTool {
                 .map(|r| r.trim().to_owned())
                 .filter(|r| !r.is_empty());
             cx.host.stop_task(cx.caller, args.task, reason).await
+        })
+    }
+}
+
+impl Handle for SetTaskProjectTool {
+    fn handle<'a>(
+        cx: &'a ToolCx<'a>,
+        args: SetTaskProjectArgs,
+    ) -> BoxFuture<'a, Result<TaskUpdated, ToolFailure>> {
+        Box::pin(async move {
+            let trim = |v: Option<String>| v.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+            let (project, folder) = (trim(args.project), trim(args.folder));
+            if project.is_some() == folder.is_some() {
+                return Err(Refusal::new("name a folder or a listed project: exactly one").into());
+            }
+            cx.host
+                .set_task_project(cx.caller, args.task, project, folder)
+                .await
         })
     }
 }

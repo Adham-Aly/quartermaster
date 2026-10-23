@@ -469,6 +469,20 @@ impl ToolHost for CoreToolHost {
         })
     }
 
+    fn set_task_project<'a>(
+        &'a self,
+        caller: &'a Caller,
+        task: TaskId,
+        project: Option<String>,
+        folder: Option<String>,
+    ) -> BoxFuture<'a, Result<TaskUpdated, ToolFailure>> {
+        Box::pin(async move {
+            self.tasks("set_task_project")?
+                .set_task_project(caller, task, project, folder)
+                .await
+        })
+    }
+
     fn close_task<'a>(
         &'a self,
         caller: &'a Caller,

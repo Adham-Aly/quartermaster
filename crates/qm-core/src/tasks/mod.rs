@@ -26,6 +26,7 @@ pub mod lifecycle;
 pub mod lookup;
 pub mod plan;
 pub mod ports;
+pub mod relabel;
 pub mod report;
 pub mod runner;
 pub mod session;
@@ -670,6 +671,16 @@ impl TaskService {
         reason: Option<String>,
     ) -> Result<TaskUpdated, ToolFailure> {
         close::stop_task(self, caller, task, reason).await
+    }
+
+    pub async fn set_task_project(
+        &self,
+        caller: &Caller,
+        task: TaskId,
+        project: Option<String>,
+        folder: Option<String>,
+    ) -> Result<TaskUpdated, ToolFailure> {
+        relabel::set_task_project(self, caller, task, project, folder).await
     }
 
     pub async fn close_task(

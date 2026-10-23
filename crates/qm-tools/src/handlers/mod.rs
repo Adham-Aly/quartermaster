@@ -33,6 +33,7 @@ pub static HANDLERS: &[Binding] = &[
     bind::<crate::defs::StartCrewmateTool>(),
     bind::<crate::defs::MessageTaskTool>(),
     bind::<crate::defs::StopTaskTool>(),
+    bind::<crate::defs::SetTaskProjectTool>(),
     bind::<crate::defs::CloseTaskTool>(),
     bind::<crate::defs::LinkTasksTool>(),
     bind::<crate::defs::TaskStatusTool>(),

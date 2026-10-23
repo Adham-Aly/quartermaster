@@ -187,6 +187,29 @@ pub struct StopTaskArgs {
 }
 
 tool! {
+    /// Changes the project label of a direct report's in-place task. Worktree tasks keep their
+    /// repository's label.
+    SetTaskProjectTool {
+        name: "set_task_project",
+        class: Act,
+        roles: [Quartermaster, Secondmate],
+        args: SetTaskProjectArgs,
+        output: TaskUpdated,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetTaskProjectArgs {
+    pub task: TaskId,
+    // A listed project's name, or a folder (absolute, or from ~): one of the two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+}
+
+tool! {
     /// Closes a direct report's task and retires its worktree and branch. A plain-folder task
     /// keeps its files where they are.
     CloseTaskTool {

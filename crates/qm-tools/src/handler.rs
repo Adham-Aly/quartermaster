@@ -119,6 +119,18 @@ pub trait ToolHost: Send + Sync {
         Box::pin(async { Err(ToolFailure::not_available("stop_task")) })
     }
 
+    /// Changes the project label of a direct report's in-place task.
+    fn set_task_project<'a>(
+        &'a self,
+        caller: &'a Caller,
+        task: TaskId,
+        project: Option<String>,
+        folder: Option<String>,
+    ) -> BoxFuture<'a, Result<TaskUpdated, ToolFailure>> {
+        let _ = (caller, task, project, folder);
+        Box::pin(async { Err(ToolFailure::not_available("set_task_project")) })
+    }
+
     /// Closes a direct report's finished task and retires its worktree.
     fn close_task<'a>(
         &'a self,
@@ -505,7 +517,6 @@ pub struct StartRequest {
 pub struct SecondmateProposal {
     pub name: String,
     pub scope: String,
-    pub projects: Vec<String>,
     pub base_branch: Option<String>,
 }
 
@@ -527,7 +538,6 @@ pub struct RouteRequest {
 pub struct CharterChange {
     pub secondmate: SecondmateId,
     pub scope: Option<String>,
-    pub projects: Option<Vec<String>>,
     /// `Some(None)` clears the standing branch.
     pub standing_branch: Option<Option<String>>,
 }

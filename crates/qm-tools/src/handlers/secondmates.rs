@@ -24,8 +24,6 @@ use qm_types::error::Refusal;
 
 /// The longest scope, in characters (the charter's `SCOPE_CHARS`).
 pub const MAX_SCOPE_CHARS: usize = 300;
-/// The most projects a charter lists.
-pub const MAX_PROJECTS: usize = 20;
 /// The longest routed request, in characters.
 pub const MAX_REQUEST_CHARS: usize = 4_000;
 
@@ -47,28 +45,6 @@ pub fn check_scope(scope: &str) -> Result<String, Refusal> {
     Ok(scope.to_owned())
 }
 
-/// The project names, trimmed: at most 20, none blank, none twice (any case).
-pub fn check_projects(projects: &[String]) -> Result<Vec<String>, Refusal> {
-    if projects.len() > MAX_PROJECTS {
-        return Err(Refusal::new(format!(
-            "a secondmate takes at most {MAX_PROJECTS} projects (this one has {})",
-            projects.len()
-        )));
-    }
-    let mut out: Vec<String> = Vec::with_capacity(projects.len());
-    for name in projects {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(Refusal::new("a project name can't be empty"));
-        }
-        if out.iter().any(|n| n.eq_ignore_ascii_case(name)) {
-            return Err(Refusal::new(format!("{name} is listed twice")));
-        }
-        out.push(name.to_owned());
-    }
-    Ok(out)
-}
-
 impl Handle for StartSecondmateTool {
     fn handle<'a>(
         cx: &'a ToolCx<'a>,
@@ -78,7 +54,6 @@ impl Handle for StartSecondmateTool {
             let name = args.name.trim().to_owned();
             check_display_name(&name)?;
             let scope = check_scope(&args.scope)?;
-            let projects = check_projects(&args.projects)?;
             let base_branch = args
                 .base_branch
                 .map(|b| b.trim().to_owned())
@@ -92,7 +67,6 @@ impl Handle for StartSecondmateTool {
                     SecondmateProposal {
                         name,
                         scope,
-                        projects,
                         base_branch,
                     },
                 )
@@ -190,11 +164,7 @@ impl Handle for ConfigureSecondmateTool {
             if set.is_some() && args.clear_standing_base_branch {
                 return Err(Refusal::new("set the standing branch or clear it, not both").into());
             }
-            if args.scope.is_none()
-                && args.projects.is_none()
-                && set.is_none()
-                && !args.clear_standing_base_branch
-            {
+            if args.scope.is_none() && set.is_none() && !args.clear_standing_base_branch {
                 return Err(Refusal::new("nothing to change").into());
             }
             let standing_branch = if args.clear_standing_base_branch {
@@ -206,14 +176,12 @@ impl Handle for ConfigureSecondmateTool {
                 check_standing_branch(Authority::Turn(started_by(cx)), branch.as_deref())?;
             }
             let scope = args.scope.as_deref().map(check_scope).transpose()?;
-            let projects = args.projects.as_deref().map(check_projects).transpose()?;
             cx.host
                 .configure_secondmate(
                     cx.caller,
                     CharterChange {
                         secondmate: args.secondmate,
                         scope,
-                        projects,
                         standing_branch,
                     },
                 )

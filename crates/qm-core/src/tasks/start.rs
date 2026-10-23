@@ -607,17 +607,21 @@ enum Recorded {
 
 /// The place `req` names: a listed project's folder, a folder (its project found by the git-root
 /// rule), or your home folder. A repository new to the app has its legacy task numbers reserved.
-async fn find_place(svc: &TaskService, req: &StartRequest) -> Result<Place, ToolFailure> {
-    if let Some(name) = req.project.clone() {
+pub(crate) async fn find_place(
+    svc: &TaskService,
+    project: Option<String>,
+    folder: Option<String>,
+) -> Result<Place, ToolFailure> {
+    if let Some(name) = project {
+        let lookup = name.clone();
         let row = svc
             .db()
-            .call(move |conn| active_by_name(conn, &name))
+            .call(move |conn| active_by_name(conn, &lookup))
             .await
             .map_err(|e| failed(&e))?;
         let Some(row) = row else {
             return Err(refuse(format!(
-                "There's no listed project called {}; name its folder instead",
-                req.project.as_deref().unwrap_or_default()
+                "There's no listed project called {name}; name its folder instead"
             )));
         };
         return Ok(Place {
@@ -626,7 +630,7 @@ async fn find_place(svc: &TaskService, req: &StartRequest) -> Result<Place, Tool
             repo: None,
         });
     }
-    let text = req.folder.clone().unwrap_or_else(|| "~".to_owned());
+    let text = folder.unwrap_or_else(|| "~".to_owned());
     let plain = svc
         .db()
         .call(|conn| places::plain_folders(conn))
@@ -718,7 +722,7 @@ pub(crate) async fn start_as(
         .await
         .map_err(|e| failed(&e))?;
     let authority = routed_authority.unwrap_or(how.authority);
-    let place = find_place(svc, &req).await?;
+    let place = find_place(svc, req.project.clone(), req.folder.clone()).await?;
     let req_copy = req.clone();
     let home = svc.deps().home.clone();
     let now = svc.clock().now();

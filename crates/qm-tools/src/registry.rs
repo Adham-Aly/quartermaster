@@ -19,6 +19,7 @@ pub static TOOLS: &[ToolDef] = &[
     ToolDef::of::<defs::SecondmateStartCrewmateTool>(),
     ToolDef::of::<defs::MessageTaskTool>(),
     ToolDef::of::<defs::StopTaskTool>(),
+    ToolDef::of::<defs::SetTaskProjectTool>(),
     ToolDef::of::<defs::CloseTaskTool>(),
     ToolDef::of::<defs::SettleTaskTool>(),
     ToolDef::of::<defs::PresentHoldTool>(),

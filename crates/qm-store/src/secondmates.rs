@@ -36,7 +36,7 @@ pub struct SecondmateRecord {
     pub parent: AgentId,
     pub name: String,
     pub scope: String,
-    /// Its project list, in the order added; empty means any registered project.
+    /// The projects of its open crewmates, kept in step by the app.
     pub projects: Vec<(ProjectId, String)>,
     pub standing_branch: Option<String>,
     pub created_at: Timestamp,

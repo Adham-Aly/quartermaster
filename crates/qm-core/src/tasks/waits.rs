@@ -262,14 +262,6 @@ pub(crate) async fn file_followup(
             followup.project.as_deref().unwrap_or("")
         )));
     };
-    // A secondmate's scope: its crewmates' follow-ups stay inside it.
-    let (scoped, project_id, project_name) = (*caller, project.id, project.name.clone());
-    svc.db()
-        .call(move |conn| {
-            crate::secondmates::scope::check_project_in(conn, &scoped, project_id, &project_name)
-        })
-        .await
-        .map_err(|e| failed(&e))??;
     let at = svc.clock().now();
     let agent = caller.agent;
     let supervisor = row.supervisor;
