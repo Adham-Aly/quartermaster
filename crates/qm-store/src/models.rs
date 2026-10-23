@@ -3,9 +3,9 @@
 //! - **Detected models** are rows per (account, model): canonical id, family, capabilities, effort
 //!   levels, first seen, new, gone. [`record_model_list`] reconciles an account's latest list
 //!   with what's stored.
-//! - **New models are never used automatically.** A model that newly appears is marked new and
-//!   starts "not in use": [`pool`] leaves it out until a placement made after it appeared puts it
-//!   in a tier. The first list read for an account isn't marked "new", nor is
+//! - **New models are never used automatically.** A model that newly appears is marked new;
+//!   [`pool`] leaves it out until a placement made after it appeared puts it in a tier.
+//!   The first list read for an account isn't marked "new", nor is
 //!   a model you already have through another account.
 //! - **Announcements happen once.** A model's appearance and disappearance are each announced by
 //!   one `events` row (`model.new`, `model.gone`; the announcement line is the row's `summary`),
@@ -22,10 +22,14 @@
 //! could be read.
 //!
 //! - **Your changes on the tier board** ([`place_model`], [`remove_placement`],
-//!   [`take_out_of_use`], [`set_placement_effort`], [`list_model`]) refuse what doesn't apply
-//!   with a plain [`ChangeError::Refused`]. Placing a model clears its "new" mark. A model found
-//!   with find, or left in no tier by your change, is listed under NOT IN USE for good: a
-//!   `settings.model_listed` event records it ([`listed_models`]).
+//!   [`take_out_of_use`]) refuse what doesn't apply with a plain [`ChangeError::Refused`].
+//!   Placements are model + effort combinations; stale move sources and duplicate destinations
+//!   are refused without removing the source. Placing a model clears its "new" mark. The UI
+//!   adds combinations from a fixed catalogue, not a NOT IN USE list or a separate effort picker.
+//! - **Legacy listing metadata** remains for compatibility: [`list_model`] and removals that
+//!   leave a model in no tier record append-only `settings.model_listed` events ([`listed_models`]).
+//!   These do not control catalogue visibility. [`set_placement_effort`] also remains available
+//!   for legacy callers; the board moves combinations without changing their effort.
 //!
 //! Like every function in this crate, these run inside the caller's transaction where they write
 //! more than one row ([`record_model_list`], [`seed_starter_placements`], [`place_model`],
@@ -37,12 +41,13 @@ use crate::ids;
 use crate::seq;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
+use qm_types::config::TierEfforts;
 use qm_types::domain::{AccountKind, Effort, Provider, Tier};
 use qm_types::ids::space;
 use qm_types::ids::{AccountId, ModelId};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Where a model list came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -396,6 +401,103 @@ pub fn list_placements(conn: &Connection) -> Result<Vec<PlacementRow>, StoreErro
         .collect()
 }
 
+/// Efforts offered for each canonical model, sorted and deduplicated across connected accounts.
+/// Paused accounts still describe capabilities; removed accounts and gone models do not.
+pub fn supported_efforts(conn: &Connection) -> Result<BTreeMap<ModelId, Vec<Effort>>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT m.canonical, m.efforts FROM models AS m
+         JOIN accounts AS a ON a.id = m.account_id
+         WHERE a.removed_at IS NULL AND m.gone_at IS NULL",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, ModelId>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut supported: BTreeMap<ModelId, Vec<Effort>> = BTreeMap::new();
+    for row in rows {
+        let (canonical, json) = row?;
+        supported
+            .entry(canonical)
+            .or_default()
+            .extend(from_json::<Vec<Effort>>("models.efforts", &json)?);
+    }
+    for efforts in supported.values_mut() {
+        efforts.sort_unstable();
+        efforts.dedup();
+    }
+    Ok(supported)
+}
+
+/// Freezes legacy tier-default entries at their effective effort using the loaded tier settings.
+/// Call inside one transaction, before routing/settings startup and after capability detection.
+///
+/// Explicit efforts never change. Collisions retain the earliest `seq` (then id), including its
+/// creation time and identity. Models with no supported efforts, or no current capability record,
+/// keep their `None` entry and placements: unresolved entries can be resolved on a later pass.
+/// No global migration marker is needed: each resolved entry is explicit, so reruns are no-ops.
+/// Returns the number of legacy entries resolved (including merged collisions).
+pub fn migrate_legacy_efforts(conn: &Connection, tiers: &TierEfforts) -> Result<usize, StoreError> {
+    let supported = supported_efforts(conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, canonical, tier, seq FROM placements
+         WHERE effort_override IS NULL ORDER BY seq, id",
+    )?;
+    let legacy = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, ModelId>(1)?,
+                r.get::<_, Tier>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut resolved = 0;
+    for (id, canonical, tier, seq) in legacy {
+        let Some(efforts) = supported.get(&canonical).filter(|e| !e.is_empty()) else {
+            continue;
+        };
+        let wanted = match tier {
+            Tier::Premium => tiers.premium,
+            Tier::High => tiers.high,
+            Tier::Medium => tiers.medium,
+            Tier::Low => tiers.low,
+        };
+        // Same cap as routing: highest supported <= wanted, otherwise the lowest supported.
+        let effort = efforts
+            .iter()
+            .copied()
+            .filter(|e| *e <= wanted)
+            .max()
+            .unwrap_or(efforts[0]);
+        let collision = conn
+            .query_row(
+                "SELECT id, seq FROM placements
+             WHERE canonical = ?1 AND tier = ?2 AND effort_override = ?3",
+                params![canonical, tier, effort],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        if let Some((other_id, other_seq)) = collision {
+            let discard = if (seq, id) < (other_seq, other_id) {
+                other_id
+            } else {
+                id
+            };
+            conn.execute("DELETE FROM placements WHERE id = ?1", params![discard])?;
+            if discard == id {
+                resolved += 1;
+                continue;
+            }
+        }
+        conn.execute(
+            "UPDATE placements SET effort_override = ?2 WHERE id = ?1",
+            params![id, effort],
+        )?;
+        resolved += 1;
+    }
+    Ok(resolved)
+}
+
 const SEEDED: &str = "starter_tiers_seeded";
 
 /// The provider's starter set was seeded before.
@@ -593,8 +695,8 @@ pub fn canonical_of(conn: &Connection, model: &ModelId) -> Result<Option<ModelId
 // mark, so the pool routes it from then on. These never touch the starter-tier record, so a
 // provider is still seeded at most once and seeding still never overwrites what you set.
 
-/// `events.kind` marking a model listed under NOT IN USE (no section prefix: it's the Settings
-/// screens' own bookkeeping and never reaches the context block).
+/// Legacy `events.kind` for the former NOT IN USE list, retained for compatibility (no section
+/// prefix: this Settings bookkeeping never reaches the context block).
 const LISTED: &str = "settings.model_listed";
 
 /// A model an active account offers (not gone), by canonical id or an account's own id: its
@@ -635,6 +737,7 @@ fn offered_model(
             }
         }
     }
+    efforts.sort_unstable();
     let name = name.unwrap_or_else(|| canonical.to_string());
     Ok((canonical, name, efforts))
 }
@@ -691,11 +794,12 @@ fn check_offered(
     }
 }
 
-/// Puts a tier entry (a model at an effort; `None` is the tier default) in tier `to`: moved out
-/// of `from`, or added when `from` is `None`. The same model may sit in one tier more than once
-/// at different efforts; adding an entry the tier already holds is refused, and moving onto one
-/// just merges the two. Clears the model's "new" mark, so the pool routes it. Call inside one
-/// transaction.
+/// Puts a model + effort combination in tier `to`: moved out of `from`, or added when `from`
+/// is `None`. An effort of `None` is retained for models without effort controls and unresolved
+/// legacy tier-default entries. The same model may sit in one tier at different efforts.
+/// A stale source or duplicate destination is refused without removing the source; moving an
+/// existing entry to its current tier is a no-op. Clears the model's "new" mark on placement,
+/// so the pool routes it. Call inside one transaction.
 pub fn place_model(
     conn: &Connection,
     model: &ModelId,
@@ -705,39 +809,45 @@ pub fn place_model(
     at: Timestamp,
 ) -> Result<(), ChangeError> {
     let (canonical, name, efforts) = offered_model(conn, model)?;
-    match from {
-        Some(from) if from == to => return Ok(()),
-        Some(from) => {
-            conn.execute(
-                "DELETE FROM placements
-                 WHERE canonical = ?1 AND tier = ?2 AND effort_override IS ?3",
-                params![canonical, from, effort],
-            )?;
+    // Detection can resolve a legacy entry's effort while an older Settings snapshot is open.
+    // Validate both ends before deleting anything: a stale move must never become a new add.
+    if let Some(from) = from {
+        if !has_entry(conn, &canonical, from, effort)? {
+            return Err(ChangeError::Refused(format!(
+                "{name} isn't in the {from} tier at {}; refresh Settings and try again.",
+                entry_effort(effort)
+            )));
         }
-        None => {
-            check_offered(&name, &efforts, effort)?;
-            if has_entry(conn, &canonical, to, effort)? {
-                return Err(ChangeError::Refused(format!(
-                    "{name} is already in the {to} tier at {}; nothing was changed.",
-                    entry_effort(effort)
-                )));
-            }
+        if from == to {
+            return Ok(());
         }
     }
-    if !has_entry(conn, &canonical, to, effort)? {
+    if has_entry(conn, &canonical, to, effort)? {
+        return Err(ChangeError::Refused(format!(
+            "{name} is already in the {to} tier at {}; nothing was changed.",
+            entry_effort(effort)
+        )));
+    }
+    check_offered(&name, &efforts, effort)?;
+    if let Some(from) = from {
         conn.execute(
-            "INSERT INTO placements (canonical, tier, effort_override, created_at, seq, id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                canonical,
-                to,
-                effort,
-                to_millis(at),
-                seq::next(at),
-                ids::fresh(conn, "placements", space::ROW)?
-            ],
+            "DELETE FROM placements
+             WHERE canonical = ?1 AND tier = ?2 AND effort_override IS ?3",
+            params![canonical, from, effort],
         )?;
     }
+    conn.execute(
+        "INSERT INTO placements (canonical, tier, effort_override, created_at, seq, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            canonical,
+            to,
+            effort,
+            to_millis(at),
+            seq::next(at),
+            ids::fresh(conn, "placements", space::ROW)?
+        ],
+    )?;
     conn.execute(
         "UPDATE models SET is_new = 0 WHERE canonical = ?1",
         params![canonical],
@@ -745,8 +855,9 @@ pub fn place_model(
     Ok(())
 }
 
-/// Takes one tier entry (the model at `effort` in `tier`) out. A model left in no tier is listed
-/// under NOT IN USE, where you put it down. Call inside one transaction.
+/// Takes one tier entry (the model at `effort` in `tier`) out. If no placements remain, records
+/// legacy listing metadata for compatibility; the model stays in the fixed catalogue regardless.
+/// Call inside one transaction.
 pub fn remove_placement(
     conn: &Connection,
     model: &ModelId,
@@ -776,8 +887,8 @@ pub fn remove_placement(
     Ok(())
 }
 
-/// Takes a model out of every tier, so it isn't routed, and lists it under NOT IN USE. Call
-/// inside one transaction.
+/// Takes a model out of every tier, so it isn't routed, and records legacy listing metadata
+/// for compatibility. Does not change catalogue visibility. Call inside one transaction.
 pub fn take_out_of_use(
     conn: &Connection,
     model: &ModelId,
@@ -792,9 +903,10 @@ pub fn take_out_of_use(
     Ok(())
 }
 
-/// Changes one tier entry's effort (`effort_override`) from `current` to `effort`; `None` is the
-/// tier default. An effort the model doesn't offer is refused, and so is one the tier already
-/// holds the model at.
+/// Legacy API for changing one tier entry's effort (`effort_override`) from `current` to
+/// `effort`; `None` retains tier-default semantics for effort-capable models. An effort the
+/// model doesn't offer is refused, and so is one the tier already holds the model at.
+/// The current board adds and moves fixed combinations instead of offering an effort picker.
 pub fn set_placement_effort(
     conn: &Connection,
     model: &ModelId,
@@ -827,14 +939,15 @@ pub fn set_placement_effort(
     Ok(())
 }
 
-/// Lists a model found with find under NOT IN USE, for good (it survives a relaunch).
+/// Legacy API recording persistent listing metadata for the former NOT IN USE list.
+/// Retained for compatibility; the current catalogue includes all models regardless of this flag.
 pub fn list_model(conn: &Connection, model: &ModelId, at: Timestamp) -> Result<(), ChangeError> {
     let (canonical, _, _) = offered_model(conn, model)?;
     record_listed(conn, &canonical, at)?;
     Ok(())
 }
 
-/// Records a model as listed under NOT IN USE, once.
+/// Records legacy listing metadata once, preserving the compatibility event format.
 fn record_listed(conn: &Connection, canonical: &ModelId, at: Timestamp) -> Result<(), StoreError> {
     if listed_models(conn)?.contains(canonical) {
         return Ok(());
@@ -854,9 +967,9 @@ fn record_listed(conn: &Connection, canonical: &ModelId, at: Timestamp) -> Resul
     Ok(())
 }
 
-/// The canonical ids listed under NOT IN USE: found with find, or left in no tier by your change.
-/// A listing is never taken back (events are append-only); the screens show it only while the
-/// model is in no tier.
+/// Canonical ids with legacy listing metadata from explicit listing or removal from all tiers.
+/// Listings are never taken back (events are append-only) and still populate the API's `listed`
+/// flag for compatibility. They do not filter the current catalogue or create a board list.
 pub fn listed_models(conn: &Connection) -> Result<BTreeSet<ModelId>, StoreError> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT json_extract(payload, '$.model') FROM events
@@ -867,3 +980,6 @@ pub fn listed_models(conn: &Connection) -> Result<BTreeSet<ModelId>, StoreError>
         .collect::<rusqlite::Result<BTreeSet<_>>>()?;
     Ok(ids)
 }
+
+#[cfg(test)]
+mod tests;

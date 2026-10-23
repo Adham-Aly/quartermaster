@@ -192,8 +192,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "accounts: connect, pause, preferred, label, disconnect, reconnect",
             ),
             (
-                "m x e /",
-                "model levels: move, remove, effort, find a model",
+                "a / m x",
+                "model levels: add/search model + effort, move, remove",
             ),
             (
                 "space c f q e",

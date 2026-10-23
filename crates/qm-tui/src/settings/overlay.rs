@@ -1,8 +1,9 @@
-//! The Settings overlays: a picker (an effort, a model, where to move a model, find) under the
-//! control that opened it, and a one-line text field (an account's label, an API key).
+//! The Settings overlays: the fixed model + effort catalogue, add/move destinations, Routing
+//! model and Quartermaster effort pickers under their controls, and one-line text fields
+//! (an account's label, an API key). Model levels has no separate placement-effort picker.
 
 use super::paint::Painter;
-use super::{Field, FieldFor, Picker, SettingsHit, boxed};
+use super::{Field, FieldFor, PickFor, Picker, SettingsHit, boxed};
 use crate::app::App;
 use crate::text::{cells, truncate, width};
 use crate::theme;
@@ -59,7 +60,8 @@ fn draw_picker(p: &mut Painter<'_, '_>, body: Rect, picker: &Picker) {
     let area = Rect::new(x, y, box_width, box_height);
     p.clear(area);
     p.hit(area, SettingsHit::Overlay);
-    let inner = boxed(p, area, "", rows, theme::accent(), theme::accent());
+    let title = if find { "Add model" } else { "Choose" };
+    let inner = boxed(p, area, title, rows, theme::accent(), theme::accent());
     let room = usize::from(inner.width.saturating_sub(1));
     let mut row = inner.y;
     if let Some(query) = &picker.query {
@@ -68,7 +70,12 @@ fn draw_picker(p: &mut Painter<'_, '_>, body: Rect, picker: &Picker) {
         row += 1;
     }
     if visible.is_empty() {
-        p.text(inner.x, row, " No model matches", theme::dim());
+        let note = if matches!(picker.purpose, PickFor::AddTo { .. }) {
+            " Already in every tier"
+        } else {
+            " No model matches"
+        };
+        p.text(inner.x, row, &truncate(note, room), theme::dim());
         return;
     }
     let cursor_at = visible

@@ -701,9 +701,9 @@ pub(crate) enum SampleLogin {
     Browser,
 }
 
-/// The sample settings: three accounts, the tier board with GPT-6 Sol on its own effort,
-/// two models not in use and 57 more on the accounts, the pin on Opus 5.5 then Sonnet 5.5, Auto
-/// for the Quartermaster, and GitHub Copilot's device-code login waiting.
+/// The sample settings: three accounts, explicit model+effort tier entries and a fixed catalogue
+/// including unplaced models, the pin on Opus 5.5 then Sonnet 5.5, Auto for the Quartermaster,
+/// and GitHub Copilot's device-code login waiting.
 pub(crate) fn settings() -> Settings {
     settings_with(SampleLogin::DeviceCode)
 }
@@ -736,7 +736,7 @@ fn sample_model(
     model
 }
 
-/// A model only find reaches.
+/// An unplaced sample catalogue model (the legacy `listed` flag does not filter the catalogue).
 fn unlisted(account_id: &str, account: &str, name: &str, supported: &[Effort]) -> SettingsModel {
     let slug: String = name
         .to_lowercase()
@@ -772,14 +772,14 @@ fn sample_models() -> Vec<SettingsModel> {
             "claude:fable-5-1",
             "Fable 5.1",
             "Claude Max",
-            &[(Tier::Premium, None)],
+            &[(Tier::Premium, Some(Effort::ExtraHigh))],
             &claude,
         ),
         sample_model(
             "claude:opus-5-5",
             "Opus 5.5",
             "Claude Max",
-            &[(Tier::High, None)],
+            &[(Tier::High, Some(Effort::ExtraHigh))],
             &claude,
         ),
         sample_model(
@@ -793,14 +793,14 @@ fn sample_models() -> Vec<SettingsModel> {
             "claude:sonnet-5-5",
             "Sonnet 5.5",
             "Claude Max",
-            &[(Tier::Medium, None)],
+            &[(Tier::Medium, Some(Effort::Medium))],
             &claude,
         ),
         sample_model(
             "chatgpt:gpt-5-6-luna",
             "GPT-5.6 Luna",
             "ChatGPT Pro",
-            &[(Tier::Medium, None)],
+            &[(Tier::Medium, Some(Effort::Medium))],
             &gpt,
         ),
     ];

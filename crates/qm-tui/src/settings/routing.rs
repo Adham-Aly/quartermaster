@@ -119,7 +119,7 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     p.text(col, y + 2, &truncate(&now, room), theme::text());
     let explain = match (&settings.quartermaster, settings.quartermaster_effort) {
         (QuartermasterModel::Auto, None) => {
-            "Auto tries high → medium → premium → low, at that tier's effort."
+            "Auto tries high → medium → premium → low, at the entry's effort."
         }
         (QuartermasterModel::Auto, Some(_)) => "Auto tries high → medium → premium → low.",
         (_, None) => "Auto effort is its model's tier default.",
@@ -531,6 +531,19 @@ mod tests {
         }
         assert!(screen.iter().any(|row| row.contains("◂  200k  ▸")));
         assert!(screen.iter().any(|row| row.contains("Autocompact")));
+    }
+
+    #[test]
+    fn auto_explains_entry_effort_not_tier_default_at_supported_widths() {
+        for width in [150, 120, 119, 100] {
+            let (buffer, _) = render(&app_at(200_000), width, 30, false);
+            let screen = rows(&buffer).join("\n");
+            assert!(
+                screen.contains("at the entry's effort."),
+                "{width}:\n{screen}"
+            );
+            assert!(!screen.contains("tier's effort"));
+        }
     }
 
     #[test]

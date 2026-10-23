@@ -34,7 +34,7 @@ pub struct Candidate {
     pub account_kind: AccountKind,
     /// The tier this placement puts the model in.
     pub tier: Tier,
-    /// Your own effort level for this model in this tier.
+    /// The selected model+effort combo in this tier. `None` uses the tier's default rules.
     pub effort_override: Option<Effort>,
     /// The levels the model supports (a set).
     pub efforts: Vec<Effort>,
@@ -122,6 +122,19 @@ pub fn skip_reason(candidate: &Candidate, needs: Needs) -> Option<String> {
         ));
     }
     None
+}
+
+/// Checks a tier entry as a fixed model+effort combo, in addition to the task's capabilities.
+/// An account must support that exact effort, not merely a lower rung. Empty effort sets cannot
+/// serve an explicit combo either. Pins and explicit orchestrator settings do not use this check.
+pub fn placement_skip_reason(candidate: &Candidate, needs: Needs) -> Option<String> {
+    skip_reason(candidate, needs).or_else(|| {
+        candidate.effort_override.and_then(|effort| {
+            (!candidate.efforts.contains(&effort)).then(|| {
+                format!("its account doesn't support the selected entry's {effort} effort")
+            })
+        })
+    })
 }
 
 /// Ranks pairs that passed the capability check, best first. Pairs that tie keep their input order
