@@ -16,9 +16,11 @@
 //!   couldn't settle (the network dropped, the app stopped mid-push) is `unconfirmed` and is read
 //!   back from GitHub every [`RECHECK_EVERY`] for [`RECHECK_FOR`] after the push ([`reconcile`]),
 //!   then the supervisor is woken (`release_observed`) with the verdict.
-//! - Whether a release workflow ran or a downloadable release exists is not observed here.
+//! - A published tag's watch starts in the same transaction that records it published; its GitHub
+//!   release and workflow runs are then observed separately (`super::observe`).
 
 use super::DeliveryService;
+use super::observe;
 use super::push_guard::{destination, show_config, shown};
 use crate::held::{HeldError, HeldOutcome, HeldPerformer, HeldService, LoadedHeld, YouLine};
 use crate::inbox::Notify;
@@ -61,9 +63,10 @@ const CONFIRM_DELAYS: [Duration; 4] = [
     Duration::from_secs(2),
     Duration::from_secs(4),
 ];
-/// What every outcome says about what isn't observed.
-const NOT_OBSERVED: &str =
-    "Whether a release workflow ran or a downloadable release exists isn't checked by the app.";
+/// What a published outcome says about what comes next.
+const WATCHED: &str = "The app now watches its GitHub release and the workflow runs it started, \
+     for up to 3 hours, and wakes you when that ends; release_status shows them meanwhile. The tag \
+     alone never means a GitHub release can be downloaded.";
 
 /// What the checks in the checkout came to.
 enum Checked<T> {
@@ -344,11 +347,11 @@ fn approved(p: &ReleaseTagPayload) -> YouLine {
 }
 
 /// What a launch's status says, for the supervisor.
-fn status_note(l: &LaunchRow) -> String {
+pub(crate) fn status_note(l: &LaunchRow) -> String {
     let words = l.remote_words.as_deref().unwrap_or("");
     let what = format!("Tag {} at {} in {}", l.tag, l.commit.short(), l.repo);
     match l.status {
-        S::Published => format!("{what} is published: GitHub shows it. {NOT_OBSERVED}"),
+        S::Published => format!("{what} is published: GitHub shows it. {WATCHED}"),
         S::Pushing | S::Unconfirmed => format!(
             "{what} was sent, but GitHub doesn't show it yet ({words}); the app keeps reading it back for {} minutes after the push and wakes you with the verdict. Don't propose it again meanwhile.",
             RECHECK_FOR.as_secs() / 60
@@ -369,8 +372,9 @@ fn status_note(l: &LaunchRow) -> String {
     }
 }
 
-/// Records `outcome` on the launch (from one of `from`) with its task event, inside `tx`. True if
-/// it moved.
+/// Records `outcome` on the launch (from one of `from`) with its task event, inside `tx`, and
+/// starts the watch of a tag just published (armed by the caller once `tx` commits). True if it
+/// moved.
 fn record(
     tx: &Connection,
     launch: &LaunchRow,
@@ -379,6 +383,9 @@ fn record(
 ) -> Result<bool, StoreError> {
     if !releases::set_outcome(tx, launch.id, from, outcome)? {
         return Ok(false);
+    }
+    if outcome.status == S::Published {
+        observe::start(tx, launch.id)?;
     }
     if let Some(task) = launch.task {
         task_store::event(
@@ -626,6 +633,8 @@ impl ReleaseTagPerformer {
             .await;
         if matches!(now.status, S::Pushing | S::Unconfirmed) {
             reconcile(svc.clone(), now.id);
+        } else if now.status == S::Published {
+            observe::arm(svc, now.id, observe::READ_EVERY);
         }
         Ok(HeldOutcome {
             note: status_note(&now),
@@ -910,7 +919,8 @@ async fn reconcile_once(svc: &DeliveryService, id: ReleaseLaunchId) -> Result<bo
     let Some((status, remote, words)) = verdict else {
         return Ok(false);
     };
-    svc.tasks()
+    let published = svc
+        .tasks()
         .write(move |tx, notify| {
             let moved = record(
                 tx,
@@ -927,10 +937,13 @@ async fn reconcile_once(svc: &DeliveryService, id: ReleaseLaunchId) -> Result<bo
                 let now_row = releases::load(tx, launch.id)?.unwrap_or(launch.clone());
                 wake(tx, notify, &now_row, now)?;
             }
-            Ok(())
+            Ok(moved && status == S::Published)
         })
         .await
         .map_err(|e| e.to_string())?;
+    if published {
+        observe::arm(svc, id, observe::READ_EVERY);
+    }
     Ok(true)
 }
 
@@ -996,7 +1009,8 @@ fn reclaim(conn: &Connection) -> Result<Vec<(HeldRow, LaunchRow)>, StoreError> {
 
 /// Startup, after settling's recovery and before any card can be answered: a release card the last
 /// run claimed is given back when nothing was sent, or has its answer recorded from its launch
-/// when the push had begun; every launch whose push isn't settled is read back from GitHub.
+/// when the push had begun; every launch whose push isn't settled is read back from GitHub, and
+/// every published tag's watch still running is armed again.
 pub async fn recover(svc: &DeliveryService, held: &HeldService) -> Result<(), StoreError> {
     let claimed = svc.tasks().db().call(|conn| reclaim(conn)).await?;
     for (row, launch) in claimed {
@@ -1021,7 +1035,7 @@ pub async fn recover(svc: &DeliveryService, held: &HeldService) -> Result<(), St
     for launch in unfinished {
         reconcile(svc.clone(), launch.id);
     }
-    Ok(())
+    observe::recover(svc).await
 }
 
 #[cfg(test)]
@@ -1151,7 +1165,8 @@ mod tests {
                 "{status}: {note}"
             );
             if status == S::Published {
-                assert!(note.contains(NOT_OBSERVED), "{note}");
+                assert!(note.contains(WATCHED), "{note}");
+                assert!(note.contains("release_status"), "{note}");
             }
             assert!(!note.contains("release is available"), "{note}");
         }
@@ -1238,6 +1253,42 @@ mod tests {
             .map(|s| s.text.as_str())
             .collect();
         assert_eq!(last, "Tag status: declined · the user rejected it");
+    }
+
+    #[test]
+    fn a_published_card_shows_the_release_and_workflows_as_their_own_lines() {
+        let conn = db();
+        let (_, held) = proposed(&conn, "v1.0.0");
+        let row = load_held(&conn, held).expect("row");
+        let facts = serde_json::json!({
+            "status": "published",
+            "words": "GitHub shows the tag",
+            "release": "none on GitHub for this tag",
+            "workflows": "1 active workflow(s); none started for this tag yet",
+            "watch": "watching until 12:00 UTC at the latest (last read 09:01:00 UTC)",
+        });
+        let card = ReleaseTagCards.card(&row, &facts);
+        let text: Vec<String> = card
+            .lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.text.as_str()).collect())
+            .collect();
+        let tail: Vec<&str> = text
+            .iter()
+            .rev()
+            .take(4)
+            .rev()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            tail,
+            vec![
+                "Tag status: published · GitHub shows the tag",
+                "Release: none on GitHub for this tag",
+                "Workflows: 1 active workflow(s); none started for this tag yet",
+                "Watch: watching until 12:00 UTC at the latest (last read 09:01:00 UTC)",
+            ]
+        );
     }
 
     fn at_time() -> jiff::Timestamp {

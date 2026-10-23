@@ -315,6 +315,22 @@ impl HeldCardBuilder for ReleaseTagCards {
             };
             card.lines.push(CardLine::new(2, vec![s(text, tone)]));
         }
+        // Once published: the GitHub release and the workflow runs, each its own fact.
+        for (label, key) in [
+            ("Release", "release"),
+            ("Workflows", "workflows"),
+            ("Watch", "watch"),
+        ] {
+            if let Some(text) = facts.get(key).and_then(serde_json::Value::as_str) {
+                let tone = if key == "watch" {
+                    Tone::Dim
+                } else {
+                    Tone::Text
+                };
+                card.lines
+                    .push(CardLine::new(2, vec![s(format!("{label}: {text}"), tone)]));
+            }
+        }
         card.buttons = vec![
             CardButton::new(
                 format!("Push tag {}", p.tag),

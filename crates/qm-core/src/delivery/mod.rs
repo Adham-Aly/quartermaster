@@ -7,6 +7,8 @@
 //! - [`probe`]: [`probe::GithubDeliveryProbe`], what `delivery_check` and the start gate share.
 //! - [`github_tools`]: `github_read` and `github_write` (the write fence).
 //! - [`release`]: `propose_release_tag`, its card's performer, and reading pushed tags back.
+//! - [`observe`]: after a tag is published, watching its GitHub release and workflow runs;
+//!   `release_status`.
 //! - `push_guard`: every push the app makes, only to the project's repository, confirmed on
 //!   GitHub before it's recorded.
 //! - [`ports`]: what delivery needs from verification and secondmates, with safe defaults.
@@ -17,6 +19,7 @@
 pub mod checks;
 pub mod excerpts;
 pub mod github_tools;
+pub mod observe;
 pub mod ports;
 pub mod pr;
 pub mod probe;
@@ -218,6 +221,16 @@ impl DeliveryService {
         args: qm_tools::defs::ProposeReleaseTagArgs,
     ) -> Result<qm_tools::defs::Held, ToolFailure> {
         release::propose(self, caller, args).await
+    }
+
+    /// `release_status`: a task's release tags, their GitHub releases and runs ([`observe`]).
+    pub async fn release_status(
+        &self,
+        caller: &Caller,
+        task: TaskId,
+        tag: Option<String>,
+    ) -> Result<qm_tools::defs::ReleaseStatus, ToolFailure> {
+        observe::release_status(self, caller, task, tag).await
     }
 
     /// Reruns one failing check on the task's pushed head and re-arms the poller (verification's

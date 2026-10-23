@@ -153,9 +153,10 @@ pub const KEPT: &[Kept] = &[
     },
     Kept {
         // A launch still in flight is kept whatever its task: the next start reconciles it
-        // against the remote.
+        // against the remote, or goes on watching its release and workflow runs.
         table: "release_launches",
         predicate: "status IN ('proposed', 'pushing', 'unconfirmed') \
+                    OR observe_state = 'observing' \
                     OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed')",
     },
     Kept {

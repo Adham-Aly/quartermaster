@@ -56,7 +56,9 @@ use qm_types::api::{
     Styled, Tone,
 };
 use qm_types::clock::Clock;
-use qm_types::domain::{HeldKind, HeldStatus, MessageKind, MessageSource, WakeKind};
+use qm_types::domain::{
+    HeldKind, HeldStatus, MessageKind, MessageSource, ReleaseLaunchStatus, WakeKind,
+};
 use qm_types::error::Refusal;
 use qm_types::ids::{AgentId, HeldActionId, MessageId};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -443,9 +445,9 @@ impl HeldService {
             qm_store::releases::set_outcome(
                 conn,
                 launch.id,
-                &[qm_types::domain::ReleaseLaunchStatus::Proposed],
+                &[ReleaseLaunchStatus::Proposed],
                 &qm_store::releases::Outcome {
-                    status: qm_types::domain::ReleaseLaunchStatus::Superseded,
+                    status: ReleaseLaunchStatus::Superseded,
                     remote_object: None,
                     words: "its card no longer applies",
                     at,
@@ -1070,12 +1072,18 @@ fn held_event(
 
 fn card_facts(conn: &Connection, row: &HeldRow) -> Result<CardFacts, StoreError> {
     let facts = if row.kind == HeldKind::ReleaseTag {
-        // A release tag's card shows its launch as it stands now.
+        // A release tag's card shows its launch as it stands now, and once the tag is published,
+        // its GitHub release and workflow runs as their own lines.
         qm_store::releases::for_held(conn, row.id)?.map_or(serde_json::Value::Null, |l| {
+            let watched = (l.status == ReleaseLaunchStatus::Published && l.observe_state.is_some())
+                .then(|| crate::delivery::observe::report(&l));
             serde_json::json!({
                 "status": l.status,
                 "words": l.remote_words,
                 "remote_object": l.remote_object,
+                "release": watched.as_ref().and_then(|r| r.release.clone()),
+                "workflows": watched.as_ref().and_then(|r| r.workflows.clone()),
+                "watch": watched.as_ref().and_then(|r| r.watch.clone()),
             })
         })
     } else {

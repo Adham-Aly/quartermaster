@@ -387,6 +387,16 @@ pub trait ToolHost: Send + Sync {
         Box::pin(async { Err(ToolFailure::not_available("propose_release_tag")) })
     }
 
+    /// `release_status`: what GitHub shows for a task's release tags, their releases and runs.
+    fn release_status<'a>(
+        &'a self,
+        caller: &'a Caller,
+        args: crate::defs::ReleaseStatusArgs,
+    ) -> BoxFuture<'a, Result<crate::defs::ReleaseStatus, ToolFailure>> {
+        let _ = (caller, args);
+        Box::pin(async { Err(ToolFailure::not_available("release_status")) })
+    }
+
     /// `settle_task`: lands a direct report's finished work under its project's delivery mode and
     /// autonomy, or holds it for your approval.
     fn settle_task<'a>(
