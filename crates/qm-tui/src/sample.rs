@@ -961,7 +961,24 @@ pub(crate) fn settings_with(login: SampleLogin) -> Settings {
         unavailable: None,
         tier_efforts: qm_types::config::TierEfforts::default(),
         autocompact_window: qm_types::config::AutocompactWindow::default(),
+        kind_tiers: sample_kind_tiers(),
     }
+}
+
+/// Every Task kinds row at its default, but review set to premium.
+fn sample_kind_tiers() -> Vec<qm_types::api::KindTierRow> {
+    use qm_types::domain::KindRow;
+    KindRow::ALL
+        .iter()
+        .map(|&row| {
+            let tier = if row == KindRow::Review {
+                Tier::Premium
+            } else {
+                row.default_tier()
+            };
+            qm_types::api::KindTierRow::new(row, tier, row.default_tier())
+        })
+        .collect()
 }
 
 /// Puts the decision sample into `app`: the sample Bridge with the sample decision open in its

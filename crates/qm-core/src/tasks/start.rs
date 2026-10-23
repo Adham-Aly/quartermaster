@@ -816,7 +816,6 @@ pub(crate) async fn start_as(
     // The record, in one transaction.
     let at = svc.clock().now();
     let config = svc.deps().config.borrow().clone();
-    let rules = svc.deps().rules.clone();
     let health = Arc::clone(&svc.deps().health);
     let paths = svc.deps().data_dir.clone();
     let caller = *caller;
@@ -913,7 +912,7 @@ pub(crate) async fn start_as(
                 qm_store::secondmates::sync_projects(&tx, sm)?;
             }
             let facts = facts_for(task, Some(agent), req.kind, &route_inputs, quick);
-            let outcome = route_crewmate(&tx, &rules, &config, &facts, &health, at)?;
+            let outcome = route_crewmate(&tx, &config, &facts, &health, at)?;
             let (summary, routed) = match outcome {
                 RouteOutcome::Refused(r) => return Ok((Recorded::Refused(r), notify)),
                 RouteOutcome::Routed(routed) => {
@@ -1111,7 +1110,6 @@ type Probe = Option<(Result<bool, Refusal>, RouteInputs, Option<AgentId>)>;
 
 async fn probe_route(svc: &TaskService, row: &TaskRow) -> Result<Probe, String> {
     let task = row.id;
-    let rules = svc.deps().rules.clone();
     let health = Arc::clone(&svc.deps().health);
     let quick = row
         .verification
@@ -1133,7 +1131,7 @@ async fn probe_route(svc: &TaskService, row: &TaskRow) -> Result<Probe, String> 
             let agent = agents::crewmate_of(conn, task)?.map(|a| a.id);
             let tx = conn.transaction()?;
             let facts = facts_for(task, agent, kind, &inputs, quick);
-            let routes = match route_crewmate(&tx, &rules, &config, &facts, &health, now)? {
+            let routes = match route_crewmate(&tx, &config, &facts, &health, now)? {
                 RouteOutcome::Routed(_) => Ok(true),
                 RouteOutcome::Waiting { .. } => Ok(false),
                 RouteOutcome::Refused(refusal) => Err(refusal),
@@ -1177,14 +1175,12 @@ async fn reroute_one(svc: &TaskService, row: TaskRow) -> Result<bool, String> {
         }
     };
     let at = svc.clock().now();
-    let rules = svc.deps().rules.clone();
     let health = Arc::clone(&svc.deps().health);
     let config = svc.deps().config.borrow().clone();
     let moved = svc
         .write(move |tx, _| {
             let facts = facts_for(task, Some(agent), kind, &inputs, quick);
-            let RouteOutcome::Routed(routed) =
-                route_crewmate(tx, &rules, &config, &facts, &health, at)?
+            let RouteOutcome::Routed(routed) = route_crewmate(tx, &config, &facts, &health, at)?
             else {
                 return Ok(false);
             };

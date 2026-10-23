@@ -4,7 +4,7 @@ Quartermaster routes crew tasks by **task kind**, then chooses an available mode
 from your model levels (tiers). The rules use the kind and checked task facts,
 not keywords in the task description.
 
-## Default rules
+## Task kinds
 
 | Task kind | Model level | Default effort |
 |---|---|---|
@@ -24,13 +24,22 @@ that the linked task is:
 Other links do not lighten routing. A plan only lightens a `build`; a diagnosis
 only lightens a `fix`. If the kind cannot be decided, it routes as `unclear`.
 
+Change any row in **Settings ▸ Routing ▸ Task kinds**: choose Premium, High,
+Medium or Low, or **Default** to follow the table above. Press `r` to reset one
+row, or `R` (or **Reset all to defaults**) and confirm to reset them all. Your
+choices are saved in `config.toml` under `[routing.kinds]`, with every row
+written once you change one; resetting all removes the section. A change applies
+to the next task routed, without a restart. A model you name for a task, and
+**Always use**, still come first. A value the app can't read is logged and that
+row follows its default.
+
 ## Choose your model levels
 
 Levels are pools **you control**, not fixed model names:
 
 | Level | Purpose | Default effort |
 |---|---|---|
-| Premium | Above High; used when you ask for premium or name a premium model, or choose a stronger-model retry | Extra high |
+| Premium | Above High; used when you request it, set a task kind to it, or choose a stronger-model retry | Extra high |
 | High | The default for work needing thinking | Extra high |
 | Medium | Work implementing finished thinking | Medium |
 | Low | Lookups | Medium |
@@ -94,7 +103,6 @@ in the same family.
 
 If no model can serve in the chosen level, it tries **Low → Medium → High**,
 **Medium → High → Low**, or **High → Medium → Low**, keeping the original level's
-default effort, capped to the model used. Premium is never an automatic fallback
-for other levels. Premium requests, and stronger-model retries to Premium, try
-**Premium → High → Medium → Low** with Premium's effort; retries to High or Medium
-wait for their target level. The routing record explains the choice and any fallback.
+default effort, capped to the model used. Premium work (asked for, set for a
+task kind, or a retry with a premium model) tries **Premium → High → Medium → Low**. Premium is never a fallback
+for other levels, and a retry with a high or medium model waits for that level. The routing record explains the choice and any fallback.

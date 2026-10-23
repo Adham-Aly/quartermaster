@@ -9,14 +9,14 @@
 //! | medium | medium → high → low | "medium runs on high" |
 //! | high | high → medium → low | "high runs on medium" |
 //! | premium | premium → high → medium → low | "premium runs on high" |
-//! | stronger-model retry to premium | as premium | "premium runs on high" |
 //! | stronger-model retry to high or medium | its target tier only; otherwise waits | "waiting for a high model" |
+//! | stronger-model retry to premium | as premium | "premium runs on high" |
 //!
-//! Premium is asked for, never picked by the rule table, and it never waits while another tier can
-//! serve: every premium model is tried first, then high's order, and the routing line names the
-//! premium models that couldn't serve. "A fallback keeps the effort level of the tier the work
-//! landed in, capped by the model actually used, and the routing record shows the step." Premium is
-//! never a fallback target.
+//! "A fallback keeps the effort level of the tier the work landed in, capped by the model actually
+//! used, and the routing record shows the step." Premium is never a fallback target. Premium work,
+//! whether you asked for it on one task or set a task kind to it, falls back like the rest: it
+//! waits only when no tier at all can serve. A stronger-model retry to high or medium still waits
+//! for its target, since running it weaker would defeat the retry.
 
 use qm_types::domain::Tier;
 
@@ -30,9 +30,9 @@ pub const fn order(landed: Tier) -> &'static [Tier] {
     }
 }
 
-/// The tiers a stronger-model retry may use. A retry to premium is a premium request, so it
-/// follows [`order`]`(Premium)`; a retry to any other tier "never drops to a lower tier; it waits
-/// until that tier can serve".
+/// The tiers a stronger-model retry may use. A retry to high or medium uses its target only and
+/// otherwise waits: "a retry with a stronger model never drops to a lower tier". A retry to premium
+/// is a premium request, so it falls back like one ([`order`]).
 pub const fn retry_order(target: Tier) -> &'static [Tier] {
     match target {
         Tier::Premium => order(Tier::Premium),

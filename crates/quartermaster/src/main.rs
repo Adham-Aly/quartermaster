@@ -75,6 +75,9 @@ fn boot(dir: &DataDir) -> Result<Booted, Failure> {
     for key in &loaded.unknown_keys {
         tracing::warn!(key = %key, "config.toml has a setting this version doesn't know; it is ignored");
     }
+    for bad in &loaded.bad_values {
+        tracing::warn!(setting = %bad, "config.toml has a value this version can't use");
+    }
 
     // Every pending migration in one transaction; a failure rolls back cleanly.
     let db = Db::open(&dir.database()).map_err(|e| fail("can't open the database")(&e))?;

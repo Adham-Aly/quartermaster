@@ -24,7 +24,7 @@
 //! # 2. Routing a crewmate — [`route_crewmate`] (for `tasks.rs`)
 //!
 //! ```text
-//! route_crewmate(conn, &RuleTable, &Config, &CrewmateFacts, at) -> Result<RouteOutcome, StoreError>
+//! route_crewmate(conn, &Config, &CrewmateFacts, at) -> Result<RouteOutcome, StoreError>
 //! ```
 //!
 //! Call it inside the transaction that starts the crewmate, after the `tasks` row exists (the
@@ -637,7 +637,6 @@ fn route_preferring(
 /// and listed in the record's `skipped`.
 pub fn route_crewmate(
     conn: &Connection,
-    table: &RuleTable,
     config: &Config,
     facts: &CrewmateFacts,
     health: &LoginHealth,
@@ -698,7 +697,9 @@ pub fn route_crewmate(
         tiers: &config.tiers,
         premium_models: &premium_models,
     };
-    let mut record = route_preferring(table, &request, &pool, facts.prefer_provider_other_than);
+    // The table follows your Task kinds settings as they are now.
+    let table = RuleTable::from_kinds(&config.routing.kinds);
+    let mut record = route_preferring(&table, &request, &pool, facts.prefer_provider_other_than);
     record.facts.prefer_provider_other_than = facts.prefer_provider_other_than;
     record.skipped.extend(pool.unusable.iter().cloned());
 

@@ -11,7 +11,7 @@
 //! **Only the Claude set is approved.** Every other set is a **draft pending your
 //! approval**, drafted from the catalog snapshot: [`StarterSet::approved`] is `false` for them.
 //! Premium is left empty in the drafts except where a vendor's premium model is in the list, since
-//! premium is never picked automatically anyway.
+//! premium is used only when asked for, and falls back to high when empty.
 
 use qm_types::domain::{Provider, Tier};
 

@@ -28,7 +28,7 @@ impl From<StartedBy> for Authority {
 pub enum OverrideKind {
     /// A named model (`start_crewmate`, `route_to_secondmate`).
     NamedModel,
-    /// Premium, which is never picked automatically.
+    /// Premium for one task.
     Premium,
     /// An effort level.
     Effort,
