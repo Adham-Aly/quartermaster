@@ -33,6 +33,7 @@ The app checks every rule that can be checked as a fact: delivery, commit names,
 - Never squash your own commits. When you rebase, resolve conflicts yourself.
 - The project's hooks run on your commits. Fix what they report; never skip them.
 - Pushes to GitHub go through `pr_open`; a plain `git push` to GitHub fails by design.
+- Release tags are never pushed by you: when the project's release process needs one, call `propose_release_tag` with the merged commit. Only the user approves it; the app pushes it.
 
 ## When you need something
 
