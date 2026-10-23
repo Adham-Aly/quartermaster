@@ -34,8 +34,10 @@
 //! `later_steps` entry, and what the task needs. It returns:
 //!
 //! - [`RouteOutcome::Refused`] when an override arrives on a turn that can't carry it (a named
-//!   model on an app-event turn: "a named model needs a turn started by the user's own message").
-//!   Nothing is recorded; the refusal goes back to the agent as the tool's answer.
+//!   model on an app-event turn: "a named model needs a turn started by the user's own message"),
+//!   or a model named for the task or by its later step is placed in no tier ("… isn't in any
+//!   model level; place it in Settings ▸ Model levels or name another model"). Nothing is
+//!   recorded; the refusal goes back to the agent as the tool's answer.
 //! - [`RouteOutcome::Routed`] with the persisted `routing_decisions` row, the `RoutingRecord` (its
 //!   `why` line is the one the task's record shows), the account's own id for the model (what the
 //!   `SessionSpec` names), the provider (the engine follows it) and whether the catalog knew the
@@ -45,8 +47,10 @@
 //!
 //! Precedence and every rule (named model first, later steps, premium and retries, the "always
 //! use" pin with its fallback, the rule table, fallbacks, ranking, effort) are
-//! `qm_routing::choose::route`'s, unchanged. Ask the `Decider` first, only when
-//! `qm_routing::choose::decider_needed` says so, and pass its answer in `kind`.
+//! `qm_routing::choose::route`'s, unchanged. The request lists every model placed in premium, so a
+//! named premium model whose account's login broke still counts as asking for premium. Ask the
+//! `Decider` first, only when `qm_routing::choose::decider_needed` says so, and pass its answer in
+//! `kind`.
 //!
 //! # 3. The "always use" notice — [`always_use_notice`]
 //!
@@ -100,7 +104,7 @@ use qm_engine::{AccountRef, DetectedModel, Engine, UsageReading};
 use qm_policy::overrides::{Authority, OverrideKind, check_override};
 use qm_routing::choose::{Pool, RouteRequest, route};
 use qm_routing::decider::{Decided, DecidedBy};
-use qm_routing::later_steps::AppliedLaterStep;
+use qm_routing::later_steps::{AppliedLaterStep, not_in_any_tier};
 use qm_routing::quartermaster_model::{self, SeatChoice};
 use qm_routing::rank::{Candidate, Needs, Usage};
 use qm_routing::record::{BuildsOn, RoutingRecord, SkippedModel, UserChoices};
@@ -391,6 +395,16 @@ fn canonical(conn: &Connection, model: &ModelId) -> Result<ModelId, StoreError> 
     Ok(models::canonical_of(conn, model)?.unwrap_or_else(|| model.clone()))
 }
 
+/// The tiers `model` (or the model it's another name for) is placed in, for checking a named model.
+pub(crate) fn tiers_of(conn: &Connection, model: &ModelId) -> Result<Vec<Tier>, StoreError> {
+    let model = canonical(conn, model)?;
+    Ok(models::list_placements(conn)?
+        .into_iter()
+        .filter(|p| p.canonical == model)
+        .map(|p| p.tier)
+        .collect())
+}
+
 /// The login problem of each active account whose login isn't usable.
 fn unusable_accounts(
     conn: &Connection,
@@ -646,6 +660,21 @@ pub fn route_crewmate(
             Ok::<_, StoreError>(l)
         })
         .transpose()?;
+    // A model you name is one placed in some tier; routing never quietly picks another.
+    let placements = models::list_placements(conn)?;
+    for model in named_model
+        .iter()
+        .chain(later_step.as_ref().and_then(|l| l.model.as_ref()))
+    {
+        if !placements.iter().any(|p| &p.canonical == model) {
+            return Ok(RouteOutcome::Refused(not_in_any_tier(model)));
+        }
+    }
+    let premium_models: Vec<ModelId> = placements
+        .into_iter()
+        .filter(|p| p.tier == Tier::Premium)
+        .map(|p| p.canonical)
+        .collect();
     let pin = canonical_pin(conn, config.routing.always_use.as_ref())?;
     let pool = load_pool(conn, pin.as_ref(), &[], health, at)?;
     let preferred = accounts::preferred_account(conn)?;
@@ -667,6 +696,7 @@ pub fn route_crewmate(
         always_use: pin.as_ref(),
         preferred_account: preferred,
         tiers: &config.tiers,
+        premium_models: &premium_models,
     };
     let mut record = route_preferring(table, &request, &pool, facts.prefer_provider_other_than);
     record.facts.prefer_provider_other_than = facts.prefer_provider_other_than;
@@ -917,3 +947,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "routing_premium_tests.rs"]
+mod premium_tests;
