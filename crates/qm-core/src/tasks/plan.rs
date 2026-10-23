@@ -441,6 +441,8 @@ async fn finish_approval(
             }
             s.stage = Stage::Approved;
             s.approved_at = Some(shown2);
+            // No round is open any more, so no page may send.
+            s.page_token = None;
             Ok(())
         })?;
         match updated {

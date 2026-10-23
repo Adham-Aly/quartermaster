@@ -85,8 +85,7 @@ if (typeof document !== "undefined") (function () {
   var sendStatus = document.getElementById("send-status");
   var sending = false, sendShut = false;
 
-  // Saved work for this round only; older rounds' drafts and its sent mark are kept, older
-  // rounds' dropped.
+  // Saved work and the sent mark for this round only; older rounds' are dropped.
   var s = store();
   if (s) {
     try {

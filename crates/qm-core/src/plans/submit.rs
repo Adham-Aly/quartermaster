@@ -194,6 +194,9 @@ fn check_state(state: &PlanState, body: &Body) -> Result<(), Answer> {
     if state.uid != body.plan {
         return Err(Answer::new(Status::Stale, STALE));
     }
+    if state.stage == Stage::Approved {
+        return Err(Answer::new(Status::Closed, CLOSED));
+    }
     if !state
         .page_token
         .as_ref()
@@ -333,7 +336,8 @@ async fn claim_and_deliver(svc: &TaskService, checked: Checked) -> Answer {
     Answer::new(Status::Sent, format!("Sent to Quartermaster at {shown}."))
 }
 
-/// The chat's one-line acknowledgement.
+/// The chat's one-line acknowledgement: what the reply held, leaving out what it didn't (a final
+/// round has no questions, so its reply is section notes only).
 fn acknowledgement(
     task: TaskId,
     round: u32,
@@ -341,15 +345,19 @@ fn acknowledgement(
     of: usize,
     sections: usize,
 ) -> String {
-    let mut text = format!(
-        "Plan reply sent from the page · {task} round {round} · {answered} of {of} answered"
-    );
+    let mut parts = Vec::new();
+    if of > 0 {
+        parts.push(format!("{answered} of {of} answered"));
+    }
     if sections > 0 {
-        let _ = write!(
-            text,
-            ", {sections} section note{}",
+        parts.push(format!(
+            "{sections} section note{}",
             if sections == 1 { "" } else { "s" }
-        );
+        ));
+    }
+    let mut text = format!("Plan reply sent from the page · {task} round {round}");
+    if !parts.is_empty() {
+        let _ = write!(text, " · {}", parts.join(", "));
     }
     text
 }
@@ -451,4 +459,28 @@ async fn delivered_at(svc: &TaskService, task: TaskId, round: u32) -> String {
         .ok()
         .flatten();
     crate::tasks::plan::local_time(at.unwrap_or_else(|| svc.clock().now()))
+}
+
+#[cfg(test)]
+mod acknowledgement_tests {
+    use super::acknowledgement;
+    use qm_types::ids::TaskId;
+
+    #[test]
+    fn the_acknowledgement_names_only_what_the_reply_held() {
+        let task = TaskId::new(7).expect("a task number");
+        assert_eq!(
+            acknowledgement(task, 1, 2, 3, 0),
+            "Plan reply sent from the page · T-0007 round 1 · 2 of 3 answered"
+        );
+        assert_eq!(
+            acknowledgement(task, 1, 1, 1, 2),
+            "Plan reply sent from the page · T-0007 round 1 · 1 of 1 answered, 2 section notes"
+        );
+        // A final round has no questions: its reply is section notes only.
+        assert_eq!(
+            acknowledgement(task, 2, 0, 0, 1),
+            "Plan reply sent from the page · T-0007 round 2 · 1 section note"
+        );
+    }
 }

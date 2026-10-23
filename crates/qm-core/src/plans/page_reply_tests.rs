@@ -412,6 +412,35 @@ async fn the_card_and_approval_follow_a_reply_from_the_page() {
     );
 }
 
+#[tokio::test]
+async fn an_approved_plan_drops_its_key_and_its_page_is_closed() {
+    let page = Page::new().await;
+    update(&page.dir, |s| {
+        s.stage = Stage::Final;
+        s.open.clear();
+    })
+    .unwrap();
+    // The final page, as it was before the approval.
+    let late = page.body();
+    let caller = Caller {
+        agent: AgentId::new(1),
+        role: Role::Quartermaster,
+        turn: None,
+        task: None,
+        secondmate: None,
+        plan: None,
+    };
+    crate::tasks::plan::approve_plan(&page.svc, &caller, page.task, false)
+        .await
+        .unwrap();
+    let state = page.state();
+    assert_eq!(state.stage, Stage::Approved);
+    assert!(state.page_token.is_none());
+    let answer = page.send(&late).await;
+    assert_eq!(answer.status, Status::Closed);
+    assert_eq!(page.delivered().await.0.len(), 0);
+}
+
 /// One raw request to the endpoint on `port`, and the whole response.
 async fn http(port: u16, request: &str) -> String {
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
