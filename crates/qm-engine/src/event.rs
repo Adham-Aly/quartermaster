@@ -1,5 +1,6 @@
 //! The event stream: everything an engine reports about a session.
 
+use crate::context::ContextReading;
 use crate::tool::ToolCallId;
 use jiff::Timestamp;
 use qm_types::ids::{JobLabel, ModelId, SessionRef};
@@ -24,6 +25,11 @@ use std::path::PathBuf;
 ///    { automatic: false }` if the conversation was compacted, then `TurnEnded` (`Completed`
 ///    when it ran, even with nothing to compact; `Failed` with the reason when it couldn't).
 ///    No text, tool calls or jobs come in it.
+/// 8. `ContextObserved` may come inside a turn (right after a `ModelCallFinished`) or between
+///    turns (after `SessionReady`, or after a model change). `CompactionStarted` comes before the
+///    `Compacted` or `CompactionFailed` it starts, inside a turn, inside `Compact`'s own turn, or
+///    between turns. None of the three comes after `SessionClosed`, and no engine has to send
+///    them: a consumer treats their absence as "unknown". They are passive and change nothing.
 ///
 /// `#[non_exhaustive]`: engines may gain events without breaking the core's `match`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -88,6 +94,12 @@ pub enum EngineEvent {
         tokens_before: Option<u64>,
         tokens_after: Option<u64>,
     },
+    /// A passive reading of how full the context is. Never changes what the session does.
+    ContextObserved { reading: ContextReading },
+    /// The engine began compacting (by itself, or because the core sent `Compact`).
+    CompactionStarted { automatic: bool },
+    /// A compaction that started didn't complete; the context is unchanged.
+    CompactionFailed { automatic: bool, message: String },
     /// A background shell job started, inside a turn: `J3` on the provider engine, whose supervisor
     /// starts it; Claude Code's own job name on Claude, which starts it itself. The core writes the
     /// `jobs` row and counts a running job as a sign of life for up to two hours. The engine keeps
@@ -149,6 +161,9 @@ impl EngineEvent {
             Self::Retrying { .. } => "retrying",
             Self::RateLimit { .. } => "rate_limit",
             Self::Compacted { .. } => "compacted",
+            Self::ContextObserved { .. } => "context_observed",
+            Self::CompactionStarted { .. } => "compaction_started",
+            Self::CompactionFailed { .. } => "compaction_failed",
             Self::JobStarted { .. } => "job_started",
             Self::JobFinished { .. } => "job_finished",
             Self::EndConversationCalled => "end_conversation_called",

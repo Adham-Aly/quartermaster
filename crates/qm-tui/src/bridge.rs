@@ -11,7 +11,10 @@ use crate::hit::{Divider, FrameMap, Hit, Pane};
 use crate::router::Screen;
 use crate::text::{cells, wrap};
 use crate::theme;
-use crate::widgets::{conversation, crew, input_box, projects, selection, slash_menu, task};
+use crate::widgets::{
+    context_strip, conversation, crew, input_box, projects, selection, slash_menu, task,
+};
+use qm_types::api::AgentRef;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -175,21 +178,21 @@ fn draw_conversation(frame: &mut Frame<'_>, middle: Rect, app: &App, map: &mut F
         );
         return;
     }
-    let input_height = input_box::height(app, middle.width).min(middle.height / 2);
-    let input_area = Rect {
-        y: middle.bottom() - input_height,
-        height: input_height,
-        ..middle
-    };
-    let conversation_area = Rect {
-        height: middle.height - input_height,
-        ..middle
-    };
+    let agent = AgentRef::Quartermaster;
+    let input_height = input_box::height(app, middle.width);
+    let [conversation_area, strip_area, input_area] =
+        context_strip::split(app, middle, input_height, agent);
     map.conversation_scroll_max = conversation::draw(frame, conversation_area, app, map);
+    context_strip::draw(frame, strip_area, app, agent);
     input_box::draw(frame, input_area, app, map);
-    // The slash-command menu sits on the conversation, just above the input box.
+    // The slash-command menu sits on the conversation, just above the strip and the input box.
     if let Some(menu) = app.slash_menu() {
-        slash_menu::draw(frame, conversation_area, input_area, &menu, app, map);
+        let anchor = Rect {
+            y: strip_area.y,
+            height: strip_area.height + input_area.height,
+            ..input_area
+        };
+        slash_menu::draw(frame, conversation_area, anchor, &menu, app, map);
     }
 }
 

@@ -836,7 +836,12 @@ impl CrewRunner {
             self.svc.deps().engines.get(&routed.engine).ok_or_else(|| {
                 format!("the {} engine isn't available on this Mac", routed.engine)
             })?;
-        let handle = engine.open(spec).map_err(|e| e.to_string())?;
+        let tap = self
+            .svc
+            .deps()
+            .monitor
+            .tap(qm_types::api::AgentRef::Crewmate { task: self.task });
+        let handle = engine.open(spec).map_err(|e| e.to_string())?.observed(tap);
         self.model = Some(routed.model.clone());
         self.session = Some(handle);
         Ok(())

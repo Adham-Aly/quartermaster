@@ -118,6 +118,8 @@ pub struct TaskDeps {
     pub inherited_env: BTreeMap<String, String>,
     /// `Dispatcher::builtin()` in the app.
     pub dispatcher: Dispatcher,
+    /// Passive context readings for the UI; its tap goes on every session this opens.
+    pub monitor: Arc<crate::context_monitor::ContextMonitor>,
 }
 
 impl fmt::Debug for TaskDeps {
@@ -146,6 +148,8 @@ pub struct TaskWiring {
     pub setup: watch::Receiver<SetupFacts>,
     /// Delivery's probe with GitHub's API; `None` keeps the local probe.
     pub probe: Option<Arc<dyn DeliveryProbe>>,
+    /// Passive context readings for the UI.
+    pub monitor: Arc<crate::context_monitor::ContextMonitor>,
 }
 
 impl fmt::Debug for TaskWiring {
@@ -341,6 +345,7 @@ impl TaskService {
             start_hook: hooks.start_hook,
             inherited_env: std::env::vars().collect(),
             dispatcher: Dispatcher::builtin(),
+            monitor: w.monitor,
         }))
     }
 

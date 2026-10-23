@@ -92,6 +92,12 @@ fn flag(compat: &BTreeMap<String, bool>, name: &str, default: bool) -> bool {
 }
 
 impl WireAdapter for AnthropicAdapter {
+    fn reported_usage(&self) -> qm_engine::ReportedUsage {
+        qm_engine::ReportedUsage::NONE
+            .with_cache_read()
+            .with_cache_write()
+    }
+
     fn api(&self) -> WireApi {
         WireApi::AnthropicMessages
     }

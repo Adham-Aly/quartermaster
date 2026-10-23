@@ -25,6 +25,7 @@ use qm_auth::{AuthError, CredentialStore, FileCredentialStore, LoginHealth, Toke
 use qm_core::api::{self, ApiDeps, ApiPart, Conversation};
 use qm_core::attachments::Attachments;
 use qm_core::context_block::ContextBuilder;
+use qm_core::context_monitor::{ContextMonitor, ContextPart};
 use qm_core::crew_view::CrewPart;
 use qm_core::decisions::cards::DecisionCards;
 use qm_core::decisions::diff::{DiffPart, GitDiffReader};
@@ -135,6 +136,7 @@ pub(crate) async fn start_core(
         data_dir: dir.clone(),
         engines: base.engines.clone(),
         model: Arc::clone(&base.model),
+        monitor: Arc::clone(&base.monitor),
     }));
     let agent = match seat.agent().await {
         Ok(agent) => agent.id,
@@ -151,6 +153,10 @@ pub(crate) async fn start_core(
     };
 
     let conversation = Arc::new(Conversation::new(db.clone(), Arc::clone(&clock), agent));
+    let monitor = Arc::clone(&base.monitor);
+    let signal = Arc::clone(&conversation);
+    base.monitor
+        .notify_with(Arc::new(move || ChatLog::changed(signal.as_ref())));
     let registry = registry(&db, &clock, &dir, base.config.subscribe());
     let wakes = Inbox::new();
     let gh = gh_program(registry.0.facts());
@@ -166,6 +172,7 @@ pub(crate) async fn start_core(
             setup: registry.0.facts(),
             health: Arc::clone(&base.health),
             github: github.clone(),
+            monitor: Arc::clone(&base.monitor),
         },
         wakes.clone(),
         Arc::clone(&conversation),
@@ -283,6 +290,7 @@ pub(crate) async fn start_core(
         secondmates.clone(),
         attachments.clone(),
     )));
+    parts.push(Arc::new(ContextPart::new(Arc::clone(&monitor))));
     parts.push(Arc::new(updates_part(&dir, &clock, &conversation)));
     parts.push(Arc::new(DraftsPart::new()));
     // After every other part, so it sees the setup findings, the settings and the model notice.
@@ -342,6 +350,8 @@ struct Foundations {
     model: Arc<dyn SeatModel>,
     /// Why the settings part can't run, when `tokens` or `catalog` is missing.
     settings_problem: Option<String>,
+    /// Passive context readings for the UI, tapped on every session the core opens.
+    monitor: Arc<ContextMonitor>,
 }
 
 /// The engines (with detection in the background), the logins and the seat's model.
@@ -409,6 +419,7 @@ async fn foundations(
         health,
         model,
         settings_problem: credentials_problem.or(catalog_problem),
+        monitor: ContextMonitor::new(Arc::clone(clock)),
     }
 }
 
@@ -466,6 +477,7 @@ fn secondmate_service(
         held: held.clone(),
         dispatcher: Dispatcher::builtin(),
         ui: Arc::clone(conversation),
+        monitor: Arc::clone(&base.monitor),
     });
     held.register(
         HeldKind::Secondmate,
@@ -661,6 +673,7 @@ struct CrewInputs<'a> {
     health: Arc<LoginHealth>,
     /// GitHub's API with the token from `gh auth token`, for the delivery probe.
     github: GithubClient,
+    monitor: Arc<ContextMonitor>,
 }
 
 /// The task service: crewmates, the wake inbox's producers and the scheduler. `None` (and the task
@@ -681,6 +694,7 @@ fn crew_tasks(
         setup,
         health,
         github,
+        monitor,
     } = inputs;
     let probe: Arc<dyn DeliveryProbe> =
         Arc::new(GithubDeliveryProbe::for_app(setup.clone(), github));
@@ -704,6 +718,7 @@ fn crew_tasks(
             seat_agent,
             setup,
             probe: Some(probe),
+            monitor,
         },
         hooks,
     ) {

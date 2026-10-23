@@ -58,17 +58,11 @@ pub(crate) fn draw(
     map: &mut FrameMap,
 ) {
     let view = app.session_view();
-    let input_height = input_box::height(app, area.width).min(area.height / 2);
-    let input_area = Rect {
-        y: area.bottom() - input_height,
-        height: input_height,
-        ..area
-    };
-    let session_area = Rect {
-        height: area.height - input_height,
-        ..area
-    };
+    let input_height = input_box::height(app, area.width);
+    let [session_area, strip_area, input_area] =
+        crate::widgets::context_strip::split(app, area, input_height, agent);
     session_pane(frame, session_area, app, agent, view, map);
+    crate::widgets::context_strip::draw(frame, strip_area, app, agent);
     input(frame, input_area, app, agent, view, map);
 }
 
@@ -159,8 +153,10 @@ fn session_pane(
         );
         return;
     }
-    let rows = if chats.is_empty() {
-        rows(lines, rows_area.width, app)
+    let notes = crate::widgets::context_strip::chat_notes(app, agent);
+    let compacting = crate::widgets::context_strip::compacting_row(app, agent);
+    let mut rows = if chats.is_empty() {
+        rows(lines, &notes, rows_area.width, app, compacting.is_none())
     } else {
         // A secondmate's conversation, from its side: its own replies under its name, the
         // Quartermaster's messages under the Quartermaster's.
@@ -169,12 +165,17 @@ fn session_pane(
             agent: &name,
             supervisor: "quartermaster",
         };
-        let mut rows = conversation::rows(chats, rows_area.width, app.term.hover, &voices);
-        if view.is_some_and(|v| v.thinking) {
+        let mut rows = conversation::rows(chats, &notes, rows_area.width, app.term.hover, &voices);
+        if compacting.is_none() && view.is_some_and(|v| v.thinking) {
             rows.extend(conversation::thinking_rows(chats, app));
         }
         rows
     };
+    // In place of the busy row: what the agent is doing now.
+    if let Some(row) = compacting {
+        rows.push(Row::plain(Line::default()));
+        rows.push(row);
+    }
     let visible = usize::from(rows_area.height);
     let max = rows.len().saturating_sub(visible);
     let offset = app.session_scroll().min(max);
@@ -317,13 +318,30 @@ impl Rows {
 /// message, which sits in a box. A run of tool calls is one line, `▸ 3 tool calls`, until you
 /// expand it. While the worker's turn runs, the busy indicator comes last, until a line of its
 /// text shows in its place.
-pub(crate) fn rows(lines: &[SessionLine], max: u16, app: &App) -> Vec<Row> {
+pub(crate) fn rows(
+    lines: &[SessionLine],
+    notes: &[&qm_types::api::CompactionNote],
+    max: u16,
+    app: &App,
+    busy_row: bool,
+) -> Vec<Row> {
+    let mut notes = notes;
     let mut out = Rows { rows: Vec::new() };
     let running = app.session_view().is_some_and(|v| v.turn_running);
     let mut i = 0;
     while i < lines.len() {
         let line = &lines[i];
         i += 1;
+        let noted = crate::widgets::context_strip::notes_before(
+            &mut notes,
+            Some(line.at),
+            max,
+            out.rows.is_empty(),
+        );
+        if !noted.is_empty() {
+            out.rows.extend(noted);
+            out.blank();
+        }
         match line.kind {
             SessionLineKind::Supervisor | SessionLineKind::App => {
                 marked(&mut out, line, max, app);
@@ -372,7 +390,11 @@ pub(crate) fn rows(lines: &[SessionLine], max: u16, app: &App) -> Vec<Row> {
     let writing = lines
         .last()
         .is_some_and(|l| l.streaming && !stream::committed(&l.text, true).is_empty());
-    if running && !writing {
+    let first = out.rows.is_empty();
+    out.rows.extend(crate::widgets::context_strip::notes_before(
+        &mut notes, None, max, first,
+    ));
+    if busy_row && running && !writing {
         out.rows.push(Row::plain(spinner::line(app, "working")));
     }
     out.rows
@@ -557,19 +579,19 @@ mod tests {
         let mut lines = app.session_view().unwrap().lines.clone();
         lines.truncate(8);
         lines.push(tool(9, "Read a"));
-        let shown = texts(&rows(&lines, 80, &app));
+        let shown = texts(&rows(&lines, &[], 80, &app, true));
         assert!(shown.contains(&"  ▸ 3 tool calls".to_owned()), "{shown:#?}");
         assert!(shown.contains(&"  ▸ 1 tool call…".to_owned()), "{shown:#?}");
         assert!(!shown.iter().any(|s| s.contains("Read AGENTS.md")));
         lines.push(tool(10, "Edit b"));
-        let shown = texts(&rows(&lines, 80, &app));
+        let shown = texts(&rows(&lines, &[], 80, &app, true));
         assert!(
             shown.contains(&"  ▸ 2 tool calls…".to_owned()),
             "{shown:#?}"
         );
         // Once the turn ends, the count stops.
         app.snapshot.session.as_mut().unwrap().turn_running = false;
-        let shown = texts(&rows(&lines, 80, &app));
+        let shown = texts(&rows(&lines, &[], 80, &app, true));
         assert!(shown.contains(&"  ▸ 2 tool calls".to_owned()), "{shown:#?}");
     }
 
@@ -582,7 +604,7 @@ mod tests {
         lines.push(tool(9, "Read a"));
         app.toggle_tool_group(9);
         lines.push(tool(10, "Edit b"));
-        let shown = texts(&rows(&lines, 80, &app));
+        let shown = texts(&rows(&lines, &[], 80, &app, true));
         let at = shown.iter().position(|s| s == "  ▾ 2 tool calls…").unwrap();
         assert_eq!(shown[at + 1], "    · Read a");
         assert_eq!(shown[at + 2], "    · Edit b");
@@ -603,7 +625,7 @@ mod tests {
         let mut app = App::new();
         sample::install_session(&mut app);
         let lines = app.session_view().unwrap().lines.clone();
-        let shown = texts(&rows(&lines, 40, &app));
+        let shown = texts(&rows(&lines, &[], 40, &app, true));
         let at = shown
             .iter()
             .position(|s| s.starts_with("╭─ you (direct) "))
@@ -633,7 +655,7 @@ mod tests {
         let mut app = App::new();
         sample::install_session(&mut app);
         let lines = app.session_view().unwrap().lines.clone();
-        let rows = rows(&lines, 100, &app);
+        let rows = rows(&lines, &[], 100, &app, true);
         let shown = texts(&rows);
         assert!(
             shown.iter().all(|s| !s.contains("**") && !s.contains('`')),
@@ -652,7 +674,7 @@ mod tests {
             agent: "SM-02",
             supervisor: "supervisor",
         };
-        let rows = conversation::rows(&chats, 100, None, &voices);
+        let rows = conversation::rows(&chats, &[], 100, None, &voices);
         let shown = texts(&rows);
         assert!(shown.iter().any(|s| s.contains("sm/web-app")), "{shown:#?}");
         assert!(shown.iter().all(|s| !s.contains('`')), "{shown:#?}");

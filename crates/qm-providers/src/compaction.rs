@@ -197,6 +197,13 @@ pub fn auto_compaction_due(tokens: u64, threshold: u64, guard: Option<u64>) -> b
         && guard.is_none_or(|base| tokens >= base + KEEP_RECENT_TOKENS)
 }
 
+/// The smallest context size [`auto_compaction_due`] would compact at, for display only: a
+/// read-only twin of the trigger, which it never changes.
+pub fn trigger_point(threshold: u64, guard: Option<u64>) -> u64 {
+    let past = threshold.saturating_add(1);
+    guard.map_or(past, |g| past.max(g.saturating_add(KEEP_RECENT_TOKENS)))
+}
+
 /// Where to cut: the index of the first item to keep, keeping about `keep_tokens` of the newest
 /// ones and cutting only before a user or assistant message. `None` when nothing would be
 /// summarised (the cut would keep everything).

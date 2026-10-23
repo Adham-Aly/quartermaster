@@ -208,6 +208,12 @@ impl ResponsesAdapter {
 }
 
 impl WireAdapter for ResponsesAdapter {
+    fn reported_usage(&self) -> qm_engine::ReportedUsage {
+        qm_engine::ReportedUsage::NONE
+            .with_thinking()
+            .with_cache_read()
+    }
+
     fn api(&self) -> WireApi {
         match self.flavour {
             Flavour::Platform | Flavour::Xai => WireApi::OpenAiResponses,

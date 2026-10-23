@@ -236,7 +236,12 @@ impl SeatSession for SecondmateSeat {
                     pick.engine, pick.model
                 ))
             })?;
-            let handle = engine.open(spec)?;
+            let handle = engine.open(spec)?.observed(
+                self.svc
+                    .deps()
+                    .monitor
+                    .tap(qm_types::api::AgentRef::Secondmate { id }),
+            );
 
             let at = self.svc.clock().now();
             let agent = row.id;

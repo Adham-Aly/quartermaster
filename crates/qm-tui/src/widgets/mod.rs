@@ -5,6 +5,7 @@
 pub(crate) mod actions;
 pub(crate) mod button;
 pub(crate) mod card;
+pub(crate) mod context_strip;
 pub(crate) mod conversation;
 pub(crate) mod crew;
 pub(crate) mod dropdown;

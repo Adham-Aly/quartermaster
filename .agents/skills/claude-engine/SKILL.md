@@ -76,6 +76,14 @@ undocumented: after a `claude` update, check no socket opens.
   since the previous `result` (`session/stream.rs`); a killed turn sums its finished calls. On
   resume, `claude` restores its totals from the transcript's last `cost-state` entry, so the engine
   starts its deltas from that entry (`transcript.rs`), not from zero.
+- **Context readings are passive** (`ContextObserved`, `CompactionStarted`, `CompactionFailed`).
+  Occupancy is the latest main-thread call's prompt (`input + cache_read + cache_creation` from
+  `message_delta`, else `message_start`) plus its `output_tokens`, never a cumulative total. The
+  auto-compact point, window and start size come from the `get_context_usage` answer the start
+  already asks for (`autoCompactThreshold`, `isAutoCompactEnabled`, `maxTokens`, `totalTokens`);
+  a model change makes the point unknown until the next start. Compaction start and failure come
+  from `system/status` (`status: "compacting"`, then `status: null` with `compact_result` and
+  `compact_error`). Never add a request, flag or environment variable for them.
 - **Helper agents** (crewmates only, Claude Code's built-in agent types; `--setting-sources=` keeps
   the user's own agents out). `claude` has no foreground-only switch, so a background helper is a
   job (`JobLabel::helper`, `jobs.rs`): no idle shutdown while one runs; a finished one wakes an
