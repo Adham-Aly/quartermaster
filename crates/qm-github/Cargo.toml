@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 base64.workspace = true
+http.workspace = true
+http-body-util.workspace = true
 jiff.workspace = true
 octocrab.workspace = true
 qm-types.workspace = true
@@ -15,6 +17,9 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "time", "sync", "io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true

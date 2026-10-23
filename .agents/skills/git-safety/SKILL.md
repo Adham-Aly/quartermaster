@@ -45,6 +45,13 @@ absent, through `push_guard`'s checked URL and the app's credentials. Published 
 when GitHub's `tag_ref` shows exactly our object; otherwise it is unconfirmed and `reconcile`
 reads it back for ten minutes, also after a restart (`release::recover`).
 
+After publication `delivery/observe.rs` watches the tag, its GitHub release and the runs the tag
+started for up to three hours (stored on the launch, re-armed at startup), then wakes the
+supervisor once; `release_status` reads it meanwhile. Reads go only through
+`qm_github::release_meta`'s closed `ReleaseEndpoint`s, capped at 1 MiB, keeping metadata and no
+URL: never follow a URL from an answer, download an asset, or trigger a workflow. A refused or
+failed read is "unavailable", never "none"; "no workflows" only when GitHub counts none.
+
 ## Crewmates can't push: `crates/qm-github/src/fence.rs`
 
 `fence::apply` sets up a crewmate's environment and `fence::check` holds it to it, in independent
