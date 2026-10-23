@@ -2,9 +2,9 @@
 //!
 //! [`reconcile`] runs before the seat opens (step 4) and deletes nothing: turns still running, of
 //! every role, become interrupted with their wakes released (the seat's and secondmates' loops
-//! then recover theirs as cut short), live crewmates are marked stopped, task
-//! worktrees are matched against tasks, and anything that needs a look is one event each and one
-//! note in the Bridge. [`catch_up`] runs once the seat is open (step 6): side exits finish their
+//! then recover theirs as cut short), live crewmates are marked stopped, task worktrees are
+//! matched against tasks, and anything that needs a look is one event each and one note in the
+//! Bridge. [`catch_up`] runs once the seat is open (step 6): side exits finish their
 //! retirement, queued tasks go back to the re-route tick, preparing tasks redo phase C,
 //! interrupted crewmates resume with the app-marked `restarted` note, and every other open task
 //! gets its runner back.
