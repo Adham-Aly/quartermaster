@@ -192,6 +192,7 @@ pub(crate) async fn supervise(
                 job,
                 exit_code: None,
                 tail: String::new(),
+                agent_told: false,
             })
             .await;
     }
@@ -680,6 +681,7 @@ impl Session {
             job,
             exit_code,
             tail,
+            agent_told: false,
         })
         .await;
     }

@@ -575,8 +575,8 @@ impl CrewRunner {
                         }
                         match ev {
                             None | Some(EngineEvent::SessionClosed { .. }) => break,
-                            Some(EngineEvent::JobFinished { job, exit_code, tail }) => {
-                                self.on_job_finished(job.to_string(), exit_code, tail, None).await;
+                            Some(EngineEvent::JobFinished { job, exit_code, tail, agent_told }) => {
+                                self.on_job_finished(job.to_string(), exit_code, tail, agent_told, None).await;
                             }
                             Some(EngineEvent::SessionReady { session, .. }) => {
                                 self.store_session(Some(&session)).await;
@@ -715,10 +715,12 @@ impl CrewRunner {
                 job,
                 exit_code,
                 tail,
+                agent_told,
             }) => {
                 // The wake signals this runner through the inbox; it starts a turn after the
-                // window (the session resumes if it was suspended).
-                self.on_job_finished(job.to_string(), exit_code, tail, None)
+                // window (the session resumes if it was suspended). A job the agent was told about
+                // posts none: its harness starts that turn itself (`TurnStarted` below).
+                self.on_job_finished(job.to_string(), exit_code, tail, agent_told, None)
                     .await;
             }
             Some(EngineEvent::RateLimit { info }) => {
@@ -1215,9 +1217,9 @@ impl CrewRunner {
                             self.watch.engine_event(&*clock);
                             self.on_job_started(job.to_string(), command, log_path, ran_for_ms).await;
                         }
-                        EngineEvent::JobFinished { job, exit_code, tail } => {
+                        EngineEvent::JobFinished { job, exit_code, tail, agent_told } => {
                             self.watch.engine_event(&*clock);
-                            self.on_job_finished(job.to_string(), exit_code, tail, Some(turn)).await;
+                            self.on_job_finished(job.to_string(), exit_code, tail, agent_told, Some(turn)).await;
                         }
                         EngineEvent::RateLimit { info } => {
                             if let Some(at) = self.on_rate_limit(&info, Some(turn)).await {
@@ -1728,12 +1730,14 @@ impl CrewRunner {
         }
     }
 
-    /// A job finished: recorded with its wake; inside a turn the wake is claimed and injected.
+    /// A job finished: recorded with its wake (none when `agent_told`); inside a turn the wake
+    /// is claimed and injected.
     async fn on_job_finished(
         &mut self,
         label: String,
         exit_code: Option<i32>,
         tail: String,
+        agent_told: bool,
         turn: Option<TurnId>,
     ) {
         saturating_decrement(&self.state.jobs_running);
@@ -1741,11 +1745,14 @@ impl CrewRunner {
             .routed
             .as_ref()
             .is_some_and(|(r, _)| r.engine == EngineKind::Claude);
-        match crate::jobs::job_finished(
-            &self.svc, self.task, self.agent, label, exit_code, tail, claude,
-        )
-        .await
-        {
+        let finished = crate::jobs::JobEnd {
+            label,
+            exit_code,
+            tail,
+            claude,
+            agent_told,
+        };
+        match crate::jobs::job_finished(&self.svc, self.task, self.agent, finished).await {
             Ok(Some(_)) => {
                 if let Some(turn) = turn {
                     self.claim_job_wakes(turn).await;
@@ -2016,5 +2023,244 @@ mod forgetting_tests {
             the_command_finish_sends(Some(Ending::Shutdown)).await,
             Some(SessionCommand::Close)
         );
+    }
+}
+
+#[cfg(test)]
+mod job_wake_tests {
+    use super::*;
+    use qm_engine::{EngineSide, SessionCommand, session_channel};
+    use qm_types::ids::JobLabel;
+
+    const CREWMATE: i64 = 3;
+
+    /// A crewmate runner for the fixture's open task 2, on a session whose engine side the test
+    /// plays.
+    struct Crew {
+        fixture: crate::turns::forget_tests::Fixture,
+        runner: CrewRunner,
+        side: EngineSide,
+        scheduler: tokio::task::JoinHandle<()>,
+    }
+
+    impl Crew {
+        async fn new() -> Self {
+            let fixture = crate::turns::forget_tests::Fixture::new().await;
+            fixture
+                .db()
+                .call(|conn| {
+                    conn.execute_batch(&format!(
+                        "INSERT INTO agents (id, role, supervisor_id, task_id, home, status, created_at, seq)
+                         VALUES ({CREWMATE}, 'crewmate', 1, 2, '/c3', 'idle', 1, 5);"
+                    ))?;
+                    qm_store::seq::observe_all(conn)?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            let (svc, scheduler) = fixture.task_service();
+            let (_tx, rx) = mpsc::unbounded_channel();
+            let (activity, _) = broadcast::channel(64);
+            let mut runner = CrewRunner::new(
+                TaskId::new(2).unwrap(),
+                AgentId::new(CREWMATE),
+                svc,
+                rx,
+                Arc::new(RunnerState::new(activity)),
+                RunnerStart::Resume,
+            );
+            let (handle, side) = session_channel();
+            runner.session = Some(handle);
+            runner
+                .on_idle_event(Some(EngineEvent::JobStarted {
+                    job: job(),
+                    command: "FAST helper".into(),
+                    log_path: None,
+                    ran_for_ms: None,
+                }))
+                .await;
+            Self {
+                fixture,
+                runner,
+                side,
+                scheduler,
+            }
+        }
+
+        async fn count(&self, sql: &'static str) -> i64 {
+            self.fixture
+                .db()
+                .call(move |conn| Ok(conn.query_row(sql, [], |r| r.get(0))?))
+                .await
+                .unwrap()
+        }
+
+        async fn job_wakes(&self) -> i64 {
+            self.count(
+                "SELECT count(*) FROM wakes WHERE target_agent_id = 3 AND kind = 'job_exited'",
+            )
+            .await
+        }
+
+        async fn finished_jobs(&self) -> i64 {
+            self.count(
+                "SELECT count(*) FROM jobs WHERE agent_id = 3 AND exited_at IS NOT NULL AND exit_code = 0",
+            )
+            .await
+        }
+
+        async fn job_events(&self) -> i64 {
+            self.count("SELECT count(*) FROM events WHERE kind = 'task.job_finished'")
+                .await
+        }
+
+        /// The refusal of the crewmate's `report` while its helpers run.
+        async fn helpers_refusal(&self) -> String {
+            self.fixture
+                .db()
+                .call(|conn| {
+                    crate::jobs::helpers_running(
+                        conn,
+                        TaskId::new(2).unwrap(),
+                        crate::jobs::HelperWait::Crewmate("report"),
+                    )
+                })
+                .await
+                .unwrap()
+                .expect("a helper runs")
+        }
+
+        /// Plays a turn the engine started by itself, with `events` before its end.
+        async fn adopted_turn(&mut self, events: Vec<EngineEvent>) {
+            for event in events.into_iter().chain([EngineEvent::TurnEnded {
+                outcome: TurnOutcome::Completed,
+                usage: TurnUsage::default(),
+                final_text: "done".into(),
+            }]) {
+                self.side.events.send(event).await.unwrap();
+            }
+            self.runner
+                .on_idle_event(Some(EngineEvent::TurnStarted))
+                .await;
+        }
+
+        /// The inputs the runner sent the engine.
+        fn sent_inputs(&mut self) -> Vec<String> {
+            let mut out = Vec::new();
+            while let Ok(command) = self.side.commands.try_recv() {
+                if let SessionCommand::Inject { input } | SessionCommand::StartTurn { input } =
+                    command
+                {
+                    out.push(format!("{input:?}"));
+                }
+            }
+            out
+        }
+
+        async fn done(self) {
+            drop(self.runner);
+            self.scheduler.abort();
+            let _ = self.scheduler.await;
+        }
+    }
+
+    fn job() -> JobLabel {
+        JobLabel::helper("FAST").unwrap()
+    }
+
+    fn finished(agent_told: bool) -> EngineEvent {
+        EngineEvent::JobFinished {
+            job: job(),
+            exit_code: Some(0),
+            tail: "FAST-done".into(),
+            agent_told,
+        }
+    }
+
+    /// Claude reported the job to the model and started a turn for it: the job's end is
+    /// recorded, the turn is one app-event turn, and the app posts no wake of its own.
+    #[tokio::test]
+    async fn a_job_the_agent_was_told_of_posts_no_wake_and_its_turn_is_adopted() {
+        let mut crew = Crew::new().await;
+        crew.runner.on_idle_event(Some(finished(true))).await;
+        crew.adopted_turn(vec![EngineEvent::TextLine {
+            text: "FAST is done.".into(),
+        }])
+        .await;
+
+        assert_eq!(crew.finished_jobs().await, 1);
+        assert_eq!(crew.job_events().await, 1);
+        assert_eq!(crew.job_wakes().await, 0);
+        let turns = crew
+            .count("SELECT count(*) FROM turns WHERE agent_id = 3 AND started_by = 'app_event'")
+            .await;
+        let all = crew
+            .count("SELECT count(*) FROM turns WHERE agent_id = 3")
+            .await;
+        assert_eq!((turns, all), (1, 1));
+        assert_eq!(crew.sent_inputs(), Vec::<String>::new());
+        crew.done().await;
+    }
+
+    /// The same job ending inside a turn: nothing is injected.
+    #[tokio::test]
+    async fn a_job_the_agent_was_told_of_mid_turn_injects_nothing() {
+        let mut crew = Crew::new().await;
+        crew.adopted_turn(vec![finished(true)]).await;
+        assert_eq!(crew.finished_jobs().await, 1);
+        assert_eq!(crew.job_wakes().await, 0);
+        assert_eq!(crew.sent_inputs(), Vec::<String>::new());
+        crew.done().await;
+    }
+
+    /// A job the agent never heard of (its process died, or the provider engine) still wakes it:
+    /// into the running turn here.
+    #[tokio::test]
+    async fn a_job_the_agent_was_not_told_of_is_injected() {
+        let mut crew = Crew::new().await;
+        crew.adopted_turn(vec![finished(false)]).await;
+        assert_eq!(crew.finished_jobs().await, 1);
+        assert_eq!(crew.job_wakes().await, 1);
+        let inputs = crew.sent_inputs();
+        assert!(
+            inputs.len() == 1 && inputs[0].contains("job_exited"),
+            "{inputs:?}"
+        );
+        crew.done().await;
+    }
+
+    /// The crewmate's refusal while helpers run counts them in good English.
+    #[tokio::test]
+    async fn the_helpers_refusal_agrees_with_its_count() {
+        let mut crew = Crew::new().await;
+        let one = crew.helpers_refusal().await;
+        assert!(
+            one.starts_with("a helper agent of yours is still running (FAST helper)"),
+            "{one}"
+        );
+        crew.runner
+            .on_idle_event(Some(EngineEvent::JobStarted {
+                job: JobLabel::helper("SLOW").unwrap(),
+                command: "SLOW helper".into(),
+                log_path: None,
+                ran_for_ms: None,
+            }))
+            .await;
+        let two = crew.helpers_refusal().await;
+        assert!(
+            two.starts_with("2 helper agents of yours are still running"),
+            "{two}"
+        );
+        crew.done().await;
+    }
+
+    /// Between turns, such a job posts its wake for the next turn.
+    #[tokio::test]
+    async fn a_job_the_agent_was_not_told_of_posts_a_wake_between_turns() {
+        let mut crew = Crew::new().await;
+        crew.runner.on_idle_event(Some(finished(false))).await;
+        assert_eq!(crew.finished_jobs().await, 1);
+        assert_eq!(crew.job_wakes().await, 1);
+        crew.done().await;
     }
 }

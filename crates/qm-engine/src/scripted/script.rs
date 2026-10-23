@@ -29,7 +29,7 @@
 //! | `{ thinking = ms }` | silent work: `Activity { Thinking }` every 30 s of clock |
 //! | `{ tool_call = "name", args = {…}, expect_result_contains = "…" }` | a call to one of our tools; waits for its result |
 //! | `{ builtin = "bash", summary = "…", for_ms = ms }` | a built-in tool running, with `Activity { BuiltinTool }` |
-//! | `{ job = "J1", command = "…", finish_after_ms = ms, exit_code = 0, tail = "…" }` | a background job |
+//! | `{ job = "J1", command = "…", finish_after_ms = ms, exit_code = 0, tail = "…", agent_told = false }` | a background job; `agent_told` plays one whose end the agent's harness told the model, as Claude Code does: ending between turns, it starts the next scripted turn by itself |
 //! | `{ stall = ms }` | nothing at all for that long |
 //! | `{ crash = true }` | the process dies mid-turn |
 //! | `{ rate_limit = "allowed_warning" }` | a rate-limit report |
@@ -138,6 +138,7 @@ pub(super) enum Step {
         finish_after_ms: u64,
         exit_code: Option<i32>,
         tail: String,
+        agent_told: bool,
     },
     Stall {
         ms: u64,
@@ -242,6 +243,7 @@ struct RawStep {
     finish_after_ms: Option<u64>,
     exit_code: Option<i32>,
     tail: Option<String>,
+    agent_told: Option<bool>,
     stall: Option<u64>,
     crash: Option<bool>,
     rate_limit: Option<RateLimitStatus>,
@@ -350,6 +352,7 @@ impl RawStep {
                 ("finish_after_ms", self.finish_after_ms.is_some()),
                 ("exit_code", self.exit_code.is_some()),
                 ("tail", self.tail.is_some()),
+                ("agent_told", self.agent_told.is_some()),
                 ("compact_ms", self.compact_ms.is_some()),
             ];
             match present
@@ -388,7 +391,13 @@ impl RawStep {
             });
         }
         if let Some(label) = self.job.clone() {
-            extras(&["command", "finish_after_ms", "exit_code", "tail"])?;
+            extras(&[
+                "command",
+                "finish_after_ms",
+                "exit_code",
+                "tail",
+                "agent_told",
+            ])?;
             if qm_types::ids::JobLabel::new(label.clone()).is_err() {
                 return Err(format!("job label {label:?} is empty or has whitespace"));
             }
@@ -398,6 +407,7 @@ impl RawStep {
                 finish_after_ms: self.finish_after_ms.unwrap_or(0),
                 exit_code: self.exit_code,
                 tail: self.tail.clone().unwrap_or_default(),
+                agent_told: self.agent_told.unwrap_or(false),
             });
         }
         if let Some(ms) = self.stall {
