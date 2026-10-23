@@ -47,7 +47,6 @@ use qm_auth::LoginHealth;
 use qm_engine::Engine;
 use qm_engine::supervisor::Supervisor;
 use qm_git::Git;
-use qm_routing::rules::RuleTable;
 use qm_store::StoreError;
 use qm_store::db::Db;
 use qm_store::wakes::NewWake;
@@ -104,7 +103,6 @@ pub struct TaskDeps {
     pub inbox: Inbox,
     pub scheduler: Scheduler,
     pub config: watch::Receiver<Config>,
-    pub rules: RuleTable,
     /// The app's record of which logins work: routing leaves broken accounts out.
     pub health: Arc<LoginHealth>,
     pub git: Git,
@@ -352,18 +350,17 @@ impl TaskService {
         svc
     }
 
-    /// The service with the app's defaults: the shipped routing rules, your `git`, the local
+    /// The service with the app's defaults: your `git`, the local
     /// delivery probe, the open report gate and the plain stuck choices (the binary replaces the
     /// last three through [`TaskDeps`]).
-    pub fn wire(w: TaskWiring) -> Result<Self, String> {
+    pub fn wire(w: TaskWiring) -> Self {
         Self::wire_with(w, TaskHooks::default())
     }
 
     /// [`Self::wire`] with verification's hooks.
-    pub fn wire_with(w: TaskWiring, hooks: TaskHooks) -> Result<Self, String> {
-        let rules = RuleTable::embedded().map_err(|e| e.to_string())?;
+    pub fn wire_with(w: TaskWiring, hooks: TaskHooks) -> Self {
         let git = Git::new();
-        Ok(Self::new(TaskDeps {
+        Self::new(TaskDeps {
             db: w.db,
             clock: w.clock,
             data_dir: w.data_dir,
@@ -373,7 +370,6 @@ impl TaskService {
             inbox: w.inbox,
             scheduler: w.scheduler,
             config: w.config,
-            rules,
             health: w.health,
             git: git.clone(),
             chat: w.chat,
@@ -387,7 +383,7 @@ impl TaskService {
             inherited_env: std::env::vars().collect(),
             dispatcher: Dispatcher::builtin(),
             monitor: w.monitor,
-        }))
+        })
     }
 
     /// The tool host crewmates' calls are dispatched to (the core's, which holds this service; a

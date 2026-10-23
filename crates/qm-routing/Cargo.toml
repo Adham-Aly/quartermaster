@@ -9,7 +9,8 @@ publish.workspace = true
 [dependencies]
 qm-types.workspace = true
 serde.workspace = true
-thiserror.workspace = true
+
+[dev-dependencies]
 toml.workspace = true
 
 [lints]

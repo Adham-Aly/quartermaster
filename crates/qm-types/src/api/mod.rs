@@ -16,7 +16,9 @@
 //! build them with `new(...)` or `default()` and then set fields, never with a struct literal, so a
 //! field added later (with a `#[serde(default)]`) breaks nobody.
 
-use crate::domain::{Autonomy, DeliveryMode, Effort, MessageKind, MessageSource, Provider, Tier};
+use crate::domain::{
+    Autonomy, DeliveryMode, Effort, KindRow, MessageKind, MessageSource, Provider, Tier,
+};
 use crate::ids::{AccountId, HeldActionId, MessageId, ModelId, SecondmateId, TaskId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -232,6 +234,16 @@ pub enum Command {
     SetAutocompactWindow {
         tokens: u32,
     },
+    /// Route a Task kinds row to `tier`; `None` puts it back to the app's default. Saved to
+    /// `config.toml` (every row, once you change any) and used by the next task routed.
+    SetKindTier {
+        row: KindRow,
+        #[serde(default)]
+        tier: Option<Tier>,
+    },
+    /// Put every Task kinds row back to the app's default: `[routing.kinds]` leaves
+    /// `config.toml`. The UI asks you first.
+    ResetKindTiers,
     /// Set a registered project's autonomy to normal or auto (from its menu in the Projects pane, or in
     /// Settings). Only you send this: no agent tool reaches it.
     SetProjectAutonomy {
@@ -1230,6 +1242,41 @@ pub struct SettingsView {
     /// Routing ▸ Autocompact).
     #[serde(default)]
     pub autocompact_window: crate::config::AutocompactWindow,
+    /// Settings ▸ Routing ▸ Task kinds: every row, in `KindRow::ALL` order.
+    #[serde(default)]
+    pub kind_tiers: Vec<KindTierRow>,
+}
+
+/// One Task kinds row: the tier it routes to and the app's default for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct KindTierRow {
+    pub row: KindRow,
+    pub tier: Tier,
+    pub default: Tier,
+    /// The tier has no model in it: its work runs on this tier instead (routing's fallback
+    /// order), or waits when `None`.
+    #[serde(default)]
+    pub empty: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runs_on: Option<Tier>,
+}
+
+impl KindTierRow {
+    pub fn new(row: KindRow, tier: Tier, default: Tier) -> Self {
+        Self {
+            row,
+            tier,
+            default,
+            empty: false,
+            runs_on: None,
+        }
+    }
+
+    /// The row routes somewhere other than the app's default.
+    pub fn changed(&self) -> bool {
+        self.tier != self.default
+    }
 }
 
 /// Whether an account is in use.

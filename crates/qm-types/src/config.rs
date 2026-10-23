@@ -12,9 +12,11 @@
 //! several efforts) are rows in `placements`; accounts, labels, the preferred account and pauses
 //! are rows in `accounts`.
 
-use crate::domain::Effort;
+use crate::domain::{Effort, KindRow, Tier};
 use crate::ids::ModelId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::BTreeMap;
+use std::fmt;
 
 /// The whole of `config.toml`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +85,156 @@ pub struct RoutingConfig {
     /// "Always use one model for all crew work, ignoring tiers", off when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub always_use: Option<AlwaysUse>,
+    /// `[routing.kinds]`: the tier each task kind routes to. Absent until you change a row.
+    #[serde(skip_serializing_if = "KindTiers::is_default")]
+    pub kinds: KindTiers,
+}
+
+/// The tier each Settings ▸ Routing ▸ Task kinds row routes to: your value, or the row's default
+/// ([`KindRow::default_tier`]).
+///
+/// Saved as every row at once (so the file shows the whole mapping), or not at all while you've
+/// set none. Loading is per row: a row missing from the file follows its default, and a value
+/// that isn't a tier is ignored for that row only (`qm_core::config_file` reports it).
+#[derive(Clone, Debug, Default)]
+pub struct KindTiers {
+    set: BTreeMap<KindRow, Tier>,
+}
+
+impl PartialEq for KindTiers {
+    /// Equal when every row routes the same and both are written to the file, or neither is.
+    fn eq(&self, other: &Self) -> bool {
+        self.is_default() == other.is_default()
+            && KindRow::ALL.iter().all(|&r| self.tier(r) == other.tier(r))
+    }
+}
+
+impl Eq for KindTiers {}
+
+impl KindTiers {
+    /// The tier `row` routes to.
+    pub fn tier(&self, row: KindRow) -> Tier {
+        self.set.get(&row).copied().unwrap_or(row.default_tier())
+    }
+
+    /// Whether `row` routes somewhere other than its default.
+    pub fn changed(&self, row: KindRow) -> bool {
+        self.tier(row) != row.default_tier()
+    }
+
+    /// Sets `row` to `tier`; `None` puts it back to its default.
+    pub fn set(&mut self, row: KindRow, tier: Option<Tier>) {
+        match tier {
+            Some(t) => {
+                self.set.insert(row, t);
+            }
+            None => {
+                self.set.remove(&row);
+            }
+        }
+    }
+
+    /// Whether no row is set: the section is left out of `config.toml`.
+    pub fn is_default(&self) -> bool {
+        self.set.is_empty()
+    }
+}
+
+impl Serialize for KindTiers {
+    /// Every row, in [`KindRow::ALL`] order.
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = s.serialize_map(Some(KindRow::ALL.len()))?;
+        for &row in KindRow::ALL {
+            map.serialize_entry(row.as_str(), &self.tier(row))?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for KindTiers {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_map(KindTiersVisitor)
+    }
+}
+
+struct KindTiersVisitor;
+
+impl<'de> serde::de::Visitor<'de> for KindTiersVisitor {
+    type Value = KindTiers;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a table of task kinds and tiers")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<KindTiers, A::Error> {
+        let mut tiers = KindTiers::default();
+        while let Some(key) = map.next_key::<String>()? {
+            if let Ok(row) = key.parse::<KindRow>() {
+                // A value that isn't a tier leaves this row at its default.
+                if let AnyValue::Text(text) = map.next_value::<AnyValue>()?
+                    && let Ok(tier) = text.parse::<Tier>()
+                {
+                    tiers.set.insert(row, tier);
+                }
+            } else {
+                // Unknown: reported as "a setting this version doesn't know".
+                map.next_value::<serde::de::IgnoredAny>()?;
+            }
+        }
+        Ok(tiers)
+    }
+}
+
+/// Any value, keeping only text: what a `[routing.kinds]` row reads before it is checked.
+enum AnyValue {
+    Text(String),
+    Other,
+}
+
+impl<'de> Deserialize<'de> for AnyValue {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = AnyValue;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("any value")
+            }
+            fn visit_str<E>(self, v: &str) -> Result<AnyValue, E> {
+                Ok(AnyValue::Text(v.to_owned()))
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<AnyValue, E> {
+                Ok(AnyValue::Other)
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<AnyValue, E> {
+                Ok(AnyValue::Other)
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<AnyValue, E> {
+                Ok(AnyValue::Other)
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<AnyValue, E> {
+                Ok(AnyValue::Other)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> Result<AnyValue, A::Error> {
+                while a.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(AnyValue::Other)
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> Result<AnyValue, A::Error> {
+                while a
+                    .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                    .is_some()
+                {}
+                Ok(AnyValue::Other)
+            }
+        }
+        d.deserialize_any(V)
+    }
 }
 
 /// The "always use" pin, with its fallback model.

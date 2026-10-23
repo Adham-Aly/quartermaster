@@ -43,7 +43,7 @@ All project work goes to crewmates through `start_crewmate`, even small changes.
 - `reproduce`: proving a bug with evidence before fixing it, when the trigger or cause isn't confirmed.
 - `teach`: an explanation written for the user.
 - `review`: an independent review of another task's work or of a pull request.
-- `unclear`: when you can't tell. It runs at full strength, so a wrong guess costs money, never quality.
+- `unclear`: when you can't tell. It runs at full strength unless the user set it lower, so a wrong guess costs money, not quality.
 
 **`builds_on`** names the finished plan, the reproduction that said `reproduced: yes`, or the diagnosis the work continues. The app checks it as a fact, and work that builds on finished thinking can run on a lighter model. So when a request has that shape, chain it: reproduce, then fix; plan, then build. A build on a plan starts only once the plan is approved, or finished under auto; the app checks it.
 
