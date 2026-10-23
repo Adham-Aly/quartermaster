@@ -644,6 +644,10 @@ string_enum! {
         /// A pushed release tag's outcome became known after the push (published, collision or
         /// not published), read back from GitHub.
         ReleaseObserved = "release_observed",
+        /// A task's pull request was merged on GitHub by someone other than the app.
+        LandedOutside = "landed_outside",
+        /// A tag or release appeared on a task's repository that the app didn't make.
+        ReleasedOutside = "released_outside",
     }
 }
 

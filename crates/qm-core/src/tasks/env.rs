@@ -6,31 +6,27 @@
 //! - `QM_PORT_BASE`: the first of the task's ports.
 //! - `QM_PLAN_DIR`: the task's plan folder in the scratch root, when it has one: the plan a
 //!   planner writes, or the copy of the plan a build builds on.
-//! - `GH_CONFIG_DIR`: an empty folder, so `gh` is logged out.
-//! - The push fence, `qm_github::fence::apply`, in layers (see there): every https, http and ssh
-//!   push URL and `origin`'s push URL go to `/dev/null/pushes go through pr_open/…`, which isn't a
-//!   repository, and ssh refuses a push to any host, so `git push` fails with that sentence
-//!   while fetching is untouched.
+//! - `GIT_TERMINAL_PROMPT=0`: a git command that needs a password fails instead of waiting for
+//!   one.
 //!
-//! `GH_TOKEN`, `GITHUB_TOKEN` and every key of `NEVER_PASSED_TO_AGENTS` are never set.
+//! `gh` and git use the user's own GitHub login (`~/.config/gh`, the keychain, their credential
+//! helpers), reached through `HOME`. No token variable ([`TOKEN_VARIABLES`]) and no key of
+//! `NEVER_PASSED_TO_AGENTS` is ever set: the prompt keeps `pr_open` the default path, and the app
+//! records what's done outside it (`delivery::outside`).
 
-use qm_github::fence;
 use qm_types::data_dir::TaskPaths;
 use qm_types::env::{NEVER_PASSED_TO_AGENTS, QM_EVIDENCE_DIR, QM_PLAN_DIR, QM_PORT_BASE};
 use qm_types::ids::PortBlock;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// The folder `gh` reads its login from: `tasks/T-0042/gh`, kept empty.
-pub fn gh_dir(paths: &TaskPaths) -> std::path::PathBuf {
-    paths.root.join("gh")
-}
-
-/// Where a pushed GitHub URL goes instead (`qm_github::fence::PUSH_FENCE_PREFIX`).
-pub const PUSH_FENCE: &str = fence::PUSH_FENCE_PREFIX;
-
-/// Keys that must never reach an agent from here.
-const FORBIDDEN: [&str; 4] = fence::TOKEN_VARIABLES;
+/// Variables that would carry a GitHub token into a process; never set here.
+pub const TOKEN_VARIABLES: [&str; 4] = [
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+];
 
 /// The crewmate's additions to its engine's environment.
 pub fn crewmate_env(paths: &TaskPaths, ports: PortBlock) -> BTreeMap<String, String> {
@@ -46,17 +42,11 @@ pub fn crewmate_env(paths: &TaskPaths, ports: PortBlock) -> BTreeMap<String, Str
             absolute(&paths.plan).to_string_lossy().into_owned(),
         );
     }
-    // The GitHub fence: its layers are `qm_github::fence`'s, and the result is held to them before
-    // any crewmate process gets it.
-    fence::apply(&mut env, &absolute(&gh_dir(paths)).to_string_lossy());
-    if let Err(why) = fence::check(&env) {
-        tracing::error!(%why, "a crewmate's environment doesn't hold the GitHub fence");
-        debug_assert!(false, "the GitHub fence is broken: {why}");
-    }
+    env.insert("GIT_TERMINAL_PROMPT".to_owned(), "0".to_owned());
     debug_assert!(
         env.keys()
             .all(|k| !NEVER_PASSED_TO_AGENTS.contains(&k.as_str())
-                && !FORBIDDEN.contains(&k.as_str())),
+                && !TOKEN_VARIABLES.contains(&k.as_str())),
         "a crewmate's environment names a key it must never carry"
     );
     env
@@ -89,5 +79,28 @@ fn absolute(path: &Path) -> std::path::PathBuf {
         path.to_owned()
     } else {
         std::env::current_dir().map_or_else(|_| path.to_owned(), |d| d.join(path))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qm_types::data_dir::DataDir;
+    use qm_types::ids::TaskId;
+
+    #[test]
+    fn a_crewmate_gets_the_users_github_login_and_no_token() {
+        let dir = DataDir::new(std::env::temp_dir().join("qm-env-test"));
+        let paths = dir.task(TaskId::new(42).expect("a task number"));
+        let env = crewmate_env(&paths, PortBlock { base: 41_000 });
+        assert_eq!(
+            env.get("GIT_TERMINAL_PROMPT").map(String::as_str),
+            Some("0")
+        );
+        for key in env.keys() {
+            assert!(!key.starts_with("GIT_CONFIG"), "{key}");
+            assert!(key != "GH_CONFIG_DIR" && key != "GIT_SSH_COMMAND", "{key}");
+            assert!(!TOKEN_VARIABLES.contains(&key.as_str()), "{key}");
+        }
     }
 }

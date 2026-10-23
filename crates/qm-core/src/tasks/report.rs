@@ -590,6 +590,7 @@ pub(crate) async fn record(
     })
     .await
     .map_err(|e| failed(&e))?;
+    svc.tell_outside(task, true);
     if let Some(plan) = plan {
         super::plan::after_report(svc, task, plan).await;
     }

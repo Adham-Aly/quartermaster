@@ -124,6 +124,48 @@ pub fn landed(
     fact: &Fact,
     at: Timestamp,
 ) -> Result<bool, StoreError> {
+    record(conn, notify, parent, task, fact, at, MergedBy::App)
+}
+
+/// [`landed`] for a pull request merged on GitHub by someone other than the app (`merged_by`,
+/// when GitHub says): the same records, but the supervisor's wake is `landed_outside`, so it
+/// tells the user.
+pub fn landed_outside(
+    conn: &Connection,
+    notify: &mut Notify,
+    parent: &dyn ParentPort,
+    task: TaskId,
+    fact: &Fact,
+    merged_by: Option<&str>,
+    at: Timestamp,
+) -> Result<bool, StoreError> {
+    record(
+        conn,
+        notify,
+        parent,
+        task,
+        fact,
+        at,
+        MergedBy::Outside(merged_by),
+    )
+}
+
+/// Who made a landing: the app, or someone on GitHub (by login, when GitHub says).
+#[derive(Clone, Copy)]
+enum MergedBy<'a> {
+    App,
+    Outside(Option<&'a str>),
+}
+
+fn record(
+    conn: &Connection,
+    notify: &mut Notify,
+    parent: &dyn ParentPort,
+    task: TaskId,
+    fact: &Fact,
+    at: Timestamp,
+    merged: MergedBy<'_>,
+) -> Result<bool, StoreError> {
     let Some(row) = task_store::load(conn, task)? else {
         return Ok(false);
     };
@@ -187,13 +229,25 @@ pub fn landed(
         ),
     };
     task_store::event(conn, outcome_kind, task, None, &outcome, payload, at)?;
+    let (kind, key, text) = match (merged, fact) {
+        (MergedBy::Outside(by), Fact::MergedPr { pr, base, .. }) => (
+            WakeKind::LandedOutside,
+            format!("landed_outside:{task}"),
+            format!(
+                "{task}'s PR #{pr} was merged on GitHub outside the app{}, at {short} into {base}. \
+                 Tell the user in a reply. Close it with close_task.",
+                by.map(|b| format!(" by {b}")).unwrap_or_default()
+            ),
+        ),
+        _ => (WakeKind::Settled, format!("settled:{task}:{short}"), text),
+    };
     Inbox::post(
         conn,
         &new_wake(
             row.supervisor,
-            WakeKind::Settled,
+            kind,
             task,
-            format!("settled:{task}:{short}"),
+            key,
             &text,
             &outcome,
             serde_json::json!({ "head": fact.head() }),

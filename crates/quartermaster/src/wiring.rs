@@ -1116,6 +1116,9 @@ fn settling_services(
     });
     verification.set_ci(Arc::new(delivery.clone()));
     tasks.set_close_facts(Arc::new(DeliveryCloseFacts::new(delivery.clone())));
+    tasks.set_outside_watch(Arc::new(qm_core::delivery::outside::OutsideHook::new(
+        delivery.clone(),
+    )));
     Settling {
         settling: SettlingService::new(delivery.clone()),
         delivery,

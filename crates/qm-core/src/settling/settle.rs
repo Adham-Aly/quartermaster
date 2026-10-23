@@ -11,6 +11,7 @@ use super::push::push_branch;
 use super::review::{passed_for, review_refusal};
 use super::{Fact, Landing, Origin, SETTLE_HELD_EVENT, SettlingService, facts};
 use crate::delivery::checks::read_snapshot;
+use crate::delivery::outside::{self, PrSeen};
 use crate::delivery::{models, verified_named};
 use crate::held::HeldService;
 use crate::tasks::lifecycle::{TaskEvent, next_for};
@@ -137,6 +138,23 @@ pub(crate) async fn settle(
     }
 
     let lock = svc.delivery().locks().lock(task).await;
+    // Merged or tagged on GitHub outside the app: recorded and told, and never merged again.
+    let watch = svc.delivery().clone();
+    tokio::spawn(async move {
+        if let Err(e) = outside::check_tags(&watch, task).await {
+            tracing::warn!(%task, error = %e, "couldn't list the tags at settle");
+        }
+    });
+    match outside::check_pr_locked(svc.delivery(), task).await {
+        Ok(PrSeen::MergedOutside { pr, merge_commit }) => {
+            return Ok(SettleOutcome::Merged {
+                pr,
+                commit: merge_commit,
+            });
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(%task, error = %e, "couldn't read the pull request at settle"),
+    }
     let loaded = svc.delivery().load(task).await?;
     let row = &loaded.row;
 

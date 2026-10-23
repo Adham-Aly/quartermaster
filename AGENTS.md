@@ -126,8 +126,9 @@ These override anything else. Security comes first.
   an allow-list of built-ins; every `system/init` is checked (skill `claude-engine`).
 - **Merging the wrong commit is the worst failure.** A merge happens only at the approved head,
   re-read from GitHub first (`qm-core` `settling/land_pr.rs`). App pushes go only through `qm-core` `delivery/push_guard.rs`,
-  the app's network git only through `qm-git` `network.rs`; crewmates can't push at all (the
-  fence in `qm-github` `fence.rs`); their work leaves only through `pr_open` (skill `git-safety`).
+  the app's network git only through `qm-git` `network.rs`. Crewmates have the user's GitHub login;
+  the prompt keeps `pr_open`, `propose_release_tag` and the cards the default path, and merges or
+  tags made outside the app are recorded (`delivery/outside.rs`; skill `git-safety`).
 - **Crewmates have helper agents on both engines** (Claude's `Agent`, the provider engine's
   `agent`); while one runs, every crewmate tool that isn't `Read` class is refused in-band.
 - **Saying no is a `Refusal`:** one plain sentence the agent can act on, naming the in-band path.

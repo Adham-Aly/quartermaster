@@ -201,6 +201,8 @@ pub(crate) struct Inner {
     sink: OnceLock<Arc<dyn runner::SessionSink>>,
     /// Delivery's hook on every retirement: where landed work went, and side exits.
     pub(crate) close_facts: OnceLock<Arc<dyn close::CloseFacts>>,
+    /// Delivery's watch for what happens on GitHub outside the app.
+    outside: OnceLock<Arc<dyn OutsideWatch>>,
     /// The plan pages' endpoint port; 0 while it isn't listening.
     plan_port: AtomicU16,
 }
@@ -297,6 +299,38 @@ pub(crate) fn cut_chars(text: &str, max: usize, suffix: &str) -> String {
     }
 }
 
+/// Delivery's hook on a task's start and report (`delivery::outside`): both run in the background
+/// and never hold up the task.
+pub trait OutsideWatch: Send + Sync + fmt::Debug {
+    /// The task's folders exist: keep the repository's tags as they are now.
+    fn started(&self, task: TaskId) -> BoxFuture<'_, ()>;
+    /// The crewmate reported: read its pull request and the tags again.
+    fn reported(&self, task: TaskId) -> BoxFuture<'_, ()>;
+}
+
+impl TaskService {
+    /// Sets delivery's outside watch (once; a second call is ignored).
+    pub fn set_outside_watch(&self, hook: Arc<dyn OutsideWatch>) {
+        if self.inner.outside.set(hook).is_err() {
+            tracing::warn!("the outside watch was set twice; the first one stays");
+        }
+    }
+
+    /// Runs the outside watch's `f` for `task` in the background, if it is set.
+    pub(crate) fn tell_outside(&self, task: TaskId, reported: bool) {
+        let Some(hook) = self.inner.outside.get().cloned() else {
+            return;
+        };
+        tokio::spawn(async move {
+            if reported {
+                hook.reported(task).await;
+            } else {
+                hook.started(task).await;
+            }
+        });
+    }
+}
+
 impl TaskService {
     /// The service; starts the UI refresh tick. Needs a Tokio runtime.
     pub fn new(deps: TaskDeps) -> Self {
@@ -310,6 +344,7 @@ impl TaskService {
                 retiring: Mutex::new(HashSet::new()),
                 sink: OnceLock::new(),
                 close_facts: OnceLock::new(),
+                outside: OnceLock::new(),
                 plan_port: AtomicU16::new(0),
             }),
         };

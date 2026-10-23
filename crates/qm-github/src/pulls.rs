@@ -90,6 +90,8 @@ pub struct PullRequest {
     /// `None` while GitHub is still computing it.
     pub mergeable: Option<bool>,
     pub mergeable_state: Option<String>,
+    /// Who merged it, by login; only when merged and GitHub says.
+    pub merged_by: Option<String>,
     pub additions: u64,
     pub deletions: u64,
 }
@@ -199,6 +201,8 @@ struct RawPull {
     #[serde(default)]
     mergeable_state: Option<String>,
     #[serde(default)]
+    merged_by: Option<RawOwner>,
+    #[serde(default)]
     additions: Option<u64>,
     #[serde(default)]
     deletions: Option<u64>,
@@ -236,6 +240,7 @@ impl RawPull {
             body: self.body.unwrap_or_default(),
             mergeable: self.mergeable,
             mergeable_state: self.mergeable_state,
+            merged_by: self.merged_by.filter(|_| merged).map(|u| u.login),
             additions: self.additions.unwrap_or(0),
             deletions: self.deletions.unwrap_or(0),
         })

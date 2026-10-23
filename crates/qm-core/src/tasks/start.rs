@@ -1336,7 +1336,6 @@ pub(crate) async fn prepare(
     let paths = svc.deps().data_dir.task(task);
 
     // 1. Folders.
-    let gh = super::env::gh_dir(&paths);
     let mut dirs = vec![
         paths.root.clone(),
         paths.session.clone(),
@@ -1344,7 +1343,6 @@ pub(crate) async fn prepare(
         paths.evidence.clone(),
         paths.jobs.clone(),
         paths.skills.clone(),
-        gh,
     ];
     // Claude Code keeps its own transcript and scratchpad; the provider engine's crewmate gets
     // these.
@@ -1371,6 +1369,7 @@ pub(crate) async fn prepare(
     .map_err(|e| PrepareError::Failed(e.to_string()))?
     .map_err(|e| PrepareError::Failed(format!("The task's folders couldn't be made: {e}")))?;
     plan_folder(svc, task, &row, &paths).await?;
+    svc.tell_outside(task, false);
 
     // 2. The project, then the workplace: a folder task works in its folder, which must still be
     // there; any other task gets a worktree on its branch.

@@ -811,6 +811,18 @@ pub fn history(conn: &Connection, task: TaskId) -> Result<Vec<EventRow>, StoreEr
 }
 
 /// The newest event of `kind` for `task`, if any.
+/// The payloads of every `kind` event of `task`, oldest first.
+pub fn event_payloads(
+    conn: &Connection,
+    task: TaskId,
+    kind: &str,
+) -> Result<Vec<serde_json::Value>, StoreError> {
+    let mut stmt =
+        conn.prepare("SELECT payload FROM events WHERE task_id = ?1 AND kind = ?2 ORDER BY seq")?;
+    let rows = stmt.query_map(params![task, kind], |r| r.get::<_, String>(0))?;
+    rows.map(|p| json_value("events.payload", &p?)).collect()
+}
+
 pub fn last_event(
     conn: &Connection,
     task: TaskId,
