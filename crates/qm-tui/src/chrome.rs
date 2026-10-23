@@ -281,6 +281,22 @@ fn counted(n: u32, one: &str, many: &str) -> String {
     format!("⚑ {n} {}", if n == 1 { one } else { many })
 }
 
+/// What the quit dialog says about the `working` crewmates, for `verb` ("quit", "stop" or
+/// "restart").
+fn quit_message(working: u32, verb: &str) -> String {
+    // The pronoun is a subject in one sentence and an object in the other.
+    let (subject, they, them) = if working == 1 {
+        ("1 crewmate is".to_owned(), "it", "it")
+    } else {
+        (format!("{working} crewmates are"), "they", "them")
+    };
+    if verb == "quit" {
+        format!("{subject} working; {they} will pick up again next launch.")
+    } else {
+        format!("{subject} working; the server pauses {them} until it starts again.")
+    }
+}
+
 /// The dialog shown when the core says agents are working.
 pub(crate) fn draw_quit_dialog(
     frame: &mut Frame<'_>,
@@ -290,16 +306,7 @@ pub(crate) fn draw_quit_dialog(
     hover: Option<Hit>,
     hits: &mut Hits,
 ) {
-    let (subject, them) = if working == 1 {
-        ("1 crewmate is".to_owned(), "it")
-    } else {
-        (format!("{working} crewmates are"), "them")
-    };
-    let message = if verb == "quit" {
-        format!("{subject} working; {them} will pick up again next launch.")
-    } else {
-        format!("{subject} working; the server pauses {them} until it starts again.")
-    };
+    let message = quit_message(working, verb);
     let dialog_width = area.width.saturating_sub(4).min(58);
     let inner_width = dialog_width.saturating_sub(4);
     let rows = crate::text::wrap(&message, usize::from(inner_width));
@@ -356,6 +363,31 @@ pub(crate) fn draw_quit_dialog(
                 1,
             ),
             Hit::CancelQuit,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quit_message;
+
+    #[test]
+    fn quit_message_reads_right_for_one_crewmate_and_many() {
+        assert_eq!(
+            quit_message(1, "quit"),
+            "1 crewmate is working; it will pick up again next launch."
+        );
+        assert_eq!(
+            quit_message(2, "quit"),
+            "2 crewmates are working; they will pick up again next launch."
+        );
+        assert_eq!(
+            quit_message(1, "stop"),
+            "1 crewmate is working; the server pauses it until it starts again."
+        );
+        assert_eq!(
+            quit_message(3, "restart"),
+            "3 crewmates are working; the server pauses them until it starts again."
         );
     }
 }
