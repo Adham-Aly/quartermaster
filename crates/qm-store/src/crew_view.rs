@@ -382,6 +382,12 @@ pub struct TokenUse {
     pub input: u64,
     /// Everything it wrote, thinking included.
     pub output: u64,
+    /// The parts of `input`: uncached input, cache reads and cache writes.
+    pub fresh_input: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    /// The thinking part of `output`.
+    pub thinking: u64,
     /// The summed cost of the turns whose engine reported one; `None` if none did.
     pub cost_usd: Option<f64>,
 }
@@ -671,16 +677,33 @@ fn routing(conn: &Connection, task: TaskId) -> Result<Option<RoutingView>, Store
 
 /// Token use summed over every turn of every crewmate the task has had.
 pub fn token_use(conn: &Connection, task: TaskId) -> Result<TokenUse, StoreError> {
-    let (turns, input, output, costed, cost): (i64, i64, i64, i64, f64) = conn.query_row(
+    type Sums = (i64, i64, i64, i64, f64, i64, i64, i64, i64);
+    let (turns, input, output, costed, cost, fresh, read, write, thinking): Sums = conn.query_row(
         "SELECT COUNT(*),
                 COALESCE(SUM(t.input_tokens + t.cache_read_tokens + t.cache_write_tokens), 0),
                 COALESCE(SUM(t.output_tokens), 0),
                 COUNT(t.cost_usd),
-                COALESCE(SUM(t.cost_usd), 0.0)
+                COALESCE(SUM(t.cost_usd), 0.0),
+                COALESCE(SUM(t.input_tokens), 0),
+                COALESCE(SUM(t.cache_read_tokens), 0),
+                COALESCE(SUM(t.cache_write_tokens), 0),
+                COALESCE(SUM(t.thinking_tokens), 0)
          FROM turns AS t JOIN agents AS a ON a.id = t.agent_id
          WHERE a.task_id = ?1 AND a.role = 'crewmate'",
         params![task],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+            ))
+        },
     )?;
     let count = |column: &'static str, n: i64| {
         u64::try_from(n).map_err(|_| StoreError::Invalid {
@@ -692,6 +715,10 @@ pub fn token_use(conn: &Connection, task: TaskId) -> Result<TokenUse, StoreError
         turns: u32::try_from(turns).unwrap_or(u32::MAX),
         input: count("turns.input_tokens", input)?,
         output: count("turns.output_tokens", output)?,
+        fresh_input: count("turns.input_tokens", fresh)?,
+        cache_read: count("turns.cache_read_tokens", read)?,
+        cache_write: count("turns.cache_write_tokens", write)?,
+        thinking: count("turns.thinking_tokens", thinking)?,
         cost_usd: (costed > 0).then_some(cost),
     })
 }
