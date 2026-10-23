@@ -7,7 +7,8 @@
 //! read naturally) and is stored as an `INTEGER`. Parsing is strict about the prefix and lenient
 //! about zero padding: `T-42` parses and displays as `T-0042`.
 //!
-//! A task's git names derive from its ID: branch `qm/task-0042` and worktree folder `T-0042`.
+//! A task's worktree folder derives from its ID (`T-0042`); its branch is named after its work
+//! and recorded with the task (`fix/upload-retry-on-slow-tmp`).
 //!
 //! **Row IDs** ([`AgentId`], [`TurnId`], [`WakeId`], …) are internal database keys with no display
 //! form; they serialise as plain numbers.
@@ -154,18 +155,19 @@ display_id!(
 );
 
 impl TaskId {
-    /// Prefix of every task branch.
-    pub const BRANCH_PREFIX: &'static str = "qm/task-";
+    /// Prefix of the branches tasks were given before branches were named after their work.
+    pub const LEGACY_BRANCH_PREFIX: &'static str = "qm/task-";
 
-    /// The task's branch, `qm/task-0042`.
-    pub fn branch(self) -> String {
-        format!("{}{:04}", Self::BRANCH_PREFIX, self.0)
+    /// The branch a task of this number had before branches were named after their work,
+    /// `qm/task-0042`. Only for recognising old branches: a task's branch is its recorded one.
+    pub fn legacy_branch(self) -> String {
+        format!("{}{:04}", Self::LEGACY_BRANCH_PREFIX, self.0)
     }
 
-    /// The task a branch belongs to, if it is a task branch.
-    pub fn from_branch(branch: &str) -> Result<Self, IdError> {
+    /// The task an old-style branch (`qm/task-0042`) names, if it is one.
+    pub fn from_legacy_branch(branch: &str) -> Result<Self, IdError> {
         let digits = branch
-            .strip_prefix(Self::BRANCH_PREFIX)
+            .strip_prefix(Self::LEGACY_BRANCH_PREFIX)
             .ok_or_else(|| IdError::new("task branch", branch, "it must start with qm/task-"))?;
         parse_number("task branch", branch, digits).map(Self)
     }

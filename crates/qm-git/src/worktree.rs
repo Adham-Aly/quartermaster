@@ -1,7 +1,8 @@
 //! Creating a task's worktree.
 //!
 //! The worktree lives at `tasks/T-0042/worktree` (outside your checkout, next to the task's
-//! evidence folder, so evidence can never be committed) on branch `qm/task-0042`, starting at
+//! evidence folder, so evidence can never be committed) on the branch recorded with the task
+//! (`fix/upload-retry-on-slow-tmp`, named by the core), starting at
 //! the settled base commit. The project's listed files are then copied in from your checkout,
 //! and its setup command run ([`crate::setup`]).
 //!
@@ -13,7 +14,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use qm_types::data_dir::TaskPaths;
-use qm_types::ids::{CommitSha, TaskId};
+use qm_types::ids::CommitSha;
 
 use crate::base::SettledBase;
 use crate::error::GitError;
@@ -23,8 +24,8 @@ use crate::setup::{SetupCommand, SetupOutcome, run_setup};
 /// Everything needed to prepare a task's worktree.
 #[derive(Clone, Copy, Debug)]
 pub struct WorktreeSpec<'a> {
-    /// The task; names the branch (`qm/task-0042`).
-    pub task: TaskId,
+    /// The task's branch, as recorded with the task (`fix/upload-retry-on-slow-tmp`).
+    pub branch: &'a str,
     /// The task's folders; the worktree goes at `paths.worktree`.
     pub paths: &'a TaskPaths,
     /// Where the branch starts.
@@ -41,7 +42,7 @@ pub struct WorktreeSpec<'a> {
 pub struct PreparedWorktree {
     /// Where the worktree is.
     pub path: PathBuf,
-    /// Its branch, `qm/task-0042`.
+    /// Its branch, as recorded with the task.
     pub branch: String,
     /// The commit the branch started at (the settled base).
     pub base_commit: CommitSha,
@@ -69,7 +70,7 @@ pub struct CopyReport {
 pub struct ReattachedWorktree {
     /// Where the worktree is.
     pub path: PathBuf,
-    /// Its branch, `qm/task-0042`.
+    /// Its branch, as recorded with the task.
     pub branch: String,
     /// The branch's commit, now checked out; unchanged by reattaching.
     pub head: CommitSha,
@@ -87,10 +88,10 @@ impl Repo {
     /// [`GitError::BranchCheckedOutElsewhere`] if another live worktree has it checked out.
     pub fn reattach_worktree(
         &self,
-        task: TaskId,
+        branch: &str,
         paths: &TaskPaths,
     ) -> Result<ReattachedWorktree, GitError> {
-        let branch = task.branch();
+        let branch = branch.to_owned();
         let path = normalize_path(&paths.worktree);
         let _guard = self.write_lock();
         if fs::symlink_metadata(&path).is_ok() {
@@ -148,7 +149,7 @@ impl Repo {
     /// place; the core decides whether to retry or retire it ([`Repo::retire`]).
     pub fn prepare_worktree(&self, spec: &WorktreeSpec<'_>) -> Result<PreparedWorktree, GitError> {
         let mut prepared =
-            self.create_worktree(spec.task, spec.paths, spec.base, spec.files_to_copy)?;
+            self.create_worktree(spec.branch, spec.paths, spec.base, spec.files_to_copy)?;
         if let Some(setup) = spec.setup {
             prepared.setup = Some(run_setup(&prepared.path, setup)?);
         }
@@ -159,7 +160,7 @@ impl Repo {
     /// a core that runs it under its own process supervision).
     pub fn create_worktree(
         &self,
-        task: TaskId,
+        branch: &str,
         paths: &TaskPaths,
         base: &SettledBase,
         files_to_copy: &[PathBuf],
@@ -168,7 +169,7 @@ impl Repo {
         for file in files_to_copy {
             validate_copy_path(file)?;
         }
-        let branch = task.branch();
+        let branch = branch.to_owned();
         fs::create_dir_all(&paths.root)
             .map_err(|e| GitError::io("create the task folder", &paths.root, e))?;
         let path = normalize_path(&paths.worktree);

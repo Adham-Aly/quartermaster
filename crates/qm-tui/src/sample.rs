@@ -595,7 +595,10 @@ fn tasks() -> Vec<TaskDetail> {
                 Tone::Dim,
             )],
         ),
-        TaskRow::new(Some("branch"), vec![s("qm/task-0042 ← main", Tone::Text)]),
+        TaskRow::new(
+            Some("branch"),
+            vec![s("fix/upload-retry-on-slow-tmp ← main", Tone::Text)],
+        ),
         TaskRow::new(Some("verify"), vec![s("Default (standard)", Tone::Text)]),
         TaskRow::new(
             Some("status"),

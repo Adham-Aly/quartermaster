@@ -51,7 +51,7 @@ pub(crate) struct AppPush<'a> {
     pub project: &'a ProjectRow,
     /// The remote, `origin` (the held payload's).
     pub remote: &'a str,
-    /// The task branch, `qm/task-0042`.
+    /// The task branch, `fix/upload-retry-on-slow-tmp`.
     pub branch: &'a str,
     pub head: &'a CommitSha,
     /// The app's own last push there; `None` means the branch must not exist yet.

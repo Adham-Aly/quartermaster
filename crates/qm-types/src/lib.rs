@@ -2,8 +2,8 @@
 //!
 //! This crate sits under every other one and holds only what several of them must agree on:
 //!
-//! - [`ids`]: display IDs (`T-0042`, `SM-02`, `C-0193`, `J3`, `SI-5`, `SC-7`), the task branch
-//!   `qm/task-0042`, database row IDs, commit SHAs and model IDs;
+//! - [`ids`]: display IDs (`T-0042`, `SM-02`, `C-0193`, `J3`, `SI-5`, `SC-7`), an old task's
+//!   branch `qm/task-0042`, database row IDs, commit SHAs and model IDs;
 //! - [`domain`]: the app's closed sets of values (roles, kinds, tiers, the effort ladder,
 //!   verification levels, delivery modes, task states, …) and a turn's [`domain::StartedBy`];
 //! - [`clock`]: wall and monotonic time behind one trait, with a fake clock for watchdog ladders

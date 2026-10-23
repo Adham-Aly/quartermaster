@@ -62,6 +62,8 @@ pub struct BriefInputs {
     /// The settled start: `origin/main`, or for a review the reviewed branch.
     pub base_ref: Option<String>,
     pub base_commit: Option<CommitSha>,
+    /// The task's own branch, absent for folder tasks.
+    pub branch: Option<String>,
     pub port_base: Option<u16>,
     pub goal: String,
     /// The user's own words, resolved (see [`user_words`]).
@@ -118,7 +120,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
                     p.github_remote IS NOT NULL, t.delivery_mode, t.verification_level,
                     t.verification_source, t.base_branch, t.base_ref, t.base_commit, t.port_base,
                     t.goal, t.instructions, t.constraints, t.tests_required, t.builds_on,
-                    t.retry_of, p.path
+                    t.retry_of, p.path, t.branch
              FROM tasks AS t
              JOIN projects AS p ON p.id = t.project_id
              JOIN agents AS a ON a.id = t.supervisor_id
@@ -149,6 +151,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
                     builds_on: r.get(18)?,
                     retry_of: r.get(19)?,
                     path: r.get(20)?,
+                    branch: r.get(21)?,
                 })
             },
         )
@@ -187,6 +190,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
         base_branch: raw.base_branch,
         base_ref: raw.base_ref,
         base_commit: raw.base_commit,
+        branch: raw.branch,
         port_base,
         goal: raw.goal,
         user_words: user_words(conn, task)?,
@@ -219,6 +223,7 @@ struct RawBrief {
     builds_on: Option<TaskId>,
     retry_of: Option<TaskId>,
     path: String,
+    branch: Option<String>,
 }
 
 /// The user's own words for `task`, copied by the app: the stored message's text when the task

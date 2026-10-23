@@ -31,6 +31,26 @@ impl GithubDeliveryProbe {
 }
 
 impl DeliveryProbe for GithubDeliveryProbe {
+    fn remote_branch_taken<'a>(
+        &'a self,
+        project: &'a ProjectRow,
+        branch: &'a str,
+    ) -> BoxFuture<'a, Option<bool>> {
+        Box::pin(async move {
+            let repo = project
+                .github_remote
+                .as_deref()
+                .and_then(RepoRef::from_project)?;
+            match self.github.branch_head(&repo, branch).await {
+                Ok(head) => Some(head.is_some()),
+                Err(e) => {
+                    tracing::info!(%repo, error = %e.plain(), "GitHub couldn't be asked about a branch name");
+                    None
+                }
+            }
+        })
+    }
+
     fn probe<'a>(
         &'a self,
         project: &'a ProjectRow,

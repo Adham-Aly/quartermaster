@@ -1,7 +1,7 @@
 //! Tasks: their rows, status changes, links and the facts the watchdogs read.
 //!
 //! - [`insert`] draws the task's ID at random inside the caller's transaction (see [`crate::ids`]),
-//!   so the row goes in with its final branch in one statement.
+//!   with the branch the caller picked ([`first_free_branch`], in the same transaction).
 //! - [`set_status`] and [`set_closed`] are compare-and-swaps: they fail if the row moved, and write
 //!   the `task.status` event in the same transaction as the change.
 //! - [`signs`] reads the watchdogs' signs of life in one query.
@@ -49,6 +49,8 @@ pub struct NewTask {
     pub base_branch: Option<String>,
     pub base_ref: Option<String>,
     pub base_commit: Option<CommitSha>,
+    /// The task's branch, named after its work ([`first_free_branch`]); `None` for a folder task.
+    pub branch: Option<String>,
     pub port_base: Option<u16>,
     pub at: Timestamp,
 }
@@ -302,7 +304,9 @@ pub fn insert(conn: &Connection, task: &NewTask) -> Result<TaskId, StoreError> {
             task.base_branch,
             task.base_ref,
             task.base_commit.as_ref().map(CommitSha::as_str),
-            (task.delivery != DeliveryMode::Folder).then(|| id.branch()),
+            task.branch
+                .as_deref()
+                .filter(|_| task.delivery != DeliveryMode::Folder),
             task.port_base.map(i64::from),
             i64::from(task.escalations),
             to_millis(task.at),
@@ -485,6 +489,48 @@ pub fn set_head_commit(
         params![task, head.as_str()],
     )?;
     Ok(())
+}
+
+/// The first of `candidates` no task row holds, open or closed; `None` when every one is taken.
+/// Call inside the transaction that records the task, so no other start takes it in between.
+pub fn first_free_branch(
+    conn: &Connection,
+    candidates: &[String],
+) -> Result<Option<String>, StoreError> {
+    let mut stmt = conn.prepare("SELECT 1 FROM tasks WHERE branch = ?1")?;
+    for name in candidates {
+        if !stmt.exists(params![name])? {
+            return Ok(Some(name.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// The task whose branch is `branch`, open or closed.
+pub fn with_branch(conn: &Connection, branch: &str) -> Result<Option<TaskRow>, StoreError> {
+    let raw = conn
+        .query_row(
+            &format!("SELECT {COLUMNS} FROM tasks WHERE branch = ?1"),
+            params![branch],
+            raw,
+        )
+        .optional()?;
+    raw.map(Raw::parse).transpose()
+}
+
+/// Renames a task's branch from `from` to `to`, only while it is still `from` (prepare's re-pick,
+/// before any worktree or commit exists). Returns whether the row changed.
+pub fn set_branch(
+    conn: &Connection,
+    task: TaskId,
+    from: &str,
+    to: &str,
+) -> Result<bool, StoreError> {
+    let changed = conn.execute(
+        "UPDATE tasks SET branch = ?3 WHERE id = ?1 AND branch = ?2",
+        params![task, from, to],
+    )?;
+    Ok(changed == 1)
 }
 
 /// Records a base settled again (a queued task's re-route): the typed branch, the ref and the
@@ -738,4 +784,112 @@ pub fn last_event(
         .optional()?;
     row.map(|(id, payload)| Ok((id, json_value("events.payload", &payload)?)))
         .transpose()
+}
+
+#[cfg(test)]
+mod branch_tests {
+    use super::*;
+    use crate::{connection, schema, seat};
+    use qm_types::domain::DeliveryMode;
+
+    /// A migrated in-memory database with a project and the Quartermaster.
+    fn db() -> (Connection, ProjectId, AgentId) {
+        let mut conn = connection::open_memory().expect("open");
+        schema::migrate(&mut conn).expect("migrate");
+        let at = Timestamp::now();
+        let dir = std::env::temp_dir();
+        let qm = seat::ensure_quartermaster(&conn, &dir, at)
+            .expect("quartermaster")
+            .id;
+        conn.execute(
+            "INSERT INTO projects (name, path, origin, default_branch, delivery_mode,
+                 merge_method, created_at, seq)
+             VALUES ('p', '/tmp/p', 'linked', 'main', 'direct_pr', 'merge', 0, ?1)",
+            params![seq::next(at)],
+        )
+        .expect("project");
+        let project = ProjectId::new(conn.last_insert_rowid());
+        (conn, project, qm)
+    }
+
+    fn new_task(project: ProjectId, qm: AgentId, branch: Option<&str>) -> NewTask {
+        NewTask {
+            project,
+            supervisor: qm,
+            kind: TaskKind::Build,
+            title: "fix(upload): retry on slow tmp".to_owned(),
+            goal: "g".to_owned(),
+            user_words: String::new(),
+            user_words_message: None,
+            instructions: serde_json::json!([]),
+            constraints: serde_json::json!([]),
+            tests_required: false,
+            builds_on: None,
+            parent: None,
+            retry_of: None,
+            escalations: 0,
+            later_steps: serde_json::json!([]),
+            secondmate_request: None,
+            delivery: DeliveryMode::DirectPr,
+            verification: None,
+            base_branch: None,
+            base_ref: None,
+            base_commit: None,
+            branch: branch.map(str::to_owned),
+            port_base: None,
+            at: Timestamp::now(),
+        }
+    }
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| (*n).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_first_name_no_task_holds_is_picked_closed_tasks_included() {
+        let (conn, project, qm) = db();
+        let all = names(&["fix/x", "fix/x-2", "fix/x-3"]);
+        assert_eq!(
+            first_free_branch(&conn, &all).expect("pick").as_deref(),
+            Some("fix/x")
+        );
+        let first = insert(&conn, &new_task(project, qm, Some("fix/x"))).expect("insert");
+        conn.execute(
+            "UPDATE tasks SET status = 'closed', outcome = 'landed', closed_at = 0 WHERE id = ?1",
+            params![first],
+        )
+        .expect("close");
+        assert_eq!(
+            first_free_branch(&conn, &all).expect("pick").as_deref(),
+            Some("fix/x-2"),
+            "a closed task's name still counts as taken"
+        );
+        insert(&conn, &new_task(project, qm, Some("fix/x-2"))).expect("insert");
+        insert(&conn, &new_task(project, qm, Some("fix/x-3"))).expect("insert");
+        assert_eq!(first_free_branch(&conn, &all).expect("pick"), None);
+        let found = with_branch(&conn, "fix/x").expect("read").expect("a task");
+        assert_eq!(found.id, first);
+        assert_eq!(found.branch, "fix/x");
+    }
+
+    #[test]
+    fn a_folder_task_records_no_branch() {
+        let (conn, project, qm) = db();
+        let mut new = new_task(project, qm, Some("fix/x"));
+        new.delivery = DeliveryMode::Folder;
+        let task = insert(&conn, &new).expect("insert");
+        let row = load(&conn, task).expect("read").expect("row");
+        assert_eq!(row.branch, "");
+        assert!(with_branch(&conn, "fix/x").expect("read").is_none());
+    }
+
+    #[test]
+    fn a_branch_is_renamed_only_from_its_recorded_name() {
+        let (conn, project, qm) = db();
+        let task = insert(&conn, &new_task(project, qm, Some("fix/x"))).expect("insert");
+        assert!(!set_branch(&conn, task, "fix/other", "fix/x-2").expect("update"));
+        assert!(set_branch(&conn, task, "fix/x", "fix/x-2").expect("update"));
+        let row = load(&conn, task).expect("read").expect("row");
+        assert_eq!(row.branch, "fix/x-2");
+    }
 }

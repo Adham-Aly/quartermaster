@@ -22,22 +22,23 @@ pub struct ReconcileProject {
     pub project: ProjectId,
     /// Your checkout (`projects.path`).
     pub checkout: PathBuf,
-    /// The tasks that should have a worktree now: started (past `preparing`) and not yet
-    /// closed.
-    pub tasks_with_worktrees: BTreeSet<TaskId>,
+    /// The tasks that should have a worktree now (started, past `preparing`, and not yet
+    /// closed), each with the branch recorded for it.
+    pub tasks_with_worktrees: BTreeMap<TaskId, String>,
 }
 
 /// Everything startup reconciliation found. Empty lists mean disk and tasks agree.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReconcileReport {
-    /// Worktrees the app made (under the data directory's `tasks/`, or on a task branch) that no
-    /// task accounts for.
+    /// Worktrees the app made (under the data directory's `tasks/`, or on an old-style
+    /// `qm/task-*` branch) that no task accounts for.
     pub unexpected_worktrees: Vec<UnexpectedWorktree>,
     /// Tasks that should have a worktree but don't.
     pub missing_worktrees: Vec<MissingWorktree>,
     /// Worktrees git still lists whose folder is gone.
     pub stale_registrations: Vec<StaleRegistration>,
-    /// Task branches with no worktree and no task that should have one.
+    /// Old-style `qm/task-*` branches with no worktree and no task that should have one. A
+    /// branch named after its work isn't recognised by name, so it's never listed here.
     pub orphan_branches: Vec<OrphanBranch>,
     /// Kept refs earlier versions saved closed tasks' unmerged work to; deleted now, their commits
     /// left for git to garbage-collect.
@@ -82,7 +83,7 @@ pub enum UnexpectedReason {
         /// The task's branch.
         expected: String,
     },
-    /// It's on a task branch but outside the data directory's `tasks/` folder.
+    /// It's on an old-style task branch but outside the data directory's `tasks/` folder.
     OutsideTasksFolder,
     /// A folder at a task's worktree path that no project's repository lists.
     NotRegistered,
@@ -95,6 +96,8 @@ pub struct MissingWorktree {
     pub task: TaskId,
     /// Where it should be.
     pub expected_path: PathBuf,
+    /// The task's recorded branch.
+    pub branch: String,
     /// Whether the task's branch still exists (its committed work is safe).
     pub branch_exists: bool,
 }
@@ -107,7 +110,7 @@ pub struct StaleRegistration {
     pub branch: Option<String>,
 }
 
-/// A task branch with no worktree and no live task.
+/// An old-style task branch (`qm/task-0042`) with no worktree and no live task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrphanBranch {
     pub project: ProjectId,
@@ -156,9 +159,10 @@ impl Repo {
         Ok(())
     }
 
-    /// The task numbers this repository's task branches name: local `qm/task-*` branches and their
-    /// remote-tracking copies, whose work may come back under the same number.
-    pub fn task_numbers(&self) -> Result<Vec<TaskId>, GitError> {
+    /// The task numbers this repository's old-style task branches name: local `qm/task-*`
+    /// branches and their remote-tracking copies, whose work may come back under the same number.
+    /// Branches named after their work name no number, so they reserve none.
+    pub fn legacy_task_numbers(&self) -> Result<Vec<TaskId>, GitError> {
         let mut numbers: Vec<TaskId> = self
             .refs_under(&["refs/heads/qm", "refs/remotes"])?
             .into_iter()
@@ -167,7 +171,7 @@ impl Repo {
                     Some(remote) => remote.split_once('/')?.1,
                     None => name.strip_prefix("refs/heads/")?,
                 };
-                TaskId::from_branch(branch).ok()
+                TaskId::from_legacy_branch(branch).ok()
             })
             .collect();
         numbers.sort();
@@ -175,16 +179,17 @@ impl Repo {
         Ok(numbers)
     }
 
-    /// Every task branch (`qm/task-*`) in this repository with its task and commit, by task.
-    pub fn task_branches(&self) -> Result<Vec<(TaskId, CommitSha)>, GitError> {
-        let prefix = format!("refs/heads/{}", TaskId::BRANCH_PREFIX);
+    /// Every old-style task branch (`qm/task-*`) in this repository with its task and commit, by
+    /// task.
+    pub fn legacy_task_branches(&self) -> Result<Vec<(TaskId, CommitSha)>, GitError> {
+        let prefix = format!("refs/heads/{}", TaskId::LEGACY_BRANCH_PREFIX);
         let mut branches: Vec<(TaskId, CommitSha)> = self
             .refs_under(&["refs/heads/qm"])?
             .into_iter()
             .filter_map(|(name, commit)| {
                 name.strip_prefix(&prefix)?;
                 let short = name.strip_prefix("refs/heads/")?;
-                Some((TaskId::from_branch(short).ok()?, commit))
+                Some((TaskId::from_legacy_branch(short).ok()?, commit))
             })
             .collect();
         branches.sort_by_key(|(task, _)| *task);
@@ -257,7 +262,7 @@ fn reconcile_project(
 ) -> Result<(), GitError> {
     let repo = Repo::open(git.clone(), &project.checkout)?;
     let worktrees = repo.worktrees()?;
-    let branches = repo.task_branches()?;
+    let legacy_branches = repo.legacy_task_branches()?;
     let legacy = repo.legacy_kept_refs()?;
     let id = project.project;
     let mut seen: BTreeSet<TaskId> = BTreeSet::new();
@@ -266,10 +271,15 @@ fn reconcile_project(
     for entry in worktrees.iter().filter(|w| !w.is_main) {
         registered.insert(entry.path.clone());
         let path_task = task_of_path(tasks_dir, &entry.path);
-        let branch_task = entry
-            .branch
-            .as_deref()
-            .and_then(|b| TaskId::from_branch(b).ok());
+        // A recorded task branch, or an old-style one, names its task.
+        let branch_task = entry.branch.as_deref().and_then(|b| {
+            project
+                .tasks_with_worktrees
+                .iter()
+                .find(|(_, recorded)| recorded.as_str() == b)
+                .map(|(task, _)| *task)
+                .or_else(|| TaskId::from_legacy_branch(b).ok())
+        });
         if path_task.is_none() && branch_task.is_none() {
             // One of your own worktrees: not the app's business.
             continue;
@@ -297,35 +307,45 @@ fn reconcile_project(
             None => report
                 .unexpected_worktrees
                 .push(unexpected(UnexpectedReason::OutsideTasksFolder)),
-            Some(task) if !project.tasks_with_worktrees.contains(&task) => report
-                .unexpected_worktrees
-                .push(unexpected(UnexpectedReason::NoLiveTask)),
-            Some(task) if entry.branch.as_deref() != Some(task.branch().as_str()) => {
-                report
+            Some(task) => match project.tasks_with_worktrees.get(&task) {
+                None => report
                     .unexpected_worktrees
-                    .push(unexpected(UnexpectedReason::WrongBranch {
-                        expected: task.branch(),
-                    }));
-                seen.insert(task);
-            }
-            Some(task) => {
-                seen.insert(task);
-            }
+                    .push(unexpected(UnexpectedReason::NoLiveTask)),
+                Some(expected) if entry.branch.as_deref() != Some(expected.as_str()) => {
+                    report
+                        .unexpected_worktrees
+                        .push(unexpected(UnexpectedReason::WrongBranch {
+                            expected: expected.clone(),
+                        }));
+                    seen.insert(task);
+                }
+                Some(_) => {
+                    seen.insert(task);
+                }
+            },
         }
     }
 
-    for task in project.tasks_with_worktrees.difference(&seen) {
+    for (task, branch) in &project.tasks_with_worktrees {
+        if seen.contains(task) {
+            continue;
+        }
         report.missing_worktrees.push(MissingWorktree {
             project: id,
             task: *task,
             expected_path: tasks_dir.join(task.to_string()).join("worktree"),
-            branch_exists: branches.iter().any(|(t, _)| t == task),
+            branch: branch.clone(),
+            branch_exists: !branch.is_empty() && repo.local_branch_commit(branch)?.is_some(),
         });
     }
 
-    for (task, commit) in branches {
-        let branch = task.branch();
-        if !project.tasks_with_worktrees.contains(&task) && !checked_out.contains(&branch) {
+    for (task, commit) in legacy_branches {
+        let branch = task.legacy_branch();
+        let recorded = project.tasks_with_worktrees.values().any(|b| *b == branch);
+        if !project.tasks_with_worktrees.contains_key(&task)
+            && !recorded
+            && !checked_out.contains(&branch)
+        {
             report.orphan_branches.push(OrphanBranch {
                 project: id,
                 task,

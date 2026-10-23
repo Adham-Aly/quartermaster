@@ -1,4 +1,4 @@
-//! Commit, pull-request and other name checks.
+//! Commit, pull-request and other name checks, and the branch names tasks are given.
 //!
 //! "`type(scope): summary`, lowercase imperative, at most 72 characters. No AI co-author trailer:
 //! Claude's attribution is switched off, provider-engine crewmates are told, and the check rejects
@@ -218,6 +218,90 @@ pub fn check_branch_name(name: &str) -> Result<(), Refusal> {
     }
 }
 
+/// The most characters a task branch has after its `type/`, suffix included.
+pub const BRANCH_NAME_CHARS: usize = 48;
+
+/// The highest suffix a task branch is given (`fix/x-99`) before the start is refused.
+pub const MAX_BRANCH_SUFFIX: u32 = 99;
+
+/// Lowercase ASCII letters and digits, every run of anything else one `-`, none at either end.
+fn slug(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+/// `slug` cut to at most `cap` characters: at the last `-` at or before the cap, or at the cap
+/// when one word is longer.
+fn cut(slug: &str, cap: usize) -> &str {
+    if slug.len() <= cap {
+        return slug;
+    }
+    if slug.as_bytes()[cap] == b'-' {
+        return &slug[..cap];
+    }
+    match slug[..cap].rfind('-') {
+        Some(at) if at > 0 => &slug[..at],
+        _ => &slug[..cap],
+    }
+}
+
+/// A task title's type and the rest of its branch name, unsuffixed and uncut:
+/// `fix(upload): retry on slow tmp` gives `("fix", "upload-retry-on-slow-tmp")`.
+fn branch_parts(title: &str) -> (String, String) {
+    let (head, summary) = title.split_once(':').unwrap_or(("", title));
+    let (ty, scope) = match head.split_once('(') {
+        Some((ty, rest)) => (ty, rest.trim_end_matches(')')),
+        None => (head, ""),
+    };
+    let ty = Some(slug(ty))
+        .filter(|t| !t.is_empty() && !t.contains('-'))
+        .unwrap_or_else(|| "chore".to_owned());
+    let rest = slug(&format!("{scope} {summary}"));
+    (ty, rest)
+}
+
+/// The branch a task titled `title` is given when its name is free, `type/scope-summary`
+/// (`fix(upload): retry on slow tmp` gives `fix/upload-retry-on-slow-tmp`), at most
+/// [`BRANCH_NAME_CHARS`] after the `type/`. A title with nothing usable gives `type/change`.
+pub fn branch_for_title(title: &str) -> String {
+    branch_with_suffix(title, 1)
+}
+
+/// The names a task titled `title` may get, in order: [`branch_for_title`], then the same name
+/// with `-2` … `-99`, each cut short enough that the suffix fits the cap. All distinct.
+pub fn branch_candidates(title: &str) -> Vec<String> {
+    (1..=MAX_BRANCH_SUFFIX)
+        .map(|n| branch_with_suffix(title, n))
+        .collect()
+}
+
+fn branch_with_suffix(title: &str, n: u32) -> String {
+    let (ty, rest) = branch_parts(title);
+    let suffix = if n > 1 {
+        format!("-{n}")
+    } else {
+        String::new()
+    };
+    let rest = cut(&rest, BRANCH_NAME_CHARS - suffix.len());
+    let rest = if rest.is_empty() { "change" } else { rest };
+    let name = format!("{ty}/{rest}{suffix}");
+    if check_branch_name(&name).is_ok() {
+        name
+    } else {
+        format!("{ty}/change{suffix}")
+    }
+}
+
 /// A name for a secondmate or a project as shown in the TUI and the context block: one line, not
 /// empty, at most 40 characters, with no marker prefix.
 ///
@@ -264,5 +348,75 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn a_branch_is_named_after_the_title() {
+        assert_eq!(
+            branch_for_title("fix(upload): retry on slow tmp"),
+            "fix/upload-retry-on-slow-tmp"
+        );
+        assert_eq!(
+            branch_for_title("docs: tidy the readme"),
+            "docs/tidy-the-readme"
+        );
+        assert_eq!(
+            branch_for_title("feat(qm-core)!: Drop the OLD -- API, again"),
+            "feat/qm-core-drop-the-old-api-again"
+        );
+        assert_eq!(
+            branch_for_title("fix(tui): caf\u{e9} menu"),
+            "fix/tui-caf-menu"
+        );
+        assert_eq!(
+            branch_for_title("fix: \u{65e5}\u{672c}\u{8a9e}"),
+            "fix/change"
+        );
+    }
+
+    #[test]
+    fn a_long_title_is_cut_at_a_word_within_the_cap() {
+        assert_eq!(
+            branch_for_title("feat(plans): send plan replies straight from the page"),
+            "feat/plans-send-plan-replies-straight-from-the-page"
+        );
+        let name = branch_for_title("feat(plans): send plan replies straight from the plan page");
+        assert_eq!(name, "feat/plans-send-plan-replies-straight-from-the-plan");
+        let long_word = branch_for_title(&format!("fix: {}", "a".repeat(60)));
+        assert_eq!(long_word, format!("fix/{}", "a".repeat(BRANCH_NAME_CHARS)));
+        // A word ending exactly at the cap is kept whole.
+        let exact = format!("fix: {} bb", "a".repeat(BRANCH_NAME_CHARS));
+        assert_eq!(
+            branch_for_title(&exact),
+            format!("fix/{}", "a".repeat(BRANCH_NAME_CHARS))
+        );
+    }
+
+    #[test]
+    fn candidates_leave_room_for_the_suffix_and_are_valid_and_distinct() {
+        let long = format!("fix: {}", "a".repeat(80));
+        for title in [
+            "fix(upload): retry on slow tmp",
+            "feat(plans): send plan replies straight from the page and more words",
+            long.as_str(),
+            "fix: \u{65e5}\u{672c}",
+        ] {
+            let all = branch_candidates(title);
+            assert_eq!(all.len(), MAX_BRANCH_SUFFIX as usize);
+            assert_eq!(all[0], branch_for_title(title));
+            let distinct: std::collections::BTreeSet<_> = all.iter().collect();
+            assert_eq!(distinct.len(), all.len(), "{title}");
+            for (i, name) in all.iter().enumerate() {
+                check_branch_name(name).expect("a valid branch name");
+                let (_, rest) = name.split_once('/').expect("type/rest");
+                assert!(rest.len() <= BRANCH_NAME_CHARS, "{name}");
+                if i > 0 {
+                    assert!(name.ends_with(&format!("-{}", i + 1)), "{name}");
+                }
+            }
+        }
+        let all = branch_candidates("fix(upload): retry on slow tmp");
+        assert_eq!(all[1], "fix/upload-retry-on-slow-tmp-2");
+        assert_eq!(all[98], "fix/upload-retry-on-slow-tmp-99");
     }
 }

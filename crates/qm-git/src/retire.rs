@@ -1,7 +1,7 @@
 //! Retiring a task's worktree.
 //!
 //! When a task closes, by any exit (landed, failed, stopped, discarded), its worktree is removed
-//! (uncommitted changes with it) and so is the branch `qm/task-0042`, with its compare-and-swap on
+//! (uncommitted changes with it) and so is its branch (the one recorded with the task), with its compare-and-swap on
 //! the tip read here. Unmerged commits are no longer saved anywhere: once the branch is gone they
 //! are unreachable and git garbage-collects them as it does any other unreachable object. The one
 //! exception is a delivered branch-only task, whose branch is the deliverable and is kept
@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use qm_types::data_dir::TaskPaths;
-use qm_types::ids::{CommitSha, TaskId};
+use qm_types::ids::CommitSha;
 
 use crate::error::GitError;
 use crate::repo::{Repo, WorktreeEntry, normalize_path};
@@ -24,8 +24,9 @@ use crate::repo::{Repo, WorktreeEntry, normalize_path};
 /// Everything needed to retire a task's worktree.
 #[derive(Clone, Copy, Debug)]
 pub struct RetireSpec<'a> {
-    /// The task; names the worktree folder and the branch.
-    pub task: TaskId,
+    /// The task's branch, as recorded with the task (`fix/upload-retry-on-slow-tmp`, or an old
+    /// task's `qm/task-0042`).
+    pub branch: &'a str,
     /// The task's folders; the worktree is at `paths.worktree`.
     pub paths: &'a TaskPaths,
     /// Leave the task's branch in place after removing the worktree: delivered branch-only work,
@@ -34,10 +35,11 @@ pub struct RetireSpec<'a> {
 }
 
 impl<'a> RetireSpec<'a> {
-    /// A retirement of `task` with the branch deleted; set [`RetireSpec::keep_branch`] to keep it.
-    pub fn new(task: TaskId, paths: &'a TaskPaths) -> Self {
+    /// A retirement of the task on `branch` with the branch deleted; set
+    /// [`RetireSpec::keep_branch`] to keep it.
+    pub fn new(branch: &'a str, paths: &'a TaskPaths) -> Self {
         Self {
-            task,
+            branch,
             paths,
             keep_branch: false,
         }
@@ -92,12 +94,16 @@ impl Repo {
     /// deletion's compare-and-swap fail (an error; calling again picks it up).
     pub fn retire(&self, spec: &RetireSpec<'_>) -> Result<Retirement, GitError> {
         let _guard = self.write_lock();
-        let task = spec.task;
+        let branch = spec.branch;
         let path = normalize_path(&spec.paths.worktree);
         let worktrees = self.worktrees()?;
         let ours = worktrees.iter().find(|w| w.path == path && !w.is_main);
-        let present = worktree_present(task, &path, ours.is_some())?;
-        let branch_tip = self.resolve_commit(&format!("refs/heads/{}", task.branch()))?;
+        let present = worktree_present(branch, &path, ours.is_some())?;
+        let branch_tip = if branch.is_empty() {
+            None
+        } else {
+            self.resolve_commit(&format!("refs/heads/{branch}"))?
+        };
 
         let worktree = self.remove_task_worktree(ours, &path, present)?;
         let branch = if spec.keep_branch {
@@ -105,7 +111,7 @@ impl Repo {
                 commit,
             })
         } else {
-            self.delete_task_branch(task, branch_tip)?
+            self.delete_task_branch(branch, branch_tip)?
         };
         Ok(Retirement { worktree, branch })
     }
@@ -137,17 +143,16 @@ impl Repo {
     /// in another worktree.
     fn delete_task_branch(
         &self,
-        task: TaskId,
+        branch: &str,
         tip: Option<CommitSha>,
     ) -> Result<BranchRemoval, GitError> {
         let Some(tip) = tip else {
             return Ok(BranchRemoval::AlreadyGone);
         };
-        let branch = task.branch();
         let elsewhere = self
             .worktrees()?
             .into_iter()
-            .find(|w| w.branch.as_deref() == Some(branch.as_str()) && w.prunable.is_none());
+            .find(|w| w.branch.as_deref() == Some(branch) && w.prunable.is_none());
         if let Some(other) = elsewhere {
             return Ok(BranchRemoval::CheckedOutElsewhere { path: other.path });
         }
@@ -221,7 +226,7 @@ impl Repo {
 /// Whether the task's worktree is there with work that could be in it. An absent path or
 /// an empty leftover folder is not; anything else at the path that isn't a registered git
 /// worktree is an error, and is left untouched.
-fn worktree_present(task: TaskId, path: &Path, registered: bool) -> Result<bool, GitError> {
+fn worktree_present(branch: &str, path: &Path, registered: bool) -> Result<bool, GitError> {
     if registered && path.join(".git").is_file() {
         return Ok(true);
     }
@@ -230,7 +235,7 @@ fn worktree_present(task: TaskId, path: &Path, registered: bool) -> Result<bool,
     }
     Err(GitError::WorktreePathOccupied {
         path: path.to_owned(),
-        branch: task.branch(),
+        branch: branch.to_owned(),
     })
 }
 
