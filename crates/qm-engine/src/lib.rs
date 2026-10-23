@@ -38,6 +38,7 @@
 //! the [`supervisor`].
 
 mod activity;
+mod context;
 mod engine;
 mod event;
 mod lines;
@@ -49,6 +50,7 @@ pub mod supervisor;
 mod tool;
 
 pub use activity::{ACTIVITY_EVERY, ActivityGate};
+pub use context::{AutocompactPoint, ContextBasis, ContextReading, ReportedUsage};
 pub use engine::{DetectedModel, Engine, EngineError, UsageReading, UsageWindow};
 pub use event::{
     ActivityKind, CallUsage, CloseReason, EngineEvent, FailureKind, InitReport, ProviderError,
@@ -58,7 +60,7 @@ pub use event::{
 pub use lines::LineBuffer;
 pub use meter::{TurnCounters, TurnMeter};
 pub use session::{
-    EVENT_BUFFER, EngineSide, InputBlock, SessionCommand, SessionHandle, TurnInput, session_channel,
+    EVENT_BUFFER, EngineSide, EventTap, InputBlock, SessionCommand, SessionHandle, TurnInput, session_channel,
 };
 pub use spec::{AccountRef, Builtins, SessionLimits, SessionSpec, SystemPrompt};
 pub use tool::{ToolCallId, ToolDescriptor, ToolResult};

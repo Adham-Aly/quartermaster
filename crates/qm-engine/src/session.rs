@@ -6,6 +6,7 @@ use crate::tool::{ToolCallId, ToolResult};
 use qm_types::ids::ModelId;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// How many events an engine may get ahead of the core before it waits.
@@ -72,11 +73,25 @@ pub enum InputBlock {
     },
 }
 
+/// A passive observer of a session's events: it sees each one before the core does, and only
+/// looks.
+pub type EventTap = Arc<dyn Fn(&EngineEvent) + Send + Sync>;
+
 /// The core's end of a session.
-#[derive(Debug)]
 pub struct SessionHandle {
     commands: mpsc::UnboundedSender<SessionCommand>,
     events: mpsc::Receiver<EngineEvent>,
+    tap: Option<EventTap>,
+}
+
+impl std::fmt::Debug for SessionHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionHandle")
+            .field("commands", &self.commands)
+            .field("events", &self.events)
+            .field("tap", &if self.tap.is_some() { "set" } else { "none" })
+            .finish()
+    }
 }
 
 /// The engine's end of a session.
@@ -94,6 +109,7 @@ pub fn session_channel() -> (SessionHandle, EngineSide) {
         SessionHandle {
             commands: cmd_tx,
             events: ev_rx,
+            tap: None,
         },
         EngineSide {
             commands: cmd_rx,
@@ -108,9 +124,21 @@ impl SessionHandle {
         self.commands.send(command).map_err(|_| EngineError::Closed)
     }
 
-    /// The next event; `None` after `SessionClosed` once the engine side is gone.
+    /// Shows every event this handle yields to `tap` first. The tap only looks.
+    #[must_use]
+    pub fn observed(mut self, tap: EventTap) -> Self {
+        self.tap = Some(tap);
+        self
+    }
+
+    /// The next event; `None` after `SessionClosed` once the engine side is gone. Cancel-safe: the
+    /// tap runs synchronously after `recv` returns.
     pub async fn next_event(&mut self) -> Option<EngineEvent> {
-        self.events.recv().await
+        let event = self.events.recv().await?;
+        if let Some(tap) = &self.tap {
+            tap(&event);
+        }
+        Some(event)
     }
 
     pub fn start_turn(&self, input: TurnInput) -> Result<(), EngineError> {
