@@ -85,7 +85,8 @@ pub fn quartermaster(conn: &Connection) -> Result<Option<SeatAgent>, StoreError>
     read(conn)
 }
 
-/// Records the engine, account, model and effort of the session just opened.
+/// Records the engine, account, model and effort of the session just opened (and where its kept
+/// chat starts, `agents::CHAT_KEPT_FROM`).
 pub fn update_session(
     conn: &Connection,
     agent: AgentId,
@@ -95,8 +96,19 @@ pub fn update_session(
     effort: Effort,
 ) -> Result<(), StoreError> {
     conn.execute(
-        "UPDATE agents SET engine = ?2, account_id = ?3, model = ?4, effort = ?5 WHERE id = ?1",
-        params![agent, engine, account, model, effort],
+        &format!(
+            "UPDATE agents SET engine = ?2, account_id = ?3, model = ?4, effort = ?5, \
+             {} WHERE id = ?1",
+            crate::agents::CHAT_KEPT_FROM
+        ),
+        params![
+            agent,
+            engine,
+            account,
+            model,
+            effort,
+            crate::agents::chat_start()
+        ],
     )?;
     Ok(())
 }

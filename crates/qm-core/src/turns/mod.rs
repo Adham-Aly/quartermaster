@@ -154,7 +154,8 @@ pub struct TurnLoop {
     open: OpenTrouble,
     /// The note the next turn that takes wakes carries after a restart cut a wake turn short.
     restart_note: Option<String>,
-    shutting_down: bool,
+    /// Why the loop is ending, once it is.
+    ending: Option<LoopEnd>,
     turn_running: bool,
     running_message: Option<MessageId>,
     running_turn: Option<TurnId>,
@@ -170,7 +171,7 @@ impl fmt::Debug for TurnLoop {
             .field("agent", &self.agent)
             .field("queue", &self.queue)
             .field("turn_running", &self.turn_running)
-            .field("shutting_down", &self.shutting_down)
+            .field("ending", &self.ending)
             .finish_non_exhaustive()
     }
 }
@@ -189,6 +190,15 @@ struct OpenTrouble {
     blocked: bool,
     /// The failure has been shown once.
     shown: bool,
+}
+
+/// Why the loop ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoopEnd {
+    /// The app quits: the session closes and its transcript stays, to resume at the next start.
+    Quit,
+    /// The secondmate was retired: the session is forgotten, transcript and all.
+    Retire,
 }
 
 /// What an input asks of a running turn.
@@ -219,7 +229,7 @@ impl TurnLoop {
             next_open: OpenReason::Startup,
             open: OpenTrouble::default(),
             restart_note: None,
-            shutting_down: false,
+            ending: None,
             turn_running: false,
             running_message: None,
             running_turn: None,
@@ -263,16 +273,20 @@ impl TurnLoop {
             self.ensure_session().await;
         }
         loop {
-            if self.shutting_down {
-                // Retired, or the app is quitting: either way the conversation is over.
-                self.forget_session().await;
+            if self.ending.is_some() {
+                // Quitting closes the session and keeps its transcript, so the next start resumes
+                // the conversation the chat still shows. Retiring ends it for good.
+                match self.ending {
+                    Some(LoopEnd::Retire) => self.forget_session().await,
+                    _ => self.close_session().await,
+                }
                 self.publish();
                 return Ok(());
             }
             // Inputs that came in while the last turn finished are taken as idle ones first, so an
             // `Esc` meant for that turn never stops the next.
             self.drain_inputs();
-            if self.shutting_down {
+            if self.ending.is_some() {
                 continue;
             }
             self.publish();
@@ -335,8 +349,12 @@ impl TurnLoop {
                 Control::Nothing
             }
             Some(SeatInput::Interrupt) => Control::Interrupt,
+            Some(SeatInput::Retire) => {
+                self.ending = Some(LoopEnd::Retire);
+                Control::Shutdown
+            }
             Some(SeatInput::Shutdown) | None => {
-                self.shutting_down = true;
+                self.ending.get_or_insert(LoopEnd::Quit);
                 Control::Shutdown
             }
         }

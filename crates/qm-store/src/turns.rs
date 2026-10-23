@@ -473,6 +473,17 @@ pub fn interrupt_running(
     at: Timestamp,
 ) -> Result<Vec<Interrupted>, StoreError> {
     let tx = conn.transaction()?;
+    let rows = interrupt_running_in(&tx, agent, at)?;
+    tx.commit()?;
+    Ok(rows)
+}
+
+/// [`interrupt_running`] inside the caller's transaction.
+pub(crate) fn interrupt_running_in(
+    tx: &Connection,
+    agent: AgentId,
+    at: Timestamp,
+) -> Result<Vec<Interrupted>, StoreError> {
     let rows = {
         let mut stmt = tx.prepare(
             "UPDATE turns SET status = 'interrupted', outcome_reason = ?2, ended_at = ?3
@@ -488,9 +499,9 @@ pub fn interrupt_running(
         rows.collect::<Result<Vec<_>, _>>()?
     };
     for t in &rows {
-        wakes::release_unconsumed(&tx, t.turn)?;
+        wakes::release_unconsumed(tx, t.turn)?;
         insert_event(
-            &tx,
+            tx,
             kind::TURN_ENDED,
             agent,
             None,
@@ -500,7 +511,6 @@ pub fn interrupt_running(
             at,
         )?;
     }
-    tx.commit()?;
     Ok(rows)
 }
 

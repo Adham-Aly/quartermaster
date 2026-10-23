@@ -78,11 +78,19 @@ pub(crate) struct Fixture {
     loop_: TurnLoop,
     side: EngineSide,
     _inbox: crate::turn_io::SeatInbox,
-    dir: std::path::PathBuf,
+    dir: TempDir,
 }
-impl Drop for Fixture {
+/// The fixture's folder, removed when the fixture goes.
+pub(crate) struct TempDir(std::path::PathBuf);
+impl std::ops::Deref for TempDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 impl Fixture {
@@ -136,7 +144,7 @@ impl Fixture {
             loop_,
             side,
             _inbox: inbox,
-            dir,
+            dir: TempDir(dir),
         }
     }
     pub(crate) fn task_service(&self) -> (crate::tasks::TaskService, tokio::task::JoinHandle<()>) {
@@ -151,7 +159,7 @@ impl Fixture {
                 self.dir.join("home"),
                 self.dir.join("scratch"),
             ),
-            home: self.dir.clone(),
+            home: self.dir.to_path_buf(),
             engines: std::collections::BTreeMap::new(),
             supervisor: Arc::new(qm_engine::supervisor::OsSupervisor::new(None)),
             inbox: crate::inbox::Inbox::new(),
@@ -553,4 +561,44 @@ async fn unsuccessful_explicit_compaction_does_not_forget() {
         })
         .await
         .unwrap();
+}
+
+/// Runs the loop until `input` ends it, answering the one command it sends with `SessionClosed`.
+async fn the_command_that_ends(input: SeatInput) -> Option<SessionCommand> {
+    let Fixture {
+        loop_,
+        mut side,
+        _inbox: inbox,
+        dir: _dir,
+    } = Fixture::new().await;
+    inbox.send(input).unwrap();
+    let engine = async move {
+        let command = side.commands.recv().await;
+        side.events
+            .send(EngineEvent::SessionClosed {
+                reason: CloseReason::Requested,
+            })
+            .await
+            .unwrap();
+        command
+    };
+    let (result, command) = tokio::join!(loop_.run(), engine);
+    result.unwrap();
+    command
+}
+
+#[tokio::test]
+async fn quitting_closes_the_session_so_its_transcript_resumes_at_the_next_start() {
+    assert_eq!(
+        the_command_that_ends(SeatInput::Shutdown).await,
+        Some(SessionCommand::Close)
+    );
+}
+
+#[tokio::test]
+async fn retiring_forgets_the_session() {
+    assert_eq!(
+        the_command_that_ends(SeatInput::Retire).await,
+        Some(SessionCommand::Forget)
+    );
 }

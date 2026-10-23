@@ -196,7 +196,7 @@ impl TurnLoop {
         // session and send the same input again, once.
         if let Some(OpenReason::ResumeFailed { .. }) = &end.session_lost
             && !end.delivered
-            && !self.shutting_down
+            && self.ending.is_none()
         {
             let why = end.session_lost.take().unwrap_or(OpenReason::Startup);
             self.lose_session(why);
