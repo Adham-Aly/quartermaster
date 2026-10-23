@@ -30,6 +30,7 @@ The app checks every rule that can be checked as a fact: delivery, commit names,
 
 - Your brief says whether the task has a branch. A plain-folder task has none: there is no git to run in its folder, nothing is committed, and its edits are final.
 - Commit names are `type(scope): summary`: lowercase, imperative, at most 72 characters. Never add a `Co-Authored-By` line naming a model or an agent.
+- Commits and pull requests read like any contributor's, in your own words: never put a task ID (T-0042) in them.
 - Never squash your own commits. When you rebase, resolve conflicts yourself.
 - The project's hooks run on your commits. Fix what they report; never skip them.
 - Pushes to GitHub go through `pr_open`; a plain `git push` to GitHub fails by design.

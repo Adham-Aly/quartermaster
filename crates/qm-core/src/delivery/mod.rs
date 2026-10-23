@@ -301,10 +301,11 @@ pub(crate) fn callers_task(caller: &Caller) -> Result<TaskId, ToolFailure> {
         .ok_or_else(|| refuse("only a crewmate's task has a branch and a pull request"))
 }
 
-/// The five headings of a PR body: each at the start of a line, optionally after `#`s or `**`,
-/// case-insensitive. Returns the missing ones (Verified also when it's blank).
+/// The headings of a PR body, an ordinary one: Summary, then Testing. Each at the start of a line,
+/// optionally after `#`s or `**`, case-insensitive. Returns the missing ones (Testing also when
+/// it's blank).
 pub(crate) fn missing_body_headings(body: &str) -> Vec<&'static str> {
-    const HEADINGS: [&str; 5] = ["Intent", "What changed", "Verified", "Risk", "Not done"];
+    const HEADINGS: [&str; 2] = ["Summary", "Testing"];
     let lines: Vec<String> = body
         .lines()
         .map(|l| {
@@ -331,7 +332,7 @@ pub(crate) fn missing_body_headings(body: &str) -> Vec<&'static str> {
             missing.push(heading);
             continue;
         };
-        if heading == "Verified" {
+        if heading == "Testing" {
             // Not blank: something after the heading on its line, or before the next heading.
             let own = lines[i]
                 .split_once(':')

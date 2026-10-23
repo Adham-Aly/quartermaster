@@ -153,6 +153,7 @@ pub fn brief_facts(
         }
     } else {
         BriefWorkspace::Branch {
+            branch: inputs.branch.clone().ok_or_else(|| not_ready("branch"))?,
             start_ref: inputs.base_ref.clone().ok_or_else(|| not_ready("base"))?,
             start_commit: inputs
                 .base_commit

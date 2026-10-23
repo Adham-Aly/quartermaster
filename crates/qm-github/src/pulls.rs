@@ -555,7 +555,7 @@ mod tests {
             .expect("sha");
         let commit = SquashCommit {
             title: "fix(core): check only a task's own commits".to_owned(),
-            message: "## Intent\nThe body.".to_owned(),
+            message: "## Summary\nThe body.".to_owned(),
         };
         assert_eq!(
             squash_request(&sha, &commit),
@@ -563,7 +563,7 @@ mod tests {
                 "sha": "0123456789abcdef0123456789abcdef01234567",
                 "merge_method": "squash",
                 "commit_title": "fix(core): check only a task's own commits",
-                "commit_message": "## Intent\nThe body.",
+                "commit_message": "## Summary\nThe body.",
             })
         );
     }

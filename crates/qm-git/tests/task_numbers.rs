@@ -54,7 +54,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 #[test]
-fn local_and_remote_tracking_task_branches_name_their_numbers() {
+fn local_and_remote_tracking_legacy_task_branches_name_their_numbers() {
     let scratch = Scratch::new("numbers");
     let checkout = scratch.0.join("checkout");
     fs::create_dir_all(&checkout).expect("checkout folder");
@@ -74,13 +74,53 @@ fn local_and_remote_tracking_task_branches_name_their_numbers() {
         &["update-ref", "refs/remotes/origin/main", &head],
     );
     git(&checkout, &["branch", "feature/other", &head]);
+    // A branch named after its work names no number.
+    git(
+        &checkout,
+        &["branch", "fix/upload-retry-on-slow-tmp", &head],
+    );
 
     let numbers = Repo::open(Git::new(), &checkout)
         .expect("repo")
-        .task_numbers()
+        .legacy_task_numbers()
         .expect("numbers");
     assert_eq!(
         numbers,
         vec![TaskId::new(7).expect("7"), TaskId::new(42).expect("42")]
+    );
+}
+
+#[test]
+fn a_name_is_taken_by_a_local_or_an_origin_branch() {
+    let scratch = Scratch::new("taken");
+    let checkout = scratch.0.join("checkout");
+    fs::create_dir_all(&checkout).expect("checkout folder");
+    git(&checkout, &["init", "-q", "-b", "main"]);
+    fs::write(checkout.join("a.txt"), "one\n").expect("write");
+    git(&checkout, &["add", "a.txt"]);
+    git(&checkout, &["commit", "-q", "-m", "one"]);
+    let head = git(&checkout, &["rev-parse", "HEAD"]);
+    git(&checkout, &["branch", "fix/x", &head]);
+    git(
+        &checkout,
+        &["update-ref", "refs/remotes/origin/fix/x-2", &head],
+    );
+    // Another remote's branch doesn't count: the app pushes to origin only.
+    git(
+        &checkout,
+        &["update-ref", "refs/remotes/fork/fix/x-3", &head],
+    );
+
+    let names: Vec<String> = ["fix/x", "fix/x-2", "fix/x-3", "fix/x-4"]
+        .iter()
+        .map(|n| (*n).to_owned())
+        .collect();
+    let taken = Repo::open(Git::new(), &checkout)
+        .expect("repo")
+        .taken_branch_names(&names)
+        .expect("taken");
+    assert_eq!(
+        taken.into_iter().collect::<Vec<_>>(),
+        vec!["fix/x".to_owned(), "fix/x-2".to_owned()]
     );
 }

@@ -95,10 +95,12 @@ pub struct BriefBuildsOn {
 /// files are the work, with no git and nothing to commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BriefWorkspace {
-    /// The task's own branch. `start_ref` is where it starts, as shown: `origin/main`
-    /// (`tasks.base_ref`), or for a review task the builder's branch `qm/task-0040`.
-    /// `start_commit` is the commit it starts at (`tasks.base_commit`).
+    /// The task's own branch, `branch` (`tasks.branch`: `fix/upload-retry-on-slow-tmp`).
+    /// `start_ref` is where it starts, as shown: `origin/main` (`tasks.base_ref`), or for a
+    /// review task the builder's branch. `start_commit` is the commit it starts at
+    /// (`tasks.base_commit`).
     Branch {
+        branch: String,
         start_ref: String,
         start_commit: CommitSha,
     },
@@ -255,13 +257,14 @@ fn header(out: &mut String, f: &BriefFacts) {
     };
     match &f.workspace {
         BriefWorkspace::Branch {
+            branch,
             start_ref,
             start_commit,
         } => {
             let _ = writeln!(
                 out,
                 "Branch {} from {} @ {} · {fate}",
-                f.task.branch(),
+                neutralise(branch),
                 neutralise(start_ref),
                 start_commit.short()
             );
@@ -542,14 +545,19 @@ fn section_delivery(out: &mut String, f: &BriefFacts) {
         // Quick has no failed-check rules ("CI is green. Nothing more."), so no diagnosis
         // and no repair count.
         DeliveryMode::DirectPr if running_level(f) == Some(VerificationLevel::Quick) => out.push_str(
-            "Open the pull request with pr_open. Keep going until every check on your latest commit\n\
-             passes; the app wakes you with each result.\n",
+            "Open the pull request with pr_open, in your own words, with no task IDs. Keep going\n\
+             until every check on your latest commit passes; the app wakes you with each result.\n",
         ),
         DeliveryMode::DirectPr => {
             if running_level(f) == Some(VerificationLevel::Reviewed) {
-                out.push_str("Once the review passes, open the pull request with pr_open.");
+                out.push_str(
+                    "Once the review passes, open the pull request with pr_open, in your own words, \
+                     with no task IDs.",
+                );
             } else {
-                out.push_str("Open the pull request with pr_open.");
+                out.push_str(
+                    "Open the pull request with pr_open, in your own words, with no task IDs.",
+                );
             }
             let _ = write!(
                 out,

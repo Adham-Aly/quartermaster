@@ -33,7 +33,7 @@ pub struct WorktreeEntry {
     pub path: PathBuf,
     /// The commit checked out, absent in a repository with no commits yet.
     pub head: Option<CommitSha>,
-    /// The branch checked out, as a short name (`qm/task-0042`), or `None` when detached.
+    /// The branch checked out, as a short name (`fix/upload-retry-on-slow-tmp`), or `None` when detached.
     pub branch: Option<String>,
     /// Whether this is your checkout itself rather than a linked worktree.
     pub is_main: bool,
@@ -184,9 +184,37 @@ impl Repo {
         list_worktrees(&self.git, &self.root)
     }
 
+    /// Which of `names` are taken here: a local branch, or a remote-tracking one on `origin`.
+    /// One `git for-each-ref`; a new task's branch must be none of them.
+    pub fn taken_branch_names(
+        &self,
+        names: &[String],
+    ) -> Result<std::collections::BTreeSet<String>, GitError> {
+        let remote = format!("refs/remotes/{ORIGIN}/");
+        let existing: std::collections::BTreeSet<String> = self
+            .refs_under(&["refs/heads", remote.trim_end_matches('/')])?
+            .into_iter()
+            .filter_map(|(name, _)| {
+                name.strip_prefix("refs/heads/")
+                    .or_else(|| name.strip_prefix(remote.as_str()))
+                    .map(str::to_owned)
+            })
+            .collect();
+        Ok(names
+            .iter()
+            .filter(|n| existing.contains(n.as_str()))
+            .cloned()
+            .collect())
+    }
+
     /// The commit a local branch points at, if the branch exists.
     pub fn local_branch_commit(&self, branch: &str) -> Result<Option<CommitSha>, GitError> {
         self.resolve_commit(&format!("refs/heads/{branch}"))
+    }
+
+    /// The commit `origin`'s copy of a branch points at, as last fetched, if there is one.
+    pub fn origin_branch_commit(&self, branch: &str) -> Result<Option<CommitSha>, GitError> {
+        self.resolve_commit(&format!("refs/remotes/{ORIGIN}/{branch}"))
     }
 
     /// The commit a full ref (or any revision) resolves to, or `None` if it doesn't resolve.

@@ -37,7 +37,7 @@ pub struct PushSpec<'a> {
     /// [`PushOutcome::Redirected`] and nothing is pushed.
     pub url: &'a str,
     pub head: &'a CommitSha,
-    /// The branch on the remote, `qm/task-0042`.
+    /// The branch on the remote, `fix/upload-retry-on-slow-tmp`.
     pub branch: &'a str,
     /// What the app last pushed there; `None` means the branch must not exist yet.
     pub expected_remote: Option<&'a CommitSha>,
@@ -74,7 +74,7 @@ pub enum PushOutcome {
 pub struct InPlaceMerge<'a> {
     /// The branch your checkout must have checked out.
     pub target_branch: &'a str,
-    /// The task branch, `qm/task-0050`.
+    /// The task branch, `fix/upload-retry-on-slow-tmp`.
     pub branch: &'a str,
     /// The approved commit, merged by SHA.
     pub head: &'a CommitSha,

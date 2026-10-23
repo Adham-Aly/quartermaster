@@ -48,6 +48,18 @@ pub trait DeliveryProbe: Send + Sync + fmt::Debug {
         project: &'a ProjectRow,
         repo_root: &'a Path,
     ) -> BoxFuture<'a, DeliveryReadiness>;
+
+    /// Whether `branch` already exists on the project's GitHub repository: `Some(true)` or
+    /// `Some(false)` when GitHub answered, `None` when it can't be asked (no GitHub remote, or
+    /// GitHub unreadable). A task's branch name is checked with it before the branch is made.
+    fn remote_branch_taken<'a>(
+        &'a self,
+        project: &'a ProjectRow,
+        branch: &'a str,
+    ) -> BoxFuture<'a, Option<bool>> {
+        let _ = (project, branch);
+        Box::pin(async { None })
+    }
 }
 
 /// The probe that needs no GitHub API.

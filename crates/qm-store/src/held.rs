@@ -65,7 +65,7 @@ pub struct PushPayload {
     pub task: TaskId,
     /// The remote's name, `origin`.
     pub remote: String,
-    /// The task branch on the remote, `qm/task-0044`.
+    /// The task branch on the remote, `fix/upload-retry-on-slow-tmp`.
     pub branch: String,
     /// The approved commit.
     pub head: CommitSha,

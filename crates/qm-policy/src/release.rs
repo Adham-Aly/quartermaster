@@ -5,7 +5,7 @@
 
 use qm_types::domain::{Autonomy, TagKind, TaskKind};
 use qm_types::error::Refusal;
-use qm_types::ids::{CommitSha, TaskId};
+use qm_types::ids::CommitSha;
 
 /// Longest tag name accepted, in bytes.
 pub const MAX_TAG: usize = 128;
@@ -129,12 +129,18 @@ pub fn check_commit(commit: &str) -> Result<CommitSha, Refusal> {
         .map_err(|_| Refusal::new("The commit must be 40 hex digits (`git rev-parse <rev>`)."))
 }
 
-fn check_branch(branch: &str) -> Result<(), Refusal> {
-    if branch.starts_with(TaskId::BRANCH_PREFIX) {
+/// A release tag's branch must be a merged one, never a task's own branch. `is_task_branch` is the
+/// core's answer: a branch recorded for any task, or an old-style `qm/task-*` one.
+pub fn check_not_task_branch(is_task_branch: bool) -> Result<(), Refusal> {
+    if is_task_branch {
         return Err(Refusal::new(
             "A release tag is checked against a merged branch, never a task branch: name the branch it landed on, or leave `branch` out.",
         ));
     }
+    Ok(())
+}
+
+fn check_branch(branch: &str) -> Result<(), Refusal> {
     if branch.starts_with('-')
         || branch.starts_with("refs/")
         || !branch.bytes().all(|b| b.is_ascii_graphic())
@@ -207,7 +213,8 @@ mod tests {
             check_release_tag(kind, "v1", SHA, branch, tag_kind, message, "s").is_err()
         };
         assert!(refuse(TaskKind::Research, None, None, None));
-        assert!(refuse(TaskKind::Build, Some("qm/task-0042"), None, None));
+        assert!(check_not_task_branch(true).is_err());
+        assert!(check_not_task_branch(false).is_ok());
         assert!(refuse(TaskKind::Build, Some("-main"), None, None));
         assert!(refuse(
             TaskKind::Build,
