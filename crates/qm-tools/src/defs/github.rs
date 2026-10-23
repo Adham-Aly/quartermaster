@@ -1,8 +1,10 @@
 //! A crewmate's GitHub and CI tools.
 
 use super::{Ack, Held};
-use qm_types::domain::{CiDiagnosis, GithubReadKind, GithubWriteAction, TagKind};
-use qm_types::ids::{CommitSha, HeldActionId};
+use qm_types::domain::{
+    CiDiagnosis, GithubReadKind, GithubWriteAction, ReleaseLaunchStatus, TagKind,
+};
+use qm_types::ids::{CommitSha, HeldActionId, TaskId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -268,4 +270,76 @@ pub struct ProposeReleaseTagArgs {
     pub message: Option<String>,
     /// What this release is and why this commit, for the user's card.
     pub summary: String,
+}
+
+tool! {
+    /// What GitHub shows for a task's release tags: the tag, its GitHub release and the workflow
+    /// runs it started, as separate facts. Metadata only; it reads, never triggers or downloads.
+    ReleaseStatusTool {
+        name: "release_status",
+        class: Read,
+        roles: [Quartermaster, Secondmate],
+        args: ReleaseStatusArgs,
+        output: ReleaseStatus,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseStatusArgs {
+    // The task whose crewmate proposed the tag.
+    pub task: TaskId,
+    // Only this tag's launch (optional; every launch of the task without it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+}
+
+/// A task's release tag launches.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ReleaseStatus {
+    pub launches: Vec<ReleaseLaunchReport>,
+}
+
+impl ReleaseStatus {
+    pub fn new(launches: Vec<ReleaseLaunchReport>) -> Self {
+        Self { launches }
+    }
+}
+
+/// One launch: the tag, the GitHub release and the workflows, each in its own words.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ReleaseLaunchReport {
+    pub tag: String,
+    pub commit: String,
+    pub repo: String,
+    /// The launch: `published` only when GitHub showed the tag at the app's object.
+    pub status: ReleaseLaunchStatus,
+    /// The tag's publication, in words.
+    pub tag_status: String,
+    /// The GitHub release for the tag, once the tag is published and watched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
+    /// The workflows and their runs for the tag, once the tag is published and watched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflows: Option<String>,
+    /// Whether the app is still watching, and when it last read GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<String>,
+}
+
+impl ReleaseLaunchReport {
+    pub fn new(tag: String, commit: String, repo: String, status: ReleaseLaunchStatus) -> Self {
+        Self {
+            tag,
+            commit,
+            repo,
+            status,
+            tag_status: String::new(),
+            release: None,
+            workflows: None,
+            watch: None,
+        }
+    }
 }

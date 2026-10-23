@@ -28,6 +28,8 @@ Pushing a tag is a GitHub write: do it only when the user asks for this release.
    Crewmates never push tags themselves; never bypass the push fence. The tag must equal `v` +
    the workspace version, or dist refuses to build.
 7. Watch the Release workflow: `gh run list --workflow release.yml --limit 1`, `gh run watch <id>`.
+   (For a tag the app pushed, `release_status` and the `release_observed` wake show the release
+   and the runs as metadata; the checks below still need doing.)
 8. `gh release view vX.Y.Z` must list, for each target, `quartermaster-<triple>.tar.xz` and its
    `.sha256`, plus `sha256.sum`, `source.tar.gz` and `quartermaster-installer.sh`. The release
    body must be `.github/release-notes.md` (install command first, a warning not to click the
