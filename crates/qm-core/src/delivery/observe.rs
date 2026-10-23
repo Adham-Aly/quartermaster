@@ -419,7 +419,7 @@ pub async fn observe_once(
                 let (why, transient) = reason(e);
                 TagFact::Unavailable {
                     reason: format!(
-                        "GitHub shows no such tag, but couldn't show the repository either ({why})"
+                        "GitHub shows no such tag, and couldn't show the repository's releases either: {why}"
                     ),
                     transient,
                 }
