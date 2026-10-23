@@ -493,6 +493,7 @@ mod tests {
 
     #[test]
     fn a_watch_starts_once_on_a_published_launch_and_never_restarts() {
+        use ObserveState::{Done, Observing};
         let conn = db();
         let id = insert_launch(&conn, &launch("v3")).expect("insert");
         assert!(
@@ -509,14 +510,13 @@ mod tests {
         assert!(!start_observing(&conn, id).expect("again"), "once");
         let at = Timestamp::from_second(1_700_000_200).expect("at");
         let seen = serde_json::json!({ "reads": 1 });
-        use ObserveState::{Done, Observing};
         assert!(save_observation(&conn, id, Observing, Observing, &seen, at).expect("save"));
         let row = load(&conn, id).expect("load").expect("row");
         assert_eq!(row.observe_state, Some(Observing));
         assert_eq!(row.observation, Some(seen.clone()));
         assert_eq!(row.observed_at, Some(at));
         assert!(save_observation(&conn, id, Observing, Done, &seen, at).expect("end"));
-        assert!(to_observe(&conn).expect("list").is_empty());
+        assert_eq!(to_observe(&conn).expect("list").len(), 0, "ended");
         assert!(!save_observation(&conn, id, Done, Observing, &seen, at).expect("back"));
         assert!(!save_observation(&conn, id, Observing, Done, &seen, at).expect("stale"));
         assert!(save_observation(&conn, id, Done, Done, &seen, at).expect("refresh"));
