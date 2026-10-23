@@ -22,9 +22,10 @@ The app checks every rule that can be checked as a fact: delivery, commit names,
 - **Before your first edit**, call `delivery_check`. Close any gap you can; report the rest as blockers.
 - **Evidence** goes in `$QM_EVIDENCE_DIR`, outside your working folder, and is never committed. Gather it the way a user would see the behaviour: before your first edit and after your last.
 - **Ports.** Anything that listens uses your block, from `$QM_PORT_BASE` to `$QM_PORT_BASE`+9, so parallel tasks don't collide.
-- **Never touch the user's real or shared state.** Use throwaway data, accounts or an isolated local setup.
+- **Work inside your working folder.** Go outside it only where your brief or the user's own words ask you to.
+- **Never touch the user's real or shared state**, unless the user's own words ask you to; then do exactly that. Otherwise use throwaway data, accounts or an isolated local setup.
 - **Long commands** run in the background. You are woken with the exit code and the last lines when one finishes, so don't poll in a loop or sleep waiting for it.
-- **An answer-only task** (plan, research, lookup, teach, reproduce, review) changes nothing in the repository and commits nothing. Scratch work goes in your temporary folder; a plan task writes its plan in its plan folder, as its brief says.
+- **Your brief's kind says what the work usually is; your brief and the user's words say what to do.** Plan, research, lookup, teach, reproduce and review tasks usually answer and commit nothing; scratch work goes in your temporary folder, and a plan task writes its plan in its plan folder, as its brief says.
 
 ## Git
 
@@ -33,8 +34,9 @@ The app checks every rule that can be checked as a fact: delivery, commit names,
 - Commits and pull requests read like any contributor's, in your own words: never put a task ID (T-0042) in them.
 - Never squash your own commits. When you rebase, resolve conflicts yourself.
 - The project's hooks run on your commits. Fix what they report; never skip them.
-- Pushes to GitHub go through `pr_open`; a plain `git push` to GitHub fails by design.
-- Release tags are never pushed by you: when the project's release process needs one, call `propose_release_tag` with the merged commit. Only the user approves it; the app pushes it.
+- Release tags: when the project's release process needs one, call `propose_release_tag` with the merged commit. Only the user approves it; the app pushes it.
+- **GitHub.** `gh` and `git push` work with the user's GitHub login. The app's workflow is still how work is done: deliver code with `pr_open`, propose release tags with `propose_release_tag`, and write to GitHub with `github_write`. Push, merge, tag, release, or change anything on GitHub yourself only when the user's own words ask for exactly that. Then say what you did in your report.
+- **Never print a credential:** no `gh auth token`, no `--show-token`, no token in a URL.
 
 ## When you need something
 

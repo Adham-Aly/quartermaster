@@ -1,7 +1,6 @@
 //! Scope and chain of command.
 //!
-//! "Words plus an optional project list. The code refuses tool calls on other projects, and the
-//! words guide judgment within them."
+//! A secondmate's scope is words that guide its judgment; they refuse nothing.
 //!
 //! "Every tool that acts on a task checks that the caller started it, so the Quartermaster can see
 //! T-0045 under SM-02 but can only talk to SM-02. Chain of command is a code rule."
@@ -11,31 +10,7 @@
 
 use qm_types::domain::Role;
 use qm_types::error::Refusal;
-use qm_types::ids::{AgentId, ProjectId, SecondmateId, TaskId};
-
-/// A secondmate's charter scope, as the code sees it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProjectScope<'a> {
-    /// The Quartermaster, or a secondmate whose charter lists no projects: words only.
-    Unrestricted,
-    /// A secondmate's project list.
-    Listed(&'a [ProjectId]),
-}
-
-/// Refuses a tool call on a project outside the caller's scope.
-pub fn check_project(
-    scope: ProjectScope<'_>,
-    project: ProjectId,
-    project_name: &str,
-) -> Result<(), Refusal> {
-    match scope {
-        ProjectScope::Unrestricted => Ok(()),
-        ProjectScope::Listed(list) if list.contains(&project) => Ok(()),
-        ProjectScope::Listed(_) => Err(Refusal::new(format!(
-            "{project_name} is outside this secondmate's scope"
-        ))),
-    }
-}
+use qm_types::ids::{AgentId, SecondmateId, TaskId};
 
 /// Refuses acting on a task the caller didn't start: "direct report only".
 pub fn check_direct_report(

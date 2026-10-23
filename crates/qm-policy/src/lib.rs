@@ -13,7 +13,7 @@
 //! - [`verification`]: choosing a task's level and changing it on a running task.
 //! - [`names`], [`markers`]: commit, PR and other names, marker neutralising.
 //! - [`scope`], [`base_branch`], [`github`]: scope and chain of command, base branches, the GitHub
-//!   write fence.
+//!   write rules.
 //! - [`limits`], [`action_rule`]: the orchestrators' limits and the effective-action rule.
 //! - [`watchdog`]: both watchdog ladders, on the app's `Clock`.
 

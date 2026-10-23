@@ -47,7 +47,7 @@ pub struct SessionSpec {
     #[serde(default)]
     pub skills_dir: Option<PathBuf>,
     /// Variables added to the environment the engine builds from scratch for the agent's process
-    /// (`QM_EVIDENCE_DIR`, `QM_PORT_BASE`, the GitHub fence). Never a secret, and never
+    /// (`QM_EVIDENCE_DIR`, `QM_PORT_BASE`, `GIT_TERMINAL_PROMPT`). Never a secret, and never
     /// one of `qm_types::env::NEVER_PASSED_TO_AGENTS`.
     ///
     /// They are added to what the engine sets itself and may not replace it: a spec naming a key

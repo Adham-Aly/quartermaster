@@ -8,9 +8,9 @@
 use super::conversation::started_by;
 use crate::defs::{
     CloseTaskArgs, CloseTaskTool, FindTasksArgs, FindTasksTool, FoundTasks, LinkTasksArgs,
-    LinkTasksTool, Linked, MessageTaskArgs, MessageTaskTool, StartCrewmateArgs, StartCrewmateTool,
-    StopTaskArgs, StopTaskTool, TaskDetail, TaskStarted, TaskStatusArgs, TaskStatusTool,
-    TaskUpdated,
+    LinkTasksTool, Linked, MessageTaskArgs, MessageTaskTool, SetTaskProjectArgs,
+    SetTaskProjectTool, StartCrewmateArgs, StartCrewmateTool, StopTaskArgs, StopTaskTool,
+    TaskDetail, TaskStarted, TaskStatusArgs, TaskStatusTool, TaskUpdated,
 };
 use crate::handler::{Handle, StartRequest, ToolCx, ToolFailure};
 use qm_policy::names::check_task_title;
@@ -42,6 +42,7 @@ pub(crate) fn check_overrides(cx: &ToolCx<'_>, request: &StartRequest) -> Result
         (request.premium, OverrideKind::Premium),
         (!request.later_steps.is_empty(), OverrideKind::LaterSteps),
         (request.base_branch.is_some(), OverrideKind::BaseBranch),
+        (request.in_place, OverrideKind::InPlace),
         (
             request.verification.is_some(),
             OverrideKind::VerificationLevel,
@@ -60,6 +61,9 @@ pub(crate) fn check_overrides(cx: &ToolCx<'_>, request: &StartRequest) -> Result
 /// The shape of a start request, before any override or fact is checked.
 pub fn check_start_shape(request: &StartRequest) -> Result<(), Refusal> {
     check_task_title(&request.title)?;
+    if request.folder.is_some() && request.project.is_some() {
+        return Err(Refusal::new("name a folder or a listed project, not both"));
+    }
     let goal = request.goal.trim();
     if goal.is_empty() {
         return Err(Refusal::new("a task needs a goal"));
@@ -114,7 +118,15 @@ impl Handle for StartCrewmateTool {
     ) -> BoxFuture<'a, Result<TaskStarted, ToolFailure>> {
         Box::pin(async move {
             let request = StartRequest {
-                project: args.project,
+                folder: args
+                    .folder
+                    .map(|f| f.trim().to_owned())
+                    .filter(|f| !f.is_empty()),
+                project: args
+                    .project
+                    .map(|p| p.trim().to_owned())
+                    .filter(|p| !p.is_empty()),
+                in_place: args.in_place,
                 kind: args.kind,
                 title: args.title.trim().to_owned(),
                 goal: args.goal,
@@ -178,6 +190,24 @@ impl Handle for StopTaskTool {
                 .map(|r| r.trim().to_owned())
                 .filter(|r| !r.is_empty());
             cx.host.stop_task(cx.caller, args.task, reason).await
+        })
+    }
+}
+
+impl Handle for SetTaskProjectTool {
+    fn handle<'a>(
+        cx: &'a ToolCx<'a>,
+        args: SetTaskProjectArgs,
+    ) -> BoxFuture<'a, Result<TaskUpdated, ToolFailure>> {
+        Box::pin(async move {
+            let trim = |v: Option<String>| v.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+            let (project, folder) = (trim(args.project), trim(args.folder));
+            if project.is_some() == folder.is_some() {
+                return Err(Refusal::new("name a folder or a listed project: exactly one").into());
+            }
+            cx.host
+                .set_task_project(cx.caller, args.task, project, folder)
+                .await
         })
     }
 }

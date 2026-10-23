@@ -1,12 +1,13 @@
-//! Delivery: pull requests, CI polling, the delivery probe, the GitHub tools and the fence's app
-//! side.
+//! Delivery: pull requests, CI polling, the delivery probe, the GitHub tools and the watch for
+//! work done on GitHub outside the app.
 //!
 //! - [`pr`]: `pr_open` and `pr_status`.
 //! - [`checks`]: the CI poller ("passed" means every check on the exact commit), `ci_results`,
 //!   reruns.
 //! - [`probe`]: [`probe::GithubDeliveryProbe`], what `delivery_check` and the start gate share.
-//! - [`github_tools`]: `github_read` and `github_write` (the write fence).
+//! - [`github_tools`]: `github_read` and `github_write` (the write rules).
 //! - [`release`]: `propose_release_tag`, its card's performer, and reading pushed tags back.
+//! - [`outside`]: a merge or a tag made on GitHub outside the app, recorded and told.
 //! - [`observe`]: after a tag is published, watching its GitHub release and workflow runs;
 //!   `release_status`.
 //! - `push_guard`: every push the app makes, only to the project's repository, confirmed on
@@ -20,6 +21,7 @@ pub mod checks;
 pub mod excerpts;
 pub mod github_tools;
 pub mod observe;
+pub mod outside;
 pub mod ports;
 pub mod pr;
 pub mod probe;
@@ -241,7 +243,8 @@ impl DeliveryService {
 
     /// Startup: re-arms the poller for every pushed head whose checks aren't final yet.
     pub async fn recover(&self) -> Result<(), StoreError> {
-        checks::recover(self).await
+        checks::recover(self).await?;
+        outside::recover(self).await
     }
 }
 

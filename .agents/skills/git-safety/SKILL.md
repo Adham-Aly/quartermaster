@@ -1,6 +1,6 @@
 ---
 name: git-safety
-description: Rules for any code that runs git or talks to GitHub - the app's guarded pushes and network commands, the crewmate push fence, repo-local config that could run programs, merge-gate invariants (approved head only). Use when touching qm-git, qm-github, qm-core delivery or settling, the crewmate environment, or anything that pushes, fetches, merges or calls the GitHub API.
+description: Rules for any code that runs git or talks to GitHub - the app's guarded pushes and network commands, what crewmates may do on GitHub, repo-local config that could run programs, merge-gate invariants (approved head only). Use when touching qm-git, qm-github, qm-core delivery or settling, the crewmate environment, or anything that pushes, fetches, merges or calls the GitHub API.
 ---
 
 # Git and GitHub safety
@@ -52,15 +52,16 @@ supervisor once; `release_status` reads it meanwhile. Reads go only through
 URL: never follow a URL from an answer, download an asset, or trigger a workflow. A refused or
 failed read is "unavailable", never "none"; "no workflows" only when GitHub counts none.
 
-## Crewmates can't push: `crates/qm-github/src/fence.rs`
+## Crewmates and GitHub: `crates/qm-core/src/tasks/env.rs`, `delivery/outside.rs`
 
-`fence::apply` sets up a crewmate's environment and `fence::check` holds it to it, in independent
-layers: no GitHub login (`GH_CONFIG_DIR` empty, no token variables), every push URL rewritten by
-scheme (`pushInsteadOf` from environment-only config), `remote.origin.pushurl` at the fence, and
-an ssh wrapper that refuses `git-receive-pack` on any host (`GIT_SSH_VARIANT=ssh` keeps fetches
-with a port working). Fetches keep working. A crewmate's work leaves only through `pr_open`,
-which the app pushes after its checks. Never pass a credential or token variable into a
-crewmate's environment.
+A crewmate runs with the user's own `gh` and git login: `gh` and `git push` work. Its environment
+still gets `GIT_TERMINAL_PROMPT=0` and never a token variable (`env::TOKEN_VARIABLES`). The prompt
+makes `pr_open`, `propose_release_tag` and `github_write` the default path, and says to act on
+GitHub directly only when the user's own words ask for exactly that. The app records what happens
+outside it: `outside.rs` watches a task's PR (at report, at settle, every 5 minutes) and a merge
+made on GitHub lands the task (`landed_outside`, wake `LandedOutside`); tags new since the task
+started (`tasks/T-n/tags-at-start`) that the app didn't push are recorded (`released_outside`,
+wake `ReleasedOutside`). The app's own pushes and merges keep every check below.
 
 ## The merge gate
 
@@ -99,8 +100,8 @@ crewmate's environment.
 
 ## Tokens
 
-Git never prompts: the app's git runs with stdin closed and `GIT_TERMINAL_PROMPT=0`, and the
-crewmate fence sets it too (a prompt would hang an agent's turn).
+Git never prompts: the app's git runs with stdin closed and `GIT_TERMINAL_PROMPT=0`, and a
+crewmate's environment sets it too (a prompt would hang an agent's turn).
 The GitHub API token comes from `gh auth token` at use, and `gh`'s path is read at each use
 (`qm_github::GhProgram`), so a `gh` the setup check installs works without a restart. Never
 log a token, a URL carrying userinfo (`qm_github::redact_url`) or an `Authorization` header.

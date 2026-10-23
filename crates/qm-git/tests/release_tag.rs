@@ -205,3 +205,24 @@ fn tag_names_and_commits_are_checked() {
     assert!(!repo.has_commit(&missing).expect("has"));
     assert!(repo.write_tag_object(&missing, "v9", "m").is_err());
 }
+
+#[test]
+fn remote_tags_lists_every_tag_name_once_and_sorted() {
+    let (scratch, checkout, _url, first, second) = setup("remote-tags");
+    let repo = Repo::open(Git::new(), &checkout).expect("open");
+    assert_eq!(
+        repo.remote_tags("origin").expect("list"),
+        Vec::<String>::new()
+    );
+    let origin = scratch.0.join("origin.git");
+    git(&origin, &["tag", "v2.0.0", second.as_str()]);
+    git(
+        &origin,
+        &["tag", "-a", "-m", "one", "v1.0.0", first.as_str()],
+    );
+    assert_eq!(
+        repo.remote_tags("origin").expect("list"),
+        vec!["v1.0.0".to_owned(), "v2.0.0".to_owned()],
+        "annotated tags appear once, without their peeled line"
+    );
+}

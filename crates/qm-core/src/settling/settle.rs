@@ -11,6 +11,7 @@ use super::push::push_branch;
 use super::review::{passed_for, review_refusal};
 use super::{Fact, Landing, Origin, SETTLE_HELD_EVENT, SettlingService, facts};
 use crate::delivery::checks::read_snapshot;
+use crate::delivery::outside::{self, PrSeen};
 use crate::delivery::{models, verified_named};
 use crate::held::HeldService;
 use crate::tasks::lifecycle::{TaskEvent, next_for};
@@ -18,7 +19,7 @@ use crate::tasks::waits::check_direct;
 use crate::tasks::{failed, refuse};
 use qm_git::{ORIGIN, Repo};
 use qm_github::PrState;
-use qm_policy::delivery::{SettleFacts, SettlePlan, plan};
+use qm_policy::delivery::{Deliverable, SettleFacts, SettlePlan, plan};
 use qm_policy::merge_gate::{ChecksVerdict, check_mergeable};
 use qm_policy::names::{Boundary, check_commits, check_pr_title};
 use qm_store::StoreError;
@@ -51,7 +52,7 @@ async fn settle_folder(
         .await?;
     check_mergeable(&gate, &ChecksVerdict::NoChecks, verified_named(report))?;
     match plan(&SettleFacts {
-        kind: row.kind,
+        deliverable: Deliverable::Code,
         delivery: row.delivery,
         autonomy,
         has_remote: false,
@@ -122,8 +123,10 @@ pub(crate) async fn settle(
         .as_ref()
         .is_some_and(|r| r.outcome == Some(ReportOutcome::Done));
 
-    // 2. Answer-only work: nothing lands; the answer is kept and the task closes.
-    if loaded.row.kind.is_answer_only() {
+    // 2. An answer, whatever the kind: nothing lands; the answer is kept and the task closes. A
+    // task that hasn't reported done yet goes on to the refusal below.
+    let delivered = crate::tasks::delivered::of_report(&loaded.row, report.as_ref());
+    if done && delivered == Deliverable::Answer {
         if loaded.row.status == TaskStatus::Reported && done {
             tasks.close_task(caller, task).await?;
             return Ok(SettleOutcome::Closed);
@@ -135,6 +138,23 @@ pub(crate) async fn settle(
     }
 
     let lock = svc.delivery().locks().lock(task).await;
+    // Merged or tagged on GitHub outside the app: recorded and told, and never merged again.
+    let watch = svc.delivery().clone();
+    tokio::spawn(async move {
+        if let Err(e) = outside::check_tags(&watch, task).await {
+            tracing::warn!(%task, error = %e, "couldn't list the tags at settle");
+        }
+    });
+    match outside::check_pr_locked(svc.delivery(), task).await {
+        Ok(PrSeen::MergedOutside { pr, merge_commit }) => {
+            return Ok(SettleOutcome::Merged {
+                pr,
+                commit: merge_commit,
+            });
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(%task, error = %e, "couldn't read the pull request at settle"),
+    }
     let loaded = svc.delivery().load(task).await?;
     let row = &loaded.row;
 
@@ -378,7 +398,7 @@ pub(crate) async fn settle(
         _ => local.has_origin,
     };
     let settle_plan = plan(&SettleFacts {
-        kind: row.kind,
+        deliverable: Deliverable::Code,
         delivery: row.delivery,
         autonomy: loaded.project.autonomy,
         has_remote,

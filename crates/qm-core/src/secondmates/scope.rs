@@ -1,15 +1,12 @@
 //! A secondmate's scope as code and the requests it may serve.
 //!
-//! "The code refuses tool calls on other projects, and the words guide judgment within them." The
-//! list is the code's part: [`check_caller_project`] wraps `qm_policy::scope::check_project` for
-//! every caller working under a secondmate (the secondmate itself, or one of its crewmates), and
-//! is a no-op for the Quartermaster and its own crewmates. A secondmate whose list is empty works
-//! on any registered project.
+//! A secondmate's projects are those of its open crewmates, kept in step by the app. They refuse
+//! nothing: a secondmate starts work in any folder. They decide only what it may read: its own
+//! tasks, and the tasks in its crewmates' projects.
 
-use qm_policy::scope::{ProjectScope, check_project};
 use qm_store::StoreError;
 use qm_store::secondmates::{self, RequestRow};
-use qm_tools::handler::{Caller, ToolFailure};
+use qm_tools::handler::Caller;
 use qm_types::domain::{RequestStatus, Role};
 use qm_types::error::Refusal;
 use qm_types::ids::{CorrelationId, ProjectId, SecondmateId, TaskId};
@@ -18,22 +15,13 @@ use rusqlite::{Connection, OptionalExtension, params};
 /// A secondmate's project list, owned.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OwnedScope {
-    /// Empty: unrestricted (words only).
     pub projects: Vec<ProjectId>,
 }
 
 impl OwnedScope {
-    pub fn as_policy(&self) -> ProjectScope<'_> {
-        if self.projects.is_empty() {
-            ProjectScope::Unrestricted
-        } else {
-            ProjectScope::Listed(&self.projects)
-        }
-    }
-
-    /// Whether `project` is inside the scope.
+    /// Whether `project` is one of the secondmate's crewmates' projects.
     pub fn contains(&self, project: ProjectId) -> bool {
-        self.projects.is_empty() || self.projects.contains(&project)
+        self.projects.contains(&project)
     }
 }
 
@@ -53,34 +41,6 @@ pub fn bound_by(caller: &Caller) -> Option<SecondmateId> {
     match caller.role {
         Role::Quartermaster => None,
         Role::Secondmate | Role::Crewmate => caller.secondmate,
-    }
-}
-
-/// Refuses a call on `project` outside the caller's secondmate's scope, inside a database call.
-pub fn check_project_in(
-    conn: &Connection,
-    caller: &Caller,
-    project: ProjectId,
-    project_name: &str,
-) -> Result<Result<(), Refusal>, StoreError> {
-    let Some(secondmate) = bound_by(caller) else {
-        return Ok(Ok(()));
-    };
-    let scope = scope_of(conn, secondmate)?;
-    Ok(check_project(scope.as_policy(), project, project_name))
-}
-
-/// [`check_project_in`] as a tool failure.
-pub fn check_caller_project(
-    conn: &Connection,
-    caller: &Caller,
-    project: ProjectId,
-    project_name: &str,
-) -> Result<(), ToolFailure> {
-    match check_project_in(conn, caller, project, project_name) {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(r)) => Err(r.into()),
-        Err(e) => Err(ToolFailure::Failed(e.to_string())),
     }
 }
 

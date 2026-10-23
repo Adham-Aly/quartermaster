@@ -67,13 +67,10 @@ pub const KEPT: &[Kept] = &[
         table: "placements",
         predicate: "1",
     },
+    // Every project, retired ones too: a folder that gets work again comes back with its settings.
     Kept {
         table: "projects",
-        predicate: concat!(
-            "removed_at IS NULL OR id IN (SELECT project_id FROM tasks WHERE ",
-            retained_task!(),
-            ")"
-        ),
+        predicate: "1",
     },
     Kept {
         table: "agents",
