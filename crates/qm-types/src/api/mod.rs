@@ -811,6 +811,10 @@ pub struct ChatLine {
     /// The text is still arriving; only complete lines are shown.
     #[serde(default)]
     pub streaming: bool,
+    /// A short note from the app drawn as one dim line, with no header: a plan reply sent from
+    /// its page.
+    #[serde(default)]
+    pub one_line: bool,
 }
 
 impl ChatLine {
@@ -833,7 +837,15 @@ impl ChatLine {
             card: None,
             queued: false,
             streaming: false,
+            one_line: false,
         }
+    }
+
+    /// The line drawn as one dim row, with no header.
+    #[must_use]
+    pub fn with_one_line(mut self) -> Self {
+        self.one_line = true;
+        self
     }
 }
 

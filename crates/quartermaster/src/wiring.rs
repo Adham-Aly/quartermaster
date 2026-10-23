@@ -9,6 +9,8 @@
 //! 3. **The seat.** `Seat` (its session, resumed where it can be), `ContextBuilder`, `Conversation`
 //!    and `CoreToolHost`, joined by the seat's inbox to the `TurnLoop`, which recovers what the
 //!    last run left, opens the session and claims pending wakes first.
+//!    The plan pages' endpoint (`qm_core::plans::endpoint`) listens on loopback beside them, for
+//!    replies sent from a plan's page.
 //! 4. **The API.** `qm_core::api::serve` answers the UI. On quit it tells the loop to shut down;
 //!    this function then waits up to [`LOOP_GRACE`] for the loop, so the interrupted turn is
 //!    recorded and the session closed before the runtime stops (no agent process outlives the
@@ -246,6 +248,15 @@ pub(crate) async fn start_core(
             tracing::error!(error = %e, "couldn't recover the release tags left by the last run");
         }
     }
+    // Plan replies sent from a page just before the last run stopped are settled, then the
+    // pages' endpoint listens (on its saved port, so pages rendered before still send).
+    let plan_endpoint = match &tasks {
+        Some(tasks) => {
+            qm_core::plans::submit::recover(tasks).await;
+            qm_core::plans::endpoint::Endpoint::start(tasks.clone()).await
+        }
+        None => None,
+    };
     let mut seat_loop = spawn_seat_loop(&db, &clock, seat, &conversation, host, inbox_rx, &wakes);
     // Every secondmate's loop, idle until work arrives.
     start_secondmates(&secondmates);
@@ -326,7 +337,11 @@ pub(crate) async fn start_core(
     )
     .await;
 
-    // The crew stops too when the UI went away without quitting (idempotent after a quit).
+    // No more plan replies from pages, then the crew stops too when the UI went away without
+    // quitting (idempotent after a quit).
+    if let (Some(endpoint), Some(tasks)) = (plan_endpoint, &tasks) {
+        endpoint.stop(tasks).await;
+    }
     if let Some(tasks) = &tasks {
         tasks.shutdown().await;
     }

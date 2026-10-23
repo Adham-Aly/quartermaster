@@ -68,6 +68,7 @@ use rusqlite::Transaction;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -198,6 +199,8 @@ pub(crate) struct Inner {
     sink: OnceLock<Arc<dyn runner::SessionSink>>,
     /// Delivery's hook on every retirement: where landed work went, and side exits.
     pub(crate) close_facts: OnceLock<Arc<dyn close::CloseFacts>>,
+    /// The plan pages' endpoint port; 0 while it isn't listening.
+    plan_port: AtomicU16,
 }
 
 /// Held while a task is being retired; a second retirement of the same task waits its turn by
@@ -305,6 +308,7 @@ impl TaskService {
                 retiring: Mutex::new(HashSet::new()),
                 sink: OnceLock::new(),
                 close_facts: OnceLock::new(),
+                plan_port: AtomicU16::new(0),
             }),
         };
         svc.spawn_refresh();
@@ -375,6 +379,21 @@ impl TaskService {
 
     pub(crate) fn clock_arc(&self) -> Arc<dyn Clock> {
         Arc::clone(&self.inner.deps.clock)
+    }
+
+    /// The port plan pages send their replies to; `None` while the endpoint isn't listening.
+    pub(crate) fn plan_port(&self) -> Option<u16> {
+        match self.inner.plan_port.load(Ordering::Acquire) {
+            0 => None,
+            port => Some(port),
+        }
+    }
+
+    /// Notes the plan pages' endpoint port (`None` once it stops).
+    pub(crate) fn set_plan_port(&self, port: Option<u16>) {
+        self.inner
+            .plan_port
+            .store(port.unwrap_or(0), Ordering::Release);
     }
 
     pub(crate) fn is_shutting_down(&self) -> bool {
