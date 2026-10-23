@@ -21,16 +21,22 @@ const SCRATCH_SUBTREE_DEPTH: usize = 4;
 /// The folders writes may go to, canonicalised: the explicit write roots, then the temporary
 /// folders, minus the app's scratch root, which only a caller's own subtree (see
 /// [`SCRATCH_SUBTREE_DEPTH`]) can reopen.
+///
+/// A protected root (the app's data folder) is closed the same way: a target inside it is
+/// writable only under a write root strictly inside that protected root (the worktree, the
+/// evidence folder), never through the protected root itself or an ancestor of it.
 #[derive(Debug, Clone)]
 pub(super) struct WritePolicy {
     roots: Vec<PathBuf>,
+    protected: Vec<PathBuf>,
+    protected_grants: Vec<PathBuf>,
     scratch_roots: Vec<PathBuf>,
     temp: Vec<PathBuf>,
     denied: PathBuf,
 }
 
 impl WritePolicy {
-    pub(super) fn new(write_roots: &[PathBuf]) -> Self {
+    pub(super) fn new(write_roots: &[PathBuf], protected_roots: &[PathBuf]) -> Self {
         let canonical = |paths: &mut dyn Iterator<Item = PathBuf>| {
             let mut out: Vec<PathBuf> = paths.map(|root| real_path(&normalize(&root))).collect();
             out.sort();
@@ -48,8 +54,16 @@ impl WritePolicy {
             })
             .cloned()
             .collect();
+        let protected = canonical(&mut protected_roots.iter().cloned());
+        let protected_grants = roots
+            .iter()
+            .filter(|root| protected.iter().any(|p| root.starts_with(p) && *root != p))
+            .cloned()
+            .collect();
         Self {
             roots,
+            protected,
+            protected_grants,
             scratch_roots,
             temp,
             denied,
@@ -71,6 +85,20 @@ impl WritePolicy {
             }
             return Err(format!(
                 "refused: {} is inside the app's own scratch folder, which no agent writes to",
+                path.display()
+            ));
+        }
+        if self.protected.iter().any(|p| target.starts_with(p)) {
+            if self
+                .protected_grants
+                .iter()
+                .any(|root| target.starts_with(root))
+            {
+                return Ok(target);
+            }
+            return Err(format!(
+                "refused: {} is inside the app's own data folder; write in the worktree, the \
+                 evidence folder or your scratchpad",
                 path.display()
             ));
         }
@@ -153,7 +181,7 @@ mod tests {
 
     #[test]
     fn the_apps_scratch_folder_refuses_writes_even_inside_the_temporary_folder() {
-        let policy = WritePolicy::new(&[]);
+        let policy = WritePolicy::new(&[], &[]);
         let scratch = Path::new(APP_SCRATCH).join("1000/abc/evidence/run.log");
         assert!(policy.check(&scratch).is_err());
         assert!(policy.check(Path::new("/tmp/elsewhere/run.log")).is_ok());
@@ -162,7 +190,7 @@ mod tests {
     #[test]
     fn a_crewmates_own_evidence_folder_inside_the_scratch_root_is_writable() {
         let evidence = Path::new(APP_SCRATCH).join("1000/abc/evidence/T-0042");
-        let policy = WritePolicy::new(std::slice::from_ref(&evidence));
+        let policy = WritePolicy::new(std::slice::from_ref(&evidence), &[]);
         assert!(policy.check(&evidence.join("run.log")).is_ok());
         assert!(
             policy
@@ -181,7 +209,7 @@ mod tests {
             Path::new(APP_SCRATCH).join("1000/abc"),
             Path::new(APP_SCRATCH).join("1000/abc/evidence"),
         ] {
-            let policy = WritePolicy::new(std::slice::from_ref(&root));
+            let policy = WritePolicy::new(std::slice::from_ref(&root), &[]);
             assert!(
                 policy.check(&inside).is_err(),
                 "{} grants nothing inside the scratch folder",
@@ -193,7 +221,7 @@ mod tests {
     #[test]
     fn a_crewmates_own_scratchpad_inside_the_scratch_root_is_writable() {
         let scratchpad = Path::new(APP_SCRATCH).join("1000/abc/scratchpad/T-0042");
-        let policy = WritePolicy::new(std::slice::from_ref(&scratchpad));
+        let policy = WritePolicy::new(std::slice::from_ref(&scratchpad), &[]);
         assert!(policy.check(&scratchpad.join("notes/plan.md")).is_ok());
         let other = Path::new(APP_SCRATCH).join("1000/abc/scratchpad/T-0043/x");
         assert!(policy.check(&other).is_err(), "another task's scratchpad");
@@ -201,7 +229,7 @@ mod tests {
 
     #[test]
     fn a_dot_dot_into_the_scratch_folder_is_still_refused() {
-        let policy = WritePolicy::new(&[]);
+        let policy = WritePolicy::new(&[], &[]);
         let sneaky = Path::new("/tmp/notes/../quartermaster/1000/run.log");
         assert!(policy.check(sneaky).is_err());
         let out = Path::new("/tmp/quartermaster/1000/../../notes/run.log");
@@ -209,5 +237,31 @@ mod tests {
             policy.check(out).is_ok(),
             "a path that leaves the scratch folder is an ordinary /tmp write"
         );
+    }
+
+    #[test]
+    fn the_data_folder_is_writable_only_through_a_root_inside_it() {
+        let home = std::env::temp_dir().join(format!("qm-protected-{}", std::process::id()));
+        let worktree = home.join("tasks/T-0042/worktree");
+        let evidence = home.join("artifacts/T-0042/evidence");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(&evidence).unwrap();
+        let policy = WritePolicy::new(
+            &[worktree.clone(), evidence.clone(), home.clone()],
+            std::slice::from_ref(&home),
+        );
+        assert!(policy.check(&worktree.join("src/lib.rs")).is_ok());
+        assert!(policy.check(&evidence.join("run.log")).is_ok());
+        for path in [
+            home.join("state.db"),
+            home.join("auth.json"),
+            home.join("artifacts/T-0043/evidence/x"),
+            home.join("tasks/T-0042/transcript/s.jsonl"),
+            worktree.join("../brief.md"),
+        ] {
+            let refused = policy.check(&path).expect_err("protected");
+            assert!(refused.contains("data folder"), "{refused}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

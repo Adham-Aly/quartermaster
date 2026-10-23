@@ -27,8 +27,8 @@ use qm_types::ids::{MessageId, TaskId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Write as _};
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::io;
+use std::os::unix::fs::DirBuilderExt as _;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -178,27 +178,9 @@ fn save(dir: &Path, state: &PlanState) -> io::Result<()> {
     write_private(&dir.join(STATE_FILE), text.as_bytes())
 }
 
-/// Writes `bytes` to `path` atomically, 0600.
+/// Writes `bytes` to `path` atomically and durably, 0600.
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
-    let write = || -> io::Result<()> {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&tmp, path)
-    };
-    write().inspect_err(|_| {
-        let _ = fs::remove_file(&tmp);
-    })
+    qm_types::fsio::write_atomic(path, bytes)
 }
 
 /// `plan.md` and its assets, read from the folder; problems name what's wrong.
@@ -279,28 +261,49 @@ pub fn render(
 }
 
 /// Copies a plan's `plan.md` and `assets/` into a build's own plan folder, replacing what was
-/// there. Links are skipped.
+/// there. Links are skipped. The copy is made whole in a staging folder beside `to` and then
+/// renamed into place, so `to/plan.md` exists only once the whole copy does: until then the
+/// retention sweep keeps the plan it is copied from.
 pub fn copy_for_build(from: &Path, to: &Path) -> io::Result<()> {
-    private_folder(to)?;
-    let assets_to = to.join(ASSETS_DIR);
-    qm_types::data_dir::remove_path(&assets_to)?;
-    private_folder(&assets_to)?;
-    let md = fs::read(from.join(PLAN_FILE))?;
-    write_private(&to.join(PLAN_FILE), &md)?;
-    let assets_from = from.join(ASSETS_DIR);
-    let entries = match fs::read_dir(&assets_from) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e),
-    };
-    for entry in entries {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            let bytes = fs::read(entry.path())?;
-            write_private(&assets_to.join(entry.file_name()), &bytes)?;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let parent = to
+        .parent()
+        .ok_or_else(|| io::Error::other("a plan folder needs a parent folder"))?;
+    private_folder(parent)?;
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staging = parent.join(format!(
+        "{}{}-{n}",
+        crate::retention::PLAN_STAGING,
+        std::process::id()
+    ));
+    let made = (|| -> io::Result<()> {
+        fs::DirBuilder::new().mode(0o700).create(&staging)?;
+        let assets_to = staging.join(ASSETS_DIR);
+        fs::DirBuilder::new().mode(0o700).create(&assets_to)?;
+        let assets_from = from.join(ASSETS_DIR);
+        match fs::read_dir(&assets_from) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = entry?;
+                    if entry.file_type()?.is_file() {
+                        let bytes = fs::read(entry.path())?;
+                        write_private(&assets_to.join(entry.file_name()), &bytes)?;
+                    }
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
         }
+        let md = fs::read(from.join(PLAN_FILE))?;
+        write_private(&staging.join(PLAN_FILE), &md)?;
+        qm_types::data_dir::remove_path(to)?;
+        fs::rename(&staging, to)?;
+        qm_types::fsio::fsync_dir(parent)
+    })();
+    if made.is_err() {
+        let _ = qm_types::data_dir::remove_path(&staging);
     }
-    Ok(())
+    made
 }
 
 #[cfg(test)]

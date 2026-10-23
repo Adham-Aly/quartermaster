@@ -2,7 +2,7 @@
 //!
 //! Every folder the app creates is mode 0700 and the root is tightened to 0700 on every start, so
 //! nothing in it (briefs, `auth.json`) is readable by other users on the Mac. The scratch root
-//! (pasted images, evidence) is checked here too; an unsafe hierarchy stops startup.
+//! (crewmates' scratchpads) is checked here too; an unsafe hierarchy stops startup.
 
 use qm_types::data_dir::DataDir;
 use std::fs::{self, DirBuilder, Permissions};

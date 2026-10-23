@@ -1,6 +1,8 @@
 //! The evidence folder.
 //!
-//! `<scratch>/evidence/T-0042/` is the crewmate's `QM_EVIDENCE_DIR` (temporary, outside the data directory). [`manifest`] lists what is in it
+//! `<data>/artifacts/T-0042/evidence/` is the crewmate's `QM_EVIDENCE_DIR`: kept on disk while
+//! the task, or a task building on or retrying it, is open (`crate::retention`). [`manifest`]
+//! lists what is in it
 //! (relative paths, sizes and times, at most [`MAX_ENTRIES`], symlinks not followed); every clear
 //! done report records it as a `task.evidence` event, and the review brief lists it so the
 //! reviewer can scrutinise it.
@@ -23,7 +25,7 @@ pub const EVIDENCE_EVENT: &str = "task.evidence";
 /// One file in the evidence folder.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceFile {
-    /// Relative to the scratch evidence folder, or absolute for preserved legacy evidence.
+    /// Relative to the evidence folder, or absolute for preserved legacy evidence.
     pub path: String,
     pub bytes: u64,
     pub modified: Option<Timestamp>,
@@ -67,7 +69,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<EvidenceFile>) {
 
 /// What is in the task's evidence folders, sorted by path, at most [`MAX_ENTRIES`] files.
 /// Includes a real legacy directory left by a migration conflict, never a compatibility link.
-/// Legacy entries use absolute paths so reviewers can find them outside the scratch folder.
+/// Legacy entries use absolute paths so reviewers can find them outside the evidence folder.
 /// (Blocking: reads the file system.)
 pub fn manifest(paths: &TaskPaths) -> Vec<EvidenceFile> {
     let mut out = Vec::new();
@@ -78,7 +80,7 @@ pub fn manifest(paths: &TaskPaths) -> Vec<EvidenceFile> {
     if fs::symlink_metadata(&legacy).is_ok_and(|meta| meta.is_dir())
         && private_folder(&legacy).is_ok()
     {
-        // An empty prefix retains the full legacy path, unlike scratch-relative entries.
+        // An empty prefix retains the full legacy path, unlike evidence-relative entries.
         walk(Path::new(""), &legacy, &mut out);
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));

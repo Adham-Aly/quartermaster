@@ -14,7 +14,7 @@ use qm_types::BoxFuture;
 use qm_types::api::{
     Card, CardAction, CardButton, CardKind, CardLine, Command, Snapshot, Styled, Tone,
 };
-use qm_types::data_dir::PLANS;
+use qm_types::data_dir::DataDir;
 use qm_types::domain::TaskKind;
 use qm_types::ids::{MessageId, TaskId};
 use std::collections::HashMap;
@@ -40,7 +40,7 @@ impl PlanPart {
 
     /// Every plan with a card: the card's message, the task, its state and its folder.
     fn plans(&self) -> Vec<(MessageId, TaskId, PlanState, PathBuf)> {
-        live(&self.svc.deps().data_dir.scratch().join(PLANS))
+        live(&self.svc.deps().data_dir)
             .into_iter()
             .filter_map(|(task, state, dir)| Some((state.card?, task, state, dir)))
             .collect()
@@ -75,17 +75,17 @@ impl PlanPart {
     }
 }
 
-/// Every plan folder under `root` (the scratch `plans/` folder) with a readable state: its task,
-/// state and folder.
-pub(crate) fn live(root: &Path) -> Vec<(TaskId, PlanState, PathBuf)> {
-    let Ok(entries) = std::fs::read_dir(root) else {
+/// Every task's plan folder (`artifacts/T-n/plan`) with a readable state: its task, state and
+/// folder.
+pub(crate) fn live(data: &DataDir) -> Vec<(TaskId, PlanState, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(data.artifacts_dir()) else {
         return Vec::new();
     };
     entries
         .flatten()
         .filter_map(|e| {
             let task = e.file_name().to_str()?.parse::<TaskId>().ok()?;
-            let dir = e.path();
+            let dir = data.task(task).plan;
             let state = super::load(&dir).ok()??;
             Some((task, state, dir))
         })

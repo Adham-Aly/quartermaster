@@ -1,7 +1,7 @@
 //! Your unsent drafts, between the UI and the core. The core holds them for as long as the server
 //! runs (`qm_core::drafts`), never on disk. This module sends each draft as it changes, restores
-//! them from the first snapshot, and keeps the bytes of their pasted images in the scratch drafts
-//! folder (`DataDir::draft_images`), where a draft names each image by its token.
+//! them from the first snapshot, and keeps the bytes of their pasted images in the data
+//! directory's drafts folder (`DataDir::draft_images`), where a draft names each image by its token.
 //!
 //! - **Restore.** The first snapshot brings every draft back. An image comes back only when its file
 //!   is there, is the size and format the draft says, and its placeholder is still in the text; any
@@ -325,7 +325,7 @@ fn write_job(dir: &DataDir, job: &Job) -> io::Result<()> {
 /// Validate the hierarchy on every operation, including cleanup with no new images. The shared
 /// ancestors are owned by `DataDir`'s validator; the drafts leaf must also be a private real folder.
 fn safe_folder(dir: &DataDir) -> io::Result<()> {
-    dir.ensure_scratch()?;
+    private_folder(dir.root())?;
     private_folder(&dir.draft_images())
 }
 

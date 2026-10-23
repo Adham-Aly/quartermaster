@@ -34,6 +34,9 @@ pub struct BuiltinCx {
     pub cwd: PathBuf,
     /// Writes are refused outside these (and the system temporary folder).
     pub write_roots: Vec<PathBuf>,
+    /// The app's own folders (its data folder): nothing inside them is writable except through a
+    /// write root strictly inside one.
+    pub protected_roots: Vec<PathBuf>,
     /// `tasks/T-0042/jobs`: job logs, `J<n>.log`.
     pub jobs_dir: PathBuf,
     /// The complete environment for `bash`, built from scratch.
@@ -49,6 +52,7 @@ impl fmt::Debug for BuiltinCx {
             .field("agent", &self.agent)
             .field("cwd", &self.cwd)
             .field("write_roots", &self.write_roots)
+            .field("protected_roots", &self.protected_roots)
             .field("jobs_dir", &self.jobs_dir)
             .field("env_keys", &self.env.keys().collect::<Vec<_>>())
             .finish_non_exhaustive()

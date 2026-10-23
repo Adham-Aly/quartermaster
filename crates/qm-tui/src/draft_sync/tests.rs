@@ -364,9 +364,9 @@ fn same_number_format_and_length_with_different_bytes_gets_a_new_token() {
 }
 
 #[test]
-fn symlinked_drafts_or_scratch_cannot_read_write_or_clean_a_victim() {
+fn symlinked_drafts_cannot_read_write_or_clean_a_victim() {
     use std::os::unix::fs::symlink;
-    for scratch_link in [false, true] {
+    {
         let home = Home::new();
         safe_folder(&home.dir()).unwrap();
         let victim = home.0.join("victim");
@@ -374,11 +374,7 @@ fn symlinked_drafts_or_scratch_cannot_read_write_or_clean_a_victim() {
         let name = file_name(&token_of(&png()), ImageFormat::Png);
         fs::write(victim.join(&name), png()).unwrap();
         fs::write(victim.join("unrelated"), b"keep").unwrap();
-        let link = if scratch_link {
-            home.dir().scratch().to_path_buf()
-        } else {
-            home.images()
-        };
+        let link = home.images();
         fs::remove_dir_all(&link).unwrap();
         symlink(&victim, &link).unwrap();
         let mut saved = SavedDraft::new(DraftTarget::Bridge, image_placeholder(1));
@@ -446,7 +442,7 @@ fn hierarchy_is_revalidated_after_open_before_cleanup_or_write() {
     safe_folder(&home.dir()).unwrap();
     let victim = home.images().join("unrelated");
     fs::write(&victim, b"keep").unwrap();
-    fs::set_permissions(home.dir().scratch(), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(home.dir().root(), fs::Permissions::from_mode(0o755)).unwrap();
     app.draft = with_image("look");
     sync.tick(&mut app);
     assert!(!finish(&mut sync));

@@ -100,6 +100,12 @@ pub fn forget_conversation_except(
             ),
             p,
         )?;
+        // The images in the forgotten part of the conversation are no longer in it.
+        tx.execute(
+            "DELETE FROM attachment_uses WHERE agent_id = ?1 AND seq < ?2 \
+                 AND message_id NOT IN (SELECT id FROM temp.protected_messages)",
+            p,
+        )?;
         let turns = tx.execute(&format!("DELETE FROM turns WHERE id IN ({TURNS})"), p)?;
         tx.execute(&format!("DELETE FROM messages WHERE id IN ({MESSAGES})"), p)?;
         forget_seen_events(tx)?;
