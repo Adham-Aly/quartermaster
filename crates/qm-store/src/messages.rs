@@ -199,6 +199,35 @@ pub fn waiting(conn: &Connection, agent: AgentId) -> Result<Vec<MessageId>, Stor
         .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// The questions still waiting on you from `agents`, oldest first: an agent's question with no
+/// later message from you to that agent. Any message you send closes it, since that is what the
+/// asking agent's next turn reads anyway.
+pub fn open_questions(
+    conn: &Connection,
+    agents: &[AgentId],
+) -> Result<Vec<MessageRow>, StoreError> {
+    if agents.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = (1..=agents.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let columns = COLUMNS
+        .split(", ")
+        .map(|c| format!("q.{c}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {columns} FROM messages AS q
+         WHERE q.kind = 'question' AND q.source = 'agent' AND q.agent_id IN ({placeholders})
+           AND NOT EXISTS (SELECT 1 FROM messages AS y
+                           WHERE y.agent_id = q.agent_id AND y.source = 'you' AND y.seq > q.seq)
+         ORDER BY q.seq"
+    ))?;
+    collect(&mut stmt, params_from_iter(agents.iter()))
+}
+
 /// One message.
 pub fn get(conn: &Connection, message: MessageId) -> Result<Option<MessageRow>, StoreError> {
     let raw = conn
@@ -391,5 +420,58 @@ mod tests {
         schema::migrate(&mut conn).expect("the schema");
         let rows = load_recent(&conn, AgentId::new(1), 5).expect("the query runs");
         assert_eq!(rows.len(), 0);
+    }
+
+    fn line(
+        conn: &Connection,
+        agent: i64,
+        source: MessageSource,
+        kind: MessageKind,
+        ms: i64,
+    ) -> MessageId {
+        insert(
+            conn,
+            &NewMessage {
+                agent: AgentId::new(agent),
+                source,
+                kind,
+                text: "text",
+                options: &[],
+                replies_to: None,
+                turn: None,
+                at: Timestamp::from_millisecond(ms).expect("a time"),
+            },
+        )
+        .expect("the line is stored")
+    }
+
+    #[test]
+    fn a_later_message_from_you_closes_a_question() {
+        let mut conn = Connection::open_in_memory().expect("memory database");
+        schema::migrate(&mut conn).expect("the schema");
+        conn.execute_batch("PRAGMA foreign_keys = OFF")
+            .expect("no agents rows needed");
+        let asked = line(&conn, 1, MessageSource::Agent, MessageKind::Question, 1_000);
+        let other = line(&conn, 2, MessageSource::Agent, MessageKind::Question, 2_000);
+        line(&conn, 3, MessageSource::Agent, MessageKind::Question, 2_500);
+        let open = |conn: &Connection| -> Vec<MessageId> {
+            open_questions(conn, &[AgentId::new(1), AgentId::new(2)])
+                .expect("the query runs")
+                .into_iter()
+                .map(|m| m.id)
+                .collect()
+        };
+        assert_eq!(open(&conn), vec![asked, other]);
+        // An answer to another agent, or a reply from the agent itself, leaves it open.
+        line(&conn, 2, MessageSource::You, MessageKind::Message, 3_000);
+        line(&conn, 1, MessageSource::Agent, MessageKind::Reply, 3_500);
+        assert_eq!(open(&conn), vec![asked]);
+        line(&conn, 1, MessageSource::You, MessageKind::Message, 4_000);
+        assert!(open(&conn).is_empty());
+        assert!(
+            open_questions(&conn, &[])
+                .expect("the query runs")
+                .is_empty()
+        );
     }
 }

@@ -316,6 +316,15 @@ pub(crate) async fn retire(
         }
         let outcome = outcome_for(now.status, kind);
         task_store::set_closed(tx, task, now.status, outcome, at)?;
+        // Nothing may be approved for a task that no longer exists. Superseding never approves
+        // or rejects; it only takes the card (and its inbox item) away.
+        let pending: Vec<qm_types::ids::HeldActionId> = tx
+            .prepare("SELECT id FROM held_actions WHERE status = 'pending' AND task_id = ?1")?
+            .query_map(rusqlite::params![task], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for held in pending {
+            crate::held::HeldService::supersede_with(tx, held, Some(task), "the task closed", at)?;
+        }
         if let Some(agent) = agents::crewmate_of(tx, task)? {
             agents::set_status(tx, agent.id, AgentStatus::Retired, at)?;
         }

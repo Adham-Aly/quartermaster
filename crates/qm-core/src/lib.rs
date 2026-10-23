@@ -10,6 +10,7 @@
 //! function in `qm-policy` or `qm-routing`; all state goes through `qm-store`'s single database
 //! thread.
 
+pub mod actions;
 pub mod api;
 pub mod attachments;
 pub mod briefs;

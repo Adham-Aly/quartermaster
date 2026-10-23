@@ -831,6 +831,48 @@ impl HeldService {
         card
     }
 
+    /// Every pending held action, oldest first, with the card the conversation shows for it and
+    /// the line that card hangs on: the Actions inbox's held items, whatever their age.
+    pub async fn pending_cards(
+        &self,
+    ) -> Result<Vec<(HeldRow, Card, Option<MessageId>)>, StoreError> {
+        let rows = self
+            .inner
+            .db
+            .call(|conn| {
+                let mut stmt = conn
+                    .prepare("SELECT id FROM held_actions WHERE status = 'pending' ORDER BY seq")?;
+                let ids = stmt
+                    .query_map([], |r| r.get::<_, HeldActionId>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let mut out = Vec::with_capacity(ids.len());
+                for id in ids {
+                    let row = load_held(conn, id)?;
+                    let facts = card_facts(conn, &row)?;
+                    let anchor: Option<MessageId> = conn
+                        .query_row(
+                            "SELECT m.id FROM events e JOIN messages m
+                               ON m.id = json_extract(e.payload, '$.message')
+                             WHERE e.kind = ?1 AND json_extract(e.payload, '$.held') = ?2
+                             ORDER BY e.seq DESC LIMIT 1",
+                            params![HELD_SHOWN, id],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    out.push((row, facts, anchor));
+                }
+                Ok(out)
+            })
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(row, facts, anchor)| {
+                let card = self.card(&row, &facts);
+                (row, card, anchor)
+            })
+            .collect())
+    }
+
     /// The card drawn from the kind's performer's face (kinds without a builder).
     fn face_card(&self, row: &HeldRow) -> Card {
         let face = self
