@@ -33,7 +33,7 @@
 //! | `{ stall = ms }` | nothing at all for that long |
 //! | `{ crash = true }` | the process dies mid-turn |
 //! | `{ rate_limit = "allowed_warning" }` | a rate-limit report |
-//! | `{ compact = [before, after] }` | an automatic compaction |
+//! | `{ compact = [before, after], compact_ms = ms }` | an automatic compaction: `CompactionStarted`, then `Compacted` after `compact_ms` (default 0) |
 //! | `{ end_conversation = true }` | `EndConversation`: the turn ends and the session closes |
 //! | `{ wait_for_inject = ms }` | waits for the next `Inject`; a timeout fails the turn |
 //!
@@ -147,6 +147,7 @@ pub(super) enum Step {
     Compact {
         before: u64,
         after: u64,
+        ms: u64,
     },
     EndConversation,
     WaitForInject {
@@ -245,6 +246,7 @@ struct RawStep {
     crash: Option<bool>,
     rate_limit: Option<RateLimitStatus>,
     compact: Option<[u64; 2]>,
+    compact_ms: Option<u64>,
     end_conversation: Option<bool>,
     wait_for_inject: Option<u64>,
 }
@@ -348,6 +350,7 @@ impl RawStep {
                 ("finish_after_ms", self.finish_after_ms.is_some()),
                 ("exit_code", self.exit_code.is_some()),
                 ("tail", self.tail.is_some()),
+                ("compact_ms", self.compact_ms.is_some()),
             ];
             match present
                 .iter()
@@ -414,8 +417,12 @@ impl RawStep {
             return Ok(Step::RateLimit(status));
         }
         if let Some([before, after]) = self.compact {
-            extras(&[])?;
-            return Ok(Step::Compact { before, after });
+            extras(&["compact_ms"])?;
+            return Ok(Step::Compact {
+                before,
+                after,
+                ms: self.compact_ms.unwrap_or(0),
+            });
         }
         if let Some(end) = self.end_conversation {
             extras(&[])?;

@@ -8,6 +8,7 @@
 use super::Progress;
 use super::script::{CallScript, Script, Step};
 use crate::activity::{ACTIVITY_EVERY, ActivityGate};
+use crate::context::{AutocompactPoint, ContextBasis, ContextReading, ReportedUsage};
 use crate::event::{
     ActivityKind, CloseReason, EngineEvent, FailureKind, InitReport, RateLimitInfo,
     RateLimitStatus, StopReason, TurnFailure, TurnOutcome, TurnUsage,
@@ -398,6 +399,29 @@ impl Session {
                 stop,
             })
             .await;
+            let u = call.usage;
+            self.emit(EngineEvent::ContextObserved {
+                reading: ContextReading::new(
+                    Some(
+                        u.input_tokens
+                            + u.cache_read_tokens
+                            + u.cache_write_tokens
+                            + u.output_tokens,
+                    ),
+                    ContextBasis::LastCall,
+                    false,
+                    AutocompactPoint::At { tokens: 160_000 },
+                )
+                .with_window(Some(200_000))
+                .with_model(Some("scripted".into()))
+                .with_reports(
+                    ReportedUsage::NONE
+                        .with_thinking()
+                        .with_cache_read()
+                        .with_cache_write(),
+                ),
+            })
+            .await;
             usage.model_calls += 1;
             usage.input_tokens += call.usage.input_tokens;
             usage.output_tokens += call.usage.output_tokens;
@@ -552,7 +576,10 @@ impl Session {
                 })
                 .await;
             }
-            Step::Compact { before, after } => {
+            Step::Compact { before, after, ms } => {
+                self.emit(EngineEvent::CompactionStarted { automatic: true })
+                    .await;
+                self.pause(Duration::from_millis(*ms)).await?;
                 self.emit(EngineEvent::Compacted {
                     automatic: true,
                     tokens_before: Some(*before),
