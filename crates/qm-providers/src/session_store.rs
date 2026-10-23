@@ -259,32 +259,31 @@ impl SessionStore {
         dir: Option<&Path>,
     ) -> Result<LoadedSession, SessionStoreError> {
         let held = sessions().get(session_id).cloned();
-        let held = match held {
-            Some(held) => held,
-            None => {
-                let path = dir
-                    .and_then(|dir| transcript_path(dir, session_id))
-                    .ok_or_else(|| SessionStoreError::Missing(session_id.to_owned()))?;
-                let entries = load(&path, session_id)?;
-                let held = Arc::new(Mutex::new(Held {
-                    entries,
-                    disk: Some(Disk { path, log: None }),
-                    forgotten: false,
-                }));
-                {
-                    let mut guard = lock(&held);
-                    let Held { entries, disk, .. } = &mut *guard;
-                    if let Some(disk) = disk {
-                        // Reopen for appending, or repair a torn tail by rewriting.
-                        let result = disk.rewrite(entries);
-                        disk.report("reopen", result);
-                    }
+        let held = if let Some(held) = held {
+            held
+        } else {
+            let path = dir
+                .and_then(|dir| transcript_path(dir, session_id))
+                .ok_or_else(|| SessionStoreError::Missing(session_id.to_owned()))?;
+            let entries = load(&path, session_id)?;
+            let held = Arc::new(Mutex::new(Held {
+                entries,
+                disk: Some(Disk { path, log: None }),
+                forgotten: false,
+            }));
+            {
+                let mut guard = lock(&held);
+                let Held { entries, disk, .. } = &mut *guard;
+                if let Some(disk) = disk {
+                    // Reopen for appending, or repair a torn tail by rewriting.
+                    let result = disk.rewrite(entries);
+                    disk.report("reopen", result);
                 }
-                sessions()
-                    .entry(session_id.to_owned())
-                    .or_insert(held)
-                    .clone()
             }
+            sessions()
+                .entry(session_id.to_owned())
+                .or_insert(held)
+                .clone()
         };
         let entries = lock(&held).entries.clone();
         let next_entry = entries

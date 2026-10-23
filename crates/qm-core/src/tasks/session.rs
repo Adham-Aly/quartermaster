@@ -54,7 +54,6 @@ pub(crate) fn crewmate_spec(
     ports: PortBlock,
     told: Told<'_>,
     resume: Option<SessionRef>,
-    protected_roots: &[PathBuf],
 ) -> SessionSpec {
     let Told { gathered, plan } = told;
     let mut spec = SessionSpec::new(
@@ -71,7 +70,6 @@ pub(crate) fn crewmate_spec(
     if routed.engine != EngineKind::Claude {
         spec.transcript_dir = Some(paths.transcript.clone());
     }
-    spec.protected_roots = protected_roots.to_vec();
     spec.tools = qm_tools::registry::descriptors(Role::Crewmate, plan);
     spec.builtins = match routed.engine {
         EngineKind::Claude => Builtins::ClaudeCode,

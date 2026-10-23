@@ -58,6 +58,20 @@ pub(crate) enum Cancel {
     Close,
 }
 
+/// How a session was asked to end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ending {
+    /// Not asked to end.
+    Open,
+    /// An orderly `Close`: the history stays in memory to resume.
+    Close,
+    /// The core dropped its handle (the app is stopping, or the agent was let go without a
+    /// `Forget`): the history leaves memory, but its transcript file stays to resume from.
+    Abandon,
+    /// The session ends for good: its transcript goes with it.
+    Forget,
+}
+
 /// The session's state.
 pub(crate) struct Session {
     pub(crate) shared: Arc<Shared>,
@@ -91,12 +105,8 @@ pub(crate) struct Session {
     pub(crate) steering: Vec<TurnInput>,
     /// Results the core sent for our pending tool calls, by call ID.
     pub(crate) pending_results: HashMap<String, Option<ToolResult>>,
-    close_requested: bool,
-    /// The session ends for good: its transcript goes with it.
-    forget_requested: bool,
-    /// The core dropped its handle (the app is stopping, or the agent was let go without a
-    /// `Forget`): the history leaves memory, but its transcript file stays to resume from.
-    abandoned: bool,
+    /// How the session was asked to end, if it was.
+    ending: Ending,
     pub(crate) in_turn: bool,
     /// The last rate-limit status reported per window, so only changes are reported.
     pub(crate) rate_limits: HashMap<String, RateLimitStatus>,
@@ -243,9 +253,9 @@ impl Drop for Session {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .closed;
-        if self.forget_requested {
+        if self.ending == Ending::Forget {
             SessionStore::forget(&self.id);
-        } else if self.abandoned || !closed {
+        } else if self.ending == Ending::Abandon || !closed {
             SessionStore::release(&self.id);
         }
     }
@@ -337,9 +347,7 @@ impl Session {
             queued_turns: VecDeque::new(),
             steering: Vec::new(),
             pending_results: HashMap::new(),
-            close_requested: false,
-            forget_requested: false,
-            abandoned: false,
+            ending: Ending::Open,
             in_turn: false,
             rate_limits: HashMap::new(),
             spec,
@@ -391,7 +399,7 @@ impl Session {
         let reading = self.context_reading(None, ContextBasis::SessionStart);
         self.emit(EngineEvent::ContextObserved { reading }).await;
         loop {
-            if self.close_requested {
+            if self.ending != Ending::Open {
                 self.close().await;
                 return;
             }
@@ -415,18 +423,23 @@ impl Session {
         }
     }
 
+    /// Records how the session ends; a `Forget` is never downgraded.
+    fn end(&mut self, ending: Ending) {
+        if self.ending != Ending::Forget {
+            self.ending = ending;
+        }
+    }
+
     /// A command between turns.
     async fn idle_command(&mut self, command: Option<SessionCommand>) {
         match command {
             None => {
-                self.abandoned = true;
-                self.close_requested = true;
+                self.end(Ending::Abandon);
             }
             Some(SessionCommand::Forget) => {
-                self.forget_requested = true;
-                self.close_requested = true;
+                self.end(Ending::Forget);
             }
-            Some(SessionCommand::Close) => self.close_requested = true,
+            Some(SessionCommand::Close) => self.end(Ending::Close),
             Some(SessionCommand::StartTurn { input } | SessionCommand::Inject { input }) => {
                 self.queued_turns.push_back(Queued::Turn(input));
             }
@@ -454,17 +467,15 @@ impl Session {
     pub(crate) fn turn_command(&mut self, command: Option<SessionCommand>) -> Option<Cancel> {
         match command {
             Some(SessionCommand::Close) => {
-                self.close_requested = true;
+                self.end(Ending::Close);
                 Some(Cancel::Close)
             }
             None => {
-                self.abandoned = true;
-                self.close_requested = true;
+                self.end(Ending::Abandon);
                 Some(Cancel::Close)
             }
             Some(SessionCommand::Forget) => {
-                self.forget_requested = true;
-                self.close_requested = true;
+                self.end(Ending::Forget);
                 Some(Cancel::Close)
             }
             Some(SessionCommand::Interrupt) => Some(Cancel::Interrupt),
@@ -510,7 +521,7 @@ impl Session {
         if self.apply_pending_model() {
             self.emit_model_changed_reading().await;
         }
-        if !self.close_requested {
+        if self.ending == Ending::Open {
             match self.compact_if_due().await {
                 Ok(()) | Err(CompactError::Nothing | CompactError::Cancelled(_)) => {}
                 Err(CompactError::Failed(reason)) => {
@@ -555,7 +566,7 @@ impl Session {
 
     /// Closes the session: jobs stopped and reported, then `SessionClosed`.
     async fn close(&mut self) {
-        if self.forget_requested {
+        if self.ending == Ending::Forget {
             SessionStore::forget(&self.id);
         }
         if let Some(tools) = self.builtins.clone() {

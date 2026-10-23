@@ -22,11 +22,12 @@ impl Home {
         let data = DataDir::with_scratch(base.join("home"), base.join("scratch"));
         Self { base, data }
     }
+}
 
-    fn file(&self, path: &Path) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, b"x").unwrap();
-    }
+/// Writes a one-byte file, making its folders.
+fn touch(path: &Path) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, b"x").unwrap();
 }
 
 impl Drop for Home {
@@ -61,8 +62,8 @@ fn a_plan_stays_until_its_build_has_its_copy_and_evidence_until_no_one_reads_it(
     let home = Home::new("plans");
     let data = &home.data;
     for n in [1, 2, 3, 4] {
-        home.file(&data.task(id(n)).plan.join("plan.md"));
-        home.file(&data.task(id(n)).evidence.join("run.log"));
+        touch(&data.task(id(n)).plan.join("plan.md"));
+        touch(&data.task(id(n)).evidence.join("run.log"));
     }
     // T-1 is a closed plan a build (T-5) hasn't copied yet; T-2 a closed plan T-6 has copied;
     // T-3 a closed task T-7 retries; T-4 closed and read by no one.
@@ -74,7 +75,7 @@ fn a_plan_stays_until_its_build_has_its_copy_and_evidence_until_no_one_reads_it(
         ],
         sessions: vec![],
     };
-    home.file(&data.task(id(6)).plan.join("plan.md"));
+    touch(&data.task(id(6)).plan.join("plan.md"));
     apply(data, &facts, SystemTime::now(), When::Running);
 
     assert!(
@@ -108,11 +109,11 @@ fn transcripts_keep_the_named_session_and_unnamed_ones_wait_an_hour_unless_at_st
     let mate = data.secondmate(SecondmateId::new(3).unwrap()).transcript;
     let task = data.task(id(8)).transcript;
     for dir in [&seat, &mate, &task] {
-        home.file(&dir.join("current.jsonl"));
-        home.file(&dir.join("superseded.jsonl"));
-        home.file(&dir.join(".current.jsonl.tmp-1-0"));
+        touch(&dir.join("current.jsonl"));
+        touch(&dir.join("superseded.jsonl"));
+        touch(&dir.join(".current.jsonl.tmp-1-0"));
     }
-    home.file(&seat.join("notes.txt"));
+    touch(&seat.join("notes.txt"));
     let facts = Facts {
         open: vec![open(8, TaskKind::Build, None, None)],
         sessions: vec![
@@ -141,7 +142,7 @@ fn transcripts_keep_the_named_session_and_unnamed_ones_wait_an_hour_unless_at_st
         "only transcripts and temporaries go"
     );
 
-    home.file(&seat.join("again.jsonl"));
+    touch(&seat.join("again.jsonl"));
     apply(data, &facts, SystemTime::now(), When::Startup);
     assert!(
         !seat.join("again.jsonl").exists(),
@@ -155,7 +156,7 @@ fn the_sweep_never_follows_a_link() {
     let home = Home::new("links");
     let data = &home.data;
     let outside = home.base.join("outside");
-    home.file(&outside.join("precious"));
+    touch(&outside.join("precious"));
     fs::create_dir_all(data.artifacts_dir()).unwrap();
     std::os::unix::fs::symlink(&outside, data.artifacts_dir().join("T-0009")).unwrap();
     let evidence = data.task(id(10)).evidence;
@@ -181,13 +182,13 @@ fn the_sweep_never_follows_a_link() {
 fn an_older_layouts_scratch_plans_and_evidence_move_in_or_go() {
     let home = Home::new("legacy");
     let data = &home.data;
-    home.file(&data.legacy_plan(id(11)).join("plan.md"));
-    home.file(&data.legacy_evidence(id(11)).join("run.log"));
-    home.file(&data.legacy_plan(id(12)).join("plan.md"));
-    home.file(&data.legacy_evidence(id(12)).join("run.log"));
-    home.file(&data.task(id(11)).root.join("evidence/old.log"));
-    home.file(&data.scratch().join("scratchpad/T-0012/notes"));
-    home.file(&data.scratch().join("scratchpad/T-0011/notes"));
+    touch(&data.legacy_plan(id(11)).join("plan.md"));
+    touch(&data.legacy_evidence(id(11)).join("run.log"));
+    touch(&data.legacy_plan(id(12)).join("plan.md"));
+    touch(&data.legacy_evidence(id(12)).join("run.log"));
+    touch(&data.task(id(11)).root.join("evidence/old.log"));
+    touch(&data.scratch().join("scratchpad/T-0012/notes"));
+    touch(&data.scratch().join("scratchpad/T-0011/notes"));
     let facts = Facts {
         open: vec![open(11, TaskKind::Plan, None, None)],
         sessions: vec![],
@@ -228,9 +229,9 @@ fn plan_staging_and_temporaries_go_after_an_hour() {
     let home = Home::new("staging");
     let data = &home.data;
     let paths = data.task(id(13));
-    home.file(&paths.artifacts.join(format!("{PLAN_STAGING}1-0/plan.md")));
-    home.file(&paths.plan.join(".plan.md.tmp-1-0"));
-    home.file(&paths.plan.join("plan.md"));
+    touch(&paths.artifacts.join(format!("{PLAN_STAGING}1-0/plan.md")));
+    touch(&paths.plan.join(".plan.md.tmp-1-0"));
+    touch(&paths.plan.join("plan.md"));
     let facts = Facts {
         open: vec![open(13, TaskKind::Plan, None, None)],
         sessions: vec![],

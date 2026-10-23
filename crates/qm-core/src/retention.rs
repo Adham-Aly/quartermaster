@@ -131,10 +131,10 @@ fn artifacts(data: &DataDir, facts: &Facts, now: SystemTime, when: When, tally: 
             continue;
         };
         let paths = data.task(id);
-        if !keep_plan(data, facts, id) {
-            remove(&paths.plan, tally);
-        } else {
+        if keep_plan(data, facts, id) {
             old_temporaries(&paths.plan, now, when, tally);
+        } else {
+            remove(&paths.plan, tally);
         }
         if !keep_evidence(facts, id) {
             remove(&paths.evidence, tally);
@@ -157,7 +157,7 @@ fn artifacts(data: &DataDir, facts: &Facts, now: SystemTime, when: When, tally: 
 /// task.
 fn legacy_scratch(data: &DataDir, facts: &Facts, tally: &mut Tally) {
     let is_open = |id: TaskId| facts.open.iter().any(|t| t.id == id);
-    let kinds: [(&str, fn(&DataDir, &Facts, TaskId) -> bool); 2] = [
+    let kinds: [(&str, KeepRule); 2] = [
         (PLANS, keep_plan),
         (qm_types::data_dir::EVIDENCE, |_, facts, id| {
             keep_evidence(facts, id)
@@ -207,6 +207,9 @@ fn legacy_scratch(data: &DataDir, facts: &Facts, tally: &mut Tally) {
         }
     }
 }
+
+/// Whether a task's files of one kind are still needed.
+type KeepRule = fn(&DataDir, &Facts, TaskId) -> bool;
 
 fn move_in(old: &Path, target: &Path, tally: &mut Tally) {
     if let Some(parent) = target.parent()
@@ -258,7 +261,9 @@ fn transcripts(data: &DataDir, facts: &Facts, now: SystemTime, when: When, tally
             if named.contains(&name) {
                 continue;
             }
-            if (is_temporary(&name) || name.ends_with(".jsonl")) && old_enough(&path, now, when) {
+            if (is_temporary(&name) || path.extension().is_some_and(|e| e == "jsonl"))
+                && old_enough(&path, now, when)
+            {
                 remove(&path, tally);
             }
         }
