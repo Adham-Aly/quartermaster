@@ -141,7 +141,6 @@ pub(crate) async fn propose(
     let task = super::callers_task(caller)?;
     let loaded = svc.load(task).await?;
     let checked = check_release_tag(
-        loaded.row.kind,
         &args.tag,
         &args.commit,
         args.branch.as_deref(),

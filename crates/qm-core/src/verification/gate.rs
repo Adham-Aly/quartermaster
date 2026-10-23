@@ -1,6 +1,6 @@
 //! The report gate and the gate facts.
 //!
-//! [`VerificationService`] is the tasks' `ReportGate`: a done report on code work is refused while
+//! [`VerificationService`] is the tasks' `ReportGate`: a done report that delivers code is refused while
 //! the repair limit holds it, while a raised level's validation is missing, and (direct PR, unless
 //! Careful before its review passed) until the checks on exactly the reported, pushed head passed
 //! (`qm_policy::merge_gate::check_finish`). After the report it records the evidence manifest and
@@ -48,11 +48,24 @@ pub fn headings_complete(args: &ReportArgs) -> bool {
     .all(|h| !blank(h.as_ref()))
 }
 
+/// The report carries any of the five headings: in place, that makes it a code report.
+pub fn any_heading(args: &ReportArgs) -> bool {
+    [
+        &args.intent,
+        &args.what_changed,
+        &args.verified,
+        &args.risk,
+        &args.not_done,
+    ]
+    .iter()
+    .any(|h| !blank(h.as_ref()))
+}
+
 /// The gate facts for `qm_policy::merge_gate` from the task's row.
 pub fn task_gate(conn: &Connection, row: &TaskRow) -> Result<TaskGate, StoreError> {
     let facts = store::facts(conn, row.id)?;
     Ok(TaskGate {
-        kind: row.kind,
+        deliverable: crate::tasks::delivered::of_task(conn, row)?,
         delivery: row.delivery,
         level: effective_of(row),
         review_passed: facts.as_ref().is_some_and(|f| f.review_passed_at.is_some()),
@@ -84,7 +97,13 @@ impl VerificationService {
         let Some(row) = task_store::load(conn, task)? else {
             return Ok(Ok(()));
         };
-        if !row.kind.can_change_code() {
+        // An answer, whatever the kind, passes: only code meets the checks.
+        let delivered = qm_policy::delivery::deliverable(qm_policy::delivery::DeliveredFacts {
+            in_place: row.delivery == DeliveryMode::Folder,
+            own_commits: head.is_some(),
+            headings: any_heading(report),
+        });
+        if delivered == qm_policy::delivery::Deliverable::Answer {
             return Ok(Ok(()));
         }
         // 1. The repair limit holds it.
@@ -238,7 +257,9 @@ impl ReportGate for VerificationService {
         if row.kind == TaskKind::Review {
             return self.review_reported(conn, &row, &stored, notify, at);
         }
-        if row.kind.can_change_code() {
+        if crate::tasks::delivered::of_report(&row, Some(&stored))
+            == qm_policy::delivery::Deliverable::Code
+        {
             return self.after_builder_report(conn, &row, &stored, notify, at);
         }
         Ok(GateNote::default())

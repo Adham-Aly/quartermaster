@@ -577,6 +577,27 @@ pub fn open_in_project(
     Ok(rows)
 }
 
+/// Every open task working in place (folder delivery), across all projects: its ID, its
+/// crewmate's folder and its kind, in creation order.
+pub fn open_in_place(
+    conn: &Connection,
+) -> Result<Vec<(TaskId, std::path::PathBuf, TaskKind)>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, a.home, t.kind FROM tasks AS t JOIN agents AS a ON a.task_id = t.id
+         WHERE t.status <> 'closed' AND t.delivery_mode = 'folder' ORDER BY t.seq",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                std::path::PathBuf::from(r.get::<_, String>(1)?),
+                r.get(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 /// The port blocks of tasks closed since `since`, newest first, at most `limit`.
 pub fn recently_closed_ports(
     conn: &Connection,

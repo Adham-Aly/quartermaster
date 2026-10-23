@@ -102,10 +102,7 @@ fn apply(data: &DataDir, facts: &Facts, now: SystemTime, when: When) {
 /// Whether T-`id`'s plan folder is still needed.
 fn keep_plan(data: &DataDir, facts: &Facts, id: TaskId) -> bool {
     facts.open.iter().any(|t| {
-        t.id == id
-            || (t.builds_on == Some(id)
-                && t.kind.can_change_code()
-                && !data.task(t.id).plan.join("plan.md").is_file())
+        t.id == id || (t.builds_on == Some(id) && !data.task(t.id).plan.join("plan.md").is_file())
     })
 }
 

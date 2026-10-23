@@ -211,7 +211,7 @@ fn header(out: &mut String, f: &BriefFacts) {
         BriefVerification::None => {
             let why = if is_review(f.kind) {
                 "review task"
-            } else if f.kind.is_answer_only() {
+            } else if f.kind.usually_answers() {
                 "answer-only task"
             } else {
                 "build in place"
@@ -241,7 +241,7 @@ fn header(out: &mut String, f: &BriefFacts) {
     );
     let fate = if is_review(f.kind) {
         "review only: change and commit nothing".to_owned()
-    } else if f.kind.is_answer_only() {
+    } else if f.kind.usually_answers() {
         "answer only: commit nothing".to_owned()
     } else {
         match (f.delivery, &f.pr_target) {
@@ -429,7 +429,7 @@ fn section_planning(out: &mut String, f: &BriefFacts) {
 }
 
 fn section_first_edit(out: &mut String, f: &BriefFacts) {
-    if f.kind.is_answer_only() {
+    if f.kind.usually_answers() {
         return;
     }
     out.push_str("\n## Before your first edit\n");
@@ -453,7 +453,7 @@ fn section_verification(out: &mut String, f: &BriefFacts) {
             } else if f.kind == TaskKind::Reproduce {
                 "Reproduce it with product-level evidence saved to $QM_EVIDENCE_DIR: the exact steps,\n\
                  what happened and what should have. Use throwaway data, never the user's real state.\n"
-            } else if f.kind.is_answer_only() {
+            } else if f.kind.usually_answers() {
                 "Back every claim with what you read or ran: file paths and lines, commands and\n\
                  their output, links. Say plainly what you couldn't confirm.\n"
             } else {
@@ -534,7 +534,7 @@ fn section_delivery(out: &mut String, f: &BriefFacts) {
         );
         return;
     }
-    if f.kind.is_answer_only() {
+    if f.kind.usually_answers() {
         out.push_str(
             "This task delivers an answer, not code. Don't commit, push or open anything; put\n\
              scratch work in your temporary folder.\n",
@@ -603,7 +603,7 @@ fn section_reporting(out: &mut String, f: &BriefFacts) {
         TaskKind::Plan => out.push_str(
             "Call report with a short summary of the plan in answer; the plan is plan.md.\n",
         ),
-        kind if kind.is_answer_only() => {
+        kind if kind.usually_answers() => {
             out.push_str("Call report with your whole answer in answer.");
             if kind == TaskKind::Research {
                 out.push_str("\nIf it is a confirmed diagnosis a fix can build on, set diagnosis.");

@@ -24,7 +24,7 @@ use crate::inbox::Inbox;
 use qm_git::{BranchRemoval, Repo, RetireSpec};
 use qm_policy::delivery::close_keeps_branch;
 use qm_store::agents;
-use qm_store::tasks as task_store;
+use qm_store::tasks::{self as task_store, TaskRow};
 use qm_tools::defs::TaskUpdated;
 use qm_tools::handler::{Caller, ToolFailure};
 use qm_types::domain::{AgentStatus, DeliveryMode, TaskStatus, WakeKind};
@@ -99,6 +99,15 @@ impl Exit {
             _ => None,
         }
     }
+}
+
+/// Whether `row`'s newest done report delivered an answer (read failures count as not).
+async fn answered(svc: &TaskService, row: &TaskRow) -> bool {
+    let row = row.clone();
+    svc.db()
+        .call(move |conn| super::delivered::of_task(conn, &row))
+        .await
+        .is_ok_and(|d| d == qm_policy::delivery::Deliverable::Answer)
 }
 
 /// What retiring did.
@@ -210,7 +219,7 @@ pub(crate) async fn retire(
         (None, false) => {
             let ok = match exit {
                 Exit::Landed => row.status == TaskStatus::Landed,
-                Exit::Answered => row.status == TaskStatus::Reported && row.kind.is_answer_only(),
+                Exit::Answered => row.status == TaskStatus::Reported && answered(svc, &row).await,
                 _ => false,
             };
             if !ok {
@@ -307,7 +316,6 @@ pub(crate) async fn retire(
 
     // 4. Close.
     let at = svc.clock().now();
-    let kind = row.kind;
     svc.write(move |tx, notify| {
         let Some(now) = task_store::load(tx, task)? else {
             return Ok(());
@@ -315,7 +323,7 @@ pub(crate) async fn retire(
         if now.status == TaskStatus::Closed {
             return Ok(());
         }
-        let outcome = outcome_for(now.status, kind);
+        let outcome = outcome_for(now.status, super::delivered::of_task(tx, &now)?);
         task_store::set_closed(tx, task, now.status, outcome, at)?;
         // Nothing may be approved for a task that no longer exists. Superseding never approves
         // or rejects; it only takes the card (and its inbox item) away.
@@ -492,7 +500,7 @@ pub(crate) async fn close_task(
             });
         }
         TaskStatus::Landed => Exit::Landed,
-        TaskStatus::Reported if row.kind.is_answer_only() => Exit::Answered,
+        TaskStatus::Reported if answered(svc, &row).await => Exit::Answered,
         TaskStatus::Reported => {
             return Err(refuse(format!(
                 "{task} has work that isn't settled: settle_task delivers it, stop_task drops it"

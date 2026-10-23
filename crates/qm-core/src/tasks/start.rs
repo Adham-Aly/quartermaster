@@ -48,9 +48,7 @@ use qm_types::domain::{
     Tier, VerificationLevel, VerificationSource,
 };
 use qm_types::error::Refusal;
-use qm_types::ids::{
-    AgentId, CommitSha, MessageId, ModelId, PortBlock, ProjectId, SecondmateId, TaskId,
-};
+use qm_types::ids::{AgentId, CommitSha, MessageId, ModelId, PortBlock, SecondmateId, TaskId};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -255,14 +253,14 @@ fn validate(
                 {
                     BuildsOnFact::FinishedPlan
                 }
-                (TaskKind::Reproduce, Some(r)) if r.reproduced == Some(true) => {
+                // Any kind may confirm a diagnosis.
+                (_, Some(r)) if r.reproduced == Some(true) || r.diagnosis => {
                     BuildsOnFact::ConfirmedDiagnosis
                 }
-                (TaskKind::Research, Some(r)) if r.diagnosis => BuildsOnFact::ConfirmedDiagnosis,
                 _ => BuildsOnFact::Nothing,
             };
             if req.kind == TaskKind::Review {
-                if !row.kind.can_change_code() || row.head_commit.is_none() {
+                if row.head_commit.is_none() {
                     return Ok(Err(Refusal::new(format!(
                         "a review builds on code work with a commit to review, and {target} has none"
                     ))));
@@ -662,9 +660,8 @@ pub(crate) async fn start_as(
             .map_err(|why| refuse(format!("The task can't start: {why}")))?;
     }
 
-    // 5. The verification level (none for answer-only, review and build in place).
+    // 5. The verification level (every task has one, except build in place).
     let level = choose_level(
-        req.kind,
         validated.project.delivery,
         req.verification,
         Some(validated.project.verification),
@@ -733,11 +730,11 @@ pub(crate) async fn start_as(
         .call(move |conn| {
             let tx = conn.transaction()?;
             let mut notify = Notify::new();
-            // Folder work shares one folder, so one code-writing task at a time may be open in it.
+            // In-place work shares its folder, so one code-kind task at a time may work there.
             if let Err(r) = check_writer_slot(
                 &tx,
-                validated.project.id,
-                validated.project.delivery,
+                validated.project.delivery == DeliveryMode::Folder,
+                &validated.project.path,
                 req.kind,
             )? {
                 return Ok((Recorded::Refused(r), notify));
@@ -1004,7 +1001,10 @@ async fn reroute_one(svc: &TaskService, row: TaskRow) -> Result<bool, String> {
         .db()
         .call(move |conn| {
             let blockers = task_store::blockers_of(conn, task)?;
-            let blocked = blockers.iter().any(|b| !blocker_finished(b.kind, b.status));
+            let mut blocked = false;
+            for b in &blockers {
+                blocked |= !blocker_finished(conn, b.task)?;
+            }
             if blocked {
                 return Ok(None);
             }
@@ -1089,14 +1089,19 @@ async fn reroute_one(svc: &TaskService, row: TaskRow) -> Result<bool, String> {
     Ok(moved)
 }
 
-/// Whether a blocker counts as finished for a queued task: an answer-only task once reported, any
-/// task once landed or closed.
-pub(crate) fn blocker_finished(kind: TaskKind, status: TaskStatus) -> bool {
-    match status {
-        TaskStatus::Reported => kind.is_answer_only(),
+/// Whether a blocker counts as finished for a queued task: a task that reported an answer, any task
+/// once landed or closed.
+pub(crate) fn blocker_finished(conn: &Connection, blocker: TaskId) -> Result<bool, StoreError> {
+    let Some(row) = task_store::load(conn, blocker)? else {
+        return Ok(false);
+    };
+    Ok(match row.status {
+        TaskStatus::Reported => {
+            super::delivered::of_task(conn, &row)? == qm_policy::delivery::Deliverable::Answer
+        }
         TaskStatus::Landed | TaskStatus::Closed => true,
         _ => false,
-    }
+    })
 }
 
 /// The inputs a task's start recorded for routing.
@@ -1414,23 +1419,21 @@ async fn make_worktree(
     Ok(())
 }
 
-/// The code-writing task already open in a project, if any: a second one is refused while it runs.
-pub(crate) fn folder_writer(open: &[(TaskId, TaskKind)]) -> Option<TaskId> {
-    open.iter()
-        .find(|(_, kind)| kind.can_change_code())
-        .map(|(task, _)| *task)
-}
-
-/// Whether a new task of `kind` may start in `project` now, given the tasks open in it. The outer
-/// `Result` is the store's; the inner one is the refusal.
+/// Whether a new task of `kind` may start working in place in `folder` now, given every task open
+/// in place. The outer `Result` is the store's; the inner one is the refusal.
 pub(crate) fn check_writer_slot(
     conn: &Connection,
-    project: ProjectId,
-    delivery: DeliveryMode,
+    in_place: bool,
+    folder: &Path,
     kind: TaskKind,
 ) -> Result<Result<(), Refusal>, StoreError> {
-    let open = task_store::open_in_project(conn, project)?;
-    Ok(check_folder_writer(delivery, kind, folder_writer(&open)))
+    if !in_place {
+        return Ok(Ok(()));
+    }
+    let open = task_store::open_in_place(conn)?;
+    let open: Vec<(TaskId, &Path, TaskKind)> =
+        open.iter().map(|(t, f, k)| (*t, f.as_path(), *k)).collect();
+    Ok(check_folder_writer(in_place, folder, kind, &open))
 }
 
 /// A folder task's folder must still be there. Nothing is created or changed in it: it's yours.
