@@ -3,7 +3,7 @@
 
 use super::model::{
     AccountStatus, BOARD, KEY_PROVIDERS, LoginMethod, LoginStatus, LoginStep, QuartermasterModel,
-    effort_label, key_provider, model_tier_default, tier_label,
+    combo_label, effort_label, key_provider, tier_label,
 };
 use super::{
     AccountLogin, AccountTarget, BoardItem, Confirm, Drag, Field, FieldFor, KIND_ROWS_FROM,
@@ -28,7 +28,6 @@ type PickOption = (String, PickValue);
 /// Where a menu opened from the keyboard sits: just under its row's label.
 const BELOW: Anchor = Anchor::Row { dx: 4, dy: 1 };
 
-const ADD_TO_TIER: &str = "Add to tier ▸";
 const REMOVE_FROM_PREMIUM: &str = "Remove from Premium";
 const REMOVE_FROM_HIGH: &str = "Remove from High";
 const REMOVE_FROM_MEDIUM: &str = "Remove from Medium";
@@ -57,17 +56,12 @@ const fn remove_from(tier: Tier) -> &'static str {
     }
 }
 
-/// The context-menu items for a Settings target (the board's right-click menu, its "Add to tier"
-/// submenu, and an account's menu).
+/// The context-menu items for a placed combination or an account.
 pub(crate) fn menu_items(target: MenuTarget) -> Vec<&'static str> {
     match target {
         MenuTarget::Model(BoardItem::Placed { tier, .. }) => {
-            vec![ADD_TO_TIER, remove_from(tier), REMOVE_FROM_ALL, ALWAYS_USE]
+            vec![remove_from(tier), REMOVE_FROM_ALL, ALWAYS_USE]
         }
-        MenuTarget::Model(BoardItem::Unused { .. }) => vec![ADD_TO_TIER, ALWAYS_USE],
-        // Every tier, the entry's own too: the same model can sit there again at another effort,
-        // which the next step asks for.
-        MenuTarget::AddToTier(_) => BOARD.into_iter().map(tier_label).collect(),
         MenuTarget::Account(account) => {
             let mut items = Vec::new();
             if account.login == AccountLogin::Broken {
@@ -254,7 +248,7 @@ impl App {
             self.settings_set(|s| &mut s.board, Some(items[at]));
             return true;
         }
-        if code == KeyCode::Char('/') {
+        if matches!(code, KeyCode::Char('/' | 'a')) {
             self.open_picker(PickFor::Find, SettingsHit::Find);
             return true;
         }
@@ -263,15 +257,8 @@ impl App {
         };
         match code {
             KeyCode::Char('m') => self.open_picker(PickFor::MoveTo(item), SettingsHit::Board(item)),
-            KeyCode::Char('e') => {
-                if item.tier().is_some() {
-                    self.open_picker(PickFor::Effort(item), SettingsHit::Effort(item));
-                }
-            }
             KeyCode::Char('x') | KeyCode::Delete | KeyCode::Backspace => {
-                if item.tier().is_some() {
-                    self.move_item(item, Zone::NotInUse);
-                }
+                self.move_item(item, Zone::NotInUse);
             }
             KeyCode::Enter | KeyCode::Char(' ') => self.open_board_menu(item, None),
             _ => return false,
@@ -544,6 +531,12 @@ impl App {
             && let Some(query) = &mut picker.query
         {
             query.extend(pasted.chars().filter(|c| !c.is_control()));
+            let visible = picker.visible();
+            if !visible.contains(&picker.cursor)
+                && let Some(&first) = visible.first()
+            {
+                picker.cursor = first;
+            }
             self.redraw();
         }
     }
@@ -589,10 +582,6 @@ impl App {
             SettingsHit::Board(item) => {
                 self.settings_set(|s| &mut s.board, Some(item));
                 self.settings_set(|s| &mut s.drag, Some(Drag { item, over: None }));
-            }
-            SettingsHit::Effort(item) => {
-                self.settings_set(|s| &mut s.board, Some(item));
-                self.open_picker(PickFor::Effort(item), hit);
             }
             SettingsHit::Zone(_) | SettingsHit::Overlay | SettingsHit::Backdrop => {}
             SettingsHit::Find => self.open_picker(PickFor::Find, hit),
@@ -659,7 +648,7 @@ impl App {
             return;
         }
         match hit {
-            SettingsHit::Board(item) | SettingsHit::Effort(item) => {
+            SettingsHit::Board(item) => {
                 self.open_board_menu(item, Some(at));
             }
             SettingsHit::Account(i)
@@ -683,13 +672,11 @@ impl App {
         };
         let zone = match hit {
             Some(Hit::Settings(SettingsHit::Zone(zone))) => Some(zone),
-            Some(Hit::Settings(SettingsHit::Board(item) | SettingsHit::Effort(item))) => {
-                Some(item.tier().map_or(Zone::NotInUse, Zone::Tier))
-            }
+            Some(Hit::Settings(SettingsHit::Board(item))) => Some(Zone::Tier(item.tier())),
             _ => None,
         };
-        let source = drag.item.tier().map_or(Zone::NotInUse, Zone::Tier);
-        let over = zone.filter(|&z| z != source);
+        let source = Zone::Tier(drag.item.tier());
+        let over = zone.filter(|&z| z != source && self.destination_available(drag.item, z));
         self.settings_set(|s| &mut s.drag, Some(Drag { over, ..drag }));
     }
 
@@ -767,7 +754,7 @@ impl App {
     /// Selects what a Settings menu acts on.
     pub(crate) fn settings_select_target(&mut self, target: MenuTarget) {
         match target {
-            MenuTarget::Model(item) | MenuTarget::AddToTier(item) => {
+            MenuTarget::Model(item) => {
                 self.settings_set(|s| &mut s.board, Some(item));
             }
             MenuTarget::Account(account) => {
@@ -788,9 +775,6 @@ impl App {
                     return;
                 };
                 match item {
-                    ADD_TO_TIER => {
-                        self.open_menu(MenuTarget::AddToTier(board), BELOW);
-                    }
                     REMOVE_FROM_ALL => self.intend(Command::TakeOutOfUse { model: id }),
                     ALWAYS_USE => {
                         let fallback = self
@@ -808,15 +792,10 @@ impl App {
                         });
                     }
                     _ => {
-                        if board.tier().is_some_and(|t| item == remove_from(t)) {
+                        if item == remove_from(board.tier()) {
                             self.move_item(board, Zone::NotInUse);
                         }
                     }
-                }
-            }
-            MenuTarget::AddToTier(board) => {
-                if let Some(&to) = BOARD.iter().find(|&&t| tier_label(t) == item) {
-                    self.open_picker(PickFor::AddAt(board, to), SettingsHit::Board(board));
                 }
             }
             MenuTarget::Account(account) => match item {
@@ -849,27 +828,41 @@ impl App {
         self.view.settings.model.accounts.get(i).map(|a| a.id)
     }
 
+    /// Duplicate combinations are unavailable to moves, including drag and stale picker choices.
+    fn destination_available(&self, item: BoardItem, zone: Zone) -> bool {
+        let Some(m) = self.view.settings.model.models.get(item.model()) else {
+            return false;
+        };
+        let from = item.tier();
+        if m.placement(from, item.effort()).is_none() {
+            return false;
+        }
+        match zone {
+            Zone::NotInUse => true,
+            Zone::Tier(tier) => from != tier && m.placement(tier, item.effort()).is_none(),
+        }
+    }
+
     /// Moves a board item to `zone`, and keeps it selected where it lands.
     fn move_item(&mut self, item: BoardItem, zone: Zone) {
+        if !self.destination_available(item, zone) {
+            return;
+        }
         let Some(model) = self.model_id(item) else {
             return;
         };
         let (from, effort) = (item.tier(), item.effort());
         let intent = match zone {
-            Zone::Tier(to) if from == Some(to) => return,
             Zone::Tier(to) => Command::PlaceModel {
                 model,
-                from,
+                from: Some(from),
                 effort,
                 to,
             },
-            Zone::NotInUse => match from {
-                Some(tier) => Command::RemovePlacement {
-                    model,
-                    tier,
-                    effort,
-                },
-                None => return,
+            Zone::NotInUse => Command::RemovePlacement {
+                model,
+                tier: from,
+                effort,
             },
         };
         self.intend(intent);
@@ -882,15 +875,11 @@ impl App {
             }),
             Zone::NotInUse => {
                 let m = &self.view.settings.model.models[index];
-                if m.unused() {
-                    Some(BoardItem::Unused { model: index })
-                } else {
-                    m.placements.first().map(|p| BoardItem::Placed {
-                        model: index,
-                        tier: p.tier,
-                        effort: p.effort,
-                    })
-                }
+                m.placements.first().map(|p| BoardItem::Placed {
+                    model: index,
+                    tier: p.tier,
+                    effort: p.effort,
+                })
             }
         };
         self.settings_set(|s| &mut s.board, landed);
@@ -1149,10 +1138,10 @@ impl App {
     // ---------------------------------------------------------------- pickers
 
     fn open_picker(&mut self, purpose: PickFor, under: SettingsHit) {
-        let Some((options, current)) = self.picker_options(purpose) else {
+        let Some((options, current)) = self.picker_options(purpose.clone()) else {
             return;
         };
-        if options.is_empty() && purpose != PickFor::Find {
+        if options.is_empty() && !matches!(purpose, PickFor::Find | PickFor::AddTo { .. }) {
             return;
         }
         let cursor = current
@@ -1162,11 +1151,11 @@ impl App {
             .settings_rect(under)
             .unwrap_or_else(|| Rect::new(self.term.size.0 / 3, self.term.size.1 / 3, 1, 1));
         let picker = Picker {
+            query: (purpose == PickFor::Find).then(String::new),
             purpose,
             options,
             cursor,
             under,
-            query: (purpose == PickFor::Find).then(String::new),
         };
         self.settings_set(|s| &mut s.picker, Some(picker));
     }
@@ -1185,13 +1174,14 @@ impl App {
             })
             .collect();
         Some(match purpose {
-            PickFor::Effort(_) | PickFor::AddAt(..) | PickFor::QuartermasterEffort => {
-                return effort_options(settings, purpose);
+            PickFor::QuartermasterEffort => {
+                return effort_options(settings, &purpose);
             }
+            PickFor::AddTo { model, effort } => (add_options(settings, &model, effort)?, None),
             PickFor::MoveTo(item) => {
                 let mut options: Vec<(String, PickValue)> = BOARD
                     .into_iter()
-                    .filter(|&t| item.tier() != Some(t))
+                    .filter(|&t| self.destination_available(item, Zone::Tier(t)))
                     .map(|t| {
                         (
                             format!("Move to {}", tier_label(t)),
@@ -1199,9 +1189,10 @@ impl App {
                         )
                     })
                     .collect();
-                if item.tier().is_some() {
-                    options.push((String::from("Not in use"), PickValue::Zone(Zone::NotInUse)));
-                }
+                options.push((
+                    String::from("Remove from tier"),
+                    PickValue::Zone(Zone::NotInUse),
+                ));
                 (options, None)
             }
             PickFor::PinModel => {
@@ -1234,20 +1225,7 @@ impl App {
                 });
                 (options, current)
             }
-            PickFor::Find => {
-                let options = settings
-                    .models
-                    .iter()
-                    .filter(|m| m.unused() && !m.listed)
-                    .map(|m| {
-                        (
-                            format!("{} · {}", m.name, m.account),
-                            PickValue::Model(m.id.clone()),
-                        )
-                    })
-                    .collect();
-                (options, None)
-            }
+            PickFor::Find => (catalogue_options(settings), None),
             PickFor::KindTier(kind) => {
                 let row = settings.kind_tiers.iter().find(|r| r.row == kind)?;
                 let mut options =
@@ -1270,53 +1248,42 @@ impl App {
         })
     }
 
-    /// Runs an effort picker's choice: a tier entry's effort, the effort a new entry is added at,
-    /// or the Quartermaster's.
-    fn choose_effort(&mut self, purpose: PickFor, effort: Option<Effort>) {
-        match purpose {
-            PickFor::Effort(item) => {
-                let (Some(model), Some(tier)) = (self.model_id(item), item.tier()) else {
-                    return;
-                };
-                let current = item.effort();
-                if current == effort {
-                    return;
-                }
-                self.intend(Command::SetPlacementEffort {
-                    model,
-                    tier,
-                    current,
-                    effort,
-                });
-                let landed = BoardItem::Placed {
-                    model: item.model(),
-                    tier,
-                    effort,
-                };
-                self.settings_set(|s| &mut s.board, Some(landed));
+    /// Adds a catalogue combination without consuming it or moving an existing placement.
+    fn add_combo(&mut self, id: ModelId, effort: Option<Effort>, to: Tier) {
+        let Some((model, m)) = self
+            .view
+            .settings
+            .model
+            .models
+            .iter()
+            .enumerate()
+            .find(|(_, m)| m.id == id)
+        else {
+            return;
+        };
+        if m.placement(to, effort).is_some()
+            || !match effort {
+                Some(e) => m.supported.contains(&e),
+                None => m.supported.is_empty(),
             }
-            PickFor::AddAt(item, tier) => {
-                let Some(model) = self.model_id(item) else {
-                    return;
-                };
-                self.intend(Command::PlaceModel {
-                    model,
-                    from: None,
-                    effort,
-                    to: tier,
-                });
-                let landed = BoardItem::Placed {
-                    model: item.model(),
-                    tier,
-                    effort,
-                };
-                self.settings_set(|s| &mut s.board, Some(landed));
-            }
-            PickFor::QuartermasterEffort => {
-                self.intend(Command::SetQuartermasterEffort { effort });
-            }
-            _ => {}
+        {
+            return;
         }
+        self.intend(Command::PlaceModel {
+            model: id,
+            from: None,
+            effort,
+            to,
+        });
+        self.settings_set(
+            |s| &mut s.board,
+            Some(BoardItem::Placed {
+                model,
+                tier: to,
+                effort,
+            }),
+        );
+        self.view.settings.reveal = true;
     }
 
     fn choose_pick(&mut self, index: usize) {
@@ -1324,14 +1291,22 @@ impl App {
             return;
         };
         self.redraw();
+        if !picker.visible().contains(&index) {
+            return;
+        }
         let Some((_, value)) = picker.options.get(index).cloned() else {
             return;
         };
         let pin = self.view.settings.model.pin.clone();
         match (picker.purpose, value) {
-            (purpose, PickValue::Effort(effort)) => self.choose_effort(purpose, effort),
             (PickFor::KindTier(row), PickValue::Tier(tier)) => {
                 self.intend(Command::SetKindTier { row, tier });
+            }
+            (PickFor::QuartermasterEffort, PickValue::Effort(effort)) => {
+                self.intend(Command::SetQuartermasterEffort { effort });
+            }
+            (PickFor::AddTo { model, effort }, PickValue::Zone(Zone::Tier(to))) => {
+                self.add_combo(model, effort, to);
             }
             (PickFor::MoveTo(item), PickValue::Zone(zone)) => self.move_item(item, zone),
             (PickFor::PinModel, PickValue::Model(id)) => {
@@ -1360,18 +1335,8 @@ impl App {
                 };
                 self.intend(Command::SetQuartermasterModel { choice });
             }
-            (PickFor::Find, PickValue::Model(id)) => {
-                let index = self
-                    .view
-                    .settings
-                    .model
-                    .models
-                    .iter()
-                    .position(|m| m.id == id);
-                self.intend(Command::ListModel { model: id });
-                if let Some(model) = index {
-                    self.settings_set(|s| &mut s.board, Some(BoardItem::Unused { model }));
-                }
+            (PickFor::Find, PickValue::Combo { model, effort }) => {
+                self.open_picker(PickFor::AddTo { model, effort }, SettingsHit::Find);
             }
             (PickFor::KeyProvider, PickValue::KeyProvider(provider)) => {
                 // A custom endpoint needs its address before its key.
@@ -1392,26 +1357,55 @@ impl App {
     }
 }
 
-/// The efforts a tier entry for `m` in `tier` can have: the tier default (with the level it comes
-/// to on this model), then each level the model supports, lowest first.
-fn entry_efforts(
-    m: &super::model::Model,
-    tier: Tier,
-    tiers: &qm_types::config::TierEfforts,
-) -> Vec<(String, Option<Effort>)> {
-    let mut out = vec![(
-        format!(
-            "Tier default · {}",
-            effort_label(model_tier_default(m, tier, tiers))
-        ),
-        None,
-    )];
-    out.extend(
-        m.supported
-            .iter()
-            .map(|&e| (effort_label(e).to_owned(), Some(e))),
-    );
-    out
+/// Destinations that can still accept this catalogue combination after a snapshot refresh.
+fn add_options(
+    settings: &super::model::Settings,
+    model: &ModelId,
+    effort: Option<Effort>,
+) -> Option<Vec<PickOption>> {
+    let m = settings.model(model)?;
+    if !match effort {
+        Some(e) => m.supported.contains(&e),
+        None => m.supported.is_empty(),
+    } {
+        return None;
+    }
+    Some(
+        BOARD
+            .into_iter()
+            .filter(|&t| m.placement(t, effort).is_none())
+            .map(|t| {
+                (
+                    format!("Add to {}", tier_label(t)),
+                    PickValue::Zone(Zone::Tier(t)),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// Stable catalogue: never filter by listed/unused or existing placements.
+fn catalogue_options(settings: &super::model::Settings) -> Vec<PickOption> {
+    settings
+        .models
+        .iter()
+        .flat_map(|m| {
+            let efforts: Vec<_> = if m.supported.is_empty() {
+                vec![None]
+            } else {
+                m.supported.iter().copied().map(Some).collect()
+            };
+            efforts.into_iter().map(move |effort| {
+                (
+                    format!("{} · {} · {}", combo_label(m, effort), m.account, m.id),
+                    PickValue::Combo {
+                        model: m.id.clone(),
+                        effort,
+                    },
+                )
+            })
+        })
+        .collect()
 }
 
 /// The levels the Quartermaster's effort picker offers: those its model supports (the model you
@@ -1438,41 +1432,19 @@ fn quartermaster_levels(settings: &super::model::Settings) -> Vec<Effort> {
     }
 }
 
-/// What an effort picker offers, and the option now in effect: a tier entry's effort (leaving out
-/// the efforts the model's other entries in that tier hold), the effort a new entry is added at
-/// (only those the tier doesn't hold yet), or the Quartermaster's.
+/// The Quartermaster's separate effort control on Routing (not Model levels).
 fn effort_options(
     settings: &super::model::Settings,
-    purpose: PickFor,
+    purpose: &PickFor,
 ) -> Option<(Vec<PickOption>, Option<PickValue>)> {
     Some(match purpose {
-        PickFor::Effort(item) => {
-            let tier = item.tier()?;
-            let m = settings.models.get(item.model())?;
-            let own = item.effort();
-            // The model's other entries in this tier keep their efforts.
-            let options = entry_efforts(m, tier, &settings.tier_efforts)
-                .into_iter()
-                .filter(|(_, e)| *e == own || m.placement(tier, *e).is_none())
-                .map(|(label, e)| (label, PickValue::Effort(e)))
-                .collect();
-            (options, Some(PickValue::Effort(own)))
-        }
-        PickFor::AddAt(item, tier) => {
-            let m = settings.models.get(item.model())?;
-            let options: Vec<PickOption> = entry_efforts(m, tier, &settings.tier_efforts)
-                .into_iter()
-                .filter(|(_, e)| m.placement(tier, *e).is_none())
-                .map(|(label, e)| (format!("Add at {label}"), PickValue::Effort(e)))
-                .collect();
-            (options, Some(PickValue::Effort(None)))
-        }
         PickFor::QuartermasterEffort => {
             let levels = quartermaster_levels(settings);
-            let mut options = vec![(
-                String::from("Auto · its model's tier default"),
-                PickValue::Effort(None),
-            )];
+            let auto = match &settings.quartermaster {
+                QuartermasterModel::Model(_) => "Auto · its model's tier default",
+                _ => "Auto · selected entry's effort",
+            };
+            let mut options = vec![(String::from(auto), PickValue::Effort(None))];
             options.extend(
                 levels
                     .into_iter()
@@ -1486,3 +1458,6 @@ fn effort_options(
         _ => return None,
     })
 }
+
+#[cfg(test)]
+mod tests;

@@ -6,8 +6,9 @@
 //!   supports."
 //! - "Defaults: premium and high run at Extra high; medium and low run at Medium." (The defaults
 //!   are `config.toml`'s `[tiers]`, [`qm_types::config::TierEfforts`].)
-//! - "Per-model override: you can set a different level for a model in a specific tier, and that
-//!   wins."
+//! - A tier entry is a model+effort combo: its explicit effort wins over the tier default even
+//!   when used as a fallback. Routing filters out accounts that cannot serve that exact combo.
+//!   Explicit task/later-step overrides deliberately retain their cap-to-supported rule.
 //! - "Quick verification: a task at the lightest verification level runs one effort step lower,
 //!   unless you chose the level explicitly. Here 'the level' means an effort level you set for
 //!   that model, or named in your words, since quick verification is only ever your own choice."
@@ -34,9 +35,9 @@ pub fn tier_default(tiers: &TierEfforts, tier: Tier) -> Effort {
 /// Everything the effort rule reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffortInput<'a> {
-    /// The default of the tier the work landed in (a fallback keeps it).
+    /// The default of the tier the work landed in (a fallback without a combo effort keeps it).
     pub tier_default: Effort,
-    /// Your own level for this model in that tier (a placement override), if set.
+    /// The selected entry's effort, even when that entry is in a fallback tier.
     pub placement_override: Option<Effort>,
     /// A level you named for this task in your words, or carried by a `later_steps` entry.
     pub named: Option<Effort>,

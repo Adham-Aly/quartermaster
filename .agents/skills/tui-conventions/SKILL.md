@@ -73,6 +73,16 @@ Map core `Tone`s with `theme::tone`.
   projects hint under its title; `Esc` or any click closes it. A new popup or menu entry: see
   the notes at the top of `popups.rs`. A badge: make `App::entry_badge` true for the entry; the
   menu button follows (Update's comes from the core, `UpdateView::badge`).
+- Settings ▸ Model levels shows placed **model + effort** labels, not an effort toggle.
+  **Add model…** (`a` or `/`) opens a fixed searchable catalogue of all models × their
+  supported efforts (one `(no effort)` entry with `None` when support is empty). Search
+  includes name, ID, account and effort; adding never consumes a catalogue entry. Choosing
+  a combination asks for its destination tier, excluding identical placements. Moves and
+  drags also exclude duplicate destinations; `x` removes. There is no add-to-tier context
+  submenu. Use `PlaceModel { from: None, effort, to, .. }` for additions. Routing's separate
+  Quartermaster effort control overrides the entry effort; with model and effort both Auto,
+  the selected entry's effort is used. Board selections and pickers are transient, not
+  persisted in `ui.json`.
 - Buttons: `widgets/button.rs` (`" label "`), one space apart. Hints go on the status bar's right.
 - Long labels are cut with `…` so status columns always fit; long problem text wraps instead.
 

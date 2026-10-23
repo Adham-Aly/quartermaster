@@ -8,12 +8,19 @@ description: Add or change a user setting stored in config.toml - the schema in 
 ## Where a setting lives
 
 - **`config.toml`** (`qm_types::config::Config`): the user's preferences that aren't about a
-  particular account or detected model: the Quartermaster's model and effort, the "always use"
-  pin, each tier's default effort, project search roots. **Never a secret**:
+  particular account or detected model: the Quartermaster's model and optional effort override,
+  the "always use" pin, tier effort defaults, project search roots. **Never a secret**:
   credentials go in `auth.json` through `qm_auth`.
+  Tier defaults (`[tiers]`, `TierEfforts`) are for model-only pins, explicitly selected
+  Quartermaster models without an effort override, and legacy effort migration—not normal
+  model+effort entry routing. Quartermaster Auto with no separate effort override uses the
+  selected entry's effort, including on fallback.
 - **The database**: anything about a particular account or model (placements, the tier entries:
   each a model at an effort; labels, pauses, the preferred account) is a row (skill
-  `add-migration`).
+  `add-migration`). Saved legacy `None` efforts are frozen to explicit supported efforts from
+  the configured tier defaults by `qm_store::models::migrate_legacy_efforts`; existing explicit
+  entries stay unchanged. Unknown capabilities wait for a later pass; no-effort models retain
+  `None`. New catalogue choices never offer "tier default". See `docs/routing.md`.
 - **`ui.json`**: UI-only state (layout, popups, drafts, scrolls), written by the UI host
   (`qm-tui` `persist.rs`), because the UI can't reach the core's config. A new remembered UI field
   is added there (read per field, so an old file still loads); `tui.toml` is only read once.

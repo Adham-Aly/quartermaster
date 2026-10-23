@@ -19,18 +19,20 @@ pub(crate) use qm_types::api::{
     QuartermasterNow, SettingsAccount as Account, SettingsModel as Model,
 };
 
-/// The effort the tier default comes to on `model`: the tier's level, or the nearest level the
-/// model supports below it (else its lowest).
-pub(crate) fn model_tier_default(model: &Model, tier: Tier, tiers: &TierEfforts) -> Effort {
-    let wanted = tier_default(tiers, tier);
-    model
-        .supported
-        .iter()
-        .copied()
-        .filter(|&e| e <= wanted)
-        .max()
-        .or_else(|| model.supported.iter().copied().min())
-        .unwrap_or(wanted)
+/// The single label used for placed entries and catalogue combinations.
+pub(crate) fn combo_label(model: &Model, effort: Option<Effort>) -> String {
+    let level = effort.map_or_else(
+        || {
+            if model.supported.is_empty() {
+                "no effort"
+            } else {
+                "default"
+            }
+            .to_owned()
+        },
+        |e| effort_label(e).to_lowercase(),
+    );
+    format!("{} ({level})", model.name)
 }
 
 /// A login in progress or just finished: the core's [`api::LoginView`], with its countdown.
@@ -73,7 +75,7 @@ pub(crate) struct Settings {
     pub(crate) models: Vec<Model>,
     pub(crate) pin: Pin,
     pub(crate) quartermaster: QuartermasterModel,
-    /// Your effort for the Quartermaster; `None` follows its model's tier.
+    /// Your Quartermaster effort override; `None` uses Auto's entry or a named model's tier default.
     pub(crate) quartermaster_effort: Option<Effort>,
     /// What the Quartermaster runs on now: a model and its effort.
     pub(crate) quartermaster_now: Option<QuartermasterNow>,
@@ -104,18 +106,6 @@ pub(crate) fn key_provider(label: &str) -> ProviderId {
 
 /// The tiers top to bottom, as the board shows them.
 pub(crate) const BOARD: [Tier; 4] = [Tier::Premium, Tier::High, Tier::Medium, Tier::Low];
-
-/// A tier's default effort before clamping to a model, from `tiers`: the efforts routing uses,
-/// as `config.toml` sets them (`SettingsView.tier_efforts`; routing's own defaults when the file
-/// says nothing, where Low runs on Medium).
-pub(crate) const fn tier_default(tiers: &TierEfforts, tier: Tier) -> Effort {
-    match tier {
-        Tier::Premium => tiers.premium,
-        Tier::High => tiers.high,
-        Tier::Medium => tiers.medium,
-        Tier::Low => tiers.low,
-    }
-}
 
 /// "Extra high".
 pub(crate) const fn effort_label(effort: Effort) -> &'static str {
@@ -148,17 +138,14 @@ pub(crate) const fn tier_heading(tier: Tier) -> &'static str {
     }
 }
 
-/// Where an empty tier's work goes instead: the first tier with a model in routing's fallback
-/// order (`qm_routing::fallback::order`). Premium is never a fallback.
+/// Where an empty tier's work goes instead, using routing's shared order. Premium requests
+/// fall back to ordinary tiers, but ordinary requests never fall back to Premium.
 pub(crate) fn fallback_tier(settings: &Settings, tier: Tier) -> Option<Tier> {
-    let filled = |t: Tier| settings.models.iter().any(|m| m.in_tier(t));
-    let order: &[Tier] = match tier {
-        Tier::Premium => &[Tier::High, Tier::Medium, Tier::Low],
-        Tier::High => &[Tier::Medium, Tier::Low],
-        Tier::Medium => &[Tier::High, Tier::Low],
-        Tier::Low => &[Tier::Medium, Tier::High],
-    };
-    order.iter().copied().find(|&t| filled(t))
+    tier.fallback_order()
+        .iter()
+        .copied()
+        .skip(1)
+        .find(|&t| settings.models.iter().any(|m| m.in_tier(t)))
 }
 
 impl Settings {
@@ -188,14 +175,6 @@ impl Settings {
     /// The models in at least one tier, board order.
     pub(crate) fn in_use(&self) -> Vec<&Model> {
         self.models.iter().filter(|m| !m.unused()).collect()
-    }
-
-    /// How many models only find reaches.
-    pub(crate) fn unlisted(&self) -> usize {
-        self.models
-            .iter()
-            .filter(|m| m.unused() && !m.listed)
-            .count()
     }
 
     /// Applies `command` to this picture, as the core will once it accepts it. Commands that
@@ -309,12 +288,12 @@ impl Settings {
     }
 
     /// Adds `model`'s entry at `effort` to `to`, out of `from` when it moves (keeping its
-    /// effort); moving onto an entry the tier already has merges the two.
+    /// effort). A duplicate destination is refused without removing the source.
     fn place(&mut self, model: &ModelId, from: Option<Tier>, effort: Option<Effort>, to: Tier) {
         let Some(m) = self.model_mut(model) else {
             return;
         };
-        if from == Some(to) {
+        if from == Some(to) || m.placement(to, effort).is_some() {
             return;
         }
         if let Some(from) = from {

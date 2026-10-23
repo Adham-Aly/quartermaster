@@ -12,22 +12,19 @@
 //! | stronger-model retry to high or medium | its target tier only; otherwise waits | "waiting for a high model" |
 //! | stronger-model retry to premium | as premium | "premium runs on high" |
 //!
-//! "A fallback keeps the effort level of the tier the work landed in, capped by the model actually
-//! used, and the routing record shows the step." Premium is never a fallback target. Premium work,
-//! whether you asked for it on one task or set a task kind to it, falls back like the rest: it
-//! waits only when no tier at all can serve. A stronger-model retry to high or medium still waits
-//! for its target, since running it weaker would defeat the retry.
+//! A fallback uses the selected tier entry's model+effort combo. Only legacy entries with no
+//! explicit effort keep the landed tier's default, capped by the model actually used. Task and
+//! later-step effort overrides still take precedence. The routing record shows each fallback
+//! step. Premium is never a fallback target. Premium work, whether you asked for it on one task
+//! or set a task kind to it, falls back like the rest: it waits only when no tier at all can
+//! serve. A stronger-model retry to high or medium still waits for its target, since running
+//! it weaker would defeat the retry.
 
 use qm_types::domain::Tier;
 
 /// The tiers to try, in order, for work that landed in `landed`.
 pub const fn order(landed: Tier) -> &'static [Tier] {
-    match landed {
-        Tier::Low => &[Tier::Low, Tier::Medium, Tier::High],
-        Tier::Medium => &[Tier::Medium, Tier::High, Tier::Low],
-        Tier::High => &[Tier::High, Tier::Medium, Tier::Low],
-        Tier::Premium => &[Tier::Premium, Tier::High, Tier::Medium, Tier::Low],
-    }
+    landed.fallback_order()
 }
 
 /// The tiers a stronger-model retry may use. A retry to high or medium uses its target only and
