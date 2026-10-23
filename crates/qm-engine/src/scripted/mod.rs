@@ -20,6 +20,8 @@
 
 mod script;
 mod session;
+#[cfg(test)]
+mod tests;
 
 pub use script::{Script, ScriptError};
 

@@ -67,6 +67,9 @@ pub(super) struct Session {
     /// `EndConversation` was played in this turn.
     ending: bool,
     in_turn: bool,
+    /// An `agent_told` job ended between turns: the next turn starts by itself, with this input
+    /// (as Claude Code starts one to tell the model).
+    self_started: Option<TurnInput>,
     /// When the session last became idle (no turn, no job), for the idle shutdown.
     idle_since: Option<Instant>,
     /// Commands that arrived mid-turn and wait for the turn to end.
@@ -80,6 +83,7 @@ struct PendingJob {
     at: Instant,
     exit_code: Option<i32>,
     tail: String,
+    agent_told: bool,
 }
 
 /// Why a turn stopped before its script ran out.
@@ -99,6 +103,12 @@ enum Got {
     Elapsed,
     Result(ToolResult),
     Inject,
+}
+
+/// What the wait between turns ended with.
+enum Idle {
+    Command(Option<SessionCommand>),
+    SelfStarted,
 }
 
 /// How a played turn ended.
@@ -129,6 +139,7 @@ impl Session {
             up: false,
             ending: false,
             in_turn: false,
+            self_started: None,
             idle_since: None,
             queued: VecDeque::new(),
             results: HashMap::new(),
@@ -165,9 +176,19 @@ impl Session {
         self.ready(index, resumed).await;
 
         loop {
+            if let Some(input) = self.self_started.take() {
+                if let Some(reason) = self.turn(index, &input).await {
+                    self.close(reason).await;
+                    return;
+                }
+                continue;
+            }
             let command = match self.queued.pop_front() {
                 Some(c) => Some(c),
-                None => self.wait_idle().await,
+                None => match self.wait_idle().await {
+                    Idle::Command(command) => command,
+                    Idle::SelfStarted => continue,
+                },
             };
             match command {
                 Some(SessionCommand::StartTurn { input } | SessionCommand::Inject { input }) => {
@@ -231,9 +252,9 @@ impl Session {
         self.idle_since = Some(self.clock.instant());
     }
 
-    /// Waits between turns for the next command, finishing jobs and suspending on the way.
-    /// `None` once the core has dropped its handle.
-    async fn wait_idle(&mut self) -> Option<SessionCommand> {
+    /// Waits between turns for the next command (`None` once the core has dropped its handle),
+    /// finishing jobs and suspending on the way, or until a job's end starts a turn by itself.
+    async fn wait_idle(&mut self) -> Idle {
         loop {
             let job_at = self.next_job_at();
             let idle_at = match (self.up, self.spec.idle_shutdown, self.idle_since) {
@@ -242,8 +263,13 @@ impl Session {
             };
             let clock = Arc::clone(&self.clock);
             tokio::select! {
-                command = self.side.commands.recv() => return command,
-                () = sleep_opt(&*clock, job_at) => self.finish_due_jobs().await,
+                command = self.side.commands.recv() => return Idle::Command(command),
+                () = sleep_opt(&*clock, job_at) => {
+                    self.finish_due_jobs().await;
+                    if self.self_started.is_some() {
+                        return Idle::SelfStarted;
+                    }
+                }
                 () = sleep_opt(&*clock, idle_at) => {
                     self.emit(EngineEvent::Suspended).await;
                     self.up = false;
@@ -548,6 +574,7 @@ impl Session {
                 finish_after_ms,
                 exit_code,
                 tail,
+                agent_told,
             } => {
                 let label = JobLabel::new(label.clone()).expect("validated when the script loaded");
                 self.emit(EngineEvent::JobStarted {
@@ -562,6 +589,7 @@ impl Session {
                     at: self.clock.instant() + Duration::from_millis(*finish_after_ms),
                     exit_code: *exit_code,
                     tail: tail.clone(),
+                    agent_told: *agent_told,
                 });
             }
             Step::Stall { ms } => self.pause(Duration::from_millis(*ms)).await?,
@@ -688,10 +716,17 @@ impl Session {
         }
         due.sort_by_key(|j| j.at);
         for job in due {
+            if job.agent_told && !self.in_turn && self.up {
+                self.self_started = Some(TurnInput::text(format!(
+                    "<task-notification>{}</task-notification>",
+                    job.label
+                )));
+            }
             self.emit(EngineEvent::JobFinished {
                 job: job.label,
                 exit_code: job.exit_code,
                 tail: job.tail,
+                agent_told: job.agent_told,
             })
             .await;
         }
@@ -708,6 +743,7 @@ impl Session {
                 job: job.label,
                 exit_code: None,
                 tail: String::new(),
+                agent_told: false,
             })
             .await;
         }
