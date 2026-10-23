@@ -28,13 +28,16 @@
 //! - **Settings in `config.toml`.** The pin and the Quartermaster's model and effort are saved through
 //!   `config_file::save` and published on the config channel, so routing and the seat see them at
 //!   once (the seat at its next idle moment).
-//! - **Accounts and the tier board.** Labels, pausing, disconnecting, the preferred account,
-//!   placements and the NOT IN USE list are each one transaction on the store thread
+//! - **Accounts and the tier board.** Labels, pausing, disconnecting, the preferred account and
+//!   model + effort placements are each one transaction on the store thread
 //!   (`qm_store::accounts`, `qm_store::models`); the next snapshot shows the change. A change
-//!   that doesn't apply (a label already taken, an unknown account or model) is refused with a
-//!   plain app note, and that snapshot puts the screens back as they were. Disconnecting forgets
-//!   the account's credentials; a Claude account, which follows your `claude` login, is paused
-//!   instead. What's listed under NOT IN USE is stored, so it survives a relaunch.
+//!   that doesn't apply (a label already taken, an unknown account or model, a stale source or
+//!   duplicate destination) is refused with a plain app note, and that snapshot puts the screens
+//!   back as they were. Disconnecting forgets the account's credentials; a Claude account, which
+//!   follows your `claude` login, is paused instead. The board adds combinations from a fixed
+//!   catalogue, with no NOT IN USE list or separate placement-effort picker. Legacy `ListModel`
+//!   and `SetPlacementEffort` commands remain supported; `settings.model_listed` events and the
+//!   snapshot's `listed` flag are retained for compatibility, not catalogue visibility.
 //!
 //! Secrets: an API key arrives as `SecretText` and goes straight into a `qm_auth::Secret`; no
 //! error message, log line, event or snapshot ever carries one.
@@ -971,9 +974,16 @@ impl Inner {
         .await
         .map_err(|e| e.to_string())?;
         let id = row.id;
+        let tiers = self.config.borrow().tiers.clone();
         let found = self
             .db
-            .call(move |conn| models::list_models(conn, id))
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                models::migrate_legacy_efforts(&tx, &tiers)?;
+                let found = models::list_models(&tx, id)?;
+                tx.commit()?;
+                Ok(found)
+            })
             .await
             .map_err(|e| e.to_string())?
             .iter()
@@ -993,13 +1003,14 @@ impl Inner {
                 for a in &accounts {
                     models.push((a.label.clone(), models::list_models(conn, a.id)?));
                 }
+                let supported = models::supported_efforts(conn)?;
                 let placements = models::list_placements(conn)?;
                 let listed = models::listed_models(conn)?;
                 let seat = qm_store::seat::quartermaster(conn)?;
-                Ok((accounts, models, placements, listed, seat))
+                Ok((accounts, models, supported, placements, listed, seat))
             })
             .await?;
-        let (accounts, account_models, placements, listed, seat) = rows;
+        let (accounts, account_models, supported, placements, listed, seat) = rows;
         let config = self.config.borrow().clone();
         let state = self.lock();
 
@@ -1036,7 +1047,7 @@ impl Inner {
                     .filter(|p| p.canonical == id)
                     .map(|p| ModelPlacement::new(p.tier, p.effort_override))
                     .collect();
-                model.supported.clone_from(&m.facts.efforts);
+                model.supported = supported.get(&id).cloned().unwrap_or_default();
                 model.new = m.is_new && model.placements.is_empty();
                 model.listed = listed.contains(&id);
                 view.models.push(model);

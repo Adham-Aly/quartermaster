@@ -1,18 +1,19 @@
 # Model routing
 
-Quartermaster routes crew tasks by **task kind**, then chooses an available model
-from your model levels (tiers). The rules use the kind and checked task facts,
-not keywords in the task description.
+Quartermaster routes crew tasks by **task kind**, then chooses an available
+**model + effort combination** from your model levels (tiers). The rules use the
+kind and checked task facts, not keywords in the task description. A level picks
+a pool, not an effort: the selected entry supplies its own effort.
 
 ## Task kinds
 
-| Task kind | Model level | Default effort |
-|---|---|---|
-| `lookup` | Low | Medium |
-| `build` building on a finished plan | Medium | Medium |
-| `fix` building on a confirmed diagnosis | Medium | Medium |
-| Other `build` or `fix` | High | Extra high |
-| `research`, `plan`, `reproduce`, `teach`, `review`, `unclear` | High | Extra high |
+| Task kind | Model level |
+|---|---|
+| `lookup` | Low |
+| `build` building on a finished plan | Medium |
+| `fix` building on a confirmed diagnosis | Medium |
+| Other `build` or `fix` | High |
+| `research`, `plan`, `reproduce`, `teach`, `review`, `unclear` | High |
 
 `builds_on` links a task to earlier work. For lighter routing, the app checks
 that the linked task is:
@@ -35,36 +36,71 @@ row follows its default.
 
 ## Choose your model levels
 
-Levels are pools **you control**, not fixed model names:
+Levels are pools **you control**, not fixed model names or effort settings:
 
-| Level | Purpose | Default effort |
-|---|---|---|
-| Premium | Above High; used when you request it, set a task kind to it, or choose a stronger-model retry | Extra high |
-| High | The default for work needing thinking | Extra high |
-| Medium | Work implementing finished thinking | Medium |
-| Low | Lookups | Medium |
+| Level | Purpose |
+|---|---|
+| Premium | Above High; used when you request it, name a premium model, set a task kind to it, or choose a stronger-model retry |
+| High | The default for work needing thinking |
+| Medium | Work implementing finished thinking |
+| Low | Lookups |
 
 Levels start empty on a new installation. Configure at least one model entry in
 **Settings ▸ Model levels** before messaging the Quartermaster; you do not need to
 fill every level. Removing the last entry blocks chatting again. Existing saved
-model levels are preserved, and connecting an account never fills levels for you.
+placements are kept, with legacy effort defaults migrated as described below.
+Connecting an account never fills levels for you.
 
 Add providers in **Settings ▸ Accounts**, then open **Settings ▸ Model levels**:
 
-- Move model entries between levels by dragging, or select one and press `m`.
-- Set an entry's effort with `e`, or choose **Tier default** to follow its level.
+- Choose **Add model…** (`a` or `/`) to search the fixed catalogue of every model
+  and each effort it supports. Search matches model name, ID, account and effort;
+  a model without effort controls has one **(no effort)** entry.
+- Choose a combination such as **Opus 5.5 (high)**, then its destination level.
+  Levels already containing that exact combination are not offered. Adding it
+  never removes it from the catalogue, so you can add it to another level later.
+- Move placed combinations between levels by dragging, or select one and press
+  `m`; duplicate destinations are unavailable. Press `x` to remove a placement.
 - A model can be in several levels, or appear at different efforts in one level.
+  Each placement is a model + effort label, with no separate effort toggle or
+  add-to-tier context submenu.
 
-Level-wide effort defaults live in the `[tiers]` section of `config.toml` in your
-data directory (`~/.quartermaster` by default).
+## Effort belongs to the entry
 
-Effort is separate from model level: **Low → Medium → High → Extra high → Max**.
-A task's named effort wins over an entry's effort, which wins over the tier default.
-**Quick** verification lowers the default by one effort step, but does not lower
-an effort you explicitly chose. Effort is adjusted to a supported setting (the
-highest at or below the request, or the model's lowest if none is that low).
-Models without effort controls receive no effort setting. A resumed conversation
-keeps the effort it started with.
+The effort ladder is **Low → Medium → High → Extra high → Max**. A selected
+combination keeps its effort, including when routing falls back to another level.
+For example, High work falling back to a Medium entry labelled **(low)** runs at
+Low effort, not High's default. Accounts that cannot run an entry's exact effort
+are skipped rather than silently lowering that combination.
+
+An effort you name for the task takes priority over an inherited `later_steps`
+effort, which takes priority over the entry's effort. A named effort is adjusted
+to a supported setting: the highest at or below the request, or the model's lowest
+if none is that low. This explicit override replaces the combination's effort;
+it does not require the account to support the original entry's effort.
+
+**Quick** verification lowers only an inherited tier default by one effort step.
+It does not lower an entry's explicit effort or an effort you named. Models
+without effort controls receive no effort setting. A resumed conversation keeps
+the effort it started with.
+
+### Tier defaults and older saved levels
+
+The `[tiers]` section of `config.toml` in your data directory
+(`~/.quartermaster` by default) still defines defaults: Premium and High start at
+Extra high; Medium and Low start at Medium. These are **not** the efforts assigned
+to normal tier routing or new catalogue entries. They are used for model-only
+pins, an explicitly selected Quartermaster model without an effort override, and
+migration of legacy entries that saved no effort (`None`).
+
+When a legacy entry's supported efforts are known, its saved `None` is migrated
+to the explicit effort obtained by capping its tier's configured default to those
+supported efforts. Existing explicit efforts are unchanged; identical placements
+are merged, keeping the earliest placement. Once migrated, later default changes
+do not alter that entry. Models without effort controls retain `None`; entries
+whose capabilities are not yet known remain unresolved until a later pass. Any
+unresolved legacy entry still uses tier-default rules; on a crew fallback it
+keeps the originally requested level's default, adjusted to the model used.
 
 ## Ask for a model or effort
 
@@ -82,7 +118,8 @@ ignores inherited choices.
 
 A named model must be placed in a tier; a model in none is refused, with a pointer
 to **Settings ▸ Model levels**. If it can't serve the task, normal routing takes
-over and records why. Naming a model does not by itself name an effort.
+over and records why. Naming a model does not by itself name an effort: it uses
+the selected entry's effort unless you name one too.
 
 Naming a model placed in Premium asks for premium. If that model can't serve,
 another Premium model runs; if none can, premium runs on High (then Medium, then
@@ -90,19 +127,41 @@ Low), and the routing record names each Premium model skipped and why.
 
 For a standing preference, **Settings ▸ Routing ▸ Always use** pins one model,
 with an optional fallback. Task-specific model choices take priority; premium
-requests and stronger-model retries bypass the pin. If neither pinned model can
-serve, normal routing takes over. The Quartermaster's own model and effort
-(and secondmates') are separate controls on the same tab.
+requests and stronger-model retries bypass the pin. A pin names a model, not a
+combination, so its effort comes from the task's routed level's default unless
+you named an effort. Quick verification can lower that default, and the result
+is adjusted to the pinned model's supported efforts. If neither pinned model can
+serve, normal routing takes over.
+
+## The Quartermaster and secondmates
+
+Their model and effort are separate controls in **Settings ▸ Routing**; crew task
+routing never changes those settings. Secondmates follow the same settings.
+
+- **Auto model, Auto effort:** tries **High → Medium → Premium → Low** across
+  subscriptions, using the selected entry's effort. Each account must support
+  that exact combination, even when Auto moves to another level.
+- **An explicit Quartermaster effort:** overrides the entry effort, including
+  with Auto model, and is adjusted to the selected model's supported efforts.
+- **An explicit Quartermaster model, Auto effort:** uses the model's tier default
+  rather than a crew entry's effort, adjusted to the model's supported efforts.
+  An explicitly selected model may use an API key as well as a subscription.
+
+Changes apply at the next idle moment, never mid-turn.
 
 ## Availability and fallbacks
 
-Routing skips models that cannot handle the task's images or context, and accounts
-at their limit. Within a tier, it prefers your preferred crew account, then
-subscriptions over API keys, allowance at risk of going unused, and newer models
-in the same family.
+Routing skips models that cannot handle the task's images or context, accounts
+at their limit, and accounts that do not support the selected combination's
+effort (unless a named effort replaces it). Within a tier, it prefers your
+preferred crew account, then subscriptions over API keys, allowance at risk of
+going unused, and newer models in the same family. Ties retain placement order.
 
-If no model can serve in the chosen level, it tries **Low → Medium → High**,
-**Medium → High → Low**, or **High → Medium → Low**, keeping the original level's
-default effort, capped to the model used. Premium work (asked for, set for a
-task kind, or a retry with a premium model) tries **Premium → High → Medium → Low**. Premium is never a fallback
-for other levels, and a retry with a high or medium model waits for that level. The routing record explains the choice and any fallback.
+If no entry can serve in the chosen level, it tries **Low → Medium → High**,
+**Medium → High → Low**, or **High → Medium → Low**. Each fallback uses the
+selected entry's model **and effort**, subject to your named effort override.
+Premium is never an automatic fallback for other levels. Premium work (asked for,
+set for a task kind, or a stronger-model retry to Premium) tries
+**Premium → High → Medium → Low**; retries to High or Medium wait for their
+target level. If no entry can serve, the task waits. The routing record explains
+the choice, skipped models and any fallback.

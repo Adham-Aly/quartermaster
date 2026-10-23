@@ -60,8 +60,21 @@ when connecting an account. Only the Claude set is user-approved; other sets rem
 
 Task kind → tier is `qm_routing::rules`: `row_for` maps a kind and its checked `builds_on` fact
 (never task text) to a `KindRow`, whose tier is the user's `[routing.kinds]` setting or
-`KindRow::default_tier`. Change a default there, and in `docs/routing.md`'s table. Each tier's default effort lives
-in `config.toml` (`[tiers]`, defaults in `qm_types::config::TierEfforts`).
+`KindRow::default_tier`. Change a default there, and in `docs/routing.md`'s table. Rules choose a
+tier, **not an effort**. Tier entries are fixed model+effort combinations: crew routing and
+Quartermaster Auto (with no separate Quartermaster effort override) use the selected entry's
+effort, including on fallback. Accounts must support that exact effort; task/`later_steps`
+efforts and a separate Quartermaster effort override instead replace it and keep cap-to-supported
+semantics.
+
+`config.toml`'s `[tiers]` (`qm_types::config::TierEfforts`) supplies defaults only for model-only
+pins, explicitly selected Quartermaster models without an effort override, and legacy entries
+without an explicit effort. `qm_store::models::migrate_legacy_efforts` freezes saved legacy `None`
+entries at the supported effort derived from their configured tier default, keeping explicit
+entries unchanged and merging identical placements by earliest placement order. Unknown
+capabilities remain unresolved for a later pass; models without effort controls keep `None` and
+send no effort. Do not reintroduce tier-default choices into the model+effort catalogue. See
+`docs/routing.md` for the full precedence and fallback rules.
 
 ## Verify
 

@@ -119,7 +119,7 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     p.text(col, y + 2, &truncate(&now, room), theme::text());
     let explain = match (&settings.quartermaster, settings.quartermaster_effort) {
         (QuartermasterModel::Auto, None) => {
-            "Auto tries high → medium → premium → low, at that tier's effort."
+            "Auto tries high → medium → premium → low, at the entry's effort."
         }
         (QuartermasterModel::Auto, Some(_)) => "Auto tries high → medium → premium → low.",
         (_, None) => "Auto effort is its model's tier default.",
@@ -534,6 +534,19 @@ mod tests {
     }
 
     #[test]
+    fn auto_explains_entry_effort_not_tier_default_at_supported_widths() {
+        for width in [150, 120, 119, 100] {
+            let (buffer, _) = render(&app_at(200_000), width, 30, false);
+            let screen = rows(&buffer).join("\n");
+            assert!(
+                screen.contains("at the entry's effort."),
+                "{width}:\n{screen}"
+            );
+            assert!(!screen.contains("tier's effort"));
+        }
+    }
+
+    #[test]
     fn the_routing_hints_fit_at_100_columns() {
         // The status bar drops its right-hand hints unless they fit beside the tab's hint.
         let left = " click to change".chars().count() + 2;
@@ -681,7 +694,7 @@ mod tests {
         let mut app = app_with_review(Tier::High);
         app.settings_click(SettingsHit::KindTier(KindRow::Teach), false, Instant::now());
         assert_eq!(
-            app.view.settings.picker.as_ref().map(|p| p.purpose),
+            app.view.settings.picker.as_ref().map(|p| p.purpose.clone()),
             Some(super::super::PickFor::KindTier(KindRow::Teach))
         );
         assert_eq!(app.view.settings.routing_row, KIND_ROWS_FROM + 7);

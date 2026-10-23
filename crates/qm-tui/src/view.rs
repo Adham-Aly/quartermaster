@@ -21,9 +21,8 @@ pub(crate) enum MenuTarget {
     Project(usize),
     /// An Actions inbox row, by index into `Snapshot::actions`.
     Action(usize),
-    /// A model on the Settings tier board, its "Add to tier" submenu, and an account.
+    /// A placed combination on the Settings tier board.
     Model(crate::settings::BoardItem),
-    AddToTier(crate::settings::BoardItem),
     Account(crate::settings::AccountTarget),
     /// The top bar's menu: its entries are `popups::MenuEntry::ALL`.
     Main,
@@ -38,7 +37,7 @@ impl MenuTarget {
             Self::Crew(agent) => Hit::Crew(agent),
             Self::Project(i) => Hit::Project(i),
             Self::Action(i) => Hit::ActionRow(i),
-            Self::Model(item) | Self::AddToTier(item) => Hit::Settings(SettingsHit::Board(item)),
+            Self::Model(item) => Hit::Settings(SettingsHit::Board(item)),
             Self::Account(account) => Hit::Settings(SettingsHit::Account(account.index)),
             Self::Main => Hit::MenuButton,
         }

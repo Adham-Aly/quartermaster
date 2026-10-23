@@ -7,7 +7,7 @@
 //! the last few turns. Secondmates follow the same setting."
 
 use crate::effort::{cap_to_supported, tier_default};
-use crate::rank::{Candidate, Needs, rank, skip_reason};
+use crate::rank::{Candidate, Needs, placement_skip_reason, rank, skip_reason};
 use qm_types::config::{QuartermasterModel, TierEfforts};
 use qm_types::domain::{AccountKind, Effort, EngineKind, Tier};
 use qm_types::ids::{AccountId, ModelId};
@@ -28,8 +28,11 @@ pub struct SeatChoice {
 /// subscriptions; a named model may run on any account that serves it, subscriptions first.
 /// `None` when nothing can serve.
 ///
-/// The orchestrators' effort is `effort` when you set one, else the default of the tier the model
-/// came from (high's for a named model outside any tier); either way capped by the model.
+/// Auto uses the selected tier entry's effort when no separate orchestrator effort is set, and
+/// only accounts supporting that exact combo can serve it. A separate effort setting overrides
+/// the combo and keeps its existing cap-to-supported semantics. A named orchestrator model also
+/// keeps its separate semantics: explicit effort, else its tier default (high outside any tier),
+/// capped by the model; it does not inherit a crew tier entry's effort.
 pub fn choose(
     setting: &QuartermasterModel,
     effort: Option<Effort>,
@@ -44,7 +47,14 @@ pub fn choose(
         account: c.account,
         tier,
         effort: cap_to_supported(
-            effort.unwrap_or_else(|| tier_default(tiers, tier.unwrap_or(Tier::High))),
+            effort.unwrap_or_else(|| {
+                if matches!(setting, QuartermasterModel::Auto)
+                    && let Some(entry_effort) = c.effort_override
+                {
+                    return entry_effort;
+                }
+                tier_default(tiers, tier.unwrap_or(Tier::High))
+            }),
             &c.efforts,
         ),
     };
@@ -53,7 +63,13 @@ pub fn choose(
             let mut ok: Vec<&Candidate> = placed
                 .iter()
                 .filter(|c| c.tier == tier && c.account_kind == AccountKind::Subscription)
-                .filter(usable)
+                .filter(|c| {
+                    if effort.is_none() {
+                        placement_skip_reason(c, needs).is_none()
+                    } else {
+                        usable(c)
+                    }
+                })
                 .collect();
             rank(&mut ok, preferred);
             ok.first().map(|c| to_choice(c, Some(tier)))
