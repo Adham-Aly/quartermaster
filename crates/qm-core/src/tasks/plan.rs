@@ -7,7 +7,11 @@
 //! or `approve_plan` on a turn the user's message started) moves it to `reported` and wakes the
 //! supervisor to start the build. Under auto autonomy the plan's report is an ordinary report.
 //!
-//! Everything about the plan stays in its folder in the scratch root ([`crate::plans`]).
+//! The user's reply to a round reaches the planner once, pasted into the Quartermaster's chat
+//! ([`record_replies`]) or sent from the page ([`crate::plans::submit`]); either way as a message
+//! from the planner's supervisor.
+//!
+//! Everything about the plan stays in its plan folder ([`crate::plans`]).
 
 use super::{TaskService, failed, load_project, new_wake, refuse};
 use crate::inbox::Inbox;
@@ -72,6 +76,18 @@ impl TaskService {
             Err(e) => {
                 tracing::error!(error = %e, "couldn't read the project whose autonomy changed");
             }
+        }
+    }
+
+    /// The name of `task`'s project, for its page's header; empty if it can't be read.
+    pub(crate) async fn project_name_of(&self, task: TaskId) -> String {
+        match self
+            .db()
+            .call(move |conn| task_store::load(conn, task))
+            .await
+        {
+            Ok(Some(row)) => self.project_name(&row).await,
+            _ => String::new(),
         }
     }
 
@@ -149,13 +165,20 @@ pub(crate) async fn plan_check(svc: &TaskService, caller: &Caller) -> Result<Str
                     Stage::WithUser
                 };
                 next.locked = None;
-                let checked =
-                    plans::render(&dir, task, &project, &next, state.fingerprints.clone())
-                        .map_err(refuse)?;
+                // A draft never sends: it isn't the round the user answers.
+                let rendered = plans::render(
+                    &dir,
+                    task,
+                    &project,
+                    &next,
+                    state.fingerprints.clone(),
+                    None,
+                )
+                .map_err(refuse)?;
                 Ok(format!(
                     "plan.md OK · round {} draft · {} · page at file://{}{notes}",
                     next.round,
-                    checked.summary(),
+                    rendered.checked.summary(),
                     dir.join(qm_plans::PAGE_FILE).display()
                 ))
             }
@@ -179,6 +202,7 @@ pub(crate) async fn before_report(
     let project = svc.project_name(&row).await;
     let task = row.id;
     let at = svc.clock().now();
+    let port = svc.plan_port();
     tokio::task::spawn_blocking(move || {
         let checked = plans::check(&dir, mode, &state).map_err(refuse)?;
         let mut next = state.clone();
@@ -187,6 +211,9 @@ pub(crate) async fn before_report(
         next.pending_reply = false;
         next.locked = None;
         next.approved_at = None;
+        // Each round gets its own page key, so an older round's page can't send.
+        next.page_token = None;
+        next.page_claim = None;
         next.stage = match mode {
             PlanMode::Internal => Stage::Approved,
             PlanMode::Interactive if !checked.questions.is_empty() => Stage::WithUser,
@@ -200,9 +227,20 @@ pub(crate) async fn before_report(
         // the recommendations) is reported like any finished plan.
         let to_user = mode == PlanMode::Interactive && next.stage != Stage::Approved;
         if mode == PlanMode::Interactive {
-            let checked = plans::render(&dir, task, &project, &next, state.fingerprints.clone())
-                .map_err(refuse)?;
-            next.fingerprints = checked.fingerprints();
+            if next.stage != Stage::Approved {
+                next.page_token = plans::PageToken::fresh();
+            }
+            let rendered = plans::render(
+                &dir,
+                task,
+                &project,
+                &next,
+                state.fingerprints.clone(),
+                port,
+            )
+            .map_err(refuse)?;
+            rendered.record(&mut next);
+            next.fingerprints = rendered.checked.fingerprints();
         } else {
             next.fingerprints = checked.fingerprints();
         }
@@ -217,7 +255,7 @@ pub(crate) async fn before_report(
 }
 
 /// "14:30", in the Mac's local time.
-fn local_time(at: jiff::Timestamp) -> String {
+pub(crate) fn local_time(at: jiff::Timestamp) -> String {
     let zoned = at.to_zoned(jiff::tz::TimeZone::system());
     format!("{:02}:{:02}", zoned.hour(), zoned.minute())
 }
@@ -314,7 +352,7 @@ pub(crate) async fn approve(
                 "{task} is writing its plan; approve when the next round is back"
             )));
         }
-        _ if state.pending_reply => {
+        _ if state.pending_reply || state.page_claim.is_some() => {
             return Err(refuse(format!(
                 "{task} is updating its plan with the user's reply; approve when the next round is back"
             )));
@@ -349,14 +387,24 @@ async fn take_recommendations(
     let task = row.id;
     let dir2 = dir.clone();
     tokio::task::spawn_blocking(move || {
-        plans::update(&dir2, |s| {
+        plans::try_update(&dir2, |s| {
+            if s.pending_reply || s.page_claim.is_some() {
+                return Err(());
+            }
             s.take_recommended = true;
             s.pending_reply = true;
+            Ok(())
         })
     })
     .await
     .map_err(|e| failed(&e))?
-    .map_err(|e| failed(&e))?;
+    .map_err(|e| failed(&e))?
+    .ok_or_else(|| refuse(format!("{task}'s plan folder is gone")))?
+    .map_err(|()| {
+        refuse(format!(
+            "{task} is updating its plan with the user's reply; approve when the next round is back"
+        ))
+    })?;
     steer(
         svc,
         row,
@@ -383,23 +431,40 @@ async fn finish_approval(
     let task = row.id;
     let shown = local_time(at);
     let project = svc.project_name(row).await;
+    let port = svc.plan_port();
     let shown2 = shown.clone();
     tokio::task::spawn_blocking(move || {
-        let updated = plans::update(&dir, |s| {
+        let updated = plans::try_update(&dir, |s| {
+            // A reply sent from the page meanwhile goes first; its next round is approved.
+            if s.pending_reply || s.page_claim.is_some() {
+                return Err(());
+            }
             s.stage = Stage::Approved;
             s.approved_at = Some(shown2);
+            // No round is open any more, so no page may send.
+            s.page_token = None;
+            Ok(())
         })?;
-        if let Some((state, ())) = updated
-            && let Err(why) =
-                plans::render(&dir, task, &project, &state, state.fingerprints.clone())
+        match updated {
+            Some(Ok(_)) => {}
+            Some(Err(())) => return Ok(Err(())),
+            None => return Ok(Ok(())),
+        }
+        if let Err(why) =
+            plans::render_saved(&dir, task, &project, port, |s| s.fingerprints.clone())
         {
             tracing::warn!(%task, %why, "couldn't re-render the approved plan's page");
         }
-        Ok::<_, std::io::Error>(())
+        Ok::<_, std::io::Error>(Ok(()))
     })
     .await
     .map_err(|e| failed(&e))?
-    .map_err(|e| failed(&e))?;
+    .map_err(|e| failed(&e))?
+    .map_err(|()| {
+        refuse(format!(
+            "{task} is updating its plan with the user's reply; approve when the next round is back"
+        ))
+    })?;
     let text = ready_text(task, row, "was approved by the user");
     let wake_supervisor = by_agent != Some(row.supervisor);
     let from = row.status;
@@ -525,17 +590,25 @@ pub(crate) async fn record_replies(
     }
     let round = state.round;
     tokio::task::spawn_blocking(move || {
-        plans::update(&dir, |s| {
-            if s.last_answered_round < round {
-                s.last_answered_round = round;
-                s.user_rounds += 1;
+        plans::try_update(&dir, |s| {
+            // One reply per round across both paths: the page's, once claimed, is the reply.
+            if s.page_claim == Some(round) || s.page_sent.as_ref().is_some_and(|p| p.round == round)
+            {
+                return Err(());
             }
-            s.pending_reply = true;
+            plans::record_answer(s, round);
+            Ok(())
         })
     })
     .await
     .map_err(|e| failed(&e))?
-    .map_err(|e| failed(&e))?;
+    .map_err(|e| failed(&e))?
+    .ok_or_else(|| refuse(format!("{task}'s plan folder is gone")))?
+    .map_err(|()| {
+        refuse(format!(
+            "Round {round}'s reply was already sent from the plan page; nothing to pass on"
+        ))
+    })?;
     let (answered, open, sections) = replies.iter().fold((0, 0, 0), |acc, r| {
         let (a, o, s) = r.counts();
         (acc.0 + a, acc.1 + o, acc.2 + s)
@@ -616,9 +689,10 @@ async fn plan_autonomy_changed(svc: &TaskService, row: &TaskRow) -> Result<(), T
     let dir = svc.plan_dir(row.id);
     let project = svc.project_name(row).await;
     let task = row.id;
+    let port = svc.plan_port();
     let steer_text =
         tokio::task::spawn_blocking(move || -> Result<Option<&'static str>, String> {
-            let Some((state, text)) = plans::update(&dir, |s| match (mode, s.stage) {
+            let Some((_, text)) = plans::update(&dir, |s| match (mode, s.stage) {
             (_, Stage::Approved) => None,
             (PlanMode::Internal, _) => {
                 s.locked = Some(
@@ -646,15 +720,9 @@ async fn plan_autonomy_changed(svc: &TaskService, row: &TaskRow) -> Result<(), T
             return Ok(None);
         };
             // The page, if there is one, shows it's closed (or open again).
-            if state.round > 0 && dir.join(qm_plans::PAGE_FILE).is_file() {
-                let _ = plans::render(
-                    &dir,
-                    task,
-                    &project,
-                    &state,
-                    std::collections::BTreeMap::new(),
-                );
-            }
+            let _ = plans::render_saved(&dir, task, &project, port, |_| {
+                std::collections::BTreeMap::new()
+            });
             Ok(text)
         })
         .await

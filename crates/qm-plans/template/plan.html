@@ -23,9 +23,10 @@
 </div>
 <footer class="reply-bar" id="reply-bar">
 <span id="reply-count" class="count" aria-live="polite"></span>
+<span id="send-status" class="send-status" role="status" aria-live="polite"></span>
 <button type="button" id="take-recommended" class="tool">Take recommended for the rest</button>
 <button type="button" id="clear" class="tool">Clear</button>
-<button type="button" id="copy" class="primary">Copy reply</button>
+{{reply_buttons}}
 <span id="copy-status" class="copy-status" aria-live="polite"></span>
 </footer>
 <dialog id="copy-fallback"><p>Copying isn't allowed here. Select the text below, copy it, and paste it into the chat.</p><textarea id="copy-text" rows="14" readonly></textarea><button type="button" id="copy-close" class="tool">Close</button></dialog>

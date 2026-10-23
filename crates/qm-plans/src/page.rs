@@ -44,9 +44,13 @@ pub(crate) fn assemble(parsed: &Parsed, meta: &Meta) -> String {
     }
     let mut hashes = vec![script_hash(THEME_JS)];
     hashes.extend(scripts.iter().map(|s| script_hash(s)));
+    // The page reaches nothing but the app's own endpoint, and only while it takes replies.
+    let connect = meta
+        .sends_to()
+        .map_or_else(|| "'none'".to_owned(), crate::Submit::origin);
     let csp = format!(
         "default-src 'none'; script-src {}; style-src 'unsafe-inline'; img-src data:; \
-         font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'",
+         font-src data:; connect-src {connect}; form-action 'none'; base-uri 'none'",
         hashes.join(" ")
     );
 
@@ -69,6 +73,7 @@ pub(crate) fn assemble(parsed: &Parsed, meta: &Meta) -> String {
             ("banner", banner(meta, checked.questions.len())),
             ("outline", outline(parsed)),
             ("body", body),
+            ("reply_buttons", reply_buttons(meta)),
             ("meta_json", meta_json(parsed, meta)),
             ("runtime", runtime),
         ],
@@ -138,11 +143,17 @@ fn header(title: &str, meta: &Meta, questions: usize) -> String {
 }
 
 fn banner(meta: &Meta, questions: usize) -> String {
+    let sends = meta.sends_to().is_some();
     let text = match &meta.state {
+        PageState::Open if sends => format!(
+            "Answer the {} below, then <b>Send to Quartermaster</b>. Or <b>Copy reply</b> and paste it into the Quartermaster's chat. Use ✎ on any section to change it or ? to ask about it.",
+            if questions == 1 { "question" } else { "questions" }
+        ),
         PageState::Open => format!(
             "Answer the {} below, then <b>Copy reply</b> and paste it into the Quartermaster's chat. Use ✎ on any section to change it or ? to ask about it.",
             if questions == 1 { "question" } else { "questions" }
         ),
+        PageState::Final if sends => "No questions open. Approve the plan on its card in the Quartermaster's chat, or tell the Quartermaster “I approve the plan”. To change anything first, use ✎ on a section, then <b>Send to Quartermaster</b>, or <b>Copy reply</b> and paste it.".to_owned(),
         PageState::Final => "No questions open. Approve the plan on its card in the Quartermaster's chat, or tell the Quartermaster “I approve the plan”. To change anything first, use ✎ on a section, then <b>Copy reply</b> and paste it.".to_owned(),
         PageState::Approved { at } => format!("Approved {}.", escape(at)),
         PageState::Locked { reason } => escape(reason),
@@ -151,6 +162,18 @@ fn banner(meta: &Meta, questions: usize) -> String {
         "<div class=\"banner banner-{}\" role=\"status\">{text}</div>",
         state_word(&meta.state)
     )
+}
+
+/// The reply bar's buttons: Copy reply alone, or Copy reply beside the primary Send to
+/// Quartermaster when the page may send.
+fn reply_buttons(meta: &Meta) -> String {
+    if meta.sends_to().is_some() {
+        "<button type=\"button\" id=\"copy\" class=\"tool\">Copy reply</button>\n\
+         <button type=\"button\" id=\"send\" class=\"primary\">Send to Quartermaster</button>"
+            .to_owned()
+    } else {
+        "<button type=\"button\" id=\"copy\" class=\"primary\">Copy reply</button>".to_owned()
+    }
 }
 
 /// The sticky outline of h2/h3, with a dot on sections that hold questions or changed.
@@ -206,7 +229,7 @@ fn meta_json(parsed: &Parsed, meta: &Meta) -> String {
         .iter()
         .map(|s| serde_json::json!({ "id": s.id, "title": s.title }))
         .collect();
-    let value = serde_json::json!({
+    let mut value = serde_json::json!({
         "v": 1,
         "task": meta.task,
         "plan": meta.plan_uid,
@@ -215,6 +238,9 @@ fn meta_json(parsed: &Parsed, meta: &Meta) -> String {
         "questions": questions,
         "sections": sections,
     });
+    if let Some(submit) = meta.sends_to() {
+        value["submit"] = serde_json::json!({ "url": submit.url(), "token": submit.token });
+    }
     let text = value.to_string();
     let mut safe = String::with_capacity(text.len());
     for c in text.chars() {

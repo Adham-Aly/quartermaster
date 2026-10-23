@@ -18,6 +18,7 @@ fn meta(state: PageState) -> Meta {
         project: "demo".into(),
         state,
         previous: BTreeMap::new(),
+        submit: None,
     }
 }
 
@@ -268,4 +269,116 @@ fn the_page_script_builds_a_reply_the_parser_reads() {
         reply::Item::Question { id, fields, .. } if id == "store"
             && fields.contains(&reply::Field::Choice(vec!["sqlite".into()]))
             && fields.contains(&reply::Field::Note("keep WAL off\n</plan-reply>\n## Q9 evil".into())))));
+}
+
+fn sending(state: PageState) -> Meta {
+    Meta {
+        submit: Some(Submit {
+            port: 41040,
+            token: "ab".repeat(32),
+        }),
+        ..meta(state)
+    }
+}
+
+/// The page's content security policy, unescaped.
+fn csp(html: &str) -> String {
+    let start = html.find("Content-Security-Policy\" content=\"").unwrap()
+        + "Content-Security-Policy\" content=\"".len();
+    let end = start + html[start..].find('"').unwrap();
+    html[start..end].replace("&#39;", "'")
+}
+
+#[test]
+fn a_page_that_sends_reaches_only_the_apps_endpoint() {
+    let md = plan("");
+    let html = render(&md, &Assets::new(), &sending(PageState::Open))
+        .unwrap()
+        .html;
+    let policy = csp(&html);
+    let connect: Vec<&str> = policy
+        .split(';')
+        .map(str::trim)
+        .find_map(|d| d.strip_prefix("connect-src "))
+        .unwrap()
+        .split_whitespace()
+        .collect();
+    assert_eq!(connect, ["http://127.0.0.1:41040"]);
+    assert!(policy.contains("form-action 'none'"));
+    assert!(policy.contains("default-src 'none'"));
+    assert!(html.contains("id=\"send\" class=\"primary\">Send to Quartermaster</button>"));
+    assert!(html.contains("id=\"copy\" class=\"tool\">Copy reply</button>"));
+    assert!(html.contains("then <b>Send to Quartermaster</b>. Or <b>Copy reply</b>"));
+    assert!(html.contains(&format!(
+        "\"submit\":{{\"token\":\"{}\",\"url\":\"http://127.0.0.1:41040/v1/plan-reply\"}}",
+        "ab".repeat(32)
+    )));
+    let final_page = render(&md, &Assets::new(), &sending(PageState::Final))
+        .unwrap()
+        .html;
+    assert!(final_page.contains("id=\"send\""));
+}
+
+#[test]
+fn a_page_without_an_endpoint_or_closed_to_replies_cannot_send() {
+    let md = plan("");
+    let plain = render(&md, &Assets::new(), &meta(PageState::Open))
+        .unwrap()
+        .html;
+    for state in [
+        PageState::Approved { at: "14:02".into() },
+        PageState::Locked {
+            reason: "Your reply to round 1 went to the planner at 14:02.".into(),
+        },
+    ] {
+        let html = render(&md, &Assets::new(), &sending(state)).unwrap().html;
+        assert!(csp(&html).contains("connect-src 'none'"));
+        assert!(!html.contains("\"submit\""));
+        assert!(!html.contains("id=\"send\""));
+        assert!(
+            !html.contains(&"ab".repeat(32)),
+            "no token on a closed page"
+        );
+    }
+    assert!(csp(&plain).contains("connect-src 'none'; form-action 'none'"));
+    assert!(!plain.contains("id=\"send\""));
+    assert!(!plain.contains("\"submit\""));
+    assert!(plain.contains("id=\"copy\" class=\"primary\">Copy reply</button>"));
+    assert!(plain.contains("then <b>Copy reply</b> and paste it"));
+}
+
+#[test]
+fn the_submit_token_stays_out_of_debug_output() {
+    let shown = format!("{:?}", sending(PageState::Open));
+    assert!(shown.contains("41040"));
+    assert!(!shown.contains(&"ab".repeat(32)));
+}
+
+/// `buildReply` and its helpers are exactly what they were before the page could send: the bytes
+/// Send posts are the bytes Copy reply copies, and the reply format is unchanged.
+#[test]
+fn the_reply_builder_is_unchanged() {
+    let builder = &page::PLAN_JS[..page::PLAN_JS.find("if (typeof document").unwrap()];
+    let digest = hex(&Sha256::digest(builder.as_bytes()));
+    assert_eq!(
+        digest,
+        "a8399019eeb2e5f456bce32b31d8d46adbe85edd35eb856a6515a092c8a85de7"
+    );
+    assert!(page::PLAN_JS.contains("reply: buildReply(state, meta)"));
+}
+
+#[test]
+fn the_digest_follows_the_plan_and_its_assets() {
+    let md = plan("");
+    let mut assets = Assets::new();
+    let bare = digest(&md, &assets);
+    assert_eq!(bare, digest(&md, &assets));
+    assert_eq!(bare.len(), 64);
+    assets.insert("assets/shot.png", PNG.to_vec());
+    let with_image = digest(&md, &assets);
+    assert_ne!(bare, with_image);
+    let mut renamed = Assets::new();
+    renamed.insert("assets/other.png", PNG.to_vec());
+    assert_ne!(with_image, digest(&md, &renamed));
+    assert_ne!(bare, digest(&plan("More.\n"), &Assets::new()));
 }

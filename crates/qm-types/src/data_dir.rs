@@ -183,6 +183,12 @@ impl DataDir {
         self.root.join("server.sock")
     }
 
+    /// The plan pages' endpoint port, kept so a page rendered before a restart still sends
+    /// (`{"port": 41041}`, mode 0600).
+    pub fn plan_endpoint(&self) -> PathBuf {
+        self.root.join("plan-endpoint.json")
+    }
+
     pub fn logs(&self) -> PathBuf {
         self.root.join("logs")
     }

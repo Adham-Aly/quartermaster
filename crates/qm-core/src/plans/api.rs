@@ -127,19 +127,31 @@ pub(crate) fn card(
     let mut card = Card::new(CardKind::Plan, heading);
     card.title = Some(format!("{task} {title}"));
     card.note = Some(format!("· {project} · round {}", state.round.max(1)));
+    // The page sends its reply itself while the endpoint it was rendered for listens.
+    let sends = state.page_port.is_some();
     let words = match (&state.locked, state.stage) {
         (Some(reason), _) => reason.clone(),
         (None, _) if state.pending_reply => format!(
-            "Your reply went to the planner; it's writing round {}.",
+            "Your reply to round {} went to the planner; it's writing round {}.",
+            state.round,
             state.round + 1
         ),
         (None, Stage::WithUser) => format!(
-            "{} open. Open the page, answer, then Copy reply on the page and paste it here.",
+            "{} open. Open the page, answer, then {}",
             match state.open.len() {
                 1 => "1 question".to_owned(),
                 n => format!("{n} questions"),
+            },
+            if sends {
+                "Send to Quartermaster (or Copy reply and paste it here)."
+            } else {
+                "Copy reply on the page and paste it here."
             }
         ),
+        (None, Stage::Final) if sends => {
+            "No questions left. Approve it, or change a section on the page and send the reply."
+                .to_owned()
+        }
         (None, Stage::Final) => {
             "No questions left. Approve it, or change a section on the page and paste the reply here."
                 .to_owned()

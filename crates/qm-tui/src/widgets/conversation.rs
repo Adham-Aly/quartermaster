@@ -161,7 +161,8 @@ impl Voices<'static> {
 }
 
 /// Every message's rows at `width`, one blank row between messages, except that the
-/// agent's reply to the message right above sits directly under it.
+/// agent's reply to the message right above sits directly under it, and one-line notes in a run
+/// stack.
 /// Compaction notes sit between the messages by time.
 pub(crate) fn rows(
     chats: &[ChatLine],
@@ -176,7 +177,8 @@ pub(crate) fn rows(
         let noted = context_strip::notes_before(&mut notes, Some(chat.at), width, out.is_empty());
         let after_note = !noted.is_empty();
         out.extend(noted);
-        if after_note || (i > 0 && !answers(&chats[i - 1], chat)) {
+        let stacked = i > 0 && chat.one_line && chats[i - 1].one_line;
+        if after_note || (i > 0 && !answers(&chats[i - 1], chat) && !stacked) {
             out.push(Row::plain(Line::default()));
         }
         out.extend(message_rows(chat, width, hover, voices));
@@ -219,8 +221,12 @@ fn is_markdown(chat: &ChatLine) -> bool {
         && matches!(chat.kind, MessageKind::Reply | MessageKind::Question)
 }
 
-/// One message: its header, its body, and its card. Your own messages sit in a box.
+/// One message: its header, its body, and its card. Your own messages sit in a box; a one-line
+/// note is a single row.
 fn message_rows(chat: &ChatLine, max: u16, hover: Option<Hit>, voices: &Voices<'_>) -> Vec<Row> {
+    if chat.one_line {
+        return vec![one_line_row(chat, max)];
+    }
     if chat.source == MessageSource::You
         && let Some(mut out) = prompt_box(title(chat, voices), right(chat), &chat.text, max)
     {
@@ -254,6 +260,45 @@ fn message_rows(chat: &ChatLine, max: u16, hover: Option<Hit>, voices: &Voices<'
         out.extend(card::rows(card, chat.id, max, hover));
     }
     out
+}
+
+/// A one-line note: a dim `✓ text`, cut with `…` to fit, and its time at the right edge while
+/// there is room for it with a space to spare.
+///
+/// ```text
+/// ✓ Plan reply sent from the page · T-0324 round 2 · 3 of 3 answered            14:12
+/// ```
+fn one_line_row(chat: &ChatLine, max: u16) -> Row {
+    let total = usize::from(max);
+    let time = chat
+        .at
+        .to_zoned(jiff::tz::TimeZone::system())
+        .strftime("%H:%M")
+        .to_string();
+    let text = format!("✓ {}", chat.text.lines().next().unwrap_or_default().trim());
+    // The time keeps a space before it and leaves the text at least a dozen cells.
+    let keeps_time = total >= width(&time) + 1 + 12;
+    let room = if keeps_time {
+        total - width(&time) - 1
+    } else {
+        total
+    };
+    let shown = truncate(&text, room);
+    let mut spans = vec![Span::styled(shown.clone(), theme::dim())];
+    if keeps_time {
+        let pad = total - width(&shown) - width(&time);
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(time, theme::dim()));
+    }
+    Row {
+        line: Line::from(spans),
+        text: Some(RowText {
+            offset: 0,
+            text: shown,
+            continues: false,
+        }),
+        hits: Vec::new(),
+    }
 }
 
 /// `you 13:41 · context` on the left, `✓ acknowledgement` or `queued` at the right edge.
@@ -441,5 +486,63 @@ mod tests {
         assert!(texts(&rows).iter().all(|s| width(s) == 24));
         // Too narrow for a box at all.
         assert!(prompt_box(title(), None, "hi", BOX_MIN - 1).is_none());
+    }
+
+    #[test]
+    fn a_page_sent_plan_reply_is_one_dim_row_and_notes_in_a_run_stack() {
+        use qm_types::ids::MessageId;
+        let at = jiff::Timestamp::from_second(1_800_000_000).unwrap();
+        let time = at
+            .to_zoned(jiff::tz::TimeZone::system())
+            .strftime("%H:%M")
+            .to_string();
+        let line = |id: i64, source, text: &str| {
+            ChatLine::new(MessageId::new(id), source, MessageKind::Message, at, text)
+        };
+        let note = |id: i64, text: &str| line(id, MessageSource::App, text).with_one_line();
+        let sent = "Plan reply sent from the page · T-0324 round 2 · 3 of 3 answered";
+        let chats = [
+            line(1, MessageSource::You, "plan it"),
+            note(2, sent),
+            note(
+                3,
+                "Plan reply sent from the page · T-0051 round 1 · 1 of 2 answered",
+            ),
+            line(
+                4,
+                MessageSource::App,
+                "T-0051's plan, round 2, has 1 question for you",
+            ),
+        ];
+        let voices = Voices::QUARTERMASTER;
+        let drawn = texts(&rows(&chats, &[], 80, None, &voices));
+        let at_note = drawn.iter().position(|r| r.starts_with('✓')).unwrap();
+        // A blank row before the run, none inside it, one after it; no header for either note.
+        assert_eq!(drawn[at_note - 1], "");
+        assert!(drawn[at_note + 1].starts_with("✓ Plan reply sent from the page · T-0051"));
+        assert_eq!(drawn[at_note + 2], "");
+        assert!(drawn[at_note + 3].starts_with("app "));
+        let first = &drawn[at_note];
+        assert_eq!(width(first), 80);
+        assert!(first.starts_with(&format!("✓ {sent}")));
+        assert!(first.ends_with(&format!(" {time}")));
+
+        let row = one_line_row(&chats[1], 40);
+        let text = texts(std::slice::from_ref(&row)).remove(0);
+        assert_eq!(width(&text), 40);
+        assert!(text.ends_with(&format!("… {time}")), "{text}");
+        assert!(
+            row.line
+                .spans
+                .iter()
+                .all(|s| s.content.trim().is_empty() || s.style == theme::dim())
+        );
+        // Its selectable text is the note, without the padding or the time.
+        assert!(row.text.as_ref().unwrap().text.starts_with("✓ Plan reply"));
+        assert!(!row.text.as_ref().unwrap().text.contains(&time));
+        // Too narrow to keep the time: the note alone, cut to the width.
+        let text = texts(&[one_line_row(&chats[1], 16)]).remove(0);
+        assert_eq!(width(&text), 16);
+        assert!(text.ends_with('…') && !text.contains(&time), "{text}");
     }
 }
