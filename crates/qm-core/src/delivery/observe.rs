@@ -400,7 +400,9 @@ pub async fn observe_once(
         }
     };
 
-    let tag = match meta::read_tag(reads, &repo, &launch.tag).await {
+    let tag_read = meta::read_tag(reads, &repo, &launch.tag).await;
+    let release_read = meta::read_release(reads, &repo, &launch.tag).await;
+    let tag = match tag_read {
         Ok(Some(found)) => match &launch.remote_object {
             Some(ours) if found.sha.eq_ignore_ascii_case(ours) => TagFact::Published,
             None => TagFact::Published,
@@ -408,14 +410,27 @@ pub async fn observe_once(
                 now: name(&found.sha),
             },
         },
-        Ok(None) => TagFact::Gone,
+        // GitHub answers 404 for a repository this login can't see too, so a missing tag is
+        // "gone" only when the same reading saw the repository's releases.
+        Ok(None) => match &release_read {
+            Ok(_) => TagFact::Gone,
+            Err(e) => {
+                note("the tag", e);
+                let (why, transient) = reason(e);
+                TagFact::Unavailable {
+                    reason: format!(
+                        "GitHub shows no such tag, but couldn't show the repository either ({why})"
+                    ),
+                    transient,
+                }
+            }
+        },
         Err(e) => {
             note("the tag", &e);
             let (reason, transient) = reason(&e);
             TagFact::Unavailable { reason, transient }
         }
     };
-    let release_read = meta::read_release(reads, &repo, &launch.tag).await;
     if let Err(e) = &release_read {
         note("the release", e);
     }
@@ -1366,11 +1381,29 @@ mod tests {
         let o = read(&moved, &Observation::default(), minutes(1));
         assert_eq!(o.ended, Some(Ended::TagChanged));
         assert!(words(&o).0.contains("not the app's tag"));
-        let gone = Fake::default();
-        assert_eq!(
-            read(&gone, &Observation::default(), minutes(1)).tag,
-            TagFact::Gone
+        let gone = Fake::default().with(&ReleaseEndpoint::Releases, 200, "[]");
+        let o = read(&gone, &Observation::default(), minutes(1));
+        assert_eq!(o.tag, TagFact::Gone);
+        assert_eq!(o.ended, Some(Ended::TagChanged));
+        // Every read 404: the login may not see the repository, so the tag isn't called gone.
+        let hidden = read(&Fake::default(), &Observation::default(), minutes(1));
+        assert!(
+            matches!(
+                hidden.tag,
+                TagFact::Unavailable {
+                    transient: false,
+                    ..
+                }
+            ),
+            "{:?}",
+            hidden.tag
         );
+        assert!(
+            !words(&hidden).0.contains("deleted"),
+            "{}",
+            words(&hidden).0
+        );
+        assert_eq!(hidden.ended, Some(Ended::Settled));
 
         let running = Fake::default()
             .with(&tag_ref(), 200, &tag_body(OBJECT))
