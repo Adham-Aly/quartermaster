@@ -27,6 +27,7 @@ pub mod markers;
 pub mod merge_gate;
 pub mod names;
 pub mod overrides;
+pub mod release;
 pub mod repair;
 pub mod review;
 pub mod scope;

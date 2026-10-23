@@ -23,9 +23,10 @@ Pushing a tag is a GitHub write: do it only when the user asks for this release.
    and wait for its checks to pass and the approved PR to merge. Never push directly to main.
 5. After merge, fetch main and confirm CI is green on the release merge commit.
 6. The user tags that merge commit with `git tag -a vX.Y.Z <merge-sha> -m "vX.Y.Z"` and
-   `git push origin vX.Y.Z`. Crewmates cannot push tags: hand off these exact commands rather
-   than bypassing the push fence. The tag must equal `v` + the workspace version, or dist refuses
-   to build.
+   `git push origin vX.Y.Z`, or a crewmate calls `propose_release_tag` (annotated, at the merge
+   commit, `branch` main) and the user approves its card, after which the app pushes it.
+   Crewmates never push tags themselves; never bypass the push fence. The tag must equal `v` +
+   the workspace version, or dist refuses to build.
 7. Watch the Release workflow: `gh run list --workflow release.yml --limit 1`, `gh run watch <id>`.
 8. `gh release view vX.Y.Z` must list, for each target, `quartermaster-<triple>.tar.xz` and its
    `.sha256`, plus `sha256.sum`, `source.tar.gz` and `quartermaster-installer.sh`. The release

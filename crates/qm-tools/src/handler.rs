@@ -376,6 +376,17 @@ pub trait ToolHost: Send + Sync {
         Box::pin(async { Err(ToolFailure::not_available("github_write")) })
     }
 
+    /// `propose_release_tag`: holds a release tag for the user's approval; the app creates and
+    /// pushes it only on that approval.
+    fn propose_release_tag<'a>(
+        &'a self,
+        caller: &'a Caller,
+        args: crate::defs::ProposeReleaseTagArgs,
+    ) -> BoxFuture<'a, Result<crate::defs::Held, ToolFailure>> {
+        let _ = (caller, args);
+        Box::pin(async { Err(ToolFailure::not_available("propose_release_tag")) })
+    }
+
     /// `settle_task`: lands a direct report's finished work under its project's delivery mode and
     /// autonomy, or holds it for your approval.
     fn settle_task<'a>(

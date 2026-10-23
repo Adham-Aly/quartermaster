@@ -20,9 +20,11 @@ use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::api::HeldAnswer;
 pub use qm_types::api::HeldChoice;
-use qm_types::domain::{GithubWriteAction, HeldKind, HeldStatus, MergeMethod, ProjectAction};
+use qm_types::domain::{
+    GithubWriteAction, HeldKind, HeldStatus, MergeMethod, ProjectAction, TagKind,
+};
 use qm_types::ids::space;
-use qm_types::ids::{AgentId, CommitSha, HeldActionId, TaskId};
+use qm_types::ids::{AgentId, CommitSha, HeldActionId, ProjectId, ReleaseLaunchId, TaskId};
 pub use qm_types::rules::HoldReason;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -39,6 +41,7 @@ pub enum HeldPayload {
     Secondmate(SecondmatePayload),
     Decision(DecisionPayload),
     Push(PushPayload),
+    ReleaseTag(ReleaseTagPayload),
 }
 
 impl HeldPayload {
@@ -50,6 +53,7 @@ impl HeldPayload {
             Self::Secondmate(_) => HeldKind::Secondmate,
             Self::Decision(_) => HeldKind::Decision,
             Self::Push(_) => HeldKind::Push,
+            Self::ReleaseTag(_) => HeldKind::ReleaseTag,
         }
     }
 }
@@ -68,6 +72,29 @@ pub struct PushPayload {
     /// The lease: what the app last pushed to that branch (`None`: it must not exist yet).
     #[serde(default)]
     pub expected_remote: Option<CommitSha>,
+}
+
+/// A release tag to create and push, bound to the repository, the tag and the commit. The same
+/// binding is in its `release_launches` row, which is what the app performs from; the card can't
+/// be amended.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseTagPayload {
+    pub launch: ReleaseLaunchId,
+    pub task: TaskId,
+    pub project: ProjectId,
+    /// `owner/name`, as GitHub showed it.
+    pub repo: String,
+    /// GitHub's numeric repository id.
+    pub repo_id: u64,
+    pub tag: String,
+    pub commit: CommitSha,
+    #[serde(default)]
+    pub branch: Option<String>,
+    pub tag_kind: TagKind,
+    #[serde(default)]
+    pub message: Option<String>,
+    /// The crewmate's one-paragraph case for the release.
+    pub summary: String,
 }
 
 /// A merge, pinned to the approved commit.

@@ -6,6 +6,7 @@
 //!   reruns.
 //! - [`probe`]: [`probe::GithubDeliveryProbe`], what `delivery_check` and the start gate share.
 //! - [`github_tools`]: `github_read` and `github_write` (the write fence).
+//! - [`release`]: `propose_release_tag`, its card's performer, and reading pushed tags back.
 //! - `push_guard`: every push the app makes, only to the project's repository, confirmed on
 //!   GitHub before it's recorded.
 //! - [`ports`]: what delivery needs from verification and secondmates, with safe defaults.
@@ -20,6 +21,7 @@ pub mod ports;
 pub mod pr;
 pub mod probe;
 pub(crate) mod push_guard;
+pub mod release;
 
 use crate::scheduler::Scheduler;
 use crate::tasks::close::CloseFacts;
@@ -207,6 +209,15 @@ impl DeliveryService {
         args: GithubWriteArgs,
     ) -> Result<GithubWriteOutcome, ToolFailure> {
         github_tools::write(self, caller, args).await
+    }
+
+    /// `propose_release_tag`: holds a release tag for the user's approval ([`release`]).
+    pub async fn propose_release_tag(
+        &self,
+        caller: &Caller,
+        args: qm_tools::defs::ProposeReleaseTagArgs,
+    ) -> Result<qm_tools::defs::Held, ToolFailure> {
+        release::propose(self, caller, args).await
     }
 
     /// Reruns one failing check on the task's pushed head and re-arms the poller (verification's

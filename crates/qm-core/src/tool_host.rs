@@ -21,7 +21,7 @@ use qm_store::events::{self, NewEvent};
 use qm_store::messages::{self, NewMessage as MessageRow};
 use qm_store::standing_instructions;
 use qm_tools::defs::Routed;
-use qm_tools::defs::{Ack, ConfigureProjectArgs, Held, ProposeProjectArgs};
+use qm_tools::defs::{Ack, ConfigureProjectArgs, Held, ProposeProjectArgs, ProposeReleaseTagArgs};
 use qm_tools::defs::{
     CiReport, GithubContent, GithubReadArgs, GithubWriteArgs, GithubWriteOutcome, PrOpened,
     PrStatus, SettleOutcome,
@@ -743,6 +743,22 @@ impl ToolHost for CoreToolHost {
                 .await?;
             self.conversation.changed();
             Ok(outcome)
+        })
+    }
+
+    fn propose_release_tag<'a>(
+        &'a self,
+        caller: &'a Caller,
+        args: ProposeReleaseTagArgs,
+    ) -> BoxFuture<'a, Result<Held, ToolFailure>> {
+        Box::pin(async move {
+            offered_to(caller, "propose_release_tag")?;
+            let held = self
+                .delivery("propose_release_tag")?
+                .propose_release_tag(caller, args)
+                .await?;
+            self.conversation.changed();
+            Ok(held)
         })
     }
 

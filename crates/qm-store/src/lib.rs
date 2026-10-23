@@ -44,6 +44,7 @@ pub mod models;
 pub mod parent_channel;
 pub mod processes;
 pub mod projects;
+pub mod releases;
 pub mod reports;
 pub mod routing_decisions;
 pub mod schedules;

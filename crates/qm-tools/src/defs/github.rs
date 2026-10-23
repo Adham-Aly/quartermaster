@@ -1,7 +1,7 @@
 //! A crewmate's GitHub and CI tools.
 
 use super::{Ack, Held};
-use qm_types::domain::{CiDiagnosis, GithubReadKind, GithubWriteAction};
+use qm_types::domain::{CiDiagnosis, GithubReadKind, GithubWriteAction, TagKind};
 use qm_types::ids::{CommitSha, HeldActionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -237,4 +237,35 @@ impl From<Held> for GithubWriteOutcome {
             note: h.note,
         }
     }
+}
+
+tool! {
+    /// Proposes a release tag for the app to create and push after the user approves it on its
+    /// own card. The crewmate never pushes a tag.
+    ProposeReleaseTagTool {
+        name: "propose_release_tag",
+        class: Act,
+        roles: [Crewmate],
+        args: ProposeReleaseTagArgs,
+        output: Held,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProposeReleaseTagArgs {
+    /// The bare tag name, as the project's release process names it.
+    pub tag: String,
+    /// The full 40-digit commit SHA to tag, already on the project's GitHub repository.
+    pub commit: String,
+    /// The branch the commit is on (optional; defaults to the project's default branch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<TagKind>,
+    /// The annotated tag's message (optional; defaults to the tag name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// What this release is and why this commit, for the user's card.
+    pub summary: String,
 }

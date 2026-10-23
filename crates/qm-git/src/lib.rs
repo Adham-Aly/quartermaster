@@ -40,6 +40,7 @@ mod reconcile;
 mod repo;
 mod retire;
 mod setup;
+mod tag;
 mod worktree;
 
 pub use base::{BaseRequest, BaseSource, SettledBase};
@@ -55,4 +56,5 @@ pub use reconcile::{
 pub use repo::{ORIGIN, Repo, WorktreeEntry};
 pub use retire::{BranchRemoval, RetireSpec, Retirement, WorktreeRemoval};
 pub use setup::{DEFAULT_SETUP_TIMEOUT, SetupCommand, SetupOutcome, run_setup};
+pub use tag::{TagPushOutcome, TagPushSpec};
 pub use worktree::{CopyReport, PreparedWorktree, ReattachedWorktree, WorktreeSpec};
