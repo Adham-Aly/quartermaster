@@ -135,6 +135,7 @@ impl Drive {
                 job,
                 exit_code,
                 tail,
+                ..
             } => self.job_finished(&job, exit_code, &tail),
             EngineEvent::TurnEnded {
                 outcome,

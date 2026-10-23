@@ -86,8 +86,9 @@ undocumented: after a `claude` update, check no socket opens.
   `compact_error`). Never add a request, flag or environment variable for them.
 - **Helper agents** (crewmates only, Claude Code's built-in agent types; `--setting-sources=` keeps
   the user's own agents out). `claude` has no foreground-only switch, so a background helper is a
-  job (`JobLabel::helper`, `jobs.rs`): no idle shutdown while one runs; a finished one wakes an
-  idle crewmate with an app-marked message; stop, discard and quit kill them; while any helper
+  job (`JobLabel::helper`, `jobs.rs`): no idle shutdown while one runs; `claude` itself tells the
+  model when one finishes (starting a turn if the crewmate is idle); stop, discard and quit kill
+  them, and an app wake reports only those; while any helper
   runs, every crewmate tool that isn't `Read` class is refused in-band (skill `add-tool`).
 - A command `claude` moves to the background becomes a job with `JobStarted { ran_for_ms }`, how
   long it had already run, so its duration counts from when the command started.
@@ -96,9 +97,12 @@ undocumented: after a `claude` update, check no socket opens.
   taken at the next tool result; one sent during the last text-only call stays queued and is
   answered in a second query after the first `result`. So a turn ends only when every injected
   message has started.
-- **Self-started turns.** A `system/init` with no turn running is a turn `claude` started by
-  itself (after a background task finished): it is interrupted before the model acts. Never
-  interrupt a queued message's second query.
+- **Self-started turns.** A `system/init` (or `session_state_changed: running`) with no turn
+  running is a turn `claude` started by itself, to show the model a finished background task: it
+  is adopted as a turn (`TurnStarted` with no `StartTurn`), never interrupted, because a `claude`
+  interrupt stops every background task still running. Only a closing session interrupts it.
+  Every `JobFinished` built from `claude`'s own task notification carries `agent_told: true`, so
+  the core posts no duplicate `job_exited` wake. Never adopt a queued message's second query.
 - **`/compact`.** `SessionCommand::Compact` is a user message that is only `/compact`: `claude`
   runs its own compaction as a turn (`compact_boundary`, then a `result` with no text). On a
   conversation too short to compact the turn ends with no `compact_boundary`.
