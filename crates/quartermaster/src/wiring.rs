@@ -33,6 +33,7 @@ use qm_core::decisions::performer::DecisionPerformer;
 use qm_core::decisions::{DecisionDeps, DecisionService};
 use qm_core::delivery::ports::ParentPort;
 use qm_core::delivery::probe::GithubDeliveryProbe;
+use qm_core::delivery::release::{self, ReleaseTagPerformer};
 use qm_core::delivery::{DeliveryCloseFacts, DeliveryDeps, DeliveryService};
 use qm_core::drafts::DraftsPart;
 use qm_core::held::{HeldPart, HeldService, InboxSignal};
@@ -53,7 +54,7 @@ use qm_core::sessions::SessionsPart;
 use qm_core::sessions::recorder::Recorder;
 use qm_core::settings_api::{SettingsDeps, SettingsPart};
 use qm_core::settling::SettlingService;
-use qm_core::settling::cards::{GithubWriteCards, MergeCards};
+use qm_core::settling::cards::{GithubWriteCards, MergeCards, ReleaseTagCards};
 use qm_core::settling::performers::{GithubWritePerformer, MergePerformer};
 use qm_core::setup_check::{SetupCheck, SetupFacts, SetupPart};
 use qm_core::tasks::delivery_probe::DeliveryProbe;
@@ -239,6 +240,11 @@ pub(crate) async fn start_core(
     // can be answered.
     if let Some(delivery_settling) = &delivery_settling {
         delivery_settling.settling.recover().await;
+        // Release tags: a card claimed mid-push gets its answer, and every tag whose push isn't
+        // settled is read back from GitHub.
+        if let Err(e) = release::recover(&delivery_settling.delivery, &held).await {
+            tracing::error!(error = %e, "couldn't recover the release tags left by the last run");
+        }
     }
     let mut seat_loop = spawn_seat_loop(&db, &clock, seat, &conversation, host, inbox_rx, &wakes);
     // Every secondmate's loop, idle until work arrives.
@@ -1011,6 +1017,12 @@ fn registry_parts(
         held.register_card(HeldKind::Merge, Arc::new(MergeCards));
         held.register_card(HeldKind::Push, Arc::new(MergeCards));
         held.register_card(HeldKind::GithubWrite, Arc::new(GithubWriteCards));
+        // Release tags: always held, carried out only on your Approve.
+        held.register(
+            HeldKind::ReleaseTag,
+            Arc::new(ReleaseTagPerformer::new(delivery_settling.delivery.clone())),
+        );
+        held.register_card(HeldKind::ReleaseTag, Arc::new(ReleaseTagCards));
     }
     // Decision cards and stuck notices, carried out exactly.
     if let Some(decisions) = decisions {

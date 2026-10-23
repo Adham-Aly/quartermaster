@@ -193,7 +193,7 @@ async fn confirm_pushed(github: &GithubClient, repo: &RepoRef, p: &AppPush<'_>) 
 
 /// Step 1: the one URL the app may push to, or the refusal saying what's wrong and how to fix
 /// it.
-fn destination<'u>(
+pub(crate) fn destination<'u>(
     urls: &'u [String],
     remote: &str,
     checkout: &Path,
@@ -236,12 +236,12 @@ fn destination<'u>(
 }
 
 /// The command that shows every setting deciding where `remote` pushes, with the file it's in.
-fn show_config(remote: &str) -> String {
+pub(crate) fn show_config(remote: &str) -> String {
     format!("`git config --show-origin --get-regexp '^(remote\\.{remote}\\.|url\\.)'`")
 }
 
 /// URLs as a sentence shows them, without any password or token in them.
-fn shown(urls: &[String]) -> String {
+pub(crate) fn shown(urls: &[String]) -> String {
     if urls.is_empty() {
         return "none".to_owned();
     }

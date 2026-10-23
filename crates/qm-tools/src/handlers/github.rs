@@ -5,8 +5,9 @@
 
 use crate::defs::{
     CiReport, CiResultsArgs, CiResultsTool, GithubContent, GithubReadArgs, GithubReadTool,
-    GithubWriteArgs, GithubWriteOutcome, GithubWriteTool, PrOpenArgs, PrOpenTool, PrOpened,
-    PrStatus, PrStatusArgs, PrStatusTool, SettleOutcome, SettleTaskArgs, SettleTaskTool,
+    GithubWriteArgs, GithubWriteOutcome, GithubWriteTool, Held, PrOpenArgs, PrOpenTool, PrOpened,
+    PrStatus, PrStatusArgs, PrStatusTool, ProposeReleaseTagArgs, ProposeReleaseTagTool,
+    SettleOutcome, SettleTaskArgs, SettleTaskTool,
 };
 use crate::handler::{Handle, ToolCx, ToolFailure};
 use qm_policy::names::{Boundary, check_pr_title};
@@ -154,6 +155,15 @@ impl Handle for GithubWriteTool {
             check_write(&args)?;
             cx.host.github_write(cx.caller, args).await
         })
+    }
+}
+
+impl Handle for ProposeReleaseTagTool {
+    fn handle<'a>(
+        cx: &'a ToolCx<'a>,
+        args: ProposeReleaseTagArgs,
+    ) -> BoxFuture<'a, Result<Held, ToolFailure>> {
+        Box::pin(async move { cx.host.propose_release_tag(cx.caller, args).await })
     }
 }
 

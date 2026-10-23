@@ -5,7 +5,7 @@ use crate::delivery::github_tools::write_words;
 use crate::held::HeldCardBuilder;
 use qm_store::held::{HeldPayload, HeldRow, MergePayload};
 use qm_types::api::{Card, CardAction, CardButton, CardKind, CardLine, HeldAnswer, Styled, Tone};
-use qm_types::domain::GithubWriteAction;
+use qm_types::domain::{GithubWriteAction, ReleaseLaunchStatus, TagKind};
 
 /// The heading of every approval card.
 pub const APPROVAL_HEADING: &str = "Approval needed";
@@ -244,6 +244,87 @@ impl HeldCardBuilder for GithubWriteCards {
             card.title = Some(row.title.clone());
         }
         card.buttons = vec![approve(), reject()];
+        card
+    }
+}
+
+/// The card for kind `release_tag`: everything the approval binds, in a fixed order, then the
+/// crewmate's summary. Approve is "Push tag <tag>" on `t`, never `a`, so a habit can't press it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReleaseTagCards;
+
+impl HeldCardBuilder for ReleaseTagCards {
+    fn card(&self, row: &HeldRow, facts: &serde_json::Value) -> Card {
+        let mut card = Card::new(CardKind::Approval, APPROVAL_HEADING);
+        card.held = Some(row.id);
+        let HeldPayload::ReleaseTag(p) = &row.payload else {
+            card.title = Some(row.title.clone());
+            card.buttons = vec![reject()];
+            return card;
+        };
+        card.title = Some(p.task.to_string());
+        let field = |name: &str, value: String| {
+            CardLine::new(
+                2,
+                vec![s(format!("{name:<11}"), Tone::Dim), s(value, Tone::Text)],
+            )
+        };
+        let kind = match p.tag_kind {
+            TagKind::Annotated => "annotated",
+            TagKind::Lightweight => "lightweight",
+        };
+        card.lines = vec![
+            CardLine::new(2, vec![s("Push a release tag to GitHub", Tone::Text)]),
+            field("Repository", format!("{} (id {})", p.repo, p.repo_id)),
+            field("Tag", format!("{} ({kind})", p.tag)),
+        ];
+        if let Some(message) = &p.message {
+            let one_line: String = message
+                .chars()
+                .take(WRITE_PREVIEW_CHARS)
+                .map(|c| if c == '\n' { ' ' } else { c })
+                .collect();
+            card.lines.push(field("Message", one_line));
+        }
+        card.lines
+            .push(field("Commit", p.commit.as_str().to_owned()));
+        if let Some(branch) = &p.branch {
+            card.lines.push(field("On branch", branch.clone()));
+        }
+        card.lines
+            .push(CardLine::new(2, vec![s(p.summary.clone(), Tone::Dim)]));
+        let status = facts
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|v| v.parse::<ReleaseLaunchStatus>().ok());
+        if let Some(status) = status.filter(|st| *st != ReleaseLaunchStatus::Proposed) {
+            let words = facts
+                .get("words")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let tone = match status {
+                ReleaseLaunchStatus::Published => Tone::Ok,
+                ReleaseLaunchStatus::Pushing | ReleaseLaunchStatus::Unconfirmed => Tone::Warn,
+                ReleaseLaunchStatus::Superseded | ReleaseLaunchStatus::Declined => Tone::Dim,
+                _ => Tone::Error,
+            };
+            let text = if words.is_empty() {
+                format!("Tag status: {status}")
+            } else {
+                format!("Tag status: {status} · {words}")
+            };
+            card.lines.push(CardLine::new(2, vec![s(text, tone)]));
+        }
+        card.buttons = vec![
+            CardButton::new(
+                format!("Push tag {}", p.tag),
+                't',
+                CardAction::Answer {
+                    answer: HeldAnswer::Approve,
+                },
+            ),
+            reject(),
+        ];
         card
     }
 }

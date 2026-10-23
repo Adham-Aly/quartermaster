@@ -107,9 +107,22 @@ pub enum MergeResult {
     Unknown { message: String },
 }
 
+/// What a tag ref points at on GitHub.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TagRef {
+    /// `tag` for an annotated tag's object, `commit` for a lightweight tag.
+    pub kind: String,
+    /// The object's id, lowercase hex.
+    pub sha: String,
+}
+
 /// A repository's facts the delivery probe needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepoInfo {
+    /// GitHub's numeric id: stays the same across renames and transfers.
+    pub id: u64,
+    /// `owner/name` as GitHub shows it now (after any rename or transfer).
+    pub full_name: String,
     pub default_branch: String,
     pub can_push: bool,
     pub archived: bool,
@@ -212,6 +225,8 @@ impl GithubClient {
         }
         #[derive(Deserialize)]
         struct Raw {
+            id: u64,
+            full_name: String,
             default_branch: String,
             #[serde(default)]
             archived: bool,
@@ -220,6 +235,8 @@ impl GithubClient {
         }
         let raw: Raw = self.get_json(&r.path(), &r.to_string()).await?;
         Ok(RepoInfo {
+            id: raw.id,
+            full_name: raw.full_name,
             default_branch: raw.default_branch,
             can_push: raw.permissions.is_some_and(|p| p.push),
             archived: raw.archived,
@@ -456,6 +473,52 @@ impl GithubClient {
             )));
         }
         sha(&raw.object.sha).map(Some)
+    }
+
+    /// What `refs/tags/<tag>` points at on GitHub now; `None` when there's no such tag.
+    /// `GET /repos/{o}/{r}/git/ref/tags/{tag}`, the singular `ref` (an exact match, never a
+    /// prefix); the answer must name exactly that ref. How the app confirms a tag it pushed.
+    pub async fn tag_ref(&self, r: &RepoRef, tag: &str) -> Result<Option<TagRef>, GithubError> {
+        #[derive(Deserialize)]
+        struct RawObject {
+            sha: String,
+            #[serde(rename = "type")]
+            kind: String,
+        }
+        #[derive(Deserialize)]
+        struct RawGitRef {
+            #[serde(rename = "ref")]
+            name: String,
+            object: RawObject,
+        }
+        let what = format!("{r}'s tag {tag}");
+        let response = self
+            .send(
+                Method::Get,
+                &format!("{}/git/ref/tags/{}", r.path(), encode_path(tag)),
+                None,
+            )
+            .await?;
+        if response.status == 404 {
+            return Ok(None);
+        }
+        if !response.ok() {
+            return Err(response.error(&what, self.rate()));
+        }
+        let raw: RawGitRef = response.json()?;
+        if raw.name != format!("refs/tags/{tag}")
+            || !matches!(raw.object.kind.as_str(), "tag" | "commit")
+        {
+            return Err(GithubError::Decode(format!(
+                "GitHub answered for {what} with {} ({}), not that tag",
+                raw.name, raw.object.kind
+            )));
+        }
+        let sha = sha(&raw.object.sha)?;
+        Ok(Some(TagRef {
+            kind: raw.object.kind,
+            sha: sha.as_str().to_owned(),
+        }))
     }
 
     /// Deletes a branch on GitHub; a branch already gone is fine.

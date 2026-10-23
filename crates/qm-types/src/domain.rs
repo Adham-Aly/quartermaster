@@ -514,6 +514,61 @@ string_enum! {
         Decision = "decision",
         /// A branch-only push to the remote, held under normal autonomy.
         Push = "push",
+        /// A release tag the app creates and pushes: always held, under every autonomy, and
+        /// answered only by you.
+        ReleaseTag = "release_tag",
+    }
+}
+
+string_enum! {
+    /// Where a proposed release tag stands. `release_launches.status` has a `CHECK` listing these.
+    /// Only `Proposed` may become `Pushing`; once `Pushing`, the app never sends the tag again.
+    pub enum ReleaseLaunchStatus ("release launch status") {
+        /// Waiting for your approval on its card.
+        Proposed = "proposed",
+        /// Approved; the tag push started. If the app stops here, the next start checks GitHub.
+        Pushing = "pushing",
+        /// Sent, but the remote didn't yet show the tag at the approved commit.
+        Unconfirmed = "unconfirmed",
+        /// The remote shows the tag pointing at the approved commit.
+        Published = "published",
+        /// The tag already existed on the remote at another object; nothing was overwritten.
+        Collision = "collision",
+        /// The remote refused the push.
+        Rejected = "rejected",
+        /// The push couldn't be made or the remote confirmed it never arrived.
+        NotPublished = "not_published",
+        /// The card stopped applying before it was answered.
+        Superseded = "superseded",
+        /// You rejected the card.
+        Declined = "declined",
+    }
+}
+
+impl ReleaseLaunchStatus {
+    /// Holds the tag name for its repository: no second launch of the same tag may start.
+    #[must_use]
+    pub const fn holds_tag(self) -> bool {
+        matches!(
+            self,
+            Self::Proposed | Self::Pushing | Self::Unconfirmed | Self::Published
+        )
+    }
+
+    /// Nothing more will happen to it.
+    #[must_use]
+    pub const fn is_final(self) -> bool {
+        !matches!(self, Self::Proposed | Self::Pushing | Self::Unconfirmed)
+    }
+}
+
+string_enum! {
+    /// The kind of git tag to create.
+    pub enum TagKind ("tag kind") {
+        /// A tag object with a tagger and message, pointing at the commit.
+        Annotated = "annotated",
+        /// A ref pointing straight at the commit.
+        Lightweight = "lightweight",
     }
 }
 
@@ -584,6 +639,9 @@ string_enum! {
         ReReview = "re_review",
         /// The independent review passed: push and open the pull request.
         ReviewPassed = "review_passed",
+        /// A pushed release tag's outcome became known after the push (published, collision or
+        /// not published), read back from GitHub.
+        ReleaseObserved = "release_observed",
     }
 }
 

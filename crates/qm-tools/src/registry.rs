@@ -75,6 +75,8 @@ pub static TOOLS: &[ToolDef] = &[
     ToolDef::of::<defs::PlanReportInternalTool>(),
     ToolDef::of::<defs::AskDecisionPlanInternalTool>(),
     ToolDef::of::<defs::ApprovePlanTool>(),
+    // Crewmates: release tags, created and pushed by the app after the user's approval.
+    ToolDef::of::<defs::ProposeReleaseTagTool>(),
 ];
 
 /// The tools one role is offered on one engine, in registry order. `plan` is the plan mode a plan
