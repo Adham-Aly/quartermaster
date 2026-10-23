@@ -572,7 +572,18 @@ async fn delete_remote_branch(svc: &SettlingService, p: &PrMerge<'_>) {
     if !DELETE_REMOTE_BRANCH_AFTER_MERGE {
         return;
     }
-    let branch = p.task.branch();
+    let task = p.task;
+    let recorded = svc
+        .tasks()
+        .db()
+        .call(move |conn| task_store::load(conn, task))
+        .await;
+    // Only the branch recorded with the task is ever deleted.
+    let Ok(Some(row)) = recorded else { return };
+    let branch = row.branch;
+    if branch.is_empty() {
+        return;
+    }
     if let Err(e) = svc
         .delivery()
         .github()
@@ -580,7 +591,6 @@ async fn delete_remote_branch(svc: &SettlingService, p: &PrMerge<'_>) {
         .await
     {
         let at = svc.delivery().clock().now();
-        let task = p.task;
         let summary = format!(
             "{task}: the remote branch {branch} couldn't be deleted: {}",
             e.plain()

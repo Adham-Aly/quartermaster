@@ -3,7 +3,7 @@
 //! Each test builds a real repository in its own folder under the system temp directory, and
 //! removes it at the end.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -85,7 +85,7 @@ fn startup_deletes_legacy_kept_refs_and_leaves_their_commits_alone() {
     let project = ReconcileProject {
         project: ProjectId::new(1),
         checkout: checkout.clone(),
-        tasks_with_worktrees: BTreeSet::new(),
+        tasks_with_worktrees: BTreeMap::new(),
     };
     let report = reconcile(&Git::new(), &tasks_dir, &[project]).expect("reconcile");
 
@@ -116,6 +116,7 @@ fn retiring_removes_the_worktree_and_branch_and_writes_no_kept_ref() {
     checkout_with_two_commits(&checkout);
     let task = TaskId::new(42).expect("a task number");
     let paths = data.task(task);
+    let branch = "fix/upload-retry-on-slow-tmp";
 
     git(
         &checkout,
@@ -124,7 +125,7 @@ fn retiring_removes_the_worktree_and_branch_and_writes_no_kept_ref() {
             "add",
             "-q",
             "-b",
-            &task.branch(),
+            branch,
             paths.worktree.to_str().expect("utf-8 path"),
             "main",
         ],
@@ -136,7 +137,7 @@ fn retiring_removes_the_worktree_and_branch_and_writes_no_kept_ref() {
 
     let retirement = Repo::open(Git::new(), &checkout)
         .expect("repo")
-        .retire(&RetireSpec::new(task, &paths))
+        .retire(&RetireSpec::new(branch, &paths))
         .expect("retire");
 
     assert!(matches!(
@@ -146,13 +147,83 @@ fn retiring_removes_the_worktree_and_branch_and_writes_no_kept_ref() {
     assert!(matches!(retirement.branch, BranchRemoval::Deleted { .. }));
     assert!(!paths.worktree.exists(), "the worktree folder is gone");
     assert_eq!(
-        git(&checkout, &["for-each-ref", "refs/heads/qm/task-0042"]),
+        git(&checkout, &["for-each-ref", "refs/heads/fix"]),
         "",
-        "the branch is gone"
+        "the branch it was given is gone"
     );
     assert_eq!(
         git(&checkout, &["for-each-ref", "refs/quartermaster/kept"]),
         "",
         "no kept ref is written"
+    );
+}
+
+/// Reconcile matches a live task's worktree against its recorded branch, finds old-style
+/// `qm/task-*` branches as before, and leaves your own branches alone.
+#[test]
+fn reconcile_reads_recorded_branches_and_still_knows_legacy_ones() {
+    let scratch = Scratch::new("reconcile");
+    let checkout = scratch.0.join("checkout");
+    let data = DataDir::new(scratch.0.join("data"));
+    checkout_with_two_commits(&checkout);
+    let on_its_branch = TaskId::new(42).expect("42");
+    let wrong_branch = TaskId::new(43).expect("43");
+    let missing = TaskId::new(44).expect("44");
+    let worktree = |task: TaskId, branch: &str| {
+        let path = data.task(task).worktree;
+        fs::create_dir_all(path.parent().expect("parent")).expect("task folder");
+        git(
+            &checkout,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                branch,
+                path.to_str().expect("utf-8 path"),
+                "main",
+            ],
+        );
+    };
+    worktree(on_its_branch, "fix/upload-retry");
+    worktree(wrong_branch, "feat/something-else");
+    git(&checkout, &["branch", "docs/missing-worktree", "main"]);
+    // Your own branch, and an old task's branch nobody accounts for.
+    git(&checkout, &["branch", "fix/my-own-work", "main"]);
+    git(&checkout, &["branch", "qm/task-0007", "main"]);
+
+    let project = ReconcileProject {
+        project: ProjectId::new(1),
+        checkout: checkout.clone(),
+        tasks_with_worktrees: BTreeMap::from([
+            (on_its_branch, "fix/upload-retry".to_owned()),
+            (wrong_branch, "feat/the-recorded-one".to_owned()),
+            (missing, "docs/missing-worktree".to_owned()),
+        ]),
+    };
+    let report = reconcile(&Git::new(), &data.tasks_dir(), &[project]).expect("reconcile");
+
+    assert_eq!(report.unexpected_worktrees.len(), 1, "{report:?}");
+    let wrong = &report.unexpected_worktrees[0];
+    assert_eq!(wrong.task, Some(wrong_branch));
+    assert_eq!(
+        wrong.reason,
+        qm_git::UnexpectedReason::WrongBranch {
+            expected: "feat/the-recorded-one".to_owned()
+        }
+    );
+    assert_eq!(report.missing_worktrees.len(), 1, "{report:?}");
+    assert_eq!(report.missing_worktrees[0].task, missing);
+    assert_eq!(report.missing_worktrees[0].branch, "docs/missing-worktree");
+    assert!(report.missing_worktrees[0].branch_exists);
+    let orphans: Vec<&str> = report
+        .orphan_branches
+        .iter()
+        .map(|o| o.branch.as_str())
+        .collect();
+    assert_eq!(
+        orphans,
+        vec!["qm/task-0007"],
+        "your own branches aren't orphans"
     );
 }

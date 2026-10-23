@@ -148,14 +148,12 @@ fn matches_key(row: &TaskRow, key: &str) -> bool {
     if let Ok(id) = key.parse::<TaskId>() {
         return row.id == id;
     }
-    if let Ok(id) = TaskId::from_branch(key) {
-        return row.id == id;
-    }
     let digits = key.trim_start_matches('#');
     if let Ok(pr) = digits.parse::<i64>() {
         return row.pr_number == Some(pr);
     }
-    row.branch == key
+    // The recorded branch, a descriptive one or an older task's `qm/task-0042`.
+    !key.is_empty() && row.branch == key
 }
 
 /// `find_tasks`.

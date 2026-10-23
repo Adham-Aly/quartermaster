@@ -125,8 +125,10 @@ pub struct SecondmateStartCrewmateArgs {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskStarted {
     pub task: TaskId,
-    /// `qm/task-0042`.
-    pub branch: String,
+    /// The task's branch, named after its title (`fix/upload-retry-on-slow-tmp`); folder tasks
+    /// have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     pub routing: RoutingSummary,
 }
 

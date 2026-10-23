@@ -263,9 +263,10 @@ pub(crate) async fn retire(
             let keep_branch = row.base_commit.is_none()
                 || (matches!(exit, Exit::Landed) && close_keeps_branch(row.delivery));
             let checkout = project.path.clone();
+            let branch = row.branch.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let repo = Repo::open(git, &checkout)?;
-                repo.retire(&RetireSpec::new(task, &paths).keep_branch(keep_branch))
+                repo.retire(&RetireSpec::new(&branch, &paths).keep_branch(keep_branch))
             })
             .await
             .map_err(|e| CloseError::Failed(e.to_string()))?;

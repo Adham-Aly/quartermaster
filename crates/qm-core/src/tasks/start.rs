@@ -48,7 +48,9 @@ use qm_types::domain::{
     Tier, VerificationLevel, VerificationSource,
 };
 use qm_types::error::Refusal;
-use qm_types::ids::{AgentId, MessageId, ModelId, PortBlock, ProjectId, SecondmateId, TaskId};
+use qm_types::ids::{
+    AgentId, CommitSha, MessageId, ModelId, PortBlock, ProjectId, SecondmateId, TaskId,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -525,6 +527,50 @@ pub(crate) async fn settle(
     }
 }
 
+/// The branch names a new task may take, from its title, in order of preference: the plain name,
+/// then `-2` up to `-99`, less those a local or `origin/` branch already has. The store drops the
+/// ones other tasks recorded. `None` for a folder task, which has no branch. If the checkout can't
+/// be read, every candidate stays: preparing checks again before it makes the branch.
+async fn free_branch_names(
+    svc: &TaskService,
+    project: &ProjectRow,
+    title: &str,
+) -> Option<Vec<String>> {
+    if project.delivery == DeliveryMode::Folder {
+        return None;
+    }
+    let candidates = qm_policy::names::branch_candidates(title);
+    let git = svc.deps().git.clone();
+    let checkout = project.path.clone();
+    let names = candidates.clone();
+    let taken = tokio::task::spawn_blocking(move || {
+        Repo::open(git, &checkout).and_then(|repo| repo.taken_branch_names(&names))
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|read| read.map_err(|e| e.to_string()));
+    match taken {
+        Ok(taken) => Some(
+            candidates
+                .into_iter()
+                .filter(|name| !taken.contains(name))
+                .collect(),
+        ),
+        Err(error) => {
+            tracing::warn!(%error, "the checkout's branches couldn't be read");
+            Some(candidates)
+        }
+    }
+}
+
+/// Every name from the title's branch to its `-99` is in use.
+fn no_free_branch(title: &str) -> Refusal {
+    let first = qm_policy::names::branch_for_title(title);
+    Refusal::new(format!(
+        "Every branch name from {first} to {first}-99 is taken; give the task a different title."
+    ))
+}
+
 /// Picks the task's block of ports: what open tasks hold, and what listens now.
 async fn pick_ports(svc: &TaskService) -> Result<PortBlock, ToolFailure> {
     let in_use = svc
@@ -547,6 +593,7 @@ async fn pick_ports(svc: &TaskService) -> Result<PortBlock, ToolFailure> {
 enum Recorded {
     Started {
         task: TaskId,
+        branch: Option<String>,
         agent: AgentId,
         summary: RoutingSummary,
         routed: bool,
@@ -651,6 +698,7 @@ pub(crate) async fn start_as(
         }
     }
     let ports = pick_ports(svc).await?;
+    let branch_names = free_branch_names(svc, &validated.project, &req.title).await;
 
     // The record, in one transaction.
     let at = svc.clock().now();
@@ -694,7 +742,15 @@ pub(crate) async fn start_as(
             )? {
                 return Ok((Recorded::Refused(r), notify));
             }
+            let branch = match &branch_names {
+                None => None,
+                Some(names) => match task_store::first_free_branch(&tx, names)? {
+                    Some(name) => Some(name),
+                    None => return Ok((Recorded::Refused(no_free_branch(&req.title)), notify)),
+                },
+            };
             let new = NewTask {
+                branch: branch.clone(),
                 project: validated.project.id,
                 supervisor: caller.agent,
                 kind: req.kind,
@@ -819,6 +875,7 @@ pub(crate) async fn start_as(
             Ok((
                 Recorded::Started {
                     task,
+                    branch,
                     agent,
                     summary,
                     routed,
@@ -834,6 +891,7 @@ pub(crate) async fn start_as(
         Recorded::Refused(r) => Err(ToolFailure::Refused(r)),
         Recorded::Started {
             task,
+            branch,
             agent,
             summary,
             routed,
@@ -847,7 +905,7 @@ pub(crate) async fn start_as(
             tracing::info!(%task, "task started");
             Ok(TaskStarted {
                 task,
-                branch: task.branch(),
+                branch,
                 routing: summary,
             })
         }
@@ -1314,13 +1372,14 @@ async fn make_worktree(
         base_ref,
         commit: base_commit,
     };
+    let branch = settle_branch_name(svc, task, project, row, paths, &settled.commit).await?;
     let git = svc.deps().git.clone();
     let checkout = project.path.clone();
     let files = project.files_to_copy.clone();
     let wpaths = paths.clone();
     let prepared = tokio::task::spawn_blocking(move || {
         let repo = Repo::open(git, &checkout)?;
-        repo.create_worktree(task, &wpaths, &settled, &files)
+        repo.create_worktree(&branch, &wpaths, &settled, &files)
     })
     .await
     .map_err(|e| PrepareError::Failed(e.to_string()))?
@@ -1391,6 +1450,78 @@ pub(crate) async fn check_folder(task: TaskId, folder: &Path) -> Result<(), Prep
 }
 
 /// A worktree failure, said plainly.
+/// The branch the task's worktree goes on: the name recorded at start, unless since then a branch
+/// of that name turned up in your checkout, on `origin`, or on GitHub. Then the next free name
+/// from the title's list is recorded instead. Once the worktree exists its branch never changes.
+/// If GitHub can't be asked, the local answer stands: the push would find the clash later.
+async fn settle_branch_name(
+    svc: &TaskService,
+    task: TaskId,
+    project: &ProjectRow,
+    row: &TaskRow,
+    paths: &TaskPaths,
+    base: &CommitSha,
+) -> Result<String, PrepareError> {
+    let recorded = row.branch.clone();
+    if recorded.is_empty() {
+        return Err(PrepareError::Failed(format!(
+            "{task} has no branch recorded"
+        )));
+    }
+    if paths.worktree.exists() {
+        return Ok(recorded);
+    }
+    let all = qm_policy::names::branch_candidates(&row.title);
+    let candidates = match all.iter().position(|n| *n == recorded) {
+        Some(at) => all[at..].to_vec(),
+        None => vec![recorded.clone()],
+    };
+    for name in candidates {
+        let git = svc.deps().git.clone();
+        let checkout = project.path.clone();
+        let local_name = name.clone();
+        let start = base.clone();
+        // A local branch at the base is an earlier attempt's, made but not yet used.
+        let free_here = tokio::task::spawn_blocking(move || {
+            let repo = Repo::open(git, &checkout)?;
+            let local = repo.local_branch_commit(&local_name)?;
+            let origin = repo.origin_branch_commit(&local_name)?;
+            Ok::<_, GitError>(origin.is_none() && local.is_none_or(|tip| tip == start))
+        })
+        .await
+        .map_err(|e| PrepareError::Failed(e.to_string()))?
+        .map_err(|e| PrepareError::Failed(worktree_failure(task, &e)))?;
+        if !free_here {
+            continue;
+        }
+        let on_github = svc.deps().probe.remote_branch_taken(project, &name).await;
+        if on_github == Some(true) {
+            continue;
+        }
+        if name == recorded {
+            return Ok(name);
+        }
+        let from = recorded.clone();
+        let to = name.clone();
+        let moved = svc
+            .write(move |tx, _| {
+                if task_store::first_free_branch(tx, std::slice::from_ref(&to))?.is_none() {
+                    return Ok(false);
+                }
+                task_store::set_branch(tx, task, &from, &to)
+            })
+            .await
+            .map_err(|e| PrepareError::Failed(e.to_string()))?;
+        if moved {
+            tracing::info!(%task, from = %recorded, to = %name, "branch name already taken; renamed");
+            return Ok(name);
+        }
+    }
+    Err(PrepareError::Failed(format!(
+        "every branch name from {recorded} on is already taken; nothing was touched"
+    )))
+}
+
 fn worktree_failure(task: TaskId, e: &GitError) -> String {
     match e {
         GitError::BranchExists { branch, .. } => {

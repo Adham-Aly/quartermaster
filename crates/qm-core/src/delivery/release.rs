@@ -27,7 +27,7 @@ use crate::inbox::Notify;
 use crate::tasks::{failed, new_wake, refuse};
 use qm_git::{Git, PushCredential, Repo, RepoTransportSetting, TagPushOutcome, TagPushSpec};
 use qm_github::{GithubClient, RepoRef, TagRef};
-use qm_policy::release::check_release_tag;
+use qm_policy::release::{check_not_task_branch, check_release_tag};
 use qm_store::StoreError;
 use qm_store::held::{HeldPayload, HeldRow, NewHeld, ReleaseTagPayload, load_held};
 use qm_store::releases::{self, LaunchRow, NewLaunch, Outcome};
@@ -150,6 +150,17 @@ pub(crate) async fn propose(
         &args.summary,
     )
     .map_err(ToolFailure::Refused)?;
+    if let Some(branch) = checked.branch.clone() {
+        let legacy = branch.starts_with(qm_types::ids::TaskId::LEGACY_BRANCH_PREFIX);
+        let recorded = svc
+            .tasks()
+            .db()
+            .call(move |conn| task_store::with_branch(conn, &branch))
+            .await
+            .map_err(|e| failed(&e))?
+            .is_some();
+        check_not_task_branch(legacy || recorded).map_err(ToolFailure::Refused)?;
+    }
     let project = &loaded.project;
     if project.removed || project.origin == ProjectOrigin::Workspace {
         return Err(refuse(

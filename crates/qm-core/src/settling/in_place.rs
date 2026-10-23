@@ -12,9 +12,10 @@ use qm_types::domain::TaskStatus;
 use qm_types::ids::{CommitSha, TaskId};
 use std::path::PathBuf;
 
-/// The merge commit's message when build in place can't fast-forward.
-pub fn in_place_message(branch: &str, title: &str) -> String {
-    format!("Merge {branch}: {title}")
+/// The merge commit's message when build in place can't fast-forward: git's own wording, so the
+/// history reads like any other merge.
+pub fn in_place_message(branch: &str) -> String {
+    format!("Merge branch '{branch}'")
 }
 
 /// Merges `payload` (a `MergePayload::InPlace`) into your checkout, exactly as stored.
@@ -52,7 +53,7 @@ pub async fn merge_in_place(
     }
     let git = svc.delivery().git();
     let checkout_path = PathBuf::from(checkout);
-    let message = in_place_message(branch, &loaded.row.title);
+    let message = in_place_message(branch);
     let (b, h, t) = (branch.clone(), head.clone(), target_branch.clone());
     // Under the repository lock, exactly the approved commit into exactly the approved branch of a
     // clean checkout; a conflict leaves everything as it was.

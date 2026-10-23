@@ -85,7 +85,13 @@ crewmate's environment.
 - Commit names are checked only on the task's own commits: `Repo::own_commits` runs
   `git log --no-merges <merge-base>..head` against a freshly fetched `origin/<branch>` (the local
   branch only when that ref is missing), never from the stored `base_commit`.
-- After a merge the remote branch is deleted; side exits (stop, discard, retry) close the PR.
+- A task's branch is named from its title (`qm_policy::names::branch_candidates`:
+  `fix/upload-retry-on-slow-tmp`, then `-2` … `-99`) and `tasks.branch` is its only record: git
+  code never derives a branch from a task ID. A name in the store, a local or `origin/` branch, or
+  on GitHub (checked again before the worktree is made) is skipped. Old `qm/task-*` branches are
+  still recognised by reconcile, task-number reservation and the release-tag check.
+- After a merge the remote branch (the recorded one) is deleted; side exits (stop, discard,
+  retry) close the PR.
 - A retired task's worktree and branch are removed (`qm-git` `retire.rs`), with their uncommitted
   changes and unmerged commits; git collects the commits later. No kept refs are written; startup
   `reconcile` deletes the `refs/quartermaster/kept/*` refs earlier versions wrote. A plain-folder

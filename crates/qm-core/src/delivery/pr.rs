@@ -79,7 +79,7 @@ pub(crate) async fn open(
         )));
     }
 
-    // The body: the five headings at standard and reviewed, optional at quick.
+    // The body: a Summary and a Testing section at standard and reviewed, optional at quick.
     let level = row.verification.map(|(l, _)| effective(l, row.delivery).0);
     let missing = missing_body_headings(&body);
     let body_complete = missing.is_empty();
@@ -89,12 +89,13 @@ pub(crate) async fn open(
     ) && !body_complete
     {
         return Err(refuse(format!(
-            "The pull request body needs Intent, What changed, Verified, Risk and Not done; missing: {}",
+            "The pull request body needs a Summary and a Testing section; missing: {}",
             missing.join(", ")
         )));
     }
 
-    // The gate, with a raised level's validation counted as done by a complete body.
+    // The gate, with a raised level's validation counted as done by a body that says how it was
+    // tested.
     let verification = svc.verification();
     let gate_port = std::sync::Arc::clone(&verification);
     let (mut gate, models) = svc

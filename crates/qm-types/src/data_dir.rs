@@ -574,7 +574,7 @@ impl AgentPaths {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskPaths {
     pub root: PathBuf,
-    /// The git worktree on branch `qm/task-0042`.
+    /// The git worktree, on the task's branch (`fix/upload-retry-on-slow-tmp`).
     pub worktree: PathBuf,
     /// The brief exactly as sent.
     pub brief: PathBuf,

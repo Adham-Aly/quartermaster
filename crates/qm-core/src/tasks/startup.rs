@@ -171,7 +171,7 @@ pub(crate) fn branch_task_numbers(git: &Git, checkouts: &[PathBuf]) -> Result<Ve
     for checkout in checkouts {
         let repo = qm_git::Repo::open(git.clone(), checkout)
             .map_err(|e| format!("{} couldn't be opened: {e}", checkout.display()))?;
-        let found = repo.task_numbers().map_err(|e| {
+        let found = repo.legacy_task_numbers().map_err(|e| {
             format!(
                 "{} task branches couldn't be listed: {e}",
                 checkout.display()
@@ -365,14 +365,20 @@ pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupErr
     })
 }
 
-/// The open tasks that have a worktree, by project. A folder task has none, so it never appears.
-pub(crate) fn tasks_with_worktrees(open: &[TaskRow]) -> BTreeMap<ProjectId, BTreeSet<TaskId>> {
-    let mut by_project: BTreeMap<ProjectId, BTreeSet<TaskId>> = BTreeMap::new();
+/// The open tasks that have a worktree, with their recorded branches, by project. A folder task
+/// has none, so it never appears.
+pub(crate) fn tasks_with_worktrees(
+    open: &[TaskRow],
+) -> BTreeMap<ProjectId, BTreeMap<TaskId, String>> {
+    let mut by_project: BTreeMap<ProjectId, BTreeMap<TaskId, String>> = BTreeMap::new();
     for t in open
         .iter()
         .filter(|t| has_worktree(t.status) && t.delivery != DeliveryMode::Folder)
     {
-        by_project.entry(t.project).or_default().insert(t.id);
+        by_project
+            .entry(t.project)
+            .or_default()
+            .insert(t.id, t.branch.clone());
     }
     by_project
 }
@@ -629,9 +635,10 @@ async fn reattach(svc: &TaskService, task: TaskId, missing: &MissingWorktree) ->
     let git = svc.deps().git.clone();
     let paths = svc.deps().data_dir.task(task);
     let files = project.files_to_copy.clone();
+    let branch = missing.branch.clone();
     let result = tokio::task::spawn_blocking(move || {
         let repo = qm_git::Repo::open(git, &project.path)?;
-        let attached = repo.reattach_worktree(task, &paths)?;
+        let attached = repo.reattach_worktree(&branch, &paths)?;
         repo.copy_files_into(&attached.path, &files)?;
         Ok::<_, qm_git::GitError>(attached)
     })
