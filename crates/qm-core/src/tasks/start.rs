@@ -1180,24 +1180,15 @@ pub(crate) async fn routed_session(
 }
 
 /// Where a crewmate works: the home its agent row was recorded with (its worktree, or a folder
-/// task's folder), and whether its tools may write there.
+/// task's folder).
 pub(crate) async fn workplace(svc: &TaskService, task: TaskId) -> Result<Workplace, PrepareError> {
-    let (row, agent) = svc
+    let agent = svc
         .db()
-        .call(move |conn| {
-            Ok((
-                task_store::load(conn, task)?,
-                agents::crewmate_of(conn, task)?,
-            ))
-        })
+        .call(move |conn| agents::crewmate_of(conn, task))
         .await
         .map_err(|e| PrepareError::Failed(e.to_string()))?;
-    let row = row.ok_or_else(|| PrepareError::Failed(format!("{task} doesn't exist")))?;
     let agent = agent.ok_or_else(|| PrepareError::Failed(format!("{task} has no crewmate")))?;
-    Ok(Workplace {
-        dir: agent.home,
-        writes_dir: row.delivery != DeliveryMode::Folder || row.kind.can_change_code(),
-    })
+    Ok(Workplace { dir: agent.home })
 }
 
 /// Gathers the crewmate's instruction files and skills (idempotent).

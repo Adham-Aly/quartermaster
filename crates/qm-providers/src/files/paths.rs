@@ -1,7 +1,8 @@
 //! Path resolution and the write policy.
 //!
-//! A relative path resolves against the worktree. A write is allowed only when its target lies
-//! under a write root or the system temporary folder, judged on real paths: the target is first
+//! A relative path resolves against the worktree. A write goes anywhere the user's account reaches,
+//! except the app's own scratch folder and data folder, which only a write root inside them reopens
+//! (the worktree, the evidence folder, the scratchpad). Judged on real paths: the target is first
 //! normalised lexically (`.` and `..` removed), then its nearest existing ancestor is
 //! canonicalised (symlinks resolved) and the rest appended. The path written is that same
 //! resolved path, so neither `..` nor a symlink can lead a write outside.
@@ -18,20 +19,17 @@ const APP_SCRATCH: &str = "/tmp/quartermaster";
 /// a user's or a data directory's folder, or `/tmp` itself) grants nothing inside it.
 const SCRATCH_SUBTREE_DEPTH: usize = 4;
 
-/// The folders writes may go to, canonicalised: the explicit write roots, then the temporary
-/// folders, minus the app's scratch root, which only a caller's own subtree (see
-/// [`SCRATCH_SUBTREE_DEPTH`]) can reopen.
+/// The deny-only write policy: every folder is writable except the app's scratch root, which only a
+/// caller's own subtree among the write roots (see [`SCRATCH_SUBTREE_DEPTH`]) can reopen.
 ///
 /// A protected root (the app's data folder) is closed the same way: a target inside it is
 /// writable only under a write root strictly inside that protected root (the worktree, the
 /// evidence folder), never through the protected root itself or an ancestor of it.
 #[derive(Debug, Clone)]
 pub(super) struct WritePolicy {
-    roots: Vec<PathBuf>,
     protected: Vec<PathBuf>,
     protected_grants: Vec<PathBuf>,
     scratch_roots: Vec<PathBuf>,
-    temp: Vec<PathBuf>,
     denied: PathBuf,
 }
 
@@ -44,7 +42,6 @@ impl WritePolicy {
             out
         };
         let roots = canonical(&mut write_roots.iter().cloned());
-        let temp = canonical(&mut [std::env::temp_dir(), PathBuf::from("/tmp")].into_iter());
         let denied = real_path(&normalize(Path::new(APP_SCRATCH)));
         let scratch_roots = roots
             .iter()
@@ -61,11 +58,9 @@ impl WritePolicy {
             .cloned()
             .collect();
         Self {
-            roots,
             protected,
             protected_grants,
             scratch_roots,
-            temp,
             denied,
         }
     }
@@ -102,19 +97,7 @@ impl WritePolicy {
                 path.display()
             ));
         }
-        if self
-            .roots
-            .iter()
-            .chain(&self.temp)
-            .any(|root| target.starts_with(root))
-        {
-            Ok(target)
-        } else {
-            Err(format!(
-                "refused: {} is outside the worktree, the evidence folder and the temporary folder",
-                path.display()
-            ))
-        }
+        Ok(target)
     }
 }
 
@@ -263,5 +246,28 @@ mod tests {
             assert!(refused.contains("data folder"), "{refused}");
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn anywhere_else_is_writable() {
+        let policy = WritePolicy::new(&[], &[]);
+        let home =
+            std::env::var_os("HOME").map_or_else(|| PathBuf::from("/Users/x"), PathBuf::from);
+        assert!(policy.check(&home.join("Downloads/renamed.txt")).is_ok());
+        assert!(policy.check(Path::new("/tmp/elsewhere/x")).is_ok());
+    }
+
+    #[test]
+    fn a_symlink_into_the_data_folder_is_refused() {
+        let base = std::env::temp_dir().join(format!("qm-link-{}", std::process::id()));
+        let data = base.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let link = base.join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&data, &link).unwrap();
+        let policy = WritePolicy::new(&[], std::slice::from_ref(&data));
+        assert!(policy.check(&link.join("state.db")).is_err());
+        assert!(policy.check(&base.join("x/../data/auth.json")).is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
