@@ -5,7 +5,8 @@
 //! always has a retirement in progress, and the app finishes it (at startup too), so every exit
 //! retires the worktree the same way (`tasks::close::retire`).
 
-use qm_types::domain::{TaskKind, TaskOutcome, TaskStatus};
+use qm_policy::delivery::Deliverable;
+use qm_types::domain::{TaskOutcome, TaskStatus};
 use qm_types::error::Refusal;
 
 /// Something that moves a task.
@@ -164,12 +165,13 @@ const fn target_word(event: TaskEvent) -> &'static str {
 }
 
 /// The outcome a close records for a task ending from `exit` (its status just before `closed`).
-pub fn outcome_for(exit: TaskStatus, kind: TaskKind) -> TaskOutcome {
+/// `delivered` is what its newest done report delivered.
+pub fn outcome_for(exit: TaskStatus, delivered: Deliverable) -> TaskOutcome {
     match exit {
         TaskStatus::Failed => TaskOutcome::Failed,
         TaskStatus::Stopped => TaskOutcome::Stopped,
         TaskStatus::Discarded => TaskOutcome::Discarded,
-        TaskStatus::Reported if kind.is_answer_only() => TaskOutcome::Answered,
+        TaskStatus::Reported if delivered == Deliverable::Answer => TaskOutcome::Answered,
         _ => TaskOutcome::Landed,
     }
 }

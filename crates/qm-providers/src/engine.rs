@@ -7,7 +7,7 @@
 //!
 //! **Keys the engine owns** (a `spec.env` naming one, or one of
 //! `qm_types::env::NEVER_PASSED_TO_AGENTS`, is refused as unsupported, except a key the engine sets
-//! named with the value it sets, as the push fence's `GIT_TERMINAL_PROMPT=0`): the environment of
+//! named with the value it sets, as the crewmate's `GIT_TERMINAL_PROMPT=0`): the environment of
 //! the only processes it starts, the built-in `bash` tool's, built from scratch: `PATH`, `HOME`,
 //! `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE` copied from the app's own
 //! environment at startup, and `GIT_TERMINAL_PROMPT=0`, `PAGER=cat`, `GIT_PAGER=cat`; then
@@ -163,8 +163,8 @@ impl ProviderEngine {
             )));
         }
         for (key, value) in &spec.env {
-            // A key the engine sets itself may be named with the same value (the crewmate's push
-            // fence sets GIT_TERMINAL_PROMPT=0 on every engine).
+            // A key the engine sets itself may be named with the same value (the crewmate's
+            // environment sets GIT_TERMINAL_PROMPT=0 on every engine).
             let owned = COPIED_ENV_KEYS.contains(&key.as_str())
                 || SET_ENV.iter().any(|(k, v)| k == key && v != value)
                 || NEVER_PASSED_TO_AGENTS.contains(&key.as_str());

@@ -182,13 +182,15 @@ string_enum! {
 }
 
 impl TaskKind {
-    /// Whether the task may change code: build, fix and unclear.
+    /// Whether the kind's work is usually code: build, fix and unclear. Guidance only (the brief's
+    /// wording, the readiness probe, one writer per folder): what a task delivered is decided by
+    /// what its crewmate did (`qm_policy::delivery::deliverable`), never by its kind.
     pub const fn can_change_code(self) -> bool {
         matches!(self, Self::Build | Self::Fix | Self::Unclear)
     }
 
-    /// Answer-only kinds deliver an answer, never code.
-    pub const fn is_answer_only(self) -> bool {
+    /// The kinds whose work is usually an answer. Guidance only, like [`Self::can_change_code`].
+    pub const fn usually_answers(self) -> bool {
         !self.can_change_code()
     }
 }
@@ -704,6 +706,10 @@ string_enum! {
         /// A pushed release tag's outcome became known after the push (published, collision or
         /// not published), read back from GitHub.
         ReleaseObserved = "release_observed",
+        /// A task's pull request was merged on GitHub by someone other than the app.
+        LandedOutside = "landed_outside",
+        /// A tag or release appeared on a task's repository that the app didn't make.
+        ReleasedOutside = "released_outside",
     }
 }
 

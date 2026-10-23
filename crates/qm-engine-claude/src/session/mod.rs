@@ -21,6 +21,9 @@
 //!   handshake, then ask `get_context_usage` and `get_hooks_listing` for the init report, then
 //!   `SessionReady`. Commands sent meanwhile wait in the channel.
 //! - **Turn.** The user message, `TurnStarted`, the stream mapped to events, `result` ends it.
+//!   A turn `claude` starts by itself (to show the model a finished background task) is adopted
+//!   the same way, with no user message; it is never interrupted, since that would stop every
+//!   other background task too.
 //! - **Interrupt.** `interrupt`; the next `result` ends the turn `Interrupted`. With no `result`
 //!   within 10 s the process is stopped, jobs are reported finished, the turn ends `Interrupted`
 //!   and the session is `Suspended`.
@@ -32,6 +35,8 @@
 //!   `SessionClosed { EndConversation }`.
 
 pub mod stream;
+#[cfg(test)]
+mod tests;
 
 use crate::argv::{LaunchOptions, ToolSet, build_argv};
 use crate::autocompact::{self, Restart};
@@ -120,9 +125,6 @@ pub struct Session {
     /// ran by itself count in the next turn. Set when a process starts: nothing for a new
     /// session, the transcript's saved totals for a resumed one ([`saved_spent`]).
     spent: stream::Spent,
-    /// `claude` started a turn by itself (after a background task finished) and was interrupted;
-    /// its `result` is not ours.
-    unasked: bool,
     /// This process reports `command_lifecycle` (claude 2.1.304 does, from its first message);
     /// without it, a turn ends at its first `result`, as before.
     lifecycle_seen: bool,
@@ -414,7 +416,6 @@ impl Session {
             init_checks: None,
             refused: None,
             spent: stream::Spent::default(),
-            unasked: false,
             lifecycle_seen: false,
             starting: false,
             closing: false,
@@ -611,7 +612,6 @@ impl Session {
         self.proc = Some(Proc::attach(child));
         self.down = false;
         self.spent = saved;
-        self.unasked = false;
         self.lifecycle_seen = false;
 
         // initialize, with our prompt and our tool server.
@@ -1385,18 +1385,8 @@ impl Session {
                 }
             }
             "session_state_changed" if str_at(msg, "/state") == Some("running") => {
-                if self.turn.is_none()
-                    && !self.starting
-                    && !self.closing
-                    && !self.ending
-                    && self.proc.is_some()
-                {
-                    // Claude started a turn by itself (e.g. after a background job): report it
-                    // as a turn.
-                    tracing::info!(session = %self.conversation, "claude started a turn nobody requested");
-                    self.idle_deadline = None;
-                    self.turn = Some(Turn::new(self.clock.instant()));
-                    self.send(EngineEvent::TurnStarted).await;
+                if self.turn.is_none() && !self.starting && !self.closing && !self.ending {
+                    self.adopt_unrequested_turn().await;
                 }
             }
             "init" => self.on_system_init(msg).await,
@@ -1453,22 +1443,42 @@ impl Session {
         }
     }
 
+    /// `claude` started a turn by itself (after a background task finished, to tell the model):
+    /// it is taken as a turn like any other, reported with `TurnStarted` and ended by its
+    /// `result`. Either `session_state_changed: running` or `system/init` may come first; the
+    /// first adopts it.
+    async fn adopt_unrequested_turn(&mut self) {
+        if self.proc.is_none() {
+            return;
+        }
+        tracing::info!(session = %self.conversation, "claude started a turn nobody requested");
+        self.idle_deadline = None;
+        self.turn = Some(Turn::new(self.clock.instant()));
+        self.send(EngineEvent::TurnStarted).await;
+    }
+
     async fn on_system_init(&mut self, msg: &Value) {
         let mut redacted = msg.clone();
         redact_accounts(&mut redacted);
         self.shared.set_system_init(redacted);
-        if self.turn.is_none() && !self.starting && self.proc.is_some() {
-            // `claude` started a turn by itself, on a background task's notification. Turns are the
-            // app's: stop it before the model acts. The notification stays in the conversation, the
-            // finished job wakes the crewmate through the app, and what the stopped turn spent
-            // counts in the next turn (`spent`).
-            tracing::info!(session = %self.conversation, "interrupting a turn claude started by itself");
-            self.unasked = true;
-            let id = self.request_id();
-            self.write(&protocol::control_request(
-                &id,
-                json!({"subtype": "interrupt"}),
-            ));
+        if self.turn.is_none() && !self.starting {
+            if self.closing || self.ending {
+                // The session is closing: it starts no new work. Its process stops soon anyway,
+                // so stopping its background tasks with it costs nothing.
+                if self.proc.is_some() {
+                    tracing::info!(session = %self.conversation, "interrupting a turn claude started while closing");
+                    let id = self.request_id();
+                    self.write(&protocol::control_request(
+                        &id,
+                        json!({"subtype": "interrupt"}),
+                    ));
+                }
+            } else {
+                // `claude` started a turn by itself, on a background task's notification. Never
+                // interrupt it: in `claude` an interrupt stops every background task still
+                // running, the crewmate's other helpers too.
+                self.adopt_unrequested_turn().await;
+            }
         }
         let mut problems = Vec::new();
         // The tools at every `system/init`: only what the role is granted, ever.
@@ -1738,9 +1748,9 @@ impl Session {
 
     async fn on_result(&mut self, msg: &Value) {
         let Some(mut turn) = self.turn.take() else {
-            // The end of a turn `claude` started by itself; its spend counts in the next turn.
-            tracing::debug!(unasked = self.unasked, "ignored a result outside a turn");
-            self.unasked = false;
+            // The end of a turn `claude` started while the session was closing (and was
+            // interrupted); its spend counts in the next turn.
+            tracing::debug!("ignored a result outside a turn");
             self.restart_for_settings().await;
             return;
         };

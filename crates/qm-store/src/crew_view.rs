@@ -435,6 +435,8 @@ pub struct OpenTask {
     pub target: String,
     /// The task's branch, absent for folder tasks.
     pub branch: Option<String>,
+    /// The folder the task works in directly, when it has no branch (in place or a plain folder).
+    pub folder: Option<String>,
     pub verification: Option<VerificationLevel>,
     pub created_at: Timestamp,
     pub started_at: Option<Timestamp>,
@@ -501,7 +503,8 @@ pub fn crew_data(conn: &Connection) -> Result<CrewData, StoreError> {
                 EXISTS (SELECT 1 FROM held_actions AS h
                         WHERE h.task_id = t.id AND h.kind = 'merge' AND h.status = 'pending'),
                 EXISTS (SELECT 1 FROM turns AS u JOIN agents AS a ON a.id = u.agent_id
-                        WHERE a.task_id = t.id AND a.role = 'crewmate' AND u.status = 'running')
+                        WHERE a.task_id = t.id AND a.role = 'crewmate' AND u.status = 'running'),
+                p.path
          FROM tasks AS t JOIN projects AS p ON p.id = t.project_id
          WHERE t.status NOT IN {HIDDEN}
          ORDER BY t.created_at, t.seq"
@@ -522,6 +525,7 @@ pub fn crew_data(conn: &Connection) -> Result<CrewData, StoreError> {
                 started_at: r.get(10)?,
                 pending_merge: r.get(11)?,
                 in_turn: r.get(12)?,
+                path: r.get(13)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -541,6 +545,7 @@ pub fn crew_data(conn: &Connection) -> Result<CrewData, StoreError> {
             supervisor: base.supervisor,
             project: base.project,
             target: base.target,
+            folder: base.branch.is_none().then_some(base.path),
             branch: base.branch,
             verification: base.verification,
             created_at: from_millis("tasks.created_at", base.created_at)?,
@@ -579,6 +584,7 @@ struct TaskBase {
     started_at: Option<i64>,
     pending_merge: bool,
     in_turn: bool,
+    path: String,
 }
 
 fn pending_holds(conn: &Connection) -> Result<Vec<PendingHold>, StoreError> {

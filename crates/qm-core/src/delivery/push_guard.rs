@@ -4,9 +4,8 @@
 //! A task's worktree shares the repository's `config` with your checkout (git keeps one per
 //! repository, and per-worktree config is off), so a single config write from any worktree, a
 //! `git remote set-url --push origin …` or a `url.*.insteadOf`, changes where your checkout
-//! pushes, and where the app's authenticated pushes would go. The crewmate fence keeps a
-//! crewmate's own pushes from leaving (`qm_github::fence`); this keeps the app's from being
-//! redirected. [`push`] is the only way the app pushes, and it:
+//! pushes, and where the app's authenticated pushes would go. This keeps the app's pushes
+//! from being redirected. [`push`] is the only way the app pushes, and it:
 //!
 //! 1. **Checks the destination.** It reads exactly where git would push the remote
 //!    ([`Repo::push_urls`]: every push URL after `pushurl`, `insteadOf` and `pushInsteadOf`)

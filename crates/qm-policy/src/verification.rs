@@ -2,8 +2,9 @@
 //!
 //! "How a task's verification level is chosen. The app works it out, never the model; the
 //! Quartermaster only passes on your words. The first rule that applies wins:
-//! 1. No level for answer-only tasks, review tasks, or work that builds in place: any task in a
-//!    project whose delivery mode is build in place.
+//! 1. No level for work that builds in place: any task in a project whose delivery mode is build
+//!    in place. Every other task has one, whatever its kind: the level applies when it delivers
+//!    code, and an answer never reaches the code gates.
 //! 2. Your words for this task, which can go lower or higher than the project's setting.
 //! 3. The project's own verification setting, which only you change.
 //! 4. `standard`.
@@ -18,7 +19,7 @@
 //! removes only the review hold. History, failed checks and other holds stay. A level change never
 //! grants permission to merge."
 
-use qm_types::domain::{DeliveryMode, TaskKind, VerificationLevel, VerificationSource};
+use qm_types::domain::{DeliveryMode, VerificationLevel, VerificationSource};
 use qm_types::error::Refusal;
 use qm_types::ids::TaskId;
 
@@ -29,20 +30,19 @@ pub struct ChosenLevel {
     pub source: VerificationSource,
 }
 
-/// Whether a task has a level at all (rule 1). Review is answer-only too.
-pub fn has_level(kind: TaskKind, delivery: DeliveryMode) -> bool {
-    !kind.is_answer_only() && delivery != DeliveryMode::BuildInPlace
+/// Whether a task has a level at all (rule 1).
+pub fn has_level(delivery: DeliveryMode) -> bool {
+    delivery != DeliveryMode::BuildInPlace
 }
 
 /// The first rule that applies. `user` is a level from your words, already accepted by the override
 /// check on your turn; `project` is the project's setting.
 pub fn choose(
-    kind: TaskKind,
     delivery: DeliveryMode,
     user: Option<VerificationLevel>,
     project: Option<VerificationLevel>,
 ) -> Option<ChosenLevel> {
-    if !has_level(kind, delivery) {
+    if !has_level(delivery) {
         return None;
     }
     Some(match (user, project) {
@@ -102,8 +102,8 @@ pub struct LevelChange {
     pub effect: LevelEffect,
 }
 
-/// `set_verification` after its override check: refused for tasks with no level ("answer-only,
-/// review, build in place").
+/// `set_verification` after its override check: refused for tasks with no level (build in
+/// place).
 pub fn change(
     task: TaskId,
     current: Option<VerificationLevel>,
@@ -113,7 +113,7 @@ pub fn change(
 ) -> Result<LevelChange, Refusal> {
     let Some(from) = current else {
         return Err(Refusal::new(format!(
-            "{task} has no verification level (answer-only, review or build-in-place work)"
+            "{task} has no verification level (build-in-place work)"
         )));
     };
     let eff_from = effective(from, delivery).0;

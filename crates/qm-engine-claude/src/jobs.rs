@@ -14,8 +14,11 @@
 //!   the summary ("exit code N") or none, `stopped` → none; the tail is the last 20 lines (at most
 //!   2,000 characters) of the task's output file, else its summary unless that only repeats the
 //!   job's description (claude 2.1.304 sends a shell task's `output_file` empty and its
-//!   description as the summary; a helper's summary is its final reply).
-//! - A crash or a stop reports every running job finished with no exit code first.
+//!   description as the summary; a helper's summary is its final reply). Claude Code shows the
+//!   model that notification itself (into the running turn, or in a turn it starts by itself), so
+//!   it carries `agent_told: true` and the core posts no wake of its own.
+//! - A crash or a stop reports every running job finished with no exit code first, with
+//!   `agent_told: false`: the model never heard of it.
 //!
 //! Whether Claude Code's job processes stay in the agent's process group, so that stopping the
 //! group stops them too, isn't established against the real `claude`. The engine assumes they do
@@ -132,10 +135,12 @@ impl Jobs {
                     summary.to_owned()
                 }
             });
+        // Claude Code shows the model every task notification itself.
         Some(EngineEvent::JobFinished {
             job,
             exit_code,
             tail,
+            agent_told: true,
         })
     }
 
@@ -147,6 +152,7 @@ impl Jobs {
                 job,
                 exit_code: None,
                 tail: String::new(),
+                agent_told: false,
             })
             .collect()
     }

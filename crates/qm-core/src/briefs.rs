@@ -335,7 +335,7 @@ fn prior_facts(
         .map(|s| cut_chars(&s, SUMMARY_CHARS))
         .unwrap_or_default();
 
-    let body = if prior.kind.is_answer_only() && answer.is_some() {
+    let body = if head.is_none() && answer.is_some() {
         answer.unwrap_or_default().to_owned()
     } else {
         let mut body = match (&prior.branch, &head) {

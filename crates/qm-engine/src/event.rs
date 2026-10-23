@@ -47,7 +47,9 @@ pub enum EngineEvent {
         resumed: bool,
         init: InitReport,
     },
-    /// A turn began (after `StartTurn`).
+    /// A turn began: after `StartTurn`, or with none when the engine adopts a turn its agent
+    /// started by itself (Claude Code does, to tell the model a background task ended). Either
+    /// way the usual turn events and `TurnEnded` follow, and turns never overlap.
     TurnStarted,
     /// A request to the model began; `call` counts from 1 within the turn (the 40-calls limit).
     ModelCallStarted { call: u32 },
@@ -119,11 +121,16 @@ pub enum EngineEvent {
     },
     /// A background job finished, for any reason; between turns too. Every `JobStarted` gets
     /// exactly one, before `SessionClosed` and before the process goes down: a job that dies with
-    /// its session is reported with `exit_code: None`. If the crewmate is idle the core wakes it.
+    /// its session is reported with `exit_code: None`. Unless `agent_told`, the core wakes the
+    /// crewmate with it (into its running turn, or a new one once it is idle).
     JobFinished {
         job: JobLabel,
         exit_code: Option<i32>,
         tail: String,
+        /// The agent's own harness has already shown the model this job's end (Claude Code's
+        /// task notification), so the core posts no wake for it.
+        #[serde(default)]
+        agent_told: bool,
     },
     /// The model called Claude's built-in `EndConversation`, which can't be removed. The turn then
     /// ends (`TurnEnded`) and the session closes (`SessionClosed { EndConversation }`); the core

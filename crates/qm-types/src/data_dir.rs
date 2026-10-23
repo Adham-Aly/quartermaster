@@ -193,12 +193,6 @@ impl DataDir {
         self.root.join("logs")
     }
 
-    /// The personal workspace's default folder (`[workspace] folder` changes it). Crewmates work
-    /// in it directly, with no git; an older one may still be a git repository.
-    pub fn workspace(&self) -> PathBuf {
-        self.root.join("workspace")
-    }
-
     /// The Quartermaster's folders.
     pub fn seat(&self) -> AgentPaths {
         AgentPaths::at(self.root.join("seat"))

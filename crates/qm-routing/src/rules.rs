@@ -11,9 +11,9 @@
 //!
 //! The `builds_on` fact checks live here too ([`builds_on_fact`]): "'Finished plan' and
 //! 'confirmed diagnosis' are facts the app checks, not words the Quartermaster writes. `builds_on`
-//! names a task, and the app checks it's a `plan` task that reported an answer, or a reproduction
-//! that reported `reproduced: yes` (or a `research` task whose report is marked as a diagnosis).
-//! Anything else is treated as building on nothing."
+//! names a task, and the app checks it's a `plan` task that reported an answer, or a task of any
+//! kind that reported `reproduced: yes` or marked its report as a diagnosis. Anything else is
+//! treated as building on nothing."
 
 use crate::record::BuildsOnFact;
 use qm_types::config::KindTiers;
@@ -104,28 +104,23 @@ impl BuildsOnFact {
 pub struct BuildsOnTarget {
     /// The named task's kind; `None` if no such task exists.
     pub kind: Option<TaskKind>,
-    /// The task reported an answer (answer-only kinds).
+    /// The task reported an answer.
     pub reported_answer: bool,
     /// A reproduction's `reproduced: yes|no`, if it reported one.
     pub reproduced: Option<bool>,
-    /// A research report marked as a diagnosis.
+    /// A report marked as a diagnosis (any kind may mark one).
     pub marked_diagnosis: bool,
 }
 
-/// The `builds_on` fact check: "a `plan` task that reported an answer" is a finished plan; "a
-/// reproduction that reported `reproduced: yes` (or a `research` task whose report is marked as a
-/// diagnosis)" is a confirmed diagnosis; "anything else is treated as building on nothing".
-///
-/// A marked research report must also have reported an answer, since the mark is on the report.
+/// The `builds_on` fact check: "a `plan` task that reported an answer" is a finished plan; any task
+/// that reported `reproduced: yes`, or whose report is marked as a diagnosis, is a confirmed
+/// diagnosis, whatever its kind; "anything else is treated as building on nothing".
 pub fn builds_on_fact(target: &BuildsOnTarget) -> BuildsOnFact {
     match target.kind {
         Some(TaskKind::Plan) if target.reported_answer => BuildsOnFact::FinishedPlan,
-        Some(TaskKind::Reproduce) if target.reproduced == Some(true) => {
+        Some(_) if target.reproduced == Some(true) || target.marked_diagnosis => {
             BuildsOnFact::ConfirmedDiagnosis
         }
-        Some(TaskKind::Research) if target.reported_answer && target.marked_diagnosis => {
-            BuildsOnFact::ConfirmedDiagnosis
-        }
-        _ => BuildsOnFact::Nothing,
+        None | Some(_) => BuildsOnFact::Nothing,
     }
 }

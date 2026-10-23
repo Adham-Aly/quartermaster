@@ -100,10 +100,7 @@ pub(crate) fn release_waiters(
             Inbox::post(tx, &wake, notify)?;
         }
     }
-    let kind = task_store::load(tx, task)?.map(|r| r.kind);
-    if let Some(kind) = kind
-        && blocker_finished(kind, status)
-    {
+    if blocker_finished(tx, task)? {
         for (blocked, blocked_status, agent) in task_store::blocked_by(tx, task)? {
             let live = is_open(blocked_status)
                 && !is_exiting(blocked_status)
@@ -265,14 +262,6 @@ pub(crate) async fn file_followup(
             followup.project.as_deref().unwrap_or("")
         )));
     };
-    // A secondmate's scope: its crewmates' follow-ups stay inside it.
-    let (scoped, project_id, project_name) = (*caller, project.id, project.name.clone());
-    svc.db()
-        .call(move |conn| {
-            crate::secondmates::scope::check_project_in(conn, &scoped, project_id, &project_name)
-        })
-        .await
-        .map_err(|e| failed(&e))??;
     let at = svc.clock().now();
     let agent = caller.agent;
     let supervisor = row.supervisor;
@@ -562,10 +551,7 @@ pub(crate) async fn link_tasks(
                 serde_json::json!({ "blocker": blocker, "blocked": blocked }),
                 at,
             )?;
-            let blocker_now = task_store::load(tx, blocker)?;
-            let finished = blocker_now
-                .as_ref()
-                .is_some_and(|b| blocker_finished(b.kind, b.status));
+            let finished = blocker_finished(tx, blocker)?;
             let live = matches!(
                 blocked_row.status,
                 TaskStatus::Preparing

@@ -6,7 +6,10 @@
 //!   one transaction. A running job is a sign of life for up to two hours.
 //! - `JobFinished`: the exit recorded and a `job_exited` wake posted for the crewmate, in one
 //!   transaction. The runner then claims it into a running turn and injects it, or the wake
-//!   starts a turn once the crewmate is idle (its session resumes if it was suspended).
+//!   starts a turn once the crewmate is idle (its session resumes if it was suspended). A job
+//!   whose end the agent's harness already showed the model (`agent_told`: Claude Code's own task
+//!   notification, which starts a turn by itself if the crewmate is idle) posts no wake; one that
+//!   died with the process does.
 //!
 //! On the Claude engine the job is Claude Code's own background shell, labelled with Claude's
 //! task ID, and has no log file of ours.
@@ -56,13 +59,13 @@ pub(crate) fn helpers_running(
     } else {
         format!(" ({})", cut_chars(&first.command, 120, "…"))
     };
-    let count = match running.len() {
-        1 => "a helper agent".to_owned(),
-        n => format!("{n} helper agents"),
+    let (count, verb) = match running.len() {
+        1 => ("a helper agent".to_owned(), "is"),
+        n => (format!("{n} helper agents"), "are"),
     };
     Ok(Some(match who {
         HelperWait::Crewmate(tool) => format!(
-            "{count} of yours is still running{what}: wait for your helpers to finish, then call \
+            "{count} of yours {verb} still running{what}: wait for your helpers to finish, then call \
              {tool} yourself. You're woken when each one finishes; stop one with TaskStop if you \
              no longer need it"
         ),
@@ -129,17 +132,33 @@ pub(crate) async fn job_started(
     .await
 }
 
-/// Records a finished job and posts its `job_exited` wake; returns the wake (`None` for a repeat
-/// report or a duplicate key).
+/// A finished job, as the engine reported it.
+#[derive(Debug)]
+pub(crate) struct JobEnd {
+    pub label: String,
+    pub exit_code: Option<i32>,
+    pub tail: String,
+    /// The crewmate runs on the Claude engine (the wake names Claude Code's task, not a log).
+    pub claude: bool,
+    /// The agent's harness already showed the model this end (`JobFinished::agent_told`).
+    pub agent_told: bool,
+}
+
+/// Records a finished job and, unless the agent was already told, posts its `job_exited` wake;
+/// returns the wake (`None` when told, for a repeat report or a duplicate key).
 pub(crate) async fn job_finished(
     svc: &TaskService,
     task: TaskId,
     agent: AgentId,
-    label: String,
-    exit_code: Option<i32>,
-    tail: String,
-    claude: bool,
+    end: JobEnd,
 ) -> Result<Option<WakeId>, StoreError> {
+    let JobEnd {
+        label,
+        exit_code,
+        tail,
+        claude,
+        agent_told,
+    } = end;
     let at = svc.clock().now();
     let paths = svc.deps().data_dir.task(task);
     svc.write(move |tx, notify| {
@@ -171,6 +190,9 @@ pub(crate) async fn job_finished(
             serde_json::json!({ "job": label, "exit_code": exit_code }),
             at,
         )?;
+        if agent_told {
+            return Ok(None);
+        }
         let wake = new_wake(
             agent,
             WakeKind::JobExited,

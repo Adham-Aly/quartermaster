@@ -118,8 +118,7 @@ const HELP_WIDTH: u16 = 104;
 /// The widest the projects hint gets, in cells.
 const PROJECTS_HINT_WIDTH: u16 = 48;
 /// What the projects hint says.
-const PROJECTS_HINT: &str =
-    "Give your Quartermaster a folder path or a GitHub repo link to add a project.";
+const PROJECTS_HINT: &str = "Projects appear when work starts in a folder. Give your Quartermaster a folder path, or a GitHub repo link to clone.";
 
 /// A window that opens over the current screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,7 +142,7 @@ impl Popup {
             Self::Settings => "Settings",
             Self::Help => "Help",
             Self::Update => "Update",
-            Self::ProjectsHint => "Add a project",
+            Self::ProjectsHint => "Projects",
             Self::Action => "Action",
         }
     }

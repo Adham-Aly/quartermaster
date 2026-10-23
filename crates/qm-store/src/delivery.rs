@@ -250,6 +250,19 @@ pub fn open_checks(conn: &Connection) -> Result<Vec<TaskId>, StoreError> {
         .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Every open direct-PR task with a pull request: the ones the outside watch reads.
+pub fn with_pull_request(conn: &Connection) -> Result<Vec<TaskId>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM tasks
+         WHERE status NOT IN ('closed', 'landed', 'failed', 'stopped', 'discarded')
+           AND delivery_mode = 'direct_pr' AND pr_number IS NOT NULL
+         ORDER BY seq",
+    )?;
+    Ok(stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// The head a pending settle hold is pinned to, and its kind.
 fn hold_head(
     conn: &Connection,

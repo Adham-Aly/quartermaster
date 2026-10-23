@@ -1,5 +1,6 @@
 //! `pr_open` and `pr_status`.
 
+use super::outside;
 use super::push_guard::{self, AppPush, Pushed};
 use super::{DeliveryService, callers_task, missing_body_headings, models};
 use crate::held::HeldService;
@@ -303,6 +304,7 @@ pub(crate) async fn open(
         .map_err(|e| failed(&e))?;
 
     svc.arm(task, head.clone());
+    outside::arm(svc, task, outside::WATCH_EVERY);
     Ok(PrOpened {
         pr,
         url: pull.url,

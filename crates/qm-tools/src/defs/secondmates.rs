@@ -23,8 +23,6 @@ pub struct StartSecondmateArgs {
     pub name: String,
     // The scope words, e.g. "web-app frontend".
     pub scope: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub projects: Vec<String>,
     // A standing base branch: only on a turn you started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
@@ -87,8 +85,6 @@ pub struct ConfigureSecondmateArgs {
     pub secondmate: SecondmateId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub projects: Option<Vec<String>>,
     // Set or clear the standing branch (not both); only on a turn you started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub standing_base_branch: Option<String>,
