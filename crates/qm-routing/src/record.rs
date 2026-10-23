@@ -4,8 +4,8 @@
 //! the work landed in and the tier, model, account and effort actually used, every model skipped
 //! and why, every fallback step, and the one plain-language line the task's record shows ("You
 //! asked for this model", "No high model was available", "Building from the plan in task T-0043").
-//! A record with no choice is waiting: premium requests and stronger-model retries wait rather than
-//! drop a tier.
+//! A record with no choice is waiting: no tier can serve, or a stronger-model retry to high or
+//! medium waits rather than drop a tier.
 
 use crate::decider::DecidedBy;
 use qm_types::domain::{Effort, Provider, TaskKind, Tier};

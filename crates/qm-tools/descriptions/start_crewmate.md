@@ -7,6 +7,7 @@ Start a task: a crewmate in its own worktree does the work and reports back to y
 - tests_required: true when the user asked for tests.
 - builds_on: the task this continues: a finished plan, a reproduction that reported "reproduced: yes", a diagnosis, or the task a review checks. The app checks it as a fact; work on finished thinking can run on a lighter model. Code work on a plan starts only once the plan is approved, or finished under auto.
 - instructions: one-time instructions for this task only.
-- later_steps: models or effort the user named for later steps of this workflow, each with the kind it applies to; the app applies them when such a task builds on this one.
+- later_steps: models, effort or premium the user named for later steps of this workflow, each with the kind it applies to; the app applies them when such a task builds on this one.
+- Premium covers only the task the user asked it for. Set `premium`, rather than naming the premium model. Add `premium: true` to `later_steps` only when the user asks for premium on those later steps.
 - model, effort, premium, base_branch, verification: only when the user's own message on this turn asked for them; refused on turns started by an app event.
 - stronger_retry_of: re-run that task's failed work as a new task on a stronger model, only when the user asked for it in their own words.

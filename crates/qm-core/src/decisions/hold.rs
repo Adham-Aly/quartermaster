@@ -123,9 +123,6 @@ pub fn hold(
             at,
         },
     )?;
-    if let Some(seat) = qm_store::seat::quartermaster(conn)? {
-        HeldService::anchor(conn, held, &task.to_string(), seat.id, at)?;
-    }
     let words = reason_words(reason);
     task_store::event(
         conn,

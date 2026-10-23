@@ -260,32 +260,11 @@ pub(crate) fn local_time(at: jiff::Timestamp) -> String {
     format!("{:02}:{:02}", zoned.hour(), zoned.minute())
 }
 
-/// After a plan task's report is recorded: saves the plan's state and, for a round that goes to
-/// the user, posts its card in the Quartermaster's chat.
+/// After a plan task's report is recorded: saves the plan's state. A round that goes to the user
+/// is listed in the Actions panel from that state; nothing is posted in the chat.
 pub(crate) async fn after_report(svc: &TaskService, task: TaskId, report: PlanReport) {
     let dir = svc.plan_dir(task);
-    let mut state = report.state;
-    if report.to_user {
-        let text = match state.stage {
-            Stage::WithUser => format!(
-                "{task}'s plan, round {}, has {} for you",
-                state.round,
-                questions(state.open.len())
-            ),
-            Stage::Approved => format!("{task}'s final plan is approved, with the recommendations"),
-            Stage::Final | Stage::Drafting => format!("{task}'s plan is ready for your approval"),
-        };
-        match svc
-            .deps()
-            .chat
-            .app_note(svc.deps().seat_agent, None, &text)
-            .await
-        {
-            Ok(message) => state.card = Some(message),
-            Err(e) => tracing::error!(%task, error = %e, "couldn't post the plan's card"),
-        }
-    }
-    let saved = state.clone();
+    let saved = report.state;
     let result = tokio::task::spawn_blocking(move || plans::update(&dir, |s| *s = saved)).await;
     if !matches!(result, Ok(Ok(Some(_)))) {
         tracing::error!(%task, "couldn't save the plan's state");

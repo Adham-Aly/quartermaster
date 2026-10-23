@@ -151,14 +151,14 @@ pub(crate) const fn tier_heading(tier: Tier) -> &'static str {
 }
 
 /// Where an empty tier's work goes instead: the nearest tier with a model, looking up first
-/// (low → medium → high → premium), then down. Premium requests wait without falling back.
+/// (low → medium → high → premium), then down. Premium runs on high, then medium, then low.
 pub(crate) fn fallback_tier(settings: &Settings, tier: Tier) -> Option<Tier> {
     let filled = |t: Tier| settings.models.iter().any(|m| m.in_tier(t));
     let order: [Tier; 3] = match tier {
         Tier::Low => [Tier::Medium, Tier::High, Tier::Premium],
         Tier::Medium => [Tier::High, Tier::Premium, Tier::Low],
         Tier::High => [Tier::Premium, Tier::Medium, Tier::Low],
-        Tier::Premium => return None,
+        Tier::Premium => [Tier::High, Tier::Medium, Tier::Low],
     };
     order.into_iter().find(|&t| filled(t))
 }

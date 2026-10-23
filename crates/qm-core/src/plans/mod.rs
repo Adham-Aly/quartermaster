@@ -88,7 +88,8 @@ pub struct PlanState {
     /// The plan mode the planner's running session was started in.
     #[serde(default)]
     pub session_mode: Option<PlanMode>,
-    /// The app note in the Quartermaster's chat that carries the plan's card.
+    /// The app note that once carried the plan's card in the chat. No longer set: kept so state
+    /// files written before still load.
     #[serde(default)]
     pub card: Option<MessageId>,
     /// Why the page takes no more replies, when it doesn't.
