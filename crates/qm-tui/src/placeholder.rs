@@ -119,12 +119,12 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         "Actions",
         &[
             ("↑ ↓ · k j", "move the selection; nothing is answered here"),
-            ("⏎ · o · double-click", "open the item's detail"),
+            ("⏎ · o · click", "open the item's detail"),
             ("space", "the selected item's menu"),
             ("in the detail: ← →", "pick a button; ⏎ presses it"),
             (
                 "in the detail: a d r · 1 2 3",
-                "press that button, as on the card",
+                "press the button with that letter",
             ),
         ],
     ),
@@ -134,8 +134,6 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("↑ ↓ · k j", "scroll a line"),
             ("pgup pgdn", "scroll a page"),
             ("home end · g G", "oldest or newest"),
-            ("a d r · 1 2 3", "press the current card's button"),
-            ("[ ]", "previous or next card"),
         ],
     ),
     (
@@ -173,10 +171,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Diff",
         &[
-            ("d", "open the current approval card's diff"),
+            ("d", "in an approval's detail: open its diff"),
             ("↑ ↓ · pgup pgdn · g G", "scroll"),
             ("a · r", "approve or reject from the diff"),
-            ("esc · ← Back", "back to the Bridge"),
+            ("esc · ← Back", "back to the Bridge, the detail open again"),
         ],
     ),
     (

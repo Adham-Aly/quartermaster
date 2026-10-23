@@ -7,7 +7,6 @@
 //! Drawing code records regions here; input code reads them.
 
 use qm_types::api::AgentRef;
-use qm_types::ids::MessageId;
 use ratatui::layout::{Position, Rect};
 use serde::{Deserialize, Serialize};
 
@@ -83,10 +82,8 @@ pub(crate) enum Hit {
     Crew(AgentRef),
     /// Row `index` of the Actions inbox, by index into `Snapshot::actions`.
     ActionRow(usize),
-    /// Button `index` of the Actions overlay: the card's buttons, then "Go to".
+    /// Button `index` of the Actions overlay: the card's buttons, then "Go to" when it has one.
     ActionButton(usize),
-    /// Button `index` (into `Card::buttons`) of the card under message `message`.
-    CardButton { message: MessageId, index: usize },
     /// A task-pane button.
     TaskButton(TaskButton),
     /// A status-bar item.

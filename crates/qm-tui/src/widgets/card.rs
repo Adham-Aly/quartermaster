@@ -9,7 +9,6 @@ use crate::hit::Hit;
 use crate::text::{cells, truncate, width, wrap_styled};
 use crate::theme;
 use qm_types::api::{Card, CardKind};
-use qm_types::ids::MessageId;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -18,21 +17,6 @@ const FRAME: u16 = 2;
 
 /// Spaces before the first button of a row.
 const BUTTONS_INDENT: u16 = 2;
-
-/// The card's rows at `width` cells (the conversation's inner width), with its buttons' hits.
-pub(crate) fn rows(card: &Card, message: MessageId, width: u16, hover: Option<Hit>) -> Vec<Row> {
-    let buttons: Vec<Button> = card
-        .buttons
-        .iter()
-        .enumerate()
-        .map(|(index, b)| Button {
-            label: b.label.clone(),
-            hit: Hit::CardButton { message, index },
-            lit: false,
-        })
-        .collect();
-    rows_with(card, width, &buttons, hover, false)
-}
 
 /// A button as one way of showing a card draws it: its label, its hit and whether it is lit
 /// (hovered, or highlighted from the keyboard).

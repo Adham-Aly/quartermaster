@@ -987,7 +987,7 @@ impl CardLine {
     }
 }
 
-/// A card under a message.
+/// A request's card, shown in the Actions overlay.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Card {

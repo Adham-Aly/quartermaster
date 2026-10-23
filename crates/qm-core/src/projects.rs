@@ -582,7 +582,7 @@ impl ProjectService {
     }
 
     /// `propose_project`: checks the proposal against the facts, fills in the location, and stores
-    /// it as a held action with a card in the conversation.
+    /// it as a held action, listed in Actions.
     pub async fn propose(
         &self,
         caller: &Caller,

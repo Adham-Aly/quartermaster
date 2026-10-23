@@ -220,9 +220,9 @@ fn placeholder(app: &App) -> String {
     };
     let card = app
         .snapshot
-        .conversation
+        .actions
         .iter()
-        .filter_map(|chat| chat.card.as_ref())
+        .map(|item| &item.card)
         .find(|card| card.held == Some(held));
     match card {
         Some(card) => format!(

@@ -165,7 +165,7 @@ fn session_pane(
             agent: &name,
             supervisor: "quartermaster",
         };
-        let mut rows = conversation::rows(chats, &notes, rows_area.width, app.term.hover, &voices);
+        let mut rows = conversation::rows(chats, &notes, rows_area.width, &voices);
         if compacting.is_none() && view.is_some_and(|v| v.thinking) {
             rows.extend(conversation::thinking_rows(chats, app));
         }
@@ -674,7 +674,7 @@ mod tests {
             agent: "SM-02",
             supervisor: "supervisor",
         };
-        let rows = conversation::rows(&chats, &[], 100, None, &voices);
+        let rows = conversation::rows(&chats, &[], 100, &voices);
         let shown = texts(&rows);
         assert!(shown.iter().any(|s| s.contains("sm/web-app")), "{shown:#?}");
         assert!(shown.iter().all(|s| !s.contains('`')), "{shown:#?}");

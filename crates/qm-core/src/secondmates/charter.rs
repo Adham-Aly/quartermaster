@@ -85,7 +85,7 @@ fn projects_words(names: &[String]) -> String {
 
 impl SecondmateService {
     /// `start_secondmate`: checks the facts, asks the decider, and stores the exact proposal as a
-    /// held action with its card in the conversation. Nothing else is created.
+    /// held action, listed in Actions. Nothing else is created.
     #[allow(clippy::too_many_lines)]
     pub async fn propose(
         &self,
