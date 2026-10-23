@@ -15,7 +15,7 @@ use qm_types::domain::{
 };
 use qm_types::ids::space;
 use qm_types::ids::{ProjectId, TaskId};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use std::path::PathBuf;
 
 /// A project as stored.
@@ -190,25 +190,6 @@ pub fn active(conn: &Connection) -> Result<Vec<ProjectRow>, StoreError> {
         "WHERE removed_at IS NULL ORDER BY origin = 'workspace', seq",
         [],
     )
-}
-
-/// The built-in personal workspace, if it has been set up.
-pub fn workspace(conn: &Connection) -> Result<Option<ProjectRow>, StoreError> {
-    Ok(query(conn, "WHERE origin = 'workspace' ORDER BY seq LIMIT 1", [])?.pop())
-}
-
-/// The folder of the most recently linked project on this Mac, removed ones included: the
-/// suggested location for a new project is its parent.
-pub fn latest_linked_path(conn: &Connection) -> Result<Option<PathBuf>, StoreError> {
-    Ok(conn
-        .query_row(
-            "SELECT path FROM projects WHERE origin = 'linked'
-             ORDER BY created_at DESC, seq DESC LIMIT 1",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?
-        .map(PathBuf::from))
 }
 
 /// Registers a project.

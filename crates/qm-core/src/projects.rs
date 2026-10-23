@@ -1,49 +1,36 @@
 //! The project registry.
 //!
-//! A project is a local git repository with settings. It joins the list only with your
-//! confirmation: `propose_project` stores a held action whose payload is exactly what will happen
-//! (link this folder, clone this URL into this folder, create this folder), with a suggested
-//! location filled in, and the [`AddProjectPerformer`] does exactly that when you approve. Nothing
-//! is scanned automatically; `find_project_folder` looks only when asked, in the search roots from
-//! settings ([`find_folders`]).
+//! A project is a folder: a git repository, or a plain folder. Projects aren't added or removed by
+//! hand: one appears when work starts in its folder and is retired when its last open task closes
+//! (`crate::places`). A retired project keeps its settings, which come back with it.
 //!
-//! - **Linking never moves or copies** anything: the folder is registered where it is.
-//! - **Removing never deletes files**: the row is marked removed and the folder left alone.
+//! - **`clone_repository`** ([`ProjectService::clone_repository`]) puts a repository on disk, with
+//!   no card; a task started in it then registers it.
+//! - **`find_project_folder`** looks only when asked, in the search roots from settings
+//!   ([`find_folders`]).
 //! - **`configure_project` can't change autonomy or the verification level** (its arguments have no
 //!   field for either), and checks what it can change against the facts: a direct-PR project needs
-//!   a GitHub remote, a branch-only one a remote, and the personal workspace stays branch-only.
-//! - **The personal workspace** ([`ProjectService::ensure_workspace`]) is a plain folder, by default
-//!   `<data dir>/workspace` or the one `[workspace] folder` names. Its delivery is `folder`: no
-//!   git runs in it, its tasks have no branches, and changing the folder refuses while personal
-//!   tasks are open ([`move_workspace`]). Only the personal workspace can be a plain folder.
+//!   a GitHub remote, a branch-only one a remote, and a plain folder stays a plain folder.
 //!
 //! [`ProjectsPart`] fills the Bridge's projects pane.
 
-use crate::api::{ApiPart, Conversation, Handled};
-use crate::held::{HeldCard, HeldError, HeldOutcome, HeldPerformer, HeldService, LoadedHeld};
+use crate::api::{ApiPart, Handled};
 use crate::setup_check::SetupFacts;
-use crate::turn_io::ChatLog;
 use qm_git::{Git, Repo};
 use qm_store::StoreError;
 use qm_store::db::Db;
 use qm_store::events::{self, NewEvent};
-use qm_store::held::{AddProjectPayload, HeldPayload, NewHeld};
-use qm_store::messages::{self, NewMessage};
-use qm_store::projects::{self, NewProject, ProjectRow, SettingsChange};
-use qm_tools::defs::{Ack, ConfigureProjectArgs, Held, ProposeProjectArgs};
+use qm_store::projects::{self, ProjectRow, SettingsChange};
+use qm_tools::defs::{Ack, ConfigureProjectArgs};
 use qm_tools::handler::{Caller, ToolFailure};
 use qm_types::BoxFuture;
-use qm_types::api::{CardAction, CardButton, CardLine, HeldAnswer, Snapshot, Styled, Tone};
+use qm_types::api::Snapshot;
 use qm_types::clock::Clock;
 use qm_types::config::Config;
 use qm_types::data_dir::DataDir;
-use qm_types::domain::{
-    Autonomy, DeliveryMode, HeldKind, MergeMethod, MessageKind, MessageSource, ProjectAction,
-    ProjectOrigin,
-};
+use qm_types::domain::{Autonomy, DeliveryMode, MergeMethod};
 use qm_types::error::Refusal;
-use qm_types::ids::{HeldActionId, ProjectId};
-use rusqlite::Connection;
+use qm_types::ids::ProjectId;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -55,16 +42,8 @@ use tokio::sync::watch;
 pub const SEARCH_DEPTH: usize = 3;
 /// The most folders `find_project_folder` returns.
 pub const MAX_FOUND: usize = 20;
-/// The personal workspace's name in the project list.
-pub const WORKSPACE_NAME: &str = "personal";
-/// The suggested location when no project has been linked on this Mac yet.
-pub const DEFAULT_LOCATION: &str = "~/Developer";
 /// The merge method a new project starts with; you change it with `configure_project`.
 pub const DEFAULT_MERGE_METHOD: MergeMethod = MergeMethod::Squash;
-/// The first commit of a created project or the workspace, so worktrees have a base.
-const FIRST_COMMIT: &str = "chore: start the repository";
-/// Who makes that commit when your git has no identity configured.
-const APP_IDENTITY: (&str, &str) = ("Quartermaster", "quartermaster@localhost");
 
 /// Event kinds the registry writes.
 pub mod event_kind {
@@ -138,93 +117,6 @@ pub fn tilde(path: &Path, home: Option<&Path>) -> String {
         Some(rest) => format!("~/{}", rest.display()),
         None => path.display().to_string(),
     }
-}
-
-/// The personal workspace's folder: the one `[workspace] folder` names, `~` expanded, else
-/// `<data dir>/workspace`.
-pub(crate) fn workspace_folder(
-    config: &Config,
-    data_dir: &DataDir,
-    home: Option<&Path>,
-) -> PathBuf {
-    match config
-        .workspace
-        .folder
-        .as_deref()
-        .map(str::trim)
-        .filter(|f| !f.is_empty())
-    {
-        Some(folder) => expand(folder, home),
-        None => data_dir.workspace(),
-    }
-}
-
-/// Checks a folder chosen for the personal workspace before anything changes: an absolute path (or
-/// one from `~`) to an existing folder that isn't read-only and isn't one of the app's task
-/// folders. Returns it expanded.
-pub(crate) fn check_workspace_folder(
-    folder: &str,
-    home: Option<&Path>,
-    data_dir: &DataDir,
-) -> Result<PathBuf, String> {
-    let text = folder.trim();
-    if text.is_empty() {
-        return Err("the personal folder needs a path".to_owned());
-    }
-    if !(text.starts_with('/') || text == "~" || text.starts_with("~/")) {
-        return Err(format!(
-            "{text} isn't an absolute path: write it from / or from ~"
-        ));
-    }
-    let path = expand(text, home);
-    if !path.is_dir() {
-        return Err(format!("{} isn't a folder", path.display()));
-    }
-    if path.metadata().is_ok_and(|m| m.permissions().readonly()) {
-        return Err(format!(
-            "{} is read-only, so crewmates can't work in it",
-            path.display()
-        ));
-    }
-    if path.starts_with(data_dir.tasks_dir()) {
-        return Err(format!(
-            "{} is one of the app's task folders, so it can't be the personal folder",
-            path.display()
-        ));
-    }
-    Ok(path)
-}
-
-/// Points the personal workspace at `folder` (already checked by [`check_workspace_folder`]).
-/// Refuses while personal tasks are open, or when another project is registered there. No files
-/// move. With no workspace registered yet, there's nothing to move: the next start registers it.
-pub(crate) fn move_workspace(conn: &Connection, folder: &Path) -> Result<(), String> {
-    let store = |e: StoreError| e.to_string();
-    let Some(workspace) = projects::workspace(conn).map_err(store)? else {
-        return Ok(());
-    };
-    if workspace.path == folder {
-        return Ok(());
-    }
-    let open = projects::open_tasks(conn, workspace.id).map_err(store)?;
-    if !open.is_empty() {
-        let names: Vec<String> = open.iter().map(ToString::to_string).collect();
-        return Err(format!(
-            "personal tasks are still open ({}); close them first, then change the personal folder",
-            names.join(", ")
-        ));
-    }
-    if let Some(other) = projects::active_by_path(conn, folder).map_err(store)?
-        && other.id != workspace.id
-    {
-        return Err(format!(
-            "{} is already the project {}",
-            folder.display(),
-            other.name
-        ));
-    }
-    projects::set_path(conn, workspace.id, folder).map_err(store)?;
-    Ok(())
 }
 
 /// Resolves a search root case-insensitively: each component that doesn't exist as written is
@@ -430,100 +322,57 @@ pub(crate) fn repo_facts(
     })
 }
 
-/// `git init` in `dir` and an empty first commit, with your identity or, when git has none, the
-/// app's.
-fn init_repository(
+/// Clones `url` into `target`, through `gh` for a GitHub repository when it's logged in, else
+/// through git. Blocking.
+fn clone_into(
+    target: &Path,
+    url: &str,
+    gh: Option<&Path>,
     program: &Path,
     env: &BTreeMap<String, String>,
-    dir: &Path,
-) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("couldn't create {}: {e}", dir.display()))?;
-    git(program, env, dir, &["init", "--quiet"])?;
-    let commit = [
-        "commit",
-        "--quiet",
-        "--allow-empty",
-        "--no-verify",
-        "-m",
-        FIRST_COMMIT,
-    ];
-    if git(program, env, dir, &commit).is_ok() {
-        return Ok(());
+) -> Result<RepoFacts, String> {
+    if target.exists() {
+        return Err(format!("{} already exists", target.display()));
     }
-    let (name, email) = APP_IDENTITY;
-    let name = format!("user.name={name}");
-    let email = format!("user.email={email}");
-    let mut args = vec!["-c", &name, "-c", &email];
-    args.extend(commit);
-    git(program, env, dir, &args).map(|_| ())
-}
-
-/// What an approved proposal does on disk: nothing for a link (the folder stays exactly where it
-/// is), a clone, or a new repository. Blocking.
-struct Materialise {
-    action: ProjectAction,
-    target: PathBuf,
-    url: Option<String>,
-    /// `gh`, when it's installed and logged in: GitHub clones go through it.
-    gh: Option<PathBuf>,
-    git: PathBuf,
-    env: BTreeMap<String, String>,
-}
-
-impl Materialise {
-    fn run(self) -> Result<RepoFacts, String> {
-        let Self {
-            action,
-            target,
-            url,
-            gh,
-            git: program,
-            env,
-        } = self;
-        match action {
-            ProjectAction::Link => {}
-            ProjectAction::Clone => {
-                if target.exists() {
-                    return Err(format!("{} already exists", target.display()));
-                }
-                let parent = target.parent().unwrap_or(Path::new("/"));
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("couldn't create {}: {e}", parent.display()))?;
-                let url = url.unwrap_or_default();
-                let dest = target.display().to_string();
-                match (github_repo(&url), gh) {
-                    (Some(repo), Some(gh)) => {
-                        let out = std::process::Command::new(&gh)
-                            .args(["repo", "clone", &repo, &dest])
-                            .env_clear()
-                            .envs(env.iter().filter(|(k, _)| !k.starts_with("GIT_")))
-                            .env("GIT_TERMINAL_PROMPT", "0")
-                            .env("GH_PROMPT_DISABLED", "1")
-                            .current_dir(parent)
-                            .stdin(Stdio::null())
-                            .output()
-                            .map_err(|e| format!("couldn't run gh: {e}"))?;
-                        if !out.status.success() {
-                            return Err(format!(
-                                "`gh repo clone {repo}` failed: {}",
-                                String::from_utf8_lossy(&out.stderr).trim()
-                            ));
-                        }
-                    }
-                    _ => {
-                        git(&program, &env, parent, &["clone", "--quiet", &url, &dest])?;
-                    }
-                }
-            }
-            ProjectAction::Create => {
-                if target.exists() {
-                    return Err(format!("{} already exists", target.display()));
-                }
-                init_repository(&program, &env, &target)?;
+    let parent = target.parent().unwrap_or(Path::new("/"));
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("couldn't create {}: {e}", parent.display()))?;
+    let dest = target.display().to_string();
+    match (github_repo(url), gh) {
+        (Some(repo), Some(gh)) => {
+            let out = std::process::Command::new(gh)
+                .args(["repo", "clone", &repo, &dest])
+                .env_clear()
+                .envs(env.iter().filter(|(k, _)| !k.starts_with("GIT_")))
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GH_PROMPT_DISABLED", "1")
+                .current_dir(parent)
+                .stdin(Stdio::null())
+                .output()
+                .map_err(|e| format!("couldn't run gh: {e}"))?;
+            if !out.status.success() {
+                return Err(format!(
+                    "`gh repo clone {repo}` failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
             }
         }
-        repo_facts(&program, &env, &target)
+        _ => {
+            git(program, env, parent, &["clone", "--quiet", url, &dest])?;
+        }
     }
+    repo_facts(program, env, target)
+}
+
+/// The folder name a clone of `url` gets: its last path part, without `.git`.
+fn clone_name(url: &str) -> Option<String> {
+    let last = url
+        .trim()
+        .trim_end_matches('/')
+        .rsplit(['/', ':'])
+        .next()?
+        .trim_end_matches(".git");
+    (!last.is_empty() && last != "." && last != "..").then(|| last.to_owned())
 }
 
 impl ProjectService {
@@ -571,369 +420,94 @@ impl ProjectService {
         Ok(found.iter().map(|p| tilde(p, home.as_deref())).collect())
     }
 
-    /// The suggested location: the parent folder of the most recently linked project on this
-    /// Mac, or `~/Developer`.
-    async fn suggested_location(&self) -> Result<PathBuf, StoreError> {
-        let latest = self
-            .inner
-            .db
-            .call(|conn| projects::latest_linked_path(conn))
-            .await?;
-        Ok(latest
-            .and_then(|p| p.parent().map(Path::to_owned))
-            .unwrap_or_else(|| expand(DEFAULT_LOCATION, self.home().as_deref())))
-    }
-
-    /// `propose_project`: checks the proposal against the facts, fills in the location, and stores
-    /// it as a held action with a card in the conversation.
-    pub async fn propose(
+    /// `clone_repository`: clones `url` into `location` (else the first search root, else your
+    /// home folder) and returns the folder. No card: nothing is registered until work starts there.
+    pub async fn clone_repository(
         &self,
-        caller: &Caller,
-        args: &ProposeProjectArgs,
-    ) -> Result<Held, ToolFailure> {
+        url: &str,
+        location: Option<&str>,
+    ) -> Result<Ack, ToolFailure> {
         let facts = self.facts();
         if facts.checked && facts.git.is_missing() {
             return Err(refused(
-                "git isn't installed on this Mac, so no project can be added until the setup \
+                "git isn't installed on this Mac, so nothing can be cloned until the setup \
                  check's fix for it is done",
             ));
         }
         let home = self.home();
-        let payload = match args.action {
-            ProjectAction::Link => self.resolve_link(args, home.as_deref()).await?,
-            ProjectAction::Clone | ProjectAction::Create => {
-                self.resolve_new(args, &facts, home.as_deref()).await?
-            }
+        let url = url.trim();
+        let url = if is_shorthand(url) {
+            format!("https://github.com/{url}")
+        } else {
+            url.to_owned()
         };
-        let description = self.describe(&payload);
-        let held_action = self.store_proposal(caller, payload).await?;
-        Ok(Held {
-            held_action,
-            note: format!(
-                "Held for the user's confirmation: {description}. Nothing happens until they \
-                 approve; you'll be woken with the outcome."
-            ),
-        })
-    }
-
-    /// A clone or a new repository: the location (yours, or the suggested one) and, for a clone,
-    /// the URL, with `owner/name` read as a GitHub repository.
-    async fn resolve_new(
-        &self,
-        args: &ProposeProjectArgs,
-        facts: &SetupFacts,
-        home: Option<&Path>,
-    ) -> Result<AddProjectPayload, ToolFailure> {
-        let location = match &args.location {
-            Some(location) => expand(location, home),
-            None => self.suggested_location().await.map_err(|e| failed(&e))?,
+        let Some(name) = clone_name(&url) else {
+            return Err(refused(format!("{url} doesn't name a repository to clone")));
+        };
+        let location = if let Some(l) = location.map(str::trim).filter(|l| !l.is_empty()) {
+            expand(l, home.as_deref())
+        } else {
+            let first = self
+                .inner
+                .config
+                .borrow()
+                .projects
+                .search_roots
+                .first()
+                .cloned();
+            match (first, home.clone()) {
+                (Some(root), _) => expand(&root, home.as_deref()),
+                (None, Some(h)) => h,
+                (None, None) => {
+                    return Err(refused("name a location: there's no home folder to use"));
+                }
+            }
         };
         if !location.is_absolute() {
             return Err(refused(format!(
-                "the location must be a full path such as ~/Developer, not {:?}",
-                args.location.as_deref().unwrap_or_default()
+                "the location must be a full path such as ~/Developer, not {}",
+                location.display()
             )));
         }
-        let dest = location.join(&args.name);
+        if location.starts_with(self.inner.data_dir.root()) {
+            return Err(refused(
+                "that location is inside the app's own data folder; pick another",
+            ));
+        }
+        let dest = location.join(&name);
         if dest.exists() {
             return Err(refused(format!(
-                "{} already exists; link it instead, or pick another name or location",
+                "{} already exists; start work in it, or name another location",
                 self.tilde(&dest)
             )));
         }
-        let url = if args.action == ProjectAction::Clone {
-            let url = args.url.clone().unwrap_or_default();
-            let url = if is_shorthand(&url) {
-                format!("https://github.com/{url}")
-            } else {
-                url
-            };
-            if github_repo(&url).is_some() && facts.checked && !facts.gh_ready() {
-                return Err(refused(
-                    "cloning from GitHub needs the GitHub CLI, which isn't set up on this Mac; \
-                     the setup check offers to install it and log in",
-                ));
-            }
-            Some(url)
-        } else {
-            None
-        };
-        Ok(AddProjectPayload {
-            action: args.action,
-            name: args.name.clone(),
-            path: None,
-            url,
-            location: Some(location.display().to_string()),
-        })
-    }
-
-    /// Stores the proposal as a pending held action, replacing an older card for the same name,
-    /// with an app line in the conversation to show its card under. One transaction.
-    async fn store_proposal(
-        &self,
-        caller: &Caller,
-        payload: AddProjectPayload,
-    ) -> Result<HeldActionId, ToolFailure> {
-        let agent = caller.agent;
-        let turn = caller.turn.map(|t| t.turn);
-        let at = self.inner.clock.now();
-        let name = payload.name.clone();
-        let link_path = payload.path.clone().map(PathBuf::from);
-        let stored = payload;
-        let outcome = self
-            .inner
-            .db
-            .call(move |conn| {
-                let tx = conn.transaction()?;
-                if let Some(existing) = projects::active_by_name(&tx, &name)? {
-                    return Ok(Err(format!(
-                        "a project named {} is already registered ({})",
-                        existing.name,
-                        existing.path.display()
-                    )));
-                }
-                if let Some(path) = &link_path
-                    && let Some(existing) = projects::active_by_path(&tx, path)?
-                {
-                    return Ok(Err(format!(
-                        "that folder is already registered as {}",
-                        existing.name
-                    )));
-                }
-                // A newer proposal for the same name replaces the older card.
-                for older in HeldService::pending(&tx, HeldKind::AddProject)? {
-                    if let HeldPayload::AddProject(p) = &older.payload
-                        && p.name.eq_ignore_ascii_case(&name)
-                    {
-                        HeldService::supersede(&tx, older.id, at)?;
-                    }
-                }
-                let held = HeldService::insert(
-                    &tx,
-                    &NewHeld {
-                        payload: HeldPayload::AddProject(stored),
-                        choices: Vec::new(),
-                        title: name.clone(),
-                        task: None,
-                        asked_by: Some(agent),
-                        at,
-                    },
-                )?;
-                let message = messages::insert(
-                    &tx,
-                    &NewMessage {
-                        agent,
-                        source: MessageSource::App,
-                        kind: MessageKind::AppNote,
-                        text: "The Quartermaster proposes adding a project.",
-                        options: &[],
-                        replies_to: None,
-                        turn,
-                        at,
-                    },
-                )?;
-                HeldService::link_message(&tx, held, message, at)?;
-                tx.commit()?;
-                Ok(Ok(held))
-            })
-            .await
-            .map_err(|e| failed(&e))?;
-        outcome.map_err(refused)
-    }
-
-    /// A folder to link: it must be a git repository; its top folder is what's linked.
-    async fn resolve_link(
-        &self,
-        args: &ProposeProjectArgs,
-        home: Option<&Path>,
-    ) -> Result<AddProjectPayload, ToolFailure> {
-        let path = expand(args.path.as_deref().unwrap_or_default(), home);
-        if !path.is_absolute() {
-            return Err(refused(format!(
-                "the folder must be a full path such as ~/Developer/api-server, not {:?}",
-                args.path.as_deref().unwrap_or_default()
-            )));
-        }
-        if !path.is_dir() {
-            return Err(refused(format!(
-                "{} isn't a folder on this Mac",
-                tilde(&path, home)
-            )));
-        }
+        let gh = facts.paths.gh.clone().filter(|_| facts.gh_ready());
         let program = self.git_program();
-        let probe = path.clone();
-        let root = tokio::task::spawn_blocking(move || {
-            Repo::open(Git::with_program(program), &probe).map(|r| r.root().to_owned())
+        let env = self.inner.env.clone();
+        let target = dest.clone();
+        let cloned = tokio::task::spawn_blocking(move || {
+            clone_into(&target, &url, gh.as_deref(), &program, &env)
         })
         .await
-        .map_err(|e| ToolFailure::Failed(format!("the repository check stopped: {e}")))?;
-        let root = root.map_err(|_| {
-            refused(format!(
-                "{} isn't a git repository, so it can't be linked as a project",
-                tilde(&path, home)
-            ))
-        })?;
-        Ok(AddProjectPayload {
-            action: ProjectAction::Link,
-            name: args.name.clone(),
-            path: Some(root.display().to_string()),
-            url: None,
-            location: None,
+        .map_err(|e| ToolFailure::Failed(format!("the clone stopped: {e}")))?
+        .map_err(refused)?;
+        Ok(Ack {
+            note: format!(
+                "Cloned into {} ({} from {}). Start work there with start_crewmate; the project \
+                 appears when it does.",
+                self.tilde(&cloned.root),
+                if cloned.github_remote.is_some() {
+                    "on GitHub"
+                } else {
+                    "a git repository"
+                },
+                if cloned.default_branch.is_empty() {
+                    "no branch yet"
+                } else {
+                    &cloned.default_branch
+                },
+            ),
         })
-    }
-
-    /// One plain phrase for a proposal: "link ~/Developer/api-server as api-server".
-    fn describe(&self, p: &AddProjectPayload) -> String {
-        let at = |dir: &Option<String>| {
-            dir.as_deref()
-                .map(|d| self.tilde(&Path::new(d).join(&p.name)))
-                .unwrap_or_default()
-        };
-        match p.action {
-            ProjectAction::Link => format!(
-                "link {} as {}",
-                self.tilde(Path::new(p.path.as_deref().unwrap_or_default())),
-                p.name
-            ),
-            ProjectAction::Clone => format!(
-                "clone {} into {}",
-                p.url.as_deref().unwrap_or_default(),
-                at(&p.location)
-            ),
-            ProjectAction::Create => {
-                format!("create a new repository {} at {}", p.name, at(&p.location))
-            }
-        }
-    }
-
-    /// Performs an approved proposal exactly as stored. Idempotent: a project already registered
-    /// with this name at this folder counts as done.
-    pub async fn add(&self, p: &AddProjectPayload) -> Result<String, HeldError> {
-        let facts = self.facts();
-        let home = self.home();
-        let (origin, folder) = match p.action {
-            ProjectAction::Link => (
-                ProjectOrigin::Linked,
-                PathBuf::from(p.path.clone().unwrap_or_default()),
-            ),
-            ProjectAction::Clone => (
-                ProjectOrigin::Cloned,
-                PathBuf::from(p.location.clone().unwrap_or_default()).join(&p.name),
-            ),
-            ProjectAction::Create => (
-                ProjectOrigin::Created,
-                PathBuf::from(p.location.clone().unwrap_or_default()).join(&p.name),
-            ),
-        };
-        if !folder.is_absolute() {
-            return Err(HeldError::Failed(
-                "the stored proposal has no full path; ask for it again".to_owned(),
-            ));
-        }
-
-        // Already done (a crash after registering, before the card was marked)?
-        let name = p.name.clone();
-        let check = folder.clone();
-        if let Some(existing) = self
-            .inner
-            .db
-            .call(move |conn| projects::active_by_name(conn, &name))
-            .await?
-        {
-            if existing.path == check {
-                return Ok(format!(
-                    "{} is registered at {}.",
-                    existing.name,
-                    tilde(&existing.path, home.as_deref())
-                ));
-            }
-            return Err(HeldError::Failed(format!(
-                "a project named {} is already registered at {}",
-                existing.name,
-                tilde(&existing.path, home.as_deref())
-            )));
-        }
-
-        let make = Materialise {
-            action: p.action,
-            target: folder,
-            url: p.url.clone(),
-            gh: facts.paths.gh.clone().filter(|_| facts.gh_ready()),
-            git: self.git_program(),
-            env: self.inner.env.clone(),
-        };
-        let repo = tokio::task::spawn_blocking(move || make.run())
-            .await
-            .map_err(|e| HeldError::Failed(format!("adding the project stopped: {e}")))?
-            .map_err(HeldError::Failed)?;
-
-        let delivery = default_delivery(repo.github_remote.as_deref(), repo.has_remote);
-        self.register(NewProject {
-            name: p.name.clone(),
-            path: repo.root.clone(),
-            origin,
-            default_branch: repo.default_branch.clone(),
-            github_remote: repo.github_remote.clone(),
-            delivery,
-            merge_method: DEFAULT_MERGE_METHOD,
-            at: self.inner.clock.now(),
-        })
-        .await?;
-        let verb = match origin {
-            ProjectOrigin::Cloned => "Cloned",
-            ProjectOrigin::Created => "Created",
-            _ => "Linked",
-        };
-        Ok(format!(
-            "{verb} {} at {}: {} from {}.",
-            p.name,
-            tilde(&repo.root, home.as_deref()),
-            delivery_words(delivery),
-            repo.default_branch
-        ))
-    }
-
-    /// Writes the project's row and its `project.added` event.
-    async fn register(&self, new: NewProject) -> Result<ProjectId, StoreError> {
-        let summary = format!("project {} added ({})", new.name, new.origin);
-        // The task numbers its branches already name are reserved before any task can take one.
-        // A folder project has no task branches, and its folder may not be a repository.
-        let checkouts = match new.delivery {
-            DeliveryMode::Folder => Vec::new(),
-            _ => vec![new.path.clone()],
-        };
-        let git = Git::with_program(self.git_program());
-        let leftovers = tokio::task::spawn_blocking(move || {
-            crate::tasks::startup::branch_task_numbers(&git, &checkouts)
-        })
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()));
-        self.inner
-            .db
-            .call(move |conn| {
-                crate::tasks::startup::reserve_scan(leftovers);
-                let tx = conn.transaction()?;
-                let id = projects::insert(&tx, &new)?;
-                events::insert(
-                    &tx,
-                    &NewEvent {
-                        kind: event_kind::ADDED,
-                        agent: None,
-                        task: None,
-                        turn: None,
-                        summary: &summary,
-                        payload: serde_json::json!({
-                            "project": id,
-                            "name": new.name,
-                            "origin": new.origin.as_str(),
-                        }),
-                        at: new.at,
-                    },
-                )?;
-                tx.commit()?;
-                Ok(id)
-            })
-            .await
     }
 
     /// The project not removed named `name` (any case), or a refusal listing the registered ones.
@@ -1082,126 +656,6 @@ impl ProjectService {
         })
     }
 
-    /// `remove_project`: unregisters it; its folder is never touched.
-    pub async fn remove(&self, caller: &Caller, name: &str) -> Result<Ack, ToolFailure> {
-        let project = self.named(name).await?;
-        if project.origin == ProjectOrigin::Workspace {
-            return Err(refused(
-                "the personal workspace is built in and can't be removed",
-            ));
-        }
-        let id = project.id;
-        let agent = caller.agent;
-        let turn = caller.turn.map(|t| t.turn);
-        let at = self.inner.clock.now();
-        let summary = format!("project {} removed", project.name);
-        let outcome = self
-            .inner
-            .db
-            .call(move |conn| {
-                let tx = conn.transaction()?;
-                let open = projects::open_tasks(&tx, id)?;
-                if !open.is_empty() {
-                    let list: Vec<String> = open.iter().map(ToString::to_string).collect();
-                    return Ok(Err(list));
-                }
-                if projects::mark_removed(&tx, id, at)? {
-                    events::insert(
-                        &tx,
-                        &NewEvent {
-                            kind: event_kind::REMOVED,
-                            agent: Some(agent),
-                            task: None,
-                            turn,
-                            summary: &summary,
-                            payload: serde_json::json!({ "project": id }),
-                            at,
-                        },
-                    )?;
-                }
-                tx.commit()?;
-                Ok(Ok(()))
-            })
-            .await
-            .map_err(|e| failed(&e))?;
-        if let Err(open) = outcome {
-            return Err(refused(format!(
-                "{} still has open tasks ({}); stop or close them first",
-                project.name,
-                open.join(", ")
-            )));
-        }
-        Ok(Ack {
-            note: format!(
-                "Removed {} from the project list. Its folder at {} is untouched.",
-                project.name,
-                self.tilde(&project.path)
-            ),
-        })
-    }
-
-    /// Registers the personal workspace once, as `personal`, in folder mode: its folder is the one
-    /// `[workspace] folder` names, else `<data dir>/workspace`, which is made here. The folder
-    /// isn't checked: a task that starts while it's missing fails and says so. Git never runs here.
-    pub async fn ensure_workspace(&self) -> Result<Option<ProjectId>, HeldError> {
-        let config = self.inner.config.borrow().clone();
-        let folder = workspace_folder(&config, &self.inner.data_dir, self.home().as_deref());
-        if folder == self.inner.data_dir.workspace() {
-            let dir = folder.clone();
-            tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir))
-                .await
-                .map_err(|e| HeldError::Failed(format!("setting up the workspace stopped: {e}")))?
-                .map_err(|e| {
-                    HeldError::Failed(format!(
-                        "the personal workspace folder couldn't be made: {e}"
-                    ))
-                })?;
-        }
-        let at = self.inner.clock.now();
-        let id = self
-            .inner
-            .db
-            .call(move |conn| {
-                let tx = conn.transaction()?;
-                if let Some(existing) = projects::workspace(&tx)? {
-                    // Settings moved the folder while the app was off: follow it, if nothing is open.
-                    if existing.path != folder {
-                        if projects::open_tasks(&tx, existing.id)?.is_empty() {
-                            projects::set_path(&tx, existing.id, &folder)?;
-                        } else {
-                            tracing::warn!("the personal folder differs from settings; personal tasks are open, so it stays");
-                        }
-                    }
-                    tx.commit()?;
-                    return Ok(existing.id);
-                }
-                let taken = projects::active_by_name(&tx, WORKSPACE_NAME)?.is_some();
-                let name = if taken {
-                    format!("{WORKSPACE_NAME}-workspace")
-                } else {
-                    WORKSPACE_NAME.to_owned()
-                };
-                let id = projects::insert(
-                    &tx,
-                    &NewProject {
-                        name,
-                        path: folder,
-                        origin: ProjectOrigin::Workspace,
-                        // A plain folder has no branches: nothing names a default one.
-                        default_branch: String::new(),
-                        github_remote: None,
-                        delivery: DeliveryMode::Folder,
-                        merge_method: DEFAULT_MERGE_METHOD,
-                        at,
-                    },
-                )?;
-                tx.commit()?;
-                Ok(id)
-            })
-            .await?;
-        Ok(Some(id))
-    }
-
     /// Your `SetProjectAutonomy`: the one way autonomy changes. No tool reaches this; it comes
     /// only from the UI. Returns whether anything changed.
     pub async fn set_autonomy(&self, name: &str, autonomy: Autonomy) -> Result<bool, StoreError> {
@@ -1267,16 +721,16 @@ fn check_change(
     let mut said: Vec<String> = Vec::new();
     let effective = args.delivery.unwrap_or(project.delivery);
     if let Some(delivery) = args.delivery {
-        if project.origin == ProjectOrigin::Workspace && delivery != DeliveryMode::Folder {
-            return Err(refused(
-                "the personal workspace is a plain folder: its changes go straight into it, with \
-                 no branches or remote",
-            ));
-        }
-        if delivery == DeliveryMode::Folder && project.origin != ProjectOrigin::Workspace {
+        if project.delivery == DeliveryMode::Folder && delivery != DeliveryMode::Folder {
             return Err(refused(format!(
-                "{} is a git project, so it delivers through branches or pull requests; only the \
-                 personal workspace is a plain folder",
+                "{} is a plain folder: its changes go straight into it, with no branches or remote",
+                project.name
+            )));
+        }
+        if delivery == DeliveryMode::Folder && project.delivery != DeliveryMode::Folder {
+            return Err(refused(format!(
+                "{} is a git project, so it delivers through branches or pull requests; for work \
+                 straight in its checkout, start a task in place when the user asks for it",
                 project.name
             )));
         }
@@ -1286,10 +740,7 @@ fn check_change(
                 project.name
             )));
         }
-        if delivery == DeliveryMode::BranchOnly
-            && project.origin != ProjectOrigin::Workspace
-            && remotes.is_empty()
-        {
+        if delivery == DeliveryMode::BranchOnly && remotes.is_empty() {
             return Err(refused(format!(
                 "{} has no remote to push a branch to, so it can't be branch-only",
                 project.name
@@ -1337,179 +788,18 @@ fn check_change(
     Ok(said)
 }
 
-/// Carries out an approved `add_project` held action exactly as stored.
-#[derive(Debug)]
-pub struct AddProjectPerformer {
-    projects: ProjectService,
-}
-
-impl AddProjectPerformer {
-    pub fn new(projects: ProjectService) -> Self {
-        Self { projects }
-    }
-}
-
-impl HeldPerformer for AddProjectPerformer {
-    fn perform<'a>(
-        &'a self,
-        held: &'a LoadedHeld,
-        answer: &'a HeldAnswer,
-    ) -> BoxFuture<'a, Result<HeldOutcome, HeldError>> {
-        Box::pin(async move {
-            let HeldPayload::AddProject(payload) = &held.payload else {
-                return Err(HeldError::Failed(
-                    "this card isn't a project proposal".to_owned(),
-                ));
-            };
-            if *answer != HeldAnswer::Approve {
-                return Err(Refusal::new("a project proposal takes Approve or Reject").into());
-            }
-            let note = self.projects.add(payload).await?;
-            Ok(HeldOutcome::new(note))
-        })
-    }
-
-    fn card(&self, held: &LoadedHeld) -> HeldCard {
-        let HeldPayload::AddProject(p) = &held.payload else {
-            return HeldCard::default();
-        };
-        let text = |s: String| Styled::new(s, Tone::Text);
-        let dim = |s: &str| Styled::new(s, Tone::Dim);
-        let home = self.projects.home();
-        let place = |dir: &Option<String>| {
-            dir.as_deref()
-                .map(|d| tilde(&Path::new(d).join(&p.name), home.as_deref()))
-                .unwrap_or_default()
-        };
-        let (note, lines) = match p.action {
-            ProjectAction::Link => (
-                "· link",
-                vec![
-                    CardLine::new(
-                        2,
-                        vec![
-                            dim("Link "),
-                            text(tilde(
-                                Path::new(p.path.as_deref().unwrap_or_default()),
-                                home.as_deref(),
-                            )),
-                        ],
-                    ),
-                    CardLine::new(2, vec![dim("Nothing is moved or copied.")]),
-                ],
-            ),
-            ProjectAction::Clone => (
-                "· clone",
-                vec![
-                    CardLine::new(
-                        2,
-                        vec![dim("Clone "), text(p.url.clone().unwrap_or_default())],
-                    ),
-                    CardLine::new(2, vec![dim("into "), text(place(&p.location))]),
-                ],
-            ),
-            ProjectAction::Create => (
-                "· create",
-                vec![CardLine::new(
-                    2,
-                    vec![dim("Create a new repository at "), text(place(&p.location))],
-                )],
-            ),
-        };
-        // A clone's or a new project's folder can be changed before anything is created.
-        let buttons = p
-            .location
-            .as_deref()
-            .filter(|_| p.action != ProjectAction::Link)
-            .map(|location| {
-                CardButton::new(
-                    "Change location",
-                    'c',
-                    CardAction::ChangeLocation {
-                        location: tilde(Path::new(location), home.as_deref()),
-                    },
-                )
-            })
-            .into_iter()
-            .collect();
-        HeldCard {
-            note: Some(note.to_owned()),
-            lines,
-            buttons,
-        }
-    }
-}
-
-impl ProjectService {
-    /// Your folder for a pending clone or new project: checked like a proposal's location, then
-    /// written into the held action's stored payload, which is what Approve then performs.
-    pub async fn change_location(
-        &self,
-        held: &HeldService,
-        id: HeldActionId,
-        location: &str,
-    ) -> Result<(), HeldError> {
-        let row = self
-            .inner
-            .db
-            .call(move |conn| qm_store::held::load_held(conn, id))
-            .await?;
-        let HeldPayload::AddProject(before) = &row.payload else {
-            return Err(Refusal::new("only a project proposal has a location").into());
-        };
-        if before.action == ProjectAction::Link {
-            return Err(Refusal::new(
-                "a linked project stays where it is; its folder can't change",
-            )
-            .into());
-        }
-        let home = self.home();
-        let folder = expand(location, home.as_deref());
-        if !folder.is_absolute() {
-            return Err(Refusal::new(format!(
-                "the location must be a full path such as ~/Developer, not {location:?}"
-            ))
-            .into());
-        }
-        let dest = folder.join(&before.name);
-        if dest.exists() {
-            return Err(Refusal::new(format!(
-                "{} already exists; pick another location",
-                self.tilde(&dest)
-            ))
-            .into());
-        }
-        let mut after = before.clone();
-        after.location = Some(folder.display().to_string());
-        let summary = format!(
-            "you changed where {} goes to {}",
-            before.name,
-            self.tilde(&dest)
-        );
-        held.amend(
-            id,
-            HeldPayload::AddProject(before.clone()),
-            HeldPayload::AddProject(after),
-            summary,
-        )
-        .await
-    }
-}
-
 /// The API's end of the registry: the projects pane.
 #[derive(Debug)]
 pub struct ProjectsPart {
     projects: ProjectService,
-    held: HeldService,
     /// The tasks, told when autonomy changes so open plans follow it.
     tasks: Option<crate::tasks::TaskService>,
 }
 
 impl ProjectsPart {
-    pub fn new(projects: ProjectService, held: HeldService) -> Self {
+    pub fn new(projects: ProjectService) -> Self {
         Self {
             projects,
-            held,
             tasks: None,
         }
     }
@@ -1519,18 +809,6 @@ impl ProjectsPart {
     pub fn with_tasks(mut self, tasks: crate::tasks::TaskService) -> Self {
         self.tasks = Some(tasks);
         self
-    }
-
-    /// Registers the personal workspace in the background, then asks for a fresh snapshot.
-    pub fn start(&self, conversation: Arc<Conversation>) {
-        let projects = self.projects.clone();
-        tokio::spawn(async move {
-            match projects.ensure_workspace().await {
-                Ok(Some(_)) => conversation.changed(),
-                Ok(None) => {}
-                Err(e) => tracing::error!(error = %e, "couldn't set up the personal workspace"),
-            }
-        });
     }
 }
 
@@ -1553,23 +831,7 @@ impl ApiPart for ProjectsPart {
                 }
             }));
         }
-        let qm_types::api::Command::ChangeHeldLocation { held, location } = command else {
-            return None;
-        };
-        Some(Box::pin(async move {
-            match self
-                .projects
-                .change_location(&self.held, *held, location)
-                .await
-            {
-                Ok(()) => {}
-                Err(HeldError::Store(e)) => {
-                    tracing::error!(error = %e, %held, "couldn't change the proposal's location");
-                }
-                Err(e) => self.held.show_failure(*held, e.to_string()),
-            }
-            Handled::Changed
-        }))
+        None
     }
 
     fn fill<'a>(&'a self, snapshot: &'a mut Snapshot) -> BoxFuture<'a, ()> {

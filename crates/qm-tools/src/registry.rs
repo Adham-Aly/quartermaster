@@ -35,9 +35,8 @@ pub static TOOLS: &[ToolDef] = &[
     ToolDef::of::<defs::ParentReportTool>(),
     // Projects.
     ToolDef::of::<defs::FindProjectFolderTool>(),
-    ToolDef::of::<defs::ProposeProjectTool>(),
+    ToolDef::of::<defs::CloneRepositoryTool>(),
     ToolDef::of::<defs::ConfigureProjectTool>(),
-    ToolDef::of::<defs::RemoveProjectTool>(),
     // Standing instructions and schedules.
     ToolDef::of::<defs::SaveInstructionTool>(),
     ToolDef::of::<defs::DropInstructionTool>(),

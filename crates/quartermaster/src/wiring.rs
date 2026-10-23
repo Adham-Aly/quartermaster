@@ -43,7 +43,7 @@ use qm_core::inbox::{Inbox, SeatSink, WakeSink};
 use qm_core::notifications::{DesktopNotifier, NotificationsPart};
 use qm_core::parent_channel::ParentChannel;
 use qm_core::processes::StoreRecorder;
-use qm_core::projects::{AddProjectPerformer, ProjectDeps, ProjectService, ProjectsPart};
+use qm_core::projects::{ProjectDeps, ProjectService, ProjectsPart};
 use qm_core::reconcile::ReconcileService;
 use qm_core::routing::{self, Engines, ModelCatalog};
 use qm_core::scheduler::Scheduler;
@@ -576,7 +576,6 @@ fn settings_parts(
             db: db.clone(),
             clock: Arc::clone(clock),
             data_dir: dir.clone(),
-            home: std::env::var_os("HOME").map(PathBuf::from),
             config: base.config,
             tokens,
             engines: base.engines,
@@ -1017,10 +1016,6 @@ fn registry_parts(
     decisions: Option<&DecisionService>,
     tasks: Option<&TaskService>,
 ) -> Vec<Arc<dyn ApiPart>> {
-    held.register(
-        HeldKind::AddProject,
-        Arc::new(AddProjectPerformer::new(projects.clone())),
-    );
     // Merges, pushes and GitHub writes, with their cards.
     if let Some(delivery_settling) = settling {
         let merges = Arc::new(MergePerformer::new(delivery_settling.settling.clone()));
@@ -1052,11 +1047,10 @@ fn registry_parts(
     }
     let setup_part = SetupPart::new(setup, Arc::clone(conversation));
     setup_part.start();
-    let mut projects_part = ProjectsPart::new(projects, held.clone());
+    let mut projects_part = ProjectsPart::new(projects);
     if let Some(tasks) = tasks {
         projects_part = projects_part.with_tasks(tasks.clone());
     }
-    projects_part.start(Arc::clone(conversation));
     let mut parts: Vec<Arc<dyn ApiPart>> = vec![
         Arc::new(HeldPart::new(held.clone(), Arc::clone(conversation))),
         Arc::new(projects_part),

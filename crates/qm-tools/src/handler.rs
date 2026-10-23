@@ -305,15 +305,15 @@ pub trait ToolHost: Send + Sync {
         Box::pin(async { Err(ToolFailure::not_available("find_project_folder")) })
     }
 
-    /// `propose_project`: stores the proposal as a held action with its location filled in, for you
-    /// to approve; nothing is linked, cloned or created before that.
-    fn propose_project<'a>(
+    /// `clone_repository`: clones a repository and returns its folder; nothing is registered.
+    fn clone_repository<'a>(
         &'a self,
         caller: &'a Caller,
-        proposal: &'a crate::defs::ProposeProjectArgs,
-    ) -> BoxFuture<'a, Result<crate::defs::Held, ToolFailure>> {
-        let _ = (caller, proposal);
-        Box::pin(async { Err(ToolFailure::not_available("propose_project")) })
+        url: &'a str,
+        location: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
+        let _ = (caller, url, location);
+        Box::pin(async { Err(ToolFailure::not_available("clone_repository")) })
     }
 
     /// `configure_project`: changes a registered project's settings; autonomy and the verification
@@ -325,16 +325,6 @@ pub trait ToolHost: Send + Sync {
     ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
         let _ = (caller, change);
         Box::pin(async { Err(ToolFailure::not_available("configure_project")) })
-    }
-
-    /// `remove_project`: unregisters a project; its files are never touched.
-    fn remove_project<'a>(
-        &'a self,
-        caller: &'a Caller,
-        project: &'a str,
-    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
-        let _ = (caller, project);
-        Box::pin(async { Err(ToolFailure::not_available("remove_project")) })
     }
 
     /// `pr_open`: pushes the caller's branch and opens or updates its pull request, after the gate,
