@@ -444,8 +444,9 @@ fn conversation() -> Vec<ChatLine> {
 }
 
 /// The chat sample (the reply, the app's `✓ Steered: T-0042`, the
-/// Quartermaster's `✓ Noted for next time`, your 14:20 message with the notice), then a question
-/// card and a message of yours queued behind the turn that asked it.
+/// Quartermaster's `✓ Noted for next time`, your 14:20 message with the notice), a plan reply
+/// sent from its page as one line, then a question card and a message of yours queued behind the
+/// turn that asked it.
 #[doc(hidden)]
 pub fn chat() -> Snapshot {
     let mut out = snapshot();
@@ -497,6 +498,15 @@ fn chat_conversation() -> Vec<ChatLine> {
     ];
     nothing.card = Some(notice);
 
+    let sent = ChatLine::new(
+        MessageId::new(9),
+        MessageSource::App,
+        MessageKind::Message,
+        at(14, 22),
+        "Plan reply sent from the page · T-0039 round 1 · 4 of 4 answered",
+    )
+    .with_one_line();
+
     let mut question = ChatLine::new(
         MessageId::new(6),
         MessageSource::Agent,
@@ -529,7 +539,7 @@ fn chat_conversation() -> Vec<ChatLine> {
     queued.queued = true;
 
     vec![
-        asked, reply, steered, noted, nothing, question, plan, queued,
+        asked, reply, steered, noted, nothing, sent, question, plan, queued,
     ]
 }
 
@@ -550,8 +560,8 @@ fn plan_line() -> ChatLine {
         CardLine::new(
             2,
             vec![s(
-                "3 questions open. Open the page, answer, then Copy reply on the page and paste \
-                 it here.",
+                "3 questions open. Open the page, answer, then Send to Quartermaster (or Copy \
+                 reply and paste it here).",
                 Tone::Text,
             )],
         ),
