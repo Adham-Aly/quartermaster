@@ -269,8 +269,8 @@ impl VerificationService {
         }
         if facts.validation_pending && !body_complete {
             return Ok(Err(Refusal::new(
-                "the verification level was raised: do the standard validation and put it in the \
-                 PR body (Intent, What changed, Verified, Risk and Not done) before pushing",
+                "the verification level was raised: do the standard validation and say how you \
+                 tested it (under Testing in the PR body, or in a complete report) before pushing",
             )));
         }
         if !rules_apply(&row) {

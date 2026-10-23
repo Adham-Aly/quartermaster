@@ -20,7 +20,8 @@ pub trait VerificationPort: Send + Sync + fmt::Debug {
 
     /// `pr_open` and a branch-only push, before pushing: the declared-diagnosis rule and the
     /// raised-level rule, checked only (nothing changes until the push is recorded).
-    /// `body_complete`: the PR body (or the done report) has the five headings.
+    /// `body_complete`: the PR body has a Summary and a non-blank Testing section (or, for a
+    /// branch-only push, the done report has the five headings).
     fn before_push(
         &self,
         conn: &Connection,

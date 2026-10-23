@@ -236,3 +236,30 @@ fn without_the_remote_ref_the_local_default_branch_is_used() {
         "{missing}"
     );
 }
+
+#[test]
+fn an_ordinary_pr_body_has_a_summary_and_a_testing_section() {
+    use super::missing_body_headings;
+    let body = "## Summary\nRetries slow uploads.\n\n## Testing\n`cargo test -p upload` passes.\n";
+    let none: Vec<&str> = Vec::new();
+    assert_eq!(missing_body_headings(body), none);
+    // Bold and inline headings count; case doesn't matter.
+    assert_eq!(
+        missing_body_headings("**Summary**: retries.\n**testing**: cargo test\n"),
+        none
+    );
+    assert_eq!(
+        missing_body_headings("## Summary\nRetries slow uploads.\n"),
+        vec!["Testing"]
+    );
+    // A blank Testing section says nothing about how the change was tested.
+    assert_eq!(
+        missing_body_headings("## Summary\nRetries.\n## Testing\n\n"),
+        vec!["Testing"]
+    );
+    // The old internal headings are no longer what a pull request needs.
+    assert_eq!(
+        missing_body_headings("## Intent\nx\n## Verified\ny\n"),
+        vec!["Summary", "Testing"]
+    );
+}
