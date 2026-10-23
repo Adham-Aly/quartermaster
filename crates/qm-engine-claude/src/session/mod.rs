@@ -989,7 +989,8 @@ impl Session {
                 .to_owned(),
         };
         self.context.window = None;
-        let reading = self.reading(self.last_tokens, ContextBasis::LastCall, false);
+        // Measured on the previous model, so an estimate until the next call.
+        let reading = self.reading(self.last_tokens, ContextBasis::LastCall, true);
         self.send(EngineEvent::ContextObserved { reading }).await;
     }
 
@@ -1139,6 +1140,19 @@ impl Session {
         if let Some(line) = last_line(&stderr) {
             message.push_str(": ");
             message.push_str(line);
+        }
+        if self.compacting {
+            // Passive: the compaction claude was running ended with the process.
+            self.compacting = false;
+            let automatic = !self
+                .turn
+                .as_ref()
+                .is_some_and(|t| t.kind == TurnKind::Compact);
+            self.send(EngineEvent::CompactionFailed {
+                automatic,
+                message: message.clone(),
+            })
+            .await;
         }
         for event in self.jobs.finish_all() {
             self.send(event).await;

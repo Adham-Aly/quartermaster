@@ -390,6 +390,9 @@ pub struct TokenUse {
     pub thinking: u64,
     /// The summed cost of the turns whose engine reported one; `None` if none did.
     pub cost_usd: Option<f64>,
+    /// The crewmate's conversation was compacted or cleared, which forgets the turns before it,
+    /// so the sums above leave those out.
+    pub forgotten: bool,
 }
 
 /// A crewmate's agent row, as the task pane shows it.
@@ -705,6 +708,16 @@ pub fn token_use(conn: &Connection, task: TaskId) -> Result<TokenUse, StoreError
             ))
         },
     )?;
+    let forgotten: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM events AS e JOIN agents AS a ON a.id = e.agent_id
+                        WHERE a.task_id = ?1 AND a.role = 'crewmate' AND e.kind IN (?2, ?3))",
+        params![
+            task,
+            crate::turns::kind::COMPACTED,
+            crate::turns::kind::CLEARED
+        ],
+        |r| r.get(0),
+    )?;
     let count = |column: &'static str, n: i64| {
         u64::try_from(n).map_err(|_| StoreError::Invalid {
             column,
@@ -720,6 +733,7 @@ pub fn token_use(conn: &Connection, task: TaskId) -> Result<TokenUse, StoreError
         cache_write: count("turns.cache_write_tokens", write)?,
         thinking: count("turns.thinking_tokens", thinking)?,
         cost_usd: (costed > 0).then_some(cost),
+        forgotten,
     })
 }
 

@@ -253,6 +253,11 @@ fn detail(
         let mut value = text(tokens_words(&task.tokens));
         if started.is_some_and(|started| task.created_at < started) {
             value.push(Styled::new(" · partial: since the app started", Tone::Dim));
+        } else if task.tokens.forgotten {
+            value.push(Styled::new(
+                " · partial: since the last compaction",
+                Tone::Dim,
+            ));
         }
         d.rows.push(TaskRow::new(Some("tokens"), value));
     }
