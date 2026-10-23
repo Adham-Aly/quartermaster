@@ -1037,7 +1037,12 @@ fn actions(conversation: &[ChatLine]) -> Vec<ActionItem> {
             // The core titles a held item with its task's title.
             let title = card.lines.first().map_or_else(
                 || card.heading.clone(),
-                |line| line.spans.iter().map(|s| s.text.as_str()).collect::<String>(),
+                |line| {
+                    line.spans
+                        .iter()
+                        .map(|s| s.text.as_str())
+                        .collect::<String>()
+                },
             );
             let title = title.trim().to_owned();
             Some(
