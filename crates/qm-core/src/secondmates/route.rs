@@ -124,6 +124,7 @@ impl SecondmateService {
                     kind: s.kind,
                     model: s.model.clone(),
                     effort: s.effort,
+                    premium: s.premium,
                 })
                 .collect(),
         };

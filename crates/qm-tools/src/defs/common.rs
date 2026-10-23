@@ -5,9 +5,9 @@ use qm_types::ids::{HeldActionId, MessageId, ModelId, TaskId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-// A model or effort you named for a later step of a workflow, recorded on your turn and applied by
-// the app when a later task of that kind builds on this one. (Argument types use `//` comments: a
-// doc comment would become a nested schema description.)
+// A model, effort or premium you named for a later step of a workflow, recorded on your turn and
+// applied by the app when a later task of that kind builds on this one. (Argument types use `//`
+// comments: a doc comment would become a nested schema description.)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LaterStep {
@@ -16,6 +16,9 @@ pub struct LaterStep {
     pub model: Option<ModelId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
+    // Premium for this step, only when you asked for it on later steps.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub premium: bool,
 }
 
 // A limit the work must respect, shown in the brief; `freeze` lists paths the crewmate must not

@@ -1,7 +1,7 @@
 //! The Model levels tab: a board of tiers. Each row is a tier entry: a model plus an effort level,
 //! so one model can sit in several tiers, and in one tier more than once at different efforts.
 //! Drag an entry between tiers or select it and press `m`; its effort offers only the levels that
-//! model supports. An empty tier says where its work goes, or that Premium requests wait.
+//! model supports. An empty tier says where its work goes.
 
 use super::model::{
     BOARD, Model, Settings, effort_label, fallback_tier, model_tier_default, tier_heading,
@@ -154,11 +154,8 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     }
 }
 
-/// The hint beneath an empty tier; Premium never falls back to another tier.
+/// The hint beneath an empty tier: where its work runs instead.
 fn empty_note(settings: &Settings, tier: Tier) -> String {
-    if tier == Tier::Premium {
-        return String::from("empty · premium requests wait");
-    }
     match fallback_tier(settings, tier) {
         Some(to) => format!(
             "empty · {} runs on {}",
@@ -280,7 +277,7 @@ mod tests {
     use qm_types::ids::ModelId;
 
     #[test]
-    fn empty_premium_always_waits_including_with_only_high_configured() {
+    fn empty_premium_runs_on_the_highest_filled_tier() {
         // Every combination of non-Premium tiers, including none and High alone.
         for mask in 0u8..8 {
             let mut settings = Settings::default();
@@ -296,10 +293,22 @@ mod tests {
             if mask != 0 {
                 settings.models.push(model);
             }
-            assert_eq!(fallback_tier(&settings, Tier::Premium), None);
+            let expected = [Tier::High, Tier::Medium, Tier::Low]
+                .into_iter()
+                .enumerate()
+                .find(|(bit, _)| mask & (1 << bit) != 0)
+                .map(|(_, tier)| tier);
+            assert_eq!(
+                fallback_tier(&settings, Tier::Premium),
+                expected,
+                "mask {mask}"
+            );
             let note = empty_note(&settings, Tier::Premium);
-            assert_eq!(note, "empty · premium requests wait", "mask {mask}");
-            assert!(!note.contains("runs on"));
+            let want = match expected {
+                Some(t) => format!("empty · premium runs on {}", tier_label(t).to_lowercase()),
+                None => String::from("empty · no model in any tier yet"),
+            };
+            assert_eq!(note, want, "mask {mask}");
         }
     }
 }

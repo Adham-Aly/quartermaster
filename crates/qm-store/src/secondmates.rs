@@ -385,6 +385,8 @@ pub struct StoredLaterStep {
     pub model: Option<ModelId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub premium: bool,
 }
 
 /// The overrides a request carries, accepted on the routing turn (`secondmate_requests.overrides`).

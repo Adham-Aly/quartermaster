@@ -7,14 +7,23 @@
 //! 1. A model you named for this task in your own words: "If you named a model for this task in
 //!    your own words, that comes first. If the named model can't serve, the app falls back normally
 //!    and says so."
-//! 2. A `later_steps` entry recorded on your turn; "newer words of yours, or a stronger-model retry
-//!    you pick, take precedence".
+//! 2. A `later_steps` entry recorded on your turn. Your words for this task (a model, an effort or
+//!    premium) replace the entry altogether, and so does a stronger-model retry you pick.
 //! 3. A stronger-model retry or premium, which you asked for: "Premium sits above high and is
 //!    never picked automatically. It is used only when you explicitly ask for it, or when you
 //!    choose 'try again with a stronger model'".
 //! 4. The "always use" pin: "'Always use' stays as a setting on the pool, with its fallback model
 //!    and a notice while it's on."
 //! 5. The rule table's tier, with fallbacks and ranking.
+//!
+//! # Premium
+//!
+//! Premium is asked for in one of four ways: the `premium` flag, naming a model placed in premium
+//! (for this task or in its `later_steps` entry), an entry with `premium` set, or a stronger-model
+//! retry whose target is premium. All four take one path: the named premium model if there is one,
+//! then every premium model, ranked as usual, then high → medium → low ([`fallback::order`]). The
+//! pin and the rule table never come first. When premium runs on another tier, the routing line
+//! names each premium model that couldn't serve and why, and the record has the fallback step.
 //!
 //! A `Decider` failure routes high: "if the call fails, times out or can't decide, the task routes
 //! high. It never blocks a task".
@@ -31,7 +40,7 @@ use crate::record::{
 use crate::rules::RuleTable;
 use qm_types::config::{AlwaysUse, TierEfforts};
 use qm_types::domain::{Effort, TaskKind, Tier};
-use qm_types::ids::AccountId;
+use qm_types::ids::{AccountId, ModelId};
 
 /// "Skipped when the outcome is already decided: you named a model, you asked for premium, or the
 /// task is a stronger-model retry. It runs at most once per task".
@@ -62,6 +71,10 @@ pub struct RouteRequest<'a> {
     pub always_use: Option<&'a AlwaysUse>,
     pub preferred_account: Option<AccountId>,
     pub tiers: &'a TierEfforts,
+    /// Every model placed in premium, whether or not it can serve now (an account whose login
+    /// stopped working is left out of the pool, but naming its premium model still asks for
+    /// premium). Models placed in premium in `Pool::placed` count too.
+    pub premium_models: &'a [ModelId],
 }
 
 /// The pool routing picks from.
@@ -131,6 +144,10 @@ struct Router<'r, 'a> {
     rule_tier: Tier,
     retry_target: Option<Tier>,
     later_step: Option<AppliedLaterStep>,
+    /// You asked for premium, in any of the four ways (module docs).
+    premium_asked: bool,
+    /// The premium model you named couldn't serve, so other premium models are tried.
+    named_premium_failed: Option<ModelId>,
     tier_landed: Tier,
     skipped: Vec<SkippedModel>,
     fallbacks: Vec<FallbackStep>,
@@ -140,19 +157,29 @@ struct Router<'r, 'a> {
 impl<'r, 'a> Router<'r, 'a> {
     fn new(req: &'r RouteRequest<'a>, pool: Pool<'r>, kind: TaskKind, rule_tier: Tier) -> Self {
         let retry_target = if req.user.stronger_retry {
-            // A retry with no computed target can't climb; it waits at the strongest tier.
+            // A retry with no computed target can't climb; it goes to the strongest tier.
             Some(req.stronger_retry_target.unwrap_or(Tier::Premium))
         } else {
             None
         };
-        let later_step = if retry_target.is_some() {
+        // Your words for this task replace a later step's entry altogether.
+        let named_now = req.user.model.is_some() || req.user.effort.is_some() || req.user.premium;
+        let later_step = if retry_target.is_some() || named_now {
             None
         } else {
             req.later_step.clone()
         };
+        let named = req
+            .user
+            .model
+            .as_ref()
+            .or_else(|| later_step.as_ref().and_then(|l| l.model.as_ref()));
+        let premium_asked = req.user.premium
+            || later_step.as_ref().is_some_and(|l| l.premium)
+            || named.is_some_and(|m| is_premium_model(req, pool, m));
         let tier_landed = match retry_target {
             Some(t) => t,
-            None if req.user.premium => Tier::Premium,
+            None if premium_asked => Tier::Premium,
             None => rule_tier,
         };
         let mut notes = Vec::new();
@@ -166,6 +193,8 @@ impl<'r, 'a> Router<'r, 'a> {
             rule_tier,
             retry_target,
             later_step,
+            premium_asked: premium_asked && retry_target.is_none(),
+            named_premium_failed: None,
             tier_landed,
             skipped: Vec::new(),
             fallbacks: Vec::new(),
@@ -217,7 +246,9 @@ impl<'r, 'a> Router<'r, 'a> {
         }
     }
 
-    /// Steps 1–2: a model you named, in this task's words or a later step's.
+    /// Steps 1–2: a model you named, in this task's words or a later step's. A premium model
+    /// named for premium serves from its premium placement; if it can't serve, the other premium
+    /// models are tried next ([`Self::try_tiers`]), never the pin or the rule table.
     fn try_named(&mut self) -> Option<(RoutedChoice, String)> {
         let from_later = self.later_step.as_ref().map(|l| l.from);
         let (model, later_from) = match (&self.req.user.model, &self.later_step) {
@@ -225,12 +256,22 @@ impl<'r, 'a> Router<'r, 'a> {
             (None, Some(l)) => (l.model.clone()?, from_later),
             (None, None) => return None,
         };
+        let why = match later_from {
+            Some(t) => format!("You asked for this model for later steps in task {t}"),
+            None => "You asked for this model".to_owned(),
+        };
         let placed = self.pool.placed;
+        if self.premium_asked && is_premium_model(self.req, self.pool, &model) {
+            let premium = placed
+                .iter()
+                .filter(|c| c.model == model && c.tier == Tier::Premium);
+            if let Some(c) = self.pick_from(premium) {
+                return Some((self.choice(c, Tier::Premium, Tier::Premium), why));
+            }
+            self.named_premium_failed = Some(model);
+            return None;
+        }
         if let Some(c) = self.pick_from(placed.iter().filter(|c| c.model == model)) {
-            let why = match later_from {
-                Some(t) => format!("You asked for this model for later steps in task {t}"),
-                None => "You asked for this model".to_owned(),
-            };
             return Some((self.choice(c, c.tier, c.tier), why));
         }
         let note = if placed.iter().any(|c| c.model == model) {
@@ -244,7 +285,7 @@ impl<'r, 'a> Router<'r, 'a> {
 
     /// Step 4: the "always use" pin, unless you asked for premium or a stronger model.
     fn try_pin(&mut self) -> Option<(RoutedChoice, String)> {
-        if self.retry_target.is_some() || self.req.user.premium {
+        if self.retry_target.is_some() || self.premium_asked {
             return None;
         }
         let pin = self.req.always_use?;
@@ -276,12 +317,8 @@ impl<'r, 'a> Router<'r, 'a> {
     /// Steps 3 and 5: the tier, with fallbacks.
     fn try_tiers(&mut self) -> Option<(RoutedChoice, String)> {
         let landed = self.tier_landed;
-        let retry_tiers;
-        let order: &[Tier] = match self.retry_target {
-            Some(t) => {
-                retry_tiers = fallback::retry_order(t);
-                &retry_tiers
-            }
+        let order = match self.retry_target {
+            Some(t) => fallback::retry_order(t),
             None => fallback::order(landed),
         };
         let placed = self.pool.placed;
@@ -299,12 +336,25 @@ impl<'r, 'a> Router<'r, 'a> {
             };
             let mut why = if self.retry_target.is_some() {
                 "You chose to try a stronger model".to_owned()
-            } else if self.req.user.premium {
+            } else if self.premium_asked {
                 "You asked for premium".to_owned()
             } else {
                 rule_line(self.kind, self.req.builds_on.as_ref(), self.rule_tier)
             };
-            if tier != landed {
+            if landed == Tier::Premium {
+                if tier != landed {
+                    why = format!(
+                        "{why}. {}, so {}",
+                        self.premium_unavailable(),
+                        fallback::runs_on_line(landed, tier)
+                    );
+                } else if let Some(m) = &self.named_premium_failed {
+                    why = format!(
+                        "{why}. The model you named ({m}) couldn't serve, so another premium \
+                         model runs"
+                    );
+                }
+            } else if tier != landed {
                 why = format!(
                     "No {landed} model was available ({}). {why}",
                     fallback::runs_on_line(landed, tier)
@@ -317,15 +367,49 @@ impl<'r, 'a> Router<'r, 'a> {
         None
     }
 
+    /// Why no premium model served: each one skipped, with its reason, or that none is placed.
+    fn premium_unavailable(&self) -> String {
+        let mut reasons: Vec<String> = Vec::new();
+        for c in self.pool.placed.iter().filter(|c| c.tier == Tier::Premium) {
+            let Some(s) = self
+                .skipped
+                .iter()
+                .find(|s| s.model == c.model && s.account == c.account)
+            else {
+                continue;
+            };
+            let line = format!("{}: {}", s.model, s.reason);
+            if !reasons
+                .iter()
+                .any(|r| r.starts_with(&format!("{}: ", s.model)))
+            {
+                reasons.push(line);
+            }
+        }
+        if reasons.is_empty() {
+            "No model is placed in premium".to_owned()
+        } else {
+            format!("No premium model could serve ({})", reasons.join("; "))
+        }
+    }
+
     /// Waiting.
     fn waiting_line(&self) -> String {
         match self.retry_target {
-            Some(t) => fallback::retry_waiting_line(t),
-            None if self.tier_landed == Tier::Premium => fallback::PREMIUM_WAITS.to_owned(),
+            Some(t) if t != Tier::Premium => fallback::retry_waiting_line(t),
             // Every tier is empty or can't serve. The task waits until one can.
-            None => "No model in any tier can serve this task; it waits".to_owned(),
+            _ => "No model in any tier can serve this task; it waits".to_owned(),
         }
     }
+}
+
+/// The model is placed in premium (whether or not it can serve now).
+fn is_premium_model(req: &RouteRequest<'_>, pool: Pool<'_>, model: &ModelId) -> bool {
+    req.premium_models.contains(model)
+        || pool
+            .placed
+            .iter()
+            .any(|c| &c.model == model && c.tier == Tier::Premium)
 }
 
 /// Routes one task. Never fails: a decision either chose a model, account, effort and tier, or is
@@ -378,5 +462,545 @@ pub fn route(table: &RuleTable, req: &RouteRequest<'_>, pool: Pool<'_>) -> Routi
         skipped: router.skipped,
         fallbacks: router.fallbacks,
         why,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rank::Usage;
+    use qm_types::domain::AccountKind;
+    use qm_types::ids::TaskId;
+
+    const FABLE: &str = "claude-fable-5-1";
+    const GPT: &str = "gpt-6-pro";
+    const OPUS: &str = "claude-opus-5-5";
+    const SONNET: &str = "claude-sonnet-5-5";
+
+    fn id(m: &str) -> ModelId {
+        ModelId::new(m).unwrap()
+    }
+
+    /// One placement; each model gets its own account unless `account` says otherwise.
+    fn cand(model: &str, account: i64, tier: Tier) -> Candidate {
+        Candidate {
+            model: id(model),
+            family: model.to_owned(),
+            generation: 1,
+            account: AccountId::new(account),
+            account_kind: AccountKind::Subscription,
+            tier,
+            effort_override: None,
+            // Opus-like: no Max, so premium's Extra high is kept and a cap is visible elsewhere.
+            efforts: vec![Effort::Low, Effort::Medium, Effort::High, Effort::ExtraHigh],
+            image_input: true,
+            context_window: None,
+            usage: Usage::Unknown,
+            cut_off: false,
+        }
+    }
+
+    fn cut(mut c: Candidate) -> Candidate {
+        c.cut_off = true;
+        c
+    }
+
+    fn no_image(mut c: Candidate) -> Candidate {
+        c.image_input = false;
+        c
+    }
+
+    struct Ask {
+        user: UserChoices,
+        later_step: Option<AppliedLaterStep>,
+        retry: Option<Tier>,
+        needs_image: bool,
+        kind: TaskKind,
+        premium_models: Vec<ModelId>,
+    }
+
+    impl Ask {
+        fn new(kind: TaskKind) -> Self {
+            Self {
+                user: UserChoices::default(),
+                later_step: None,
+                retry: None,
+                needs_image: false,
+                kind,
+                premium_models: Vec::new(),
+            }
+        }
+        fn premium(mut self) -> Self {
+            self.user.premium = true;
+            self
+        }
+        fn model(mut self, m: &str) -> Self {
+            self.user.model = Some(id(m));
+            self
+        }
+        fn later(mut self, model: Option<&str>, premium: bool) -> Self {
+            self.later_step = Some(AppliedLaterStep {
+                from: TaskId::new(100).unwrap(),
+                message: None,
+                model: model.map(id),
+                effort: None,
+                premium,
+            });
+            self
+        }
+        fn retry(mut self, target: Tier) -> Self {
+            self.user.stronger_retry = true;
+            self.retry = Some(target);
+            self
+        }
+    }
+
+    fn run(ask: &Ask, placed: &[Candidate]) -> RoutingRecord {
+        let table = RuleTable::embedded().unwrap();
+        let tiers = TierEfforts::default();
+        let req = RouteRequest {
+            kind: Decided::Answer {
+                value: ask.kind,
+                by: DecidedBy::Declared,
+            },
+            decider: DecidedBy::Declared,
+            builds_on: None,
+            needs: Needs {
+                image_input: ask.needs_image,
+                context_tokens: None,
+            },
+            quick_verification: false,
+            user: ask.user.clone(),
+            stronger_retry_target: ask.retry,
+            later_step: ask.later_step.clone(),
+            always_use: None,
+            preferred_account: None,
+            tiers: &tiers,
+            premium_models: &ask.premium_models,
+        };
+        route(
+            &table,
+            &req,
+            Pool {
+                placed,
+                pinned: &[],
+            },
+        )
+    }
+
+    fn used(r: &RoutingRecord) -> Option<(Tier, String)> {
+        r.choice.as_ref().map(|c| (c.tier, c.model.to_string()))
+    }
+
+    /// The pool states the #59 guard runs over.
+    fn pool_states() -> Vec<(&'static str, Vec<Candidate>, bool)> {
+        let opus = cand(OPUS, 3, Tier::High);
+        let sonnet = cand(SONNET, 4, Tier::Medium);
+        vec![
+            (
+                "premium serves",
+                vec![
+                    cand(FABLE, 1, Tier::Premium),
+                    cand(GPT, 2, Tier::Premium),
+                    opus.clone(),
+                    sonnet.clone(),
+                ],
+                false,
+            ),
+            (
+                "one premium cut off, another free",
+                vec![
+                    cut(cand(FABLE, 1, Tier::Premium)),
+                    cand(GPT, 2, Tier::Premium),
+                    opus.clone(),
+                    sonnet.clone(),
+                ],
+                false,
+            ),
+            (
+                "every premium cut off",
+                vec![
+                    cut(cand(FABLE, 1, Tier::Premium)),
+                    cut(cand(GPT, 2, Tier::Premium)),
+                    opus.clone(),
+                    sonnet.clone(),
+                ],
+                false,
+            ),
+            ("premium empty", vec![opus.clone(), sonnet.clone()], false),
+            (
+                "premium lacks image input",
+                vec![
+                    no_image(cand(FABLE, 1, Tier::Premium)),
+                    no_image(cand(GPT, 2, Tier::Premium)),
+                    opus.clone(),
+                    sonnet.clone(),
+                ],
+                true,
+            ),
+            (
+                "every premium and high cut off",
+                vec![
+                    cut(cand(FABLE, 1, Tier::Premium)),
+                    cut(cand(GPT, 2, Tier::Premium)),
+                    cut(opus),
+                    sonnet,
+                ],
+                false,
+            ),
+        ]
+    }
+
+    /// Every way of asking for premium; `None` for the named model means none is named.
+    fn ways(kind: TaskKind) -> Vec<(&'static str, Ask, Option<&'static str>)> {
+        vec![
+            ("the premium flag", Ask::new(kind).premium(), None),
+            ("naming fable", Ask::new(kind).model(FABLE), Some(FABLE)),
+            ("naming gpt", Ask::new(kind).model(GPT), Some(GPT)),
+            (
+                "the flag and naming fable",
+                Ask::new(kind).premium().model(FABLE),
+                Some(FABLE),
+            ),
+            (
+                "a later step with premium",
+                Ask::new(kind).later(None, true),
+                None,
+            ),
+            (
+                "a later step naming fable",
+                Ask::new(kind).later(Some(FABLE), false),
+                Some(FABLE),
+            ),
+            (
+                "the flag over an older later step naming opus",
+                Ask::new(kind).premium().later(Some(OPUS), false),
+                None,
+            ),
+        ]
+    }
+
+    /// The #59 guard: whenever premium is asked for, a premium model runs if any can serve;
+    /// otherwise the first tier of high → medium → low that can, with the step recorded and the
+    /// premium models that couldn't serve named in the routing line.
+    #[test]
+    fn premium_runs_on_premium_whenever_any_premium_model_can_serve() {
+        for &kind in TaskKind::ALL {
+            for (state, placed, needs_image) in pool_states() {
+                for (way, mut ask, named) in ways(kind) {
+                    ask.needs_image = needs_image;
+                    let ctx = format!("{kind} · {state} · {way}");
+                    let serves = |c: &Candidate| skip_reason(c, ask_needs(&ask)).is_none();
+                    // A named model that isn't placed at all is refused before routing.
+                    if named.is_some_and(|m| !placed.iter().any(|c| c.model == id(m))) {
+                        continue;
+                    }
+                    let r = run(&ask, &placed);
+                    assert_eq!(r.tier_landed, Tier::Premium, "{ctx}");
+                    let premium_serving: Vec<&Candidate> = placed
+                        .iter()
+                        .filter(|c| c.tier == Tier::Premium && serves(c))
+                        .collect();
+                    let (tier, model) = used(&r).unwrap_or_else(|| panic!("{ctx}: waits"));
+                    if premium_serving.is_empty() {
+                        let expected = [Tier::High, Tier::Medium, Tier::Low]
+                            .into_iter()
+                            .find(|t| placed.iter().any(|c| c.tier == *t && serves(c)))
+                            .unwrap();
+                        assert_eq!(tier, expected, "{ctx}");
+                        assert_eq!(
+                            r.fallbacks.first(),
+                            Some(&FallbackStep {
+                                from: Tier::Premium,
+                                to: Tier::High
+                            }),
+                            "{ctx}"
+                        );
+                        assert!(
+                            r.why.contains(&format!("so premium runs on {expected}")),
+                            "{ctx}: {}",
+                            r.why
+                        );
+                        for c in placed.iter().filter(|c| c.tier == Tier::Premium) {
+                            let reason = skip_reason(c, ask_needs(&ask)).unwrap();
+                            assert!(
+                                r.why.contains(&format!("{}: {reason}", c.model)),
+                                "{ctx}: {}",
+                                r.why
+                            );
+                        }
+                        // Premium's effort, capped by the model that runs.
+                        assert_eq!(r.choice.unwrap().effort, Effort::ExtraHigh, "{ctx}");
+                    } else {
+                        assert_eq!(tier, Tier::Premium, "{ctx}: {}", r.why);
+                        assert!(r.fallbacks.is_empty(), "{ctx}");
+                        if let Some(m) = named
+                            && premium_serving.iter().any(|c| c.model == id(m))
+                        {
+                            assert_eq!(model, m, "{ctx}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn ask_needs(ask: &Ask) -> Needs {
+        Needs {
+            image_input: ask.needs_image,
+            context_tokens: None,
+        }
+    }
+
+    fn claude_pool(fable_cut: bool) -> Vec<Candidate> {
+        let fable = cand(FABLE, 1, Tier::Premium);
+        vec![
+            if fable_cut { cut(fable) } else { fable },
+            cand(OPUS, 1, Tier::High),
+        ]
+    }
+
+    #[test]
+    fn case_a_premium_flag_runs_on_premium() {
+        let r = run(&Ask::new(TaskKind::Build).premium(), &claude_pool(false));
+        assert_eq!(used(&r), Some((Tier::Premium, FABLE.to_owned())));
+        assert_eq!(r.why, "You asked for premium");
+    }
+
+    #[test]
+    fn case_b_premium_flag_with_premium_at_its_limit_runs_on_high_and_says_so() {
+        let r = run(&Ask::new(TaskKind::Build).premium(), &claude_pool(true));
+        assert_eq!(used(&r), Some((Tier::High, OPUS.to_owned())));
+        assert_eq!(
+            r.why,
+            "You asked for premium. No premium model could serve (claude-fable-5-1: its account \
+             is at its limit until it resets), so premium runs on high"
+        );
+        assert_eq!(
+            r.fallbacks,
+            vec![FallbackStep {
+                from: Tier::Premium,
+                to: Tier::High
+            }]
+        );
+    }
+
+    #[test]
+    fn case_c_premium_flag_with_premium_empty_runs_on_high_and_says_so() {
+        let r = run(
+            &Ask::new(TaskKind::Build).premium(),
+            &[cand(OPUS, 1, Tier::High)],
+        );
+        assert_eq!(used(&r), Some((Tier::High, OPUS.to_owned())));
+        assert_eq!(
+            r.why,
+            "You asked for premium. No model is placed in premium, so premium runs on high"
+        );
+    }
+
+    #[test]
+    fn case_d_named_premium_model_at_its_limit_tries_premium_then_high() {
+        // Alone in premium: high, with the step and the reason.
+        let r = run(&Ask::new(TaskKind::Build).model(FABLE), &claude_pool(true));
+        assert_eq!(r.tier_landed, Tier::Premium);
+        assert_eq!(used(&r), Some((Tier::High, OPUS.to_owned())));
+        assert!(r.why.contains("so premium runs on high"), "{}", r.why);
+        // With another premium model free: that one.
+        let mut placed = claude_pool(true);
+        placed.push(cand(GPT, 2, Tier::Premium));
+        let r = run(&Ask::new(TaskKind::Build).model(FABLE), &placed);
+        assert_eq!(used(&r), Some((Tier::Premium, GPT.to_owned())));
+        assert_eq!(
+            r.why,
+            "You asked for premium. The model you named (claude-fable-5-1) couldn't serve, so \
+             another premium model runs"
+        );
+    }
+
+    #[test]
+    fn case_e_named_model_in_no_tier_routes_normally_here_and_is_refused_in_the_core() {
+        let r = run(
+            &Ask::new(TaskKind::Build).model(FABLE),
+            &[cand(OPUS, 1, Tier::High)],
+        );
+        assert_eq!(r.tier_landed, Tier::High);
+        assert!(r.why.contains("isn't in any tier"), "{}", r.why);
+    }
+
+    #[test]
+    fn a_named_premium_model_whose_login_broke_still_asks_for_premium() {
+        // The core leaves an unusable account's pairs out of the pool but lists premium's models.
+        let mut ask = Ask::new(TaskKind::Build).model(FABLE);
+        ask.premium_models = vec![id(FABLE)];
+        let r = run(
+            &ask,
+            &[cand(GPT, 2, Tier::Premium), cand(OPUS, 3, Tier::High)],
+        );
+        assert_eq!(r.tier_landed, Tier::Premium);
+        assert_eq!(used(&r), Some((Tier::Premium, GPT.to_owned())));
+    }
+
+    #[test]
+    fn case_f_premium_on_this_turn_replaces_an_older_later_step() {
+        let ask = Ask::new(TaskKind::Build).premium().later(Some(OPUS), false);
+        let r = run(&ask, &claude_pool(false));
+        assert_eq!(used(&r), Some((Tier::Premium, FABLE.to_owned())));
+        assert_eq!(r.facts.later_step_from, None);
+        assert_eq!(r.why, "You asked for premium");
+    }
+
+    #[test]
+    fn this_turns_words_replace_the_whole_later_step() {
+        let mut placed = claude_pool(false);
+        placed.push(cand(SONNET, 1, Tier::Medium));
+        // An effort named now: the entry's model doesn't apply either.
+        let mut ask = Ask::new(TaskKind::Build).later(Some(SONNET), false);
+        ask.later_step.as_mut().unwrap().effort = Some(Effort::Low);
+        ask.user.effort = Some(Effort::High);
+        let r = run(&ask, &placed);
+        assert_eq!(used(&r), Some((Tier::High, OPUS.to_owned())));
+        assert_eq!(r.choice.unwrap().effort, Effort::High);
+        assert_eq!(r.facts.later_step_from, None);
+        // A model named now: the entry's effort doesn't apply.
+        let mut ask = Ask::new(TaskKind::Build).model(SONNET).later(None, false);
+        ask.later_step.as_mut().unwrap().effort = Some(Effort::Low);
+        let r = run(&ask, &placed);
+        assert_eq!(used(&r), Some((Tier::Medium, SONNET.to_owned())));
+        assert_eq!(r.choice.unwrap().effort, Effort::Medium);
+        // Nothing named now: the entry applies.
+        let r = run(
+            &Ask::new(TaskKind::Build).later(Some(SONNET), false),
+            &placed,
+        );
+        assert_eq!(used(&r), Some((Tier::Medium, SONNET.to_owned())));
+        assert_eq!(r.facts.later_step_from, TaskId::new(100));
+    }
+
+    #[test]
+    fn case_g_no_premium_asked_routes_by_the_rule_table() {
+        let r = run(&Ask::new(TaskKind::Build), &claude_pool(false));
+        assert_eq!(r.tier_landed, Tier::High);
+        assert_eq!(used(&r), Some((Tier::High, OPUS.to_owned())));
+    }
+
+    #[test]
+    fn a_model_in_high_and_premium_named_for_premium_runs_as_premium() {
+        let mut high = cand(OPUS, 1, Tier::High);
+        high.effort_override = Some(Effort::Medium);
+        let placed = vec![high, cand(OPUS, 1, Tier::Premium)];
+        let r = run(&Ask::new(TaskKind::Lookup).model(OPUS), &placed);
+        let c = r.choice.unwrap();
+        assert_eq!((c.tier, c.effort), (Tier::Premium, Effort::ExtraHigh));
+        assert_eq!(r.tier_landed, Tier::Premium);
+    }
+
+    #[test]
+    fn a_named_model_that_isnt_premium_keeps_todays_fallback() {
+        let placed = vec![
+            cand(FABLE, 1, Tier::Premium),
+            cut(cand(OPUS, 2, Tier::High)),
+            cand(SONNET, 3, Tier::Medium),
+        ];
+        let r = run(&Ask::new(TaskKind::Build).model(OPUS), &placed);
+        assert_eq!(r.tier_landed, Tier::High);
+        assert_eq!(used(&r), Some((Tier::Medium, SONNET.to_owned())));
+    }
+
+    #[test]
+    fn a_premium_later_step_applies_only_to_its_task() {
+        let placed = claude_pool(false);
+        let r = run(&Ask::new(TaskKind::Review).later(None, true), &placed);
+        assert_eq!(used(&r), Some((Tier::Premium, FABLE.to_owned())));
+        assert_eq!(r.facts.later_step_from, TaskId::new(100));
+        // Without an entry, a task built on premium work routes by its kind.
+        let r = run(&Ask::new(TaskKind::Review), &placed);
+        assert_ne!(r.tier_landed, Tier::Premium);
+    }
+
+    #[test]
+    fn a_retry_to_premium_falls_back_and_says_so() {
+        let r = run(
+            &Ask::new(TaskKind::Build).retry(Tier::Premium),
+            &claude_pool(true),
+        );
+        assert_eq!(used(&r), Some((Tier::High, OPUS.to_owned())));
+        assert!(
+            r.why
+                .starts_with("You chose to try a stronger model. No premium model could serve"),
+            "{}",
+            r.why
+        );
+        assert!(r.facts.user.stronger_retry);
+    }
+
+    #[test]
+    fn a_retry_to_high_still_waits_for_high() {
+        let placed = vec![
+            cut(cand(OPUS, 1, Tier::High)),
+            cand(SONNET, 2, Tier::Medium),
+        ];
+        let r = run(&Ask::new(TaskKind::Build).retry(Tier::High), &placed);
+        assert_eq!(r.choice, None);
+        assert_eq!(r.why, "waiting for a high model");
+    }
+
+    #[test]
+    fn premium_waits_only_when_no_tier_can_serve() {
+        let placed = vec![
+            cut(cand(FABLE, 1, Tier::Premium)),
+            cut(cand(OPUS, 1, Tier::High)),
+        ];
+        let r = run(&Ask::new(TaskKind::Build).premium(), &placed);
+        assert_eq!(r.choice, None);
+        assert_eq!(r.why, "No model in any tier can serve this task; it waits");
+    }
+
+    #[test]
+    fn premium_skips_the_pin() {
+        let table = RuleTable::embedded().unwrap();
+        let tiers = TierEfforts::default();
+        let pin = AlwaysUse {
+            model: id(SONNET),
+            fallback: None,
+        };
+        let pinned = [cand(SONNET, 1, Tier::Medium)];
+        let placed = claude_pool(false);
+        for user in [
+            UserChoices {
+                premium: true,
+                ..UserChoices::default()
+            },
+            UserChoices {
+                model: Some(id(FABLE)),
+                ..UserChoices::default()
+            },
+        ] {
+            let req = RouteRequest {
+                kind: Decided::Answer {
+                    value: TaskKind::Build,
+                    by: DecidedBy::Declared,
+                },
+                decider: DecidedBy::Declared,
+                builds_on: None,
+                needs: Needs::default(),
+                quick_verification: false,
+                user,
+                stronger_retry_target: None,
+                later_step: None,
+                always_use: Some(&pin),
+                preferred_account: None,
+                tiers: &tiers,
+                premium_models: &[],
+            };
+            let r = route(
+                &table,
+                &req,
+                Pool {
+                    placed: &placed,
+                    pinned: &pinned,
+                },
+            );
+            assert_eq!(used(&r), Some((Tier::Premium, FABLE.to_owned())));
+        }
     }
 }
