@@ -332,7 +332,12 @@ pub(crate) fn rows(
     while i < lines.len() {
         let line = &lines[i];
         i += 1;
-        let noted = crate::widgets::context_strip::notes_before(&mut notes, Some(line.at), max);
+        let noted = crate::widgets::context_strip::notes_before(
+            &mut notes,
+            Some(line.at),
+            max,
+            out.rows.is_empty(),
+        );
         if !noted.is_empty() {
             out.rows.extend(noted);
             out.blank();
@@ -385,8 +390,9 @@ pub(crate) fn rows(
     let writing = lines
         .last()
         .is_some_and(|l| l.streaming && !stream::committed(&l.text, true).is_empty());
+    let first = out.rows.is_empty();
     out.rows.extend(crate::widgets::context_strip::notes_before(
-        &mut notes, None, max,
+        &mut notes, None, max, first,
     ));
     if busy_row && running && !writing {
         out.rows.push(Row::plain(spinner::line(app, "working")));

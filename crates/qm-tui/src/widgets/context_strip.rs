@@ -363,11 +363,16 @@ pub(crate) fn card_runs(app: &App, view: Option<&AgentContextView>) -> Vec<Run> 
                     } else {
                         level(pct)
                     };
+                    let number = if occ.stale.is_some() {
+                        theme::dim()
+                    } else {
+                        theme::text()
+                    };
                     parts.push(vec![(format!("{tilde}{pct}%"), tone)]);
                     parts.push(vec![
-                        (format!("{tilde}{}", tokens_short(tokens)), theme::text()),
+                        (format!("{tilde}{}", tokens_short(tokens)), number),
                         (" of ".to_owned(), theme::dim()),
-                        (tokens_short(*point), theme::text()),
+                        (tokens_short(*point), number),
                     ]);
                 }
                 (Some(tokens), point) => {
@@ -432,10 +437,13 @@ fn level(pct: u64) -> Style {
     }
 }
 
-/// `12s`, `4m`, `2h`, `3d`; drawing one keeps the once-a-second redraw going.
+/// `12s`, `4m`, `2h`, `3d`; drawing a seconds count keeps the once-a-second redraw going.
 pub(crate) fn age(app: &App, at: Timestamp, now: Timestamp) -> String {
-    app.ages_shown.set(true);
     let secs = now.duration_since(at).as_secs().max(0);
+    // Only seconds change every second; a minute count is redrawn with whatever comes next.
+    if secs < 60 {
+        app.ages_shown.set(true);
+    }
     match secs {
         0..60 => format!("{secs}s"),
         60..3_600 => format!("{}m", secs / 60),
@@ -512,18 +520,22 @@ pub(crate) fn compacting_row(app: &App, agent: AgentRef) -> Option<Row> {
     )))
 }
 
-/// Every note in `notes` from before `at`, as rows each after a blank row; `notes` keeps the rest.
+/// Every note in `notes` from before `at`, as rows each after a blank row (none at the very
+/// `first` row of a chat); `notes` keeps the rest.
 pub(crate) fn notes_before(
     notes: &mut &[&CompactionNote],
     at: Option<Timestamp>,
     width: u16,
+    first: bool,
 ) -> Vec<Row> {
     let mut out = Vec::new();
     while let Some((note, rest)) = notes.split_first() {
         if at.is_some_and(|at| note.at > at) {
             break;
         }
-        out.push(Row::plain(Line::default()));
+        if !(first && out.is_empty()) {
+            out.push(Row::plain(Line::default()));
+        }
         out.extend(note_rows(note, width));
         *notes = rest;
     }

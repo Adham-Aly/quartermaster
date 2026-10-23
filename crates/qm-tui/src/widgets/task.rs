@@ -138,9 +138,13 @@ fn detail_rows(app: &App, agent: AgentRef, detail: &TaskDetail, max: u16) -> Vec
             .collect();
         push_labelled(&mut out, row.label.as_deref(), &runs, max_cells);
     }
-    // Live from the engine's passive readings: occupancy against the auto-compact point.
-    let context = context_strip::card_runs(app, context_strip::view_for(app, agent));
-    push_labelled(&mut out, Some("context"), &context, max_cells);
+    // Live from the engine's passive readings: occupancy against the auto-compact point. Only
+    // while the core holds a reading for a crewmate it shows, so a queued or finished task has
+    // no row rather than an "unknown" one.
+    if let Some(view) = context_strip::view_for(app, agent) {
+        let context = context_strip::card_runs(app, Some(view));
+        push_labelled(&mut out, Some("context"), &context, max_cells);
+    }
     if !detail.activity.is_empty() {
         out.push(Row::plain(Line::default()));
         for tool in &detail.activity {

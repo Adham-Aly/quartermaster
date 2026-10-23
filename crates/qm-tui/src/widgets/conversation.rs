@@ -173,7 +173,7 @@ pub(crate) fn rows(
     let mut notes = notes;
     let mut out = Vec::new();
     for (i, chat) in chats.iter().enumerate() {
-        let noted = context_strip::notes_before(&mut notes, Some(chat.at), width);
+        let noted = context_strip::notes_before(&mut notes, Some(chat.at), width, out.is_empty());
         let after_note = !noted.is_empty();
         out.extend(noted);
         if after_note || (i > 0 && !answers(&chats[i - 1], chat)) {
@@ -181,7 +181,8 @@ pub(crate) fn rows(
         }
         out.extend(message_rows(chat, width, hover, voices));
     }
-    out.extend(context_strip::notes_before(&mut notes, None, width));
+    let first = out.is_empty();
+    out.extend(context_strip::notes_before(&mut notes, None, width, first));
     out
 }
 
