@@ -27,6 +27,34 @@ pub fn call_usage(usage: &Value) -> CallUsage {
     }
 }
 
+/// A call's prompt size: input, cache read and cache write. `None` when none of the three is
+/// present.
+pub fn prompt_tokens(usage: &Value) -> Option<u64> {
+    let fields = [
+        "input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ];
+    let mut seen = false;
+    let mut total = 0u64;
+    for field in fields {
+        if let Some(n) = usage.get(field).and_then(Value::as_u64) {
+            seen = true;
+            total = total.saturating_add(n);
+        }
+    }
+    seen.then_some(total)
+}
+
+/// A `system/status` message: its `status`, `compact_result` and `compact_error`.
+pub fn compaction_status(msg: &Value) -> (Option<&str>, Option<&str>, Option<String>) {
+    (
+        str_at(msg, "/status"),
+        str_at(msg, "/compact_result"),
+        str_at(msg, "/compact_error").map(str::to_owned),
+    )
+}
+
 /// A `stop_reason` string.
 pub fn stop_reason(reason: Option<&str>) -> StopReason {
     match reason {

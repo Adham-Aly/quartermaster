@@ -45,9 +45,10 @@ use qm_engine::supervisor::{
     Child, ChildOutput, ChildStdin, ExitCause, ExitWatch, ProcessOwner, SpawnSpec, StopPolicy, stop,
 };
 use qm_engine::{
-    ACTIVITY_EVERY, ActivityGate, ActivityKind, CallUsage, CloseReason, EngineEvent, EngineSide,
-    FailureKind, InitReport, LineBuffer, SessionCommand, SessionSpec, StopReason, SystemPrompt,
-    ToolCallId, TurnFailure, TurnInput, TurnOutcome,
+    ACTIVITY_EVERY, ActivityGate, ActivityKind, AutocompactPoint, CallUsage, CloseReason,
+    ContextBasis, ContextReading, EngineEvent, EngineSide, FailureKind, InitReport, LineBuffer,
+    ReportedUsage, SessionCommand, SessionSpec, StopReason, SystemPrompt, ToolCallId, TurnFailure,
+    TurnInput, TurnOutcome,
 };
 use qm_types::clock::Clock;
 use qm_types::config::Config;
@@ -138,7 +139,63 @@ pub struct Session {
     core_gone: bool,
     done: bool,
     claude_home: Option<PathBuf>,
+    /// What the start's `get_context_usage` answer said about the context, for passive readings.
+    context: ContextFacts,
+    /// The latest context size seen, kept across a model change.
+    last_tokens: Option<u64>,
+    /// `claude` reported `status: "compacting"` and hasn't finished yet.
+    compacting: bool,
 }
+
+/// The context facts `claude` reports when a process starts (from the `get_context_usage` query
+/// the start already makes; nothing extra is asked).
+#[derive(Debug, Clone)]
+struct ContextFacts {
+    threshold: AutocompactPoint,
+    window: Option<u64>,
+    start_total: Option<u64>,
+}
+
+impl ContextFacts {
+    fn unknown(why: &str) -> Self {
+        Self {
+            threshold: AutocompactPoint::Unknown {
+                why: why.to_owned(),
+            },
+            window: None,
+            start_total: None,
+        }
+    }
+
+    fn from_answer(context: &Result<Value, String>) -> Self {
+        let Ok(context) = context else {
+            return Self::unknown("claude didn't answer its context usage query at start");
+        };
+        let threshold = if context.get("isAutoCompactEnabled").and_then(Value::as_bool)
+            == Some(false)
+        {
+            AutocompactPoint::Off
+        } else if let Some(tokens) = context.get("autoCompactThreshold").and_then(Value::as_u64) {
+            AutocompactPoint::At { tokens }
+        } else {
+            AutocompactPoint::Unknown {
+                why: "claude didn't report its auto-compact threshold".to_owned(),
+            }
+        };
+        Self {
+            threshold,
+            window: context.get("maxTokens").and_then(Value::as_u64),
+            start_total: context.get("totalTokens").and_then(Value::as_u64),
+        }
+    }
+}
+
+/// Claude reports every category separately, and the turn's cost.
+const CLAUDE_REPORTS: ReportedUsage = ReportedUsage::NONE
+    .with_thinking()
+    .with_cache_read()
+    .with_cache_write()
+    .with_cost();
 
 impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -170,6 +227,14 @@ struct PendingCall {
     rpc_id: Value,
 }
 
+/// What a turn was started for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnKind {
+    Normal,
+    /// `SessionCommand::Compact`: its compaction is not automatic.
+    Compact,
+}
+
 /// One turn's running state.
 #[derive(Debug)]
 struct Turn {
@@ -177,6 +242,13 @@ struct Turn {
     calls: u32,
     call_open: bool,
     call_usage: CallUsage,
+    /// The current call's prompt size (input, cache read and cache write) from its
+    /// `message_start`, when the `message_delta` has none.
+    prompt_tokens: Option<u64>,
+    /// The call's prompt size from its `message_delta`, when it carried input fields.
+    delta_prompt: Option<u64>,
+    /// Whether this turn runs `/compact` (sent by `SessionCommand::Compact`).
+    kind: TurnKind,
     call_stop: StopReason,
     /// What the turn's finished calls used, summed: its usage when `claude` dies before its
     /// `result`.
@@ -207,6 +279,9 @@ impl Turn {
             calls: 0,
             call_open: false,
             call_usage: CallUsage::default(),
+            prompt_tokens: None,
+            delta_prompt: None,
+            kind: TurnKind::Normal,
             call_stop: StopReason::Unknown,
             spent: CallUsage::default(),
             lines: LineBuffer::default(),
@@ -347,6 +422,9 @@ impl Session {
             core_gone: false,
             done: false,
             claude_home,
+            context: ContextFacts::unknown("no reading yet"),
+            last_tokens: None,
+            compacting: false,
             shared,
             spec,
         }
@@ -363,6 +441,7 @@ impl Session {
                     init,
                 })
                 .await;
+                self.send_start_reading().await;
             }
             Err(failure) => {
                 let reason = if resuming {
@@ -561,6 +640,8 @@ impl Session {
             .query(json!({"subtype": "get_context_usage", "detail": "full"}))
             .await?;
         self.check_autocompact(&context);
+        self.context = ContextFacts::from_answer(&context);
+        self.compacting = false;
         let hooks = self.query(json!({"subtype": "get_hooks_listing"})).await?;
         let report = self.init_report(init, context, hooks);
         if report.raw.get("tools_source").is_none()
@@ -760,7 +841,7 @@ impl Session {
             SessionCommand::SetModel { model } => {
                 model.as_str().clone_into(&mut self.model);
                 if self.proc.is_some() && self.turn.is_none() {
-                    self.write_set_model(model.as_str());
+                    self.write_set_model(model.as_str()).await;
                 } else if self.proc.is_some() {
                     self.pending_model = Some(model.as_str().to_owned());
                 }
@@ -773,6 +854,9 @@ impl Session {
                     // A user message that is only `/compact` runs `claude`'s own compaction: a
                     // turn with a `compact_boundary` and a `result`, and no model text.
                     self.begin_turn(TurnInput::text(COMPACT_COMMAND)).await;
+                    if let Some(turn) = &mut self.turn {
+                        turn.kind = TurnKind::Compact;
+                    }
                 }
             }
             SessionCommand::Close | SessionCommand::Forget => self.on_close().await,
@@ -798,6 +882,7 @@ impl Session {
                         init,
                     })
                     .await;
+                    self.send_start_reading().await;
                 }
                 Err(failure) => {
                     let message = format!(
@@ -815,7 +900,7 @@ impl Session {
             }
         }
         if let Some(model) = self.pending_model.take() {
-            self.write_set_model(&model);
+            self.write_set_model(&model).await;
         }
         let now = self.clock.instant();
         match protocol::user_message(&input, &uuid::Uuid::new_v4().to_string()) {
@@ -892,12 +977,38 @@ impl Session {
         ));
     }
 
-    fn write_set_model(&mut self, model: &str) {
+    async fn write_set_model(&mut self, model: &str) {
         let id = self.request_id();
         self.write(&protocol::control_request(
             &id,
             json!({"subtype": "set_model", "model": model}),
         ));
+        // Passive: claude reports the new model's threshold only when a process next starts.
+        self.context.threshold = AutocompactPoint::Unknown {
+            why: "the model changed; claude reports the new threshold when it next starts"
+                .to_owned(),
+        };
+        self.context.window = None;
+        let reading = self.reading(self.last_tokens, ContextBasis::LastCall, false);
+        self.send(EngineEvent::ContextObserved { reading }).await;
+    }
+
+    /// A passive reading with this session's facts.
+    fn reading(&self, tokens: Option<u64>, basis: ContextBasis, estimate: bool) -> ContextReading {
+        ContextReading::new(tokens, basis, estimate, self.context.threshold.clone())
+            .with_window(self.context.window)
+            .with_model(Some(self.model.clone()))
+            .with_reports(CLAUDE_REPORTS)
+    }
+
+    /// After `SessionReady`: claude's own estimate of the context at start.
+    async fn send_start_reading(&mut self) {
+        let tokens = self.context.start_total;
+        if tokens.is_some() {
+            self.last_tokens = tokens;
+        }
+        let reading = self.reading(tokens, ContextBasis::SessionStart, true);
+        self.send(EngineEvent::ContextObserved { reading }).await;
     }
 
     async fn on_close(&mut self) {
@@ -1232,8 +1343,31 @@ impl Session {
     async fn on_system(&mut self, subtype: &str, msg: &Value) {
         match subtype {
             "status" => {
-                if str_at(msg, "/status") == Some("requesting") {
+                let (status, result, error) = stream::compaction_status(msg);
+                if status == Some("requesting") {
                     self.call_started().await;
+                }
+                if status == Some("compacting") {
+                    if !self.compacting {
+                        self.compacting = true;
+                        let automatic = !self
+                            .turn
+                            .as_ref()
+                            .is_some_and(|t| t.kind == TurnKind::Compact);
+                        self.send(EngineEvent::CompactionStarted { automatic })
+                            .await;
+                    }
+                } else if status.is_none() && self.compacting {
+                    self.compacting = false;
+                    if result == Some("failed") {
+                        let automatic = !self
+                            .turn
+                            .as_ref()
+                            .is_some_and(|t| t.kind == TurnKind::Compact);
+                        let message = error.unwrap_or_else(|| "claude didn't say why".to_owned());
+                        self.send(EngineEvent::CompactionFailed { automatic, message })
+                            .await;
+                    }
                 }
             }
             "session_state_changed" if str_at(msg, "/state") == Some("running") => {
@@ -1272,6 +1406,7 @@ impl Session {
             }
             "compact_boundary" => {
                 let (automatic, tokens_before, tokens_after) = stream::compacted(msg);
+                self.compacting = false;
                 self.send(EngineEvent::Compacted {
                     automatic,
                     tokens_before,
@@ -1414,6 +1549,9 @@ impl Session {
                 self.call_started().await;
                 if let Some(turn) = &mut self.turn {
                     turn.blocks.clear();
+                    turn.prompt_tokens = event
+                        .pointer("/message/usage")
+                        .and_then(stream::prompt_tokens);
                 }
             }
             "content_block_start" => {
@@ -1458,6 +1596,7 @@ impl Session {
                 if let Some(turn) = &mut self.turn {
                     if let Some(usage) = event.get("usage") {
                         turn.call_usage = stream::call_usage(usage);
+                        turn.delta_prompt = stream::prompt_tokens(usage).filter(|&n| n > 0);
                     }
                     if let Some(reason) = str_at(event, "/delta/stop_reason") {
                         turn.call_stop = stream::stop_reason(Some(reason));
@@ -1475,6 +1614,8 @@ impl Session {
                 turn.calls += 1;
                 turn.call_open = true;
                 turn.call_usage = CallUsage::default();
+                turn.prompt_tokens = None;
+                turn.delta_prompt = None;
                 turn.call_stop = StopReason::Unknown;
                 turn.call_text.clear();
                 turn.calls
@@ -1486,7 +1627,7 @@ impl Session {
 
     async fn call_finished(&mut self) {
         let cap = self.spec.limits.map(|l| l.max_output_tokens);
-        let (call, usage, stop, over_cap) = match &mut self.turn {
+        let (call, usage, stop, over_cap, prompt) = match &mut self.turn {
             Some(turn) if turn.call_open => {
                 turn.call_open = false;
                 let u = turn.call_usage;
@@ -1500,7 +1641,14 @@ impl Session {
                     turn.call_usage.output_tokens > u64::from(cap)
                         || turn.call_stop == StopReason::MaxTokens
                 });
-                (turn.calls, turn.call_usage, turn.call_stop, over_cap)
+                let prompt = turn.delta_prompt.or(turn.prompt_tokens);
+                (
+                    turn.calls,
+                    turn.call_usage,
+                    turn.call_stop,
+                    over_cap,
+                    prompt,
+                )
             }
             _ => return,
         };
@@ -1509,6 +1657,14 @@ impl Session {
         }
         self.send(EngineEvent::ModelCallFinished { call, usage, stop })
             .await;
+        if !self.compacting {
+            let tokens = prompt.map(|p| p + usage.output_tokens);
+            if tokens.is_some() {
+                self.last_tokens = tokens;
+            }
+            let reading = self.reading(tokens, ContextBasis::LastCall, false);
+            self.send(EngineEvent::ContextObserved { reading }).await;
+        }
         if over_cap && let Some(cap) = cap {
             if let Some(turn) = &mut self.turn {
                 turn.failure.get_or_insert(TurnFailure {
@@ -1628,7 +1784,7 @@ impl Session {
             self.finish(CloseReason::Requested).await;
         } else {
             if let Some(model) = self.pending_model.take() {
-                self.write_set_model(&model);
+                self.write_set_model(&model).await;
             }
             self.arm_idle();
             self.restart_for_settings().await;
