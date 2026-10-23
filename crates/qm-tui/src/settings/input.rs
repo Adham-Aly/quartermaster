@@ -6,8 +6,8 @@ use super::model::{
     effort_label, key_provider, model_tier_default, tier_label,
 };
 use super::{
-    AccountLogin, AccountTarget, BoardItem, Drag, Field, FieldFor, PickFor, PickValue, Picker,
-    SettingsHit, Tab, Zone, connect, levels,
+    AccountLogin, AccountTarget, BoardItem, Confirm, Drag, Field, FieldFor, KIND_ROWS_FROM,
+    PickFor, PickValue, Picker, ROUTING_ROWS, SettingsHit, Tab, Zone, connect, levels,
 };
 use crate::app::App;
 use crate::hit::Hit;
@@ -16,8 +16,8 @@ use crate::popups::{Anchor, Popup};
 use crate::router::Screen;
 use crate::view::MenuTarget;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use qm_types::api::{Command, SecretText};
-use qm_types::domain::{Autonomy, Effort, Provider as ProviderId, Tier};
+use qm_types::api::{Command, KindTierRow, SecretText};
+use qm_types::domain::{Autonomy, Effort, KindRow, Provider as ProviderId, Tier};
 use qm_types::ids::{AccountId, ModelId};
 use ratatui::layout::{Position, Rect};
 use std::time::Instant;
@@ -165,6 +165,14 @@ impl App {
     }
 
     fn on_settings_key_here(&mut self, key: KeyEvent, now: Instant) -> bool {
+        if self.view.settings.confirm.is_some() {
+            // The hint bar asks "Reset all task kinds to defaults?": only `⏎` says yes.
+            self.settings_set(|s| &mut s.confirm, None);
+            if key.code == KeyCode::Enter {
+                self.intend(Command::ResetKindTiers);
+            }
+            return true;
+        }
         if self.view.settings.field.is_some() {
             self.on_field_key(key);
             return true;
@@ -273,9 +281,29 @@ impl App {
 
     fn on_routing_key(&mut self, code: KeyCode) -> bool {
         let row = self.view.settings.routing_row;
-        if let Some(at) = list_move(code, Some(row), 3) {
+        if let Some(at) = list_move(code, Some(row), ROUTING_ROWS) {
             self.settings_set(|s| &mut s.routing_row, at);
             return true;
+        }
+        if code == KeyCode::Char('R') {
+            self.ask_reset_kinds();
+            return true;
+        }
+        if let Some(kind) = row
+            .checked_sub(KIND_ROWS_FROM)
+            .and_then(|i| KindRow::ALL.get(i).copied())
+        {
+            match code {
+                KeyCode::Enter => {
+                    self.open_picker(PickFor::KindTier(kind), SettingsHit::KindTier(kind));
+                    return true;
+                }
+                KeyCode::Char('r') => {
+                    self.reset_kind(kind);
+                    return true;
+                }
+                _ => {}
+            }
         }
         match code {
             KeyCode::Char(' ') => self.toggle_pin(),
@@ -298,6 +326,38 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// Puts one Task kinds row back to its default, if it isn't there.
+    fn reset_kind(&mut self, kind: KindRow) {
+        let changed = self
+            .view
+            .settings
+            .model
+            .kind_tiers
+            .iter()
+            .any(|r| r.row == kind && r.changed());
+        if changed {
+            self.intend(Command::SetKindTier {
+                row: kind,
+                tier: None,
+            });
+        }
+    }
+
+    /// Asks in the hint bar before every Task kinds row goes back to its default; nothing to
+    /// reset asks nothing.
+    fn ask_reset_kinds(&mut self) {
+        if self
+            .view
+            .settings
+            .model
+            .kind_tiers
+            .iter()
+            .any(KindTierRow::changed)
+        {
+            self.settings_set(|s| &mut s.confirm, Some(Confirm::ResetKinds));
+        }
     }
 
     /// Steps the autocompact window one step up or down and selects its row. At an end it does
@@ -323,14 +383,6 @@ impl App {
         match code {
             KeyCode::Char('a' | ' ') | KeyCode::Enter if count > 0 => {
                 self.toggle_project_autonomy(row);
-            }
-            KeyCode::Char('f') => {
-                let field = Field {
-                    purpose: FieldFor::WorkspaceFolder,
-                    text: self.view.settings.model.workspace_folder.clone(),
-                    base_url: None,
-                };
-                self.settings_set(|s| &mut s.field, Some(field));
             }
             _ => return false,
         }
@@ -500,6 +552,11 @@ impl App {
 
     /// A left click on a Settings target.
     pub(crate) fn settings_click(&mut self, hit: SettingsHit, double: bool, now: Instant) {
+        if self.view.settings.confirm.is_some() {
+            // A click anywhere answers "no".
+            self.settings_set(|s| &mut s.confirm, None);
+            return;
+        }
         let s = &self.view.settings;
         let overlay_open = s.picker.is_some() || s.field.is_some();
         if overlay_open
@@ -562,6 +619,13 @@ impl App {
             }
             SettingsHit::AutocompactDown => self.step_autocompact(false),
             SettingsHit::AutocompactUp => self.step_autocompact(true),
+            SettingsHit::KindTier(kind) => {
+                if let Some(i) = KindRow::ALL.iter().position(|&k| k == kind) {
+                    self.settings_set(|s| &mut s.routing_row, KIND_ROWS_FROM + i);
+                }
+                self.open_picker(PickFor::KindTier(kind), hit);
+            }
+            SettingsHit::ResetKinds => self.ask_reset_kinds(),
             SettingsHit::Provider(i) => {
                 self.settings_set(|s| &mut s.provider, Some(i));
                 if double {
@@ -898,7 +962,6 @@ impl App {
                     });
                 }
             }
-            FieldFor::WorkspaceFolder => self.intend(Command::SetWorkspaceFolder { folder: text }),
             FieldFor::BaseUrl => {
                 let field = Field {
                     purpose: FieldFor::ApiKey("custom"),
@@ -1185,6 +1248,18 @@ impl App {
                     .collect();
                 (options, None)
             }
+            PickFor::KindTier(kind) => {
+                let row = settings.kind_tiers.iter().find(|r| r.row == kind)?;
+                let mut options =
+                    vec![(format!("Default ({})", row.default), PickValue::Tier(None))];
+                options.extend(
+                    BOARD
+                        .into_iter()
+                        .map(|t| (tier_label(t).to_owned(), PickValue::Tier(Some(t)))),
+                );
+                let current = PickValue::Tier(row.changed().then_some(row.tier));
+                (options, Some(current))
+            }
             PickFor::KeyProvider => {
                 let options = KEY_PROVIDERS
                     .iter()
@@ -1255,6 +1330,9 @@ impl App {
         let pin = self.view.settings.model.pin.clone();
         match (picker.purpose, value) {
             (purpose, PickValue::Effort(effort)) => self.choose_effort(purpose, effort),
+            (PickFor::KindTier(row), PickValue::Tier(tier)) => {
+                self.intend(Command::SetKindTier { row, tier });
+            }
             (PickFor::MoveTo(item), PickValue::Zone(zone)) => self.move_item(item, zone),
             (PickFor::PinModel, PickValue::Model(id)) => {
                 let fallback = pin.fallback.filter(|f| *f != id);

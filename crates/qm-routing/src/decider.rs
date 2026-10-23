@@ -61,7 +61,7 @@ impl<T> Decided<T> {
 }
 
 impl Decided<TaskKind> {
-    /// The decided kind, or `unclear` (which always routes high) when undecided.
+    /// The decided kind, or `unclear` (routed by the unclear row) when undecided.
     pub fn kind_or_unclear(&self) -> TaskKind {
         self.value().copied().unwrap_or(TaskKind::Unclear)
     }

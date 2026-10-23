@@ -227,6 +227,9 @@ fn detail(
             Some("branch"),
             text(format!("{branch} ← {}", task.target)),
         ));
+    } else if let Some(folder) = &task.folder {
+        d.rows
+            .push(TaskRow::new(Some("folder"), text(folder.clone())));
     }
     d.rows.push(TaskRow::new(
         Some("verify"),

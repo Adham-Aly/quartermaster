@@ -3,7 +3,7 @@
 //! | Field | Claude engine | Provider (and scripted) engine |
 //! |---|---|---|
 //! | `prompt` | appended to Claude Code's preset | the whole prompt |
-//! | `builtins` | Claude Code's | our file tools, writing only to the workplace, evidence and a planner's plan folder |
+//! | `builtins` | Claude Code's | our file tools, writing anywhere but the app's data and scratch folders |
 //! | `env` | `env::crewmate_env` | same |
 //! | `idle_shutdown` | 5 minutes | same |
 //! | `limits` | none: crewmates have no limits of ours | same |
@@ -21,12 +21,10 @@ use std::time::Duration;
 /// A crewmate's process is released after this long idle.
 pub const CREW_IDLE_SHUTDOWN: Duration = Duration::from_mins(5);
 
-/// Where a crewmate works: its worktree, or a folder task's folder, and whether its tools may write
-/// there. An answer-only folder task reads its folder and writes only its evidence.
+/// Where a crewmate works: its worktree, or the folder an in-place task works in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Workplace {
     pub dir: PathBuf,
-    pub writes_dir: bool,
 }
 
 /// What routing decided, as the session needs it.
@@ -75,11 +73,8 @@ pub(crate) fn crewmate_spec(
         EngineKind::Claude => Builtins::ClaudeCode,
         EngineKind::Provider | EngineKind::Scripted => Builtins::ProviderFileTools {
             write_roots: {
-                let mut roots = if place.writes_dir {
-                    vec![place.dir.clone(), paths.evidence.clone()]
-                } else {
-                    vec![paths.evidence.clone()]
-                };
+                // Folders inside the app's own that stay writable.
+                let mut roots = vec![place.dir.clone(), paths.evidence.clone()];
                 // A planner writes its plan; a build reads its copy of the plan it builds on.
                 if plan.is_some() {
                     roots.push(paths.plan.clone());

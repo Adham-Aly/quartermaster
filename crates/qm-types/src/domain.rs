@@ -182,24 +182,88 @@ string_enum! {
 }
 
 impl TaskKind {
-    /// Whether the task may change code: build, fix and unclear.
+    /// Whether the kind's work is usually code: build, fix and unclear. Guidance only (the brief's
+    /// wording, the readiness probe, one writer per folder): what a task delivered is decided by
+    /// what its crewmate did (`qm_policy::delivery::deliverable`), never by its kind.
     pub const fn can_change_code(self) -> bool {
         matches!(self, Self::Build | Self::Fix | Self::Unclear)
     }
 
-    /// Answer-only kinds deliver an answer, never code.
-    pub const fn is_answer_only(self) -> bool {
+    /// The kinds whose work is usually an answer. Guidance only, like [`Self::can_change_code`].
+    pub const fn usually_answers(self) -> bool {
         !self.can_change_code()
     }
 }
 
 string_enum! {
-    /// Model tiers, weakest first. Premium is never picked automatically.
+    /// Model tiers, weakest first. Premium is used only when you ask for it, retry with a stronger
+    /// model, or set a task kind to it.
     pub enum Tier ("tier") {
         Low = "low",
         Medium = "medium",
         High = "high",
         Premium = "premium",
+    }
+}
+
+string_enum! {
+    /// A row of Settings ▸ Routing ▸ Task kinds: a task kind, or a kind building on a fact the app
+    /// checked. Each row routes to the tier you set for it (`config.toml`'s `[routing.kinds]`).
+    /// Not stored in the database.
+    pub enum KindRow ("task kind row") {
+        Lookup = "lookup",
+        Build = "build",
+        BuildOnFinishedPlan = "build_on_finished_plan",
+        Fix = "fix",
+        FixOnConfirmedDiagnosis = "fix_on_confirmed_diagnosis",
+        Plan = "plan",
+        Research = "research",
+        Teach = "teach",
+        Review = "review",
+        Reproduce = "reproduce",
+        Unclear = "unclear",
+    }
+}
+
+impl KindRow {
+    /// The row for work of `kind` that builds on nothing the app checked.
+    pub const fn for_kind(kind: TaskKind) -> Self {
+        match kind {
+            TaskKind::Build => Self::Build,
+            TaskKind::Fix => Self::Fix,
+            TaskKind::Plan => Self::Plan,
+            TaskKind::Research => Self::Research,
+            TaskKind::Lookup => Self::Lookup,
+            TaskKind::Teach => Self::Teach,
+            TaskKind::Review => Self::Review,
+            TaskKind::Unclear => Self::Unclear,
+            TaskKind::Reproduce => Self::Reproduce,
+        }
+    }
+
+    /// The kind this row routes.
+    pub const fn kind(self) -> TaskKind {
+        match self {
+            Self::Build | Self::BuildOnFinishedPlan => TaskKind::Build,
+            Self::Fix | Self::FixOnConfirmedDiagnosis => TaskKind::Fix,
+            Self::Plan => TaskKind::Plan,
+            Self::Research => TaskKind::Research,
+            Self::Lookup => TaskKind::Lookup,
+            Self::Teach => TaskKind::Teach,
+            Self::Review => TaskKind::Review,
+            Self::Unclear => TaskKind::Unclear,
+            Self::Reproduce => TaskKind::Reproduce,
+        }
+    }
+
+    /// The app's own tier for this row: lookups run on low, work building on finished thinking on
+    /// medium, and everything else on high.
+    pub const fn default_tier(self) -> Tier {
+        match self {
+            Self::Lookup => Tier::Low,
+            Self::BuildOnFinishedPlan | Self::FixOnConfirmedDiagnosis => Tier::Medium,
+            _ => Tier::High,
+        }
     }
 }
 
@@ -642,6 +706,10 @@ string_enum! {
         /// A pushed release tag's outcome became known after the push (published, collision or
         /// not published), read back from GitHub.
         ReleaseObserved = "release_observed",
+        /// A task's pull request was merged on GitHub by someone other than the app.
+        LandedOutside = "landed_outside",
+        /// A tag or release appeared on a task's repository that the app didn't make.
+        ReleasedOutside = "released_outside",
     }
 }
 

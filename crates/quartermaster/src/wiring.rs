@@ -42,7 +42,7 @@ use qm_core::held::{HeldPart, HeldService, InboxSignal};
 use qm_core::inbox::{Inbox, SeatSink, WakeSink};
 use qm_core::parent_channel::ParentChannel;
 use qm_core::processes::StoreRecorder;
-use qm_core::projects::{AddProjectPerformer, ProjectDeps, ProjectService, ProjectsPart};
+use qm_core::projects::{ProjectDeps, ProjectService, ProjectsPart};
 use qm_core::reconcile::ReconcileService;
 use qm_core::routing::{self, Engines, ModelCatalog};
 use qm_core::scheduler::Scheduler;
@@ -164,7 +164,7 @@ pub(crate) async fn start_core(
     let gh = gh_program(registry.0.facts());
     let github = GithubClient::new(Arc::new(GhCli::following(Arc::clone(&gh))));
     let verification = verification_service(&db, &clock, &dir, &base.health, &wakes, &conversation);
-    let tasks = crew_tasks(
+    let tasks = Some(crew_tasks(
         CrewInputs {
             dir: &dir,
             db: &db,
@@ -180,7 +180,7 @@ pub(crate) async fn start_core(
         Arc::clone(&conversation),
         agent,
         verification_hooks(&verification),
-    );
+    ));
     // Every crewmate's session is recorded from its first turn.
     let recorder = tasks.as_ref().map(|tasks| {
         let recorder = Recorder::spawn(db.clone(), Arc::clone(&clock), conversation.clone());
@@ -570,7 +570,6 @@ fn settings_parts(
             db: db.clone(),
             clock: Arc::clone(clock),
             data_dir: dir.clone(),
-            home: std::env::var_os("HOME").map(PathBuf::from),
             config: base.config,
             tokens,
             engines: base.engines,
@@ -694,15 +693,14 @@ struct CrewInputs<'a> {
     monitor: Arc<ContextMonitor>,
 }
 
-/// The task service: crewmates, the wake inbox's producers and the scheduler. `None` (and the task
-/// tools unavailable) only if the shipped routing rules can't be read.
+/// The task service: crewmates, the wake inbox's producers and the scheduler.
 fn crew_tasks(
     inputs: CrewInputs<'_>,
     wakes: Inbox,
     chat: Arc<Conversation>,
     seat_agent: AgentId,
     hooks: TaskHooks,
-) -> Option<TaskService> {
+) -> TaskService {
     let CrewInputs {
         dir,
         db,
@@ -720,7 +718,7 @@ fn crew_tasks(
     let supervisor: Arc<dyn Supervisor> = Arc::new(OsSupervisor::new(Some(Arc::new(recorder))));
     let (scheduler, _scheduler_task) = Scheduler::spawn(Arc::clone(clock));
     let home = std::env::var_os("HOME").map_or_else(|| dir.root().to_owned(), PathBuf::from);
-    match TaskService::wire_with(
+    TaskService::wire_with(
         TaskWiring {
             db: db.clone(),
             clock: Arc::clone(clock),
@@ -739,13 +737,7 @@ fn crew_tasks(
             monitor,
         },
         hooks,
-    ) {
-        Ok(tasks) => Some(tasks),
-        Err(e) => {
-            tracing::error!(error = %e, "the routing rules are unreadable; crewmates are off");
-            None
-        }
-    }
+    )
 }
 
 /// The engines this Mac can run, by kind, and the subscription type `claude` is logged in with,
@@ -1011,10 +1003,6 @@ fn registry_parts(
     decisions: Option<&DecisionService>,
     tasks: Option<&TaskService>,
 ) -> Vec<Arc<dyn ApiPart>> {
-    held.register(
-        HeldKind::AddProject,
-        Arc::new(AddProjectPerformer::new(projects.clone())),
-    );
     // Merges, pushes and GitHub writes, with their cards.
     if let Some(delivery_settling) = settling {
         let merges = Arc::new(MergePerformer::new(delivery_settling.settling.clone()));
@@ -1046,11 +1034,10 @@ fn registry_parts(
     }
     let setup_part = SetupPart::new(setup, Arc::clone(conversation));
     setup_part.start();
-    let mut projects_part = ProjectsPart::new(projects, held.clone());
+    let mut projects_part = ProjectsPart::new(projects);
     if let Some(tasks) = tasks {
         projects_part = projects_part.with_tasks(tasks.clone());
     }
-    projects_part.start(Arc::clone(conversation));
     let mut parts: Vec<Arc<dyn ApiPart>> = vec![
         Arc::new(HeldPart::new(held.clone(), Arc::clone(conversation))),
         Arc::new(projects_part),
@@ -1116,6 +1103,9 @@ fn settling_services(
     });
     verification.set_ci(Arc::new(delivery.clone()));
     tasks.set_close_facts(Arc::new(DeliveryCloseFacts::new(delivery.clone())));
+    tasks.set_outside_watch(Arc::new(qm_core::delivery::outside::OutsideHook::new(
+        delivery.clone(),
+    )));
     Settling {
         settling: SettlingService::new(delivery.clone()),
         delivery,

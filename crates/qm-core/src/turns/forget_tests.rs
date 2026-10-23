@@ -175,8 +175,7 @@ impl Fixture {
             setup,
             probe: None,
             monitor: crate::context_monitor::ContextMonitor::new(Arc::new(SystemClock)),
-        })
-        .unwrap();
+        });
         (svc, job)
     }
     async fn assert_forgotten(&self) {
@@ -201,7 +200,9 @@ impl Fixture {
             "{refusal}"
         );
         let request = qm_tools::handler::StartRequest {
-            project: "p".into(),
+            folder: None,
+            project: Some("p".into()),
+            in_place: false,
             kind: qm_types::domain::TaskKind::Build,
             title: "new".into(),
             goal: "new".into(),

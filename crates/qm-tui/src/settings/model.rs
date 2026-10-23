@@ -14,7 +14,7 @@ use qm_types::ids::{AccountId, ModelId};
 use std::time::{Duration, Instant};
 
 pub(crate) use qm_types::api::{
-    AccountStatus, LoginMethod, LoginProvider as Provider, LoginStatus, LoginStep,
+    AccountStatus, KindTierRow, LoginMethod, LoginProvider as Provider, LoginStatus, LoginStep,
     ModelPlacement as Placement, PinSetting as Pin, QuartermasterChoice as QuartermasterModel,
     QuartermasterNow, SettingsAccount as Account, SettingsModel as Model,
 };
@@ -79,12 +79,12 @@ pub(crate) struct Settings {
     pub(crate) quartermaster_now: Option<QuartermasterNow>,
     pub(crate) providers: Vec<Provider>,
     pub(crate) login: Option<Login>,
-    /// The personal workspace's folder, as Settings shows it (Projects).
-    pub(crate) workspace_folder: String,
     /// Each tier's default effort as routing uses it (`config.toml`'s `[tiers]`).
     pub(crate) tier_efforts: TierEfforts,
     /// The autocompact window every agent compacts at (Routing).
     pub(crate) autocompact_window: AutocompactWindow,
+    /// The Task kinds rows (Routing), in `KindRow::ALL` order.
+    pub(crate) kind_tiers: Vec<KindTierRow>,
     /// Why the core's settings part didn't start this run, shown in place of the tabs that need it.
     pub(crate) unavailable: Option<String>,
 }
@@ -148,20 +148,33 @@ pub(crate) const fn tier_heading(tier: Tier) -> &'static str {
     }
 }
 
-/// Where an empty tier's work goes instead: the nearest tier with a model, looking up first
-/// (low → medium → high → premium), then down. Premium runs on high, then medium, then low.
+/// Where an empty tier's work goes instead: the first tier with a model in routing's fallback
+/// order (`qm_routing::fallback::order`). Premium is never a fallback.
 pub(crate) fn fallback_tier(settings: &Settings, tier: Tier) -> Option<Tier> {
     let filled = |t: Tier| settings.models.iter().any(|m| m.in_tier(t));
-    let order: [Tier; 3] = match tier {
-        Tier::Low => [Tier::Medium, Tier::High, Tier::Premium],
-        Tier::Medium => [Tier::High, Tier::Premium, Tier::Low],
-        Tier::High => [Tier::Premium, Tier::Medium, Tier::Low],
-        Tier::Premium => [Tier::High, Tier::Medium, Tier::Low],
+    let order: &[Tier] = match tier {
+        Tier::Premium => &[Tier::High, Tier::Medium, Tier::Low],
+        Tier::High => &[Tier::Medium, Tier::Low],
+        Tier::Medium => &[Tier::High, Tier::Low],
+        Tier::Low => &[Tier::Medium, Tier::High],
     };
-    order.into_iter().find(|&t| filled(t))
+    order.iter().copied().find(|&t| filled(t))
 }
 
 impl Settings {
+    /// What a Task kinds command changes, shown before the core answers.
+    fn apply_kind_tier(&mut self, command: &Command) {
+        for r in &mut self.kind_tiers {
+            match command {
+                Command::SetKindTier { row, tier } if r.row == *row => {
+                    r.tier = tier.unwrap_or(r.default);
+                }
+                Command::ResetKindTiers => r.tier = r.default,
+                _ => {}
+            }
+        }
+    }
+
     /// The model with `id`.
     pub(crate) fn model(&self, id: &ModelId) -> Option<&Model> {
         self.models.iter().find(|m| &m.id == id)
@@ -281,6 +294,7 @@ impl Settings {
             Command::SetAutocompactWindow { tokens } => {
                 self.autocompact_window = AutocompactWindow::new(*tokens);
             }
+            Command::SetKindTier { .. } | Command::ResetKindTiers => self.apply_kind_tier(command),
             // Only the core can act on the rest (logins it runs, keys it checks).
             _ => {}
         }

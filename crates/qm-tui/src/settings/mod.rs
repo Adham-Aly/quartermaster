@@ -31,7 +31,7 @@ use model::Settings;
 use paint::Painter;
 use qm_types::api::Command;
 use qm_types::domain::Effort;
-use qm_types::domain::Tier;
+use qm_types::domain::{KindRow, Tier};
 use qm_types::ids::ModelId;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -41,8 +41,12 @@ use std::time::Instant;
 
 pub(crate) use input::menu_items;
 
-/// How many rows the Routing tab has: `SettingsView::routing_row` is below it.
-pub(crate) const ROUTING_ROWS: usize = 3;
+/// How many rows the Routing tab has: `SettingsView::routing_row` is below it. The pin, the
+/// Quartermaster and Autocompact, then one per Task kinds row.
+pub(crate) const ROUTING_ROWS: usize = KIND_ROWS_FROM + KindRow::ALL.len();
+
+/// The Routing row of the first Task kinds row.
+pub(crate) const KIND_ROWS_FROM: usize = 3;
 
 /// A Settings tab.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +151,9 @@ pub(crate) enum SettingsHit {
     QuartermasterEffort,
     AutocompactDown,
     AutocompactUp,
+    /// A Task kinds row's level, and "Reset all to defaults".
+    KindTier(KindRow),
+    ResetKinds,
     /// Projects: one of a project's two autonomy buttons (normal, auto).
     ProjectAutonomy(usize, qm_types::domain::Autonomy),
     /// System: the setup check's "Open".
@@ -198,6 +205,8 @@ pub(crate) enum PickFor {
     PinFallback,
     QuartermasterModel,
     QuartermasterEffort,
+    /// The level a Task kinds row routes to.
+    KindTier(KindRow),
     Find,
     KeyProvider,
 }
@@ -212,6 +221,8 @@ pub(crate) enum PickValue {
     NoModel,
     Auto,
     KeyProvider(&'static str),
+    /// A Task kinds row's level; `None` is its default.
+    Tier(Option<Tier>),
 }
 
 /// An open picker: a small list under the control that opened it.
@@ -250,8 +261,6 @@ pub(crate) enum FieldFor {
     ReconnectKey(usize),
     /// A custom endpoint's base URL, asked before its key.
     BaseUrl,
-    /// The personal workspace's folder (Settings ▸ Projects).
-    WorkspaceFolder,
 }
 
 /// An open text field.
@@ -268,9 +277,7 @@ impl std::fmt::Debug for Field {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let text = match self.purpose {
             FieldFor::ApiKey(_) | FieldFor::ReconnectKey(_) => "<redacted>",
-            FieldFor::Label(_) | FieldFor::BaseUrl | FieldFor::WorkspaceFolder => {
-                self.text.as_str()
-            }
+            FieldFor::Label(_) | FieldFor::BaseUrl => self.text.as_str(),
         };
         f.debug_struct("Field")
             .field("purpose", &self.purpose)
@@ -287,6 +294,13 @@ pub(crate) struct Drag {
     pub(crate) over: Option<Zone>,
 }
 
+/// A question Settings asks in the hint bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Confirm {
+    /// "Reset all task kinds to defaults?"
+    ResetKinds,
+}
+
 /// The Settings popup's state, held in `View::settings`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SettingsView {
@@ -301,8 +315,11 @@ pub(crate) struct SettingsView {
     pub(crate) connecting: bool,
     pub(crate) account: Option<usize>,
     pub(crate) board: Option<BoardItem>,
-    /// Routing: 0 the pin, 1 the Quartermaster, 2 the autocompact window (`ROUTING_ROWS` in all).
+    /// Routing: 0 the pin, 1 the Quartermaster, 2 the autocompact window, then the Task kinds
+    /// rows from `KIND_ROWS_FROM` (`ROUTING_ROWS` in all).
     pub(crate) routing_row: usize,
+    /// A question asking in the hint bar: `⏎` says yes, anything else cancels.
+    pub(crate) confirm: Option<Confirm>,
     /// Projects: the selected project row.
     pub(crate) project_row: usize,
     /// Connect: a provider row, or `providers.len()` for the API-key row.
@@ -407,6 +424,13 @@ pub(crate) fn status_hints(app: &App) -> (&'static str, &'static str) {
         connect::hints(view)
     } else if !view.loaded && matches!(view.tab, Tab::Accounts | Tab::ModelLevels | Tab::Routing) {
         ("", "tab next · esc close")
+    } else if view.tab == Tab::Routing && view.confirm == Some(Confirm::ResetKinds) {
+        ("", "Reset all task kinds to defaults? ⏎ yes · esc no")
+    } else if view.tab == Tab::Routing && view.routing_row >= KIND_ROWS_FROM {
+        (
+            "click to change",
+            "⏎ level · r reset · R reset all · space pin · q quartermaster · esc",
+        )
     } else {
         hints(view.tab)
     }
@@ -493,10 +517,7 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
             "space pin · c model · f fallback · q quartermaster · e effort · −/+ window · esc",
         ),
         Tab::System => ("click to open", "s setup check · esc close"),
-        Tab::Projects => (
-            "click to change",
-            "a normal or auto · f personal folder · esc close",
-        ),
+        Tab::Projects => ("click to change", "a normal or auto · esc close"),
     }
 }
 

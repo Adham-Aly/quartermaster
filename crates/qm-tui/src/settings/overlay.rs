@@ -117,11 +117,6 @@ fn draw_field(p: &mut Painter<'_, '_>, body: Rect, field: &Field, app: &App) {
             field.text.clone(),
             "OpenAI-compatible, such as https://llm.example.com/v1",
         ),
-        FieldFor::WorkspaceFolder => (
-            String::from("Personal folder"),
-            field.text.clone(),
-            "Crewmates work in it directly. Nothing moves when you change it.",
-        ),
         FieldFor::ApiKey(provider) => (
             format!("Add {provider} key"),
             "•".repeat(field.text.chars().count()),

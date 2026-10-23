@@ -41,7 +41,6 @@
 
 use crate::api::{ApiPart, Conversation, Handled};
 use crate::config_file;
-use crate::projects::{check_workspace_folder, move_workspace, tilde, workspace_folder};
 use crate::routing::{self, ModelCatalog};
 use crate::turn_io::ChatLog;
 use jiff::Timestamp;
@@ -56,18 +55,17 @@ use qm_store::db::Db;
 use qm_store::models;
 use qm_types::BoxFuture;
 use qm_types::api::{
-    AccountStatus, Command, LoginMethod, LoginProvider, LoginStatus, LoginStep, LoginView,
-    ModelPlacement, PinSetting, QuartermasterChoice, QuartermasterNow, SecretText, SettingsAccount,
-    SettingsModel, SettingsView, Snapshot,
+    AccountStatus, Command, KindTierRow, LoginMethod, LoginProvider, LoginStatus, LoginStep,
+    LoginView, ModelPlacement, PinSetting, QuartermasterChoice, QuartermasterNow, SecretText,
+    SettingsAccount, SettingsModel, SettingsView, Snapshot,
 };
 use qm_types::clock::Clock;
-use qm_types::config::{AlwaysUse, AutocompactWindow, Config, QuartermasterModel};
+use qm_types::config::{AlwaysUse, AutocompactWindow, Config, KindTiers, QuartermasterModel};
 use qm_types::data_dir::DataDir;
-use qm_types::domain::{AccountKind, Effort, EngineKind, Provider};
+use qm_types::domain::{AccountKind, Effort, EngineKind, KindRow, Provider, Tier};
 use qm_types::ids::{AccountId, ModelId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 use tokio::sync::watch;
@@ -77,8 +75,6 @@ pub struct SettingsDeps {
     pub db: Db,
     pub clock: Arc<dyn Clock>,
     pub data_dir: DataDir,
-    /// Your home folder, for `~` in the personal folder's path (`HOME`, per Mac).
-    pub home: Option<PathBuf>,
     /// The current settings; the part saves a change to `config.toml` and then sends it here.
     pub config: watch::Sender<Config>,
     /// The one token keeper over the credential store the provider engine reads too; new logins
@@ -108,7 +104,6 @@ struct Inner {
     db: Db,
     clock: Arc<dyn Clock>,
     data_dir: DataDir,
-    home: Option<PathBuf>,
     config: watch::Sender<Config>,
     tokens: Arc<TokenKeeper>,
     engines: BTreeMap<EngineKind, Arc<dyn Engine>>,
@@ -146,7 +141,6 @@ impl SettingsPart {
                 db: deps.db,
                 clock: deps.clock,
                 data_dir: deps.data_dir,
-                home: deps.home,
                 config: deps.config,
                 tokens: deps.tokens,
                 engines: deps.engines,
@@ -300,6 +294,11 @@ impl ApiPart for SettingsPart {
                 let tokens = *tokens;
                 Box::pin(async move { inner.set_autocompact_window(tokens).await })
             }
+            Command::SetKindTier { row, tier } => {
+                let (row, tier) = (*row, *tier);
+                Box::pin(async move { inner.set_kind_tier(row, tier).await })
+            }
+            Command::ResetKindTiers => Box::pin(async move { inner.reset_kind_tiers().await }),
             Command::SetWorkspaceFolder { folder } => {
                 let folder = folder.clone();
                 Box::pin(async move { inner.set_workspace_folder(folder).await })
@@ -495,39 +494,36 @@ impl Inner {
         }
     }
 
-    /// Points the personal workspace at a folder you chose. The folder is checked, and the change
-    /// refused while personal tasks are open; then `[workspace] folder` is saved. No files move.
-    async fn set_workspace_folder(&self, folder: String) -> Handled {
-        let checked = match check_workspace_folder(&folder, self.home.as_deref(), &self.data_dir) {
-            Ok(path) => path,
-            Err(why) => {
-                return self
-                    .note(&format!("The personal folder wasn't changed: {why}."))
-                    .await;
-            }
-        };
-        let moving = checked.clone();
-        let moved = match self
-            .db
-            .call(move |conn| Ok(move_workspace(conn, &moving)))
-            .await
-        {
-            Ok(moved) => moved,
-            Err(e) => Err(e.to_string()),
-        };
-        if let Err(why) = moved {
-            return self
-                .note(&format!("The personal folder wasn't changed: {why}."))
-                .await;
-        }
-        let saved = folder.trim().to_owned();
-        match self.save_config(|c| c.workspace.folder = Some(saved)).await {
+    /// Routes a Task kinds row to `tier` (`None`: its default). The next task routed uses it,
+    /// and waiting ones at the next reroute.
+    async fn set_kind_tier(&self, row: KindRow, tier: Option<Tier>) -> Handled {
+        match self.save_config(|c| c.routing.kinds.set(row, tier)).await {
             Ok(()) => Handled::Changed,
             Err(e) => {
-                self.note(&format!("The personal folder couldn't be saved: {e}"))
+                self.note(&format!("The level for {row} work couldn't be saved: {e}"))
                     .await
             }
         }
+    }
+
+    /// Puts every Task kinds row back to its default, removing `[routing.kinds]`.
+    async fn reset_kind_tiers(&self) -> Handled {
+        match self
+            .save_config(|c| c.routing.kinds = KindTiers::default())
+            .await
+        {
+            Ok(()) => Handled::Changed,
+            Err(e) => {
+                self.note(&format!("The task kinds couldn't be reset: {e}"))
+                    .await
+            }
+        }
+    }
+
+    /// The personal workspace is gone: work runs in whatever folder it names.
+    async fn set_workspace_folder(&self, _folder: String) -> Handled {
+        self.note("There's no personal folder any more: work runs in the folder you name, which becomes a project when it starts.")
+            .await
     }
 
     // ---- logins ----
@@ -1032,10 +1028,9 @@ impl Inner {
             Some(pin) => PinSetting::new(true, Some(pin.model.clone()), pin.fallback.clone()),
             None => PinSetting::default(),
         };
-        let folder = workspace_folder(&config, &self.data_dir, self.home.as_deref());
-        view.workspace_folder = tilde(&folder, self.home.as_deref());
         view.tier_efforts = config.tiers.clone();
         view.autocompact_window = config.compaction.autocompact_window;
+        view.kind_tiers = kind_tier_rows(&config.routing.kinds, &view.models);
         view.quartermaster = match &config.quartermaster.model {
             QuartermasterModel::Model(m) => QuartermasterChoice::Model(m.clone()),
             QuartermasterModel::Auto => QuartermasterChoice::Auto,
@@ -1091,6 +1086,27 @@ struct Login<'a> {
 }
 
 /// Who a login waits for.
+/// Every Task kinds row as Settings shows it: its tier, its default, and where its work runs
+/// while its tier has no model (routing's own fallback order).
+fn kind_tier_rows(kinds: &KindTiers, models: &[SettingsModel]) -> Vec<KindTierRow> {
+    let filled = |t: Tier| models.iter().any(|m| m.in_tier(t));
+    KindRow::ALL
+        .iter()
+        .map(|&row| {
+            let tier = kinds.tier(row);
+            let mut view = KindTierRow::new(row, tier, row.default_tier());
+            if !filled(tier) {
+                view.empty = true;
+                view.runs_on = qm_routing::fallback::order(tier)
+                    .iter()
+                    .copied()
+                    .find(|&t| filled(t));
+            }
+            view
+        })
+        .collect()
+}
+
 fn waiting_for(provider: Provider) -> String {
     match provider {
         Provider::Copilot => "GitHub".to_owned(),

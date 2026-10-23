@@ -176,7 +176,7 @@ pub struct TierModels {
     pub note: Option<String>,
 }
 
-/// The note on the premium tier: it is never picked automatically.
+/// The note on the premium tier: it is used only when asked for or set for a task kind.
 pub const PREMIUM_NOTE: &str = "only when you ask";
 
 /// A task's one-line state: the detail when the app has it, else its status in words.

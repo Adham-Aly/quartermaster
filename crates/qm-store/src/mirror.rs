@@ -720,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn unread_closed_tasks_keep_removed_projects_and_retired_supervisors() {
+    fn unread_closed_tasks_keep_retired_supervisors_and_projects_stay() {
         let scratch = Scratch::new("closed-task-dependencies");
         {
             let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("mirror");
@@ -765,7 +765,8 @@ mod tests {
         drop((mem, mirror));
         let (mem, _) = Mirror::open(&scratch.state()).expect("restart after delivery");
         assert_eq!(count(&mem, "tasks"), 0);
-        assert_eq!(count(&mem, "projects"), 0);
+        // A retired project is kept, so its settings come back when work returns to its folder.
+        assert_eq!(count(&mem, "projects"), 1);
         assert_eq!(count(&mem, "secondmates"), 0);
     }
 

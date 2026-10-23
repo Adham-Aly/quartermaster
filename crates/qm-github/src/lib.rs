@@ -6,17 +6,12 @@
 //! succeeded and every required check is present), and merges through the asynchronous merge API
 //! with the approved SHA as a precondition, so GitHub refuses if the head moved.
 //!
-//! The credentials fence lives here too: crewmate processes get a logged-out `gh` and
-//! environment-only git config that makes any direct push fail; only the app pushes, after its
-//! checks, in its own environment.
-//!
 //! The crate knows GitHub and nothing of tasks: the core maps its types to the rules.
 //!
 //! - [`token`]: [`TokenSource`], [`GhCli`], [`GithubToken`].
 //! - [`repo`]: [`RepoRef`] and remote URL parsing.
 //! - [`client`]: [`GithubClient`] (octocrab per token, the rate limit).
 //! - [`pulls`], [`checks`], [`logs`], [`content`]: the calls.
-//! - [`fence`]: the crewmate fence's constants and their check.
 //! - [`release_meta`]: what GitHub shows after a release tag is pushed (the tag, its release
 //!   and the workflow runs on its commit), through closed, capped, metadata-only reads.
 //! - [`releases`]: a public repository's newest release, read without a login (the app's update
@@ -26,7 +21,6 @@ pub mod checks;
 pub mod client;
 pub mod content;
 mod error;
-pub mod fence;
 pub mod logs;
 pub mod pulls;
 pub mod release_meta;

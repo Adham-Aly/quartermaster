@@ -19,6 +19,7 @@ pub static TOOLS: &[ToolDef] = &[
     ToolDef::of::<defs::SecondmateStartCrewmateTool>(),
     ToolDef::of::<defs::MessageTaskTool>(),
     ToolDef::of::<defs::StopTaskTool>(),
+    ToolDef::of::<defs::SetTaskProjectTool>(),
     ToolDef::of::<defs::CloseTaskTool>(),
     ToolDef::of::<defs::SettleTaskTool>(),
     ToolDef::of::<defs::PresentHoldTool>(),
@@ -34,9 +35,8 @@ pub static TOOLS: &[ToolDef] = &[
     ToolDef::of::<defs::ParentReportTool>(),
     // Projects.
     ToolDef::of::<defs::FindProjectFolderTool>(),
-    ToolDef::of::<defs::ProposeProjectTool>(),
+    ToolDef::of::<defs::CloneRepositoryTool>(),
     ToolDef::of::<defs::ConfigureProjectTool>(),
-    ToolDef::of::<defs::RemoveProjectTool>(),
     // Standing instructions and schedules.
     ToolDef::of::<defs::SaveInstructionTool>(),
     ToolDef::of::<defs::DropInstructionTool>(),

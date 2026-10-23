@@ -166,7 +166,6 @@ pub struct AddProjectPayload {
 pub struct SecondmatePayload {
     pub name: String,
     pub scope: String,
-    pub projects: Vec<String>,
     pub base_branch: Option<String>,
 }
 

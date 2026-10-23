@@ -7,6 +7,7 @@
 
 use qm_types::config::Config;
 use qm_types::data_dir::DataDir;
+use qm_types::domain::{KindRow, Tier};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -18,6 +19,10 @@ pub struct Loaded {
     pub config: Config,
     /// Dotted paths such as `tiers.ultra`, in file order.
     pub unknown_keys: Vec<String>,
+    /// Settings whose value this version can't use, each kept at its default: one plain line
+    /// per setting, such as `routing.kinds.review = "fast" isn't a level; review follows its
+    /// default (high)`.
+    pub bad_values: Vec<String>,
 }
 
 /// Why `config.toml` couldn't be read or written.
@@ -67,7 +72,37 @@ pub fn parse(text: &str) -> Result<Loaded, toml::de::Error> {
     Ok(Loaded {
         config,
         unknown_keys,
+        bad_values: bad_kind_tiers(text),
     })
+}
+
+/// The `[routing.kinds]` rows whose value isn't a tier. `KindTiers` loads each row on its own and
+/// leaves these at their defaults; this names them for the log.
+fn bad_kind_tiers(text: &str) -> Vec<String> {
+    let Ok(table) = text.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let Some(kinds) = table
+        .get("routing")
+        .and_then(|r| r.get("kinds"))
+        .and_then(toml::Value::as_table)
+    else {
+        return Vec::new();
+    };
+    kinds
+        .iter()
+        .filter_map(|(key, value)| {
+            let row = key.parse::<KindRow>().ok()?;
+            if value.as_str().is_some_and(|v| v.parse::<Tier>().is_ok()) {
+                return None;
+            }
+            Some(format!(
+                "routing.kinds.{key} = {value} isn't a level (premium, high, medium or low); \
+                 {key} follows its default ({})",
+                row.default_tier()
+            ))
+        })
+        .collect()
 }
 
 /// Saves `config` as the data directory's `config.toml`, atomically.
@@ -142,5 +177,123 @@ mod tests {
     #[test]
     fn a_window_that_is_not_a_number_is_an_error() {
         assert!(parse("[compaction]\nautocompact_window = \"big\"\n").is_err());
+    }
+
+    /// Every row, with `review` and `teach` changed.
+    const ALL_ROWS: &str = "[routing.kinds]
+lookup = \"low\"
+build = \"high\"
+build_on_finished_plan = \"medium\"
+fix = \"high\"
+fix_on_confirmed_diagnosis = \"medium\"
+plan = \"high\"
+research = \"high\"
+teach = \"low\"
+review = \"premium\"
+reproduce = \"high\"
+unclear = \"high\"
+";
+
+    #[test]
+    fn no_kinds_section_means_every_default_and_none_is_written() {
+        let loaded = parse("").unwrap();
+        for &row in KindRow::ALL {
+            assert_eq!(loaded.config.routing.kinds.tier(row), row.default_tier());
+        }
+        let text = toml::to_string_pretty(&loaded.config).unwrap();
+        assert!(!text.contains("kinds"), "{text}");
+    }
+
+    #[test]
+    fn the_first_change_writes_every_row() {
+        let mut config = Config::default();
+        config
+            .routing
+            .kinds
+            .set(KindRow::Review, Some(Tier::Premium));
+        config.routing.kinds.set(KindRow::Teach, Some(Tier::Low));
+        let text = toml::to_string_pretty(&config).unwrap();
+        assert!(text.contains(ALL_ROWS), "{text}");
+        // And it reads back the same.
+        let back = parse(&text).unwrap();
+        assert_eq!(
+            back.config.routing.kinds.tier(KindRow::Review),
+            Tier::Premium
+        );
+        assert_eq!(back.config.routing.kinds.tier(KindRow::Teach), Tier::Low);
+        assert_eq!(
+            toml::to_string_pretty(&back.config).unwrap(),
+            text,
+            "round trip"
+        );
+        assert_eq!(back.unknown_keys, Vec::<String>::new());
+        assert_eq!(back.bad_values, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_missing_row_follows_its_default_and_is_written_on_the_next_save() {
+        let loaded = parse("[routing.kinds]\nreview = \"low\"\n").unwrap();
+        let kinds = &loaded.config.routing.kinds;
+        assert_eq!(kinds.tier(KindRow::Review), Tier::Low);
+        assert_eq!(kinds.tier(KindRow::Build), Tier::High);
+        assert_eq!(kinds.tier(KindRow::BuildOnFinishedPlan), Tier::Medium);
+        let text = toml::to_string_pretty(&loaded.config).unwrap();
+        assert!(
+            text.contains("build_on_finished_plan = \"medium\""),
+            "{text}"
+        );
+        assert!(text.contains("review = \"low\""), "{text}");
+        let section = text.split("[routing.kinds]\n").nth(1).unwrap();
+        let section = section.split("\n\n").next().unwrap();
+        assert_eq!(section.lines().count(), KindRow::ALL.len(), "{text}");
+    }
+
+    #[test]
+    fn an_unknown_kind_key_is_reported_once() {
+        let loaded = parse("[routing.kinds]\nreview = \"low\"\nsurvey = \"high\"\n").unwrap();
+        assert_eq!(loaded.unknown_keys, ["routing.kinds.survey"]);
+        assert_eq!(loaded.config.routing.kinds.tier(KindRow::Review), Tier::Low);
+    }
+
+    #[test]
+    fn a_bad_value_leaves_only_its_row_at_the_default() {
+        let text = "[routing.kinds]\nreview = \"fast\"\nteach = 3\nplan = \"low\"\n\
+                    [compaction]\nautocompact_window = 300000\n";
+        let loaded = parse(text).unwrap();
+        let kinds = &loaded.config.routing.kinds;
+        assert_eq!(kinds.tier(KindRow::Review), Tier::High);
+        assert_eq!(kinds.tier(KindRow::Teach), Tier::High);
+        assert_eq!(kinds.tier(KindRow::Plan), Tier::Low);
+        assert_eq!(
+            u32::from(loaded.config.compaction.autocompact_window),
+            300_000,
+            "the rest of the file still loads"
+        );
+        assert_eq!(loaded.bad_values.len(), 2, "{:?}", loaded.bad_values);
+        assert!(loaded.bad_values[0].contains("routing.kinds.review = \"fast\""));
+        assert!(loaded.bad_values[0].contains("review follows its default (high)"));
+        assert!(loaded.bad_values[1].contains("routing.kinds.teach = 3"));
+        assert_eq!(loaded.unknown_keys, Vec::<String>::new());
+    }
+
+    #[test]
+    fn resetting_every_row_removes_the_section() {
+        let mut loaded = parse(ALL_ROWS).unwrap();
+        loaded.config.routing.kinds = qm_types::config::KindTiers::default();
+        let text = toml::to_string_pretty(&loaded.config).unwrap();
+        assert!(!text.contains("kinds"), "{text}");
+    }
+
+    #[test]
+    fn the_kinds_sit_beside_the_pin() {
+        let text = "[routing]\nalways_use = { model = \"claude-opus-5-5\" }\n\n[routing.kinds]\nunclear = \"low\"\n";
+        let loaded = parse(text).unwrap();
+        assert!(loaded.config.routing.always_use.is_some());
+        assert_eq!(
+            loaded.config.routing.kinds.tier(KindRow::Unclear),
+            Tier::Low
+        );
+        let back = parse(&toml::to_string_pretty(&loaded.config).unwrap()).unwrap();
+        assert_eq!(back.config, loaded.config);
     }
 }

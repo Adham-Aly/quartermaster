@@ -1,4 +1,4 @@
-//! `find_project_folder`, `propose_project`, `configure_project` and `remove_project`.
+//! `find_project_folder`, `clone_repository` and `configure_project`.
 //!
 //! Each handler checks what it can from the arguments alone, then hands the call to the core's
 //! project registry through the [`ToolHost`](crate::handler::ToolHost), which checks the facts
@@ -7,13 +7,11 @@
 //! either is refused before it gets here (unknown fields are refused).
 
 use crate::defs::{
-    Ack, ConfigureProjectArgs, ConfigureProjectTool, FindProjectFolderArgs, FindProjectFolderTool,
-    FoundFolders, Held, ProposeProjectArgs, ProposeProjectTool, RemoveProjectArgs,
-    RemoveProjectTool,
+    Ack, CloneRepositoryArgs, CloneRepositoryTool, ConfigureProjectArgs, ConfigureProjectTool,
+    FindProjectFolderArgs, FindProjectFolderTool, FoundFolders,
 };
 use crate::handler::{Handle, ToolCx, ToolFailure};
 use qm_types::BoxFuture;
-use qm_types::domain::ProjectAction;
 use qm_types::error::Refusal;
 use std::path::{Component, Path};
 
@@ -76,8 +74,8 @@ impl Handle for FindProjectFolderTool {
             }
             if name.contains('/') {
                 return Err(refuse(
-                    "find_project_folder looks up one folder name, not a path; to link a path \
-                     you already know, use propose_project",
+                    "find_project_folder looks up one folder name, not a path; to work in a \
+                     path you already know, name it to start_crewmate",
                 ));
             }
             let folders = cx.host.find_project_folder(cx.caller, name).await?;
@@ -86,54 +84,24 @@ impl Handle for FindProjectFolderTool {
     }
 }
 
-impl Handle for ProposeProjectTool {
+impl Handle for CloneRepositoryTool {
     fn handle<'a>(
         cx: &'a ToolCx<'a>,
-        args: ProposeProjectArgs,
-    ) -> BoxFuture<'a, Result<Held, ToolFailure>> {
+        args: CloneRepositoryArgs,
+    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
         Box::pin(async move {
-            let mut args = args;
-            args.name = args.name.trim().to_owned();
-            check_project_name(&args.name)?;
-            let blank = |v: &Option<String>| v.as_deref().is_none_or(|s| s.trim().is_empty());
-            for field in [&mut args.path, &mut args.url, &mut args.location] {
-                if blank(field) {
-                    *field = None;
-                }
+            let url = args.url.trim();
+            if url.is_empty() || url.chars().any(char::is_whitespace) || url.starts_with('-') {
+                return Err(refuse(
+                    "clone_repository needs one repository URL, or owner/name for GitHub",
+                ));
             }
-            match args.action {
-                ProjectAction::Link => {
-                    if args.path.is_none() {
-                        return Err(refuse("linking a project needs the folder's path"));
-                    }
-                    if args.url.is_some() || args.location.is_some() {
-                        return Err(refuse(
-                            "linking takes only the folder's path; the folder stays where it is, \
-                             so url and location don't apply",
-                        ));
-                    }
-                }
-                ProjectAction::Clone => {
-                    if args.url.is_none() {
-                        return Err(refuse("cloning a project needs the repository's url"));
-                    }
-                    if args.path.is_some() {
-                        return Err(refuse(
-                            "cloning takes a url and, optionally, a location (the parent folder); \
-                             path is for linking",
-                        ));
-                    }
-                }
-                ProjectAction::Create => {
-                    if args.path.is_some() || args.url.is_some() {
-                        return Err(refuse(
-                            "creating a project takes a name and, optionally, a location (the \
-                             parent folder); path and url don't apply",
-                        ));
-                    }
-                }
-            }
-            cx.host.propose_project(cx.caller, &args).await
+            let location = args
+                .location
+                .as_deref()
+                .map(str::trim)
+                .filter(|l| !l.is_empty());
+            cx.host.clone_repository(cx.caller, url, location).await
         })
     }
 }
@@ -186,21 +154,6 @@ impl Handle for ConfigureProjectTool {
                 ));
             }
             cx.host.configure_project(cx.caller, &args).await
-        })
-    }
-}
-
-impl Handle for RemoveProjectTool {
-    fn handle<'a>(
-        cx: &'a ToolCx<'a>,
-        args: RemoveProjectArgs,
-    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
-        Box::pin(async move {
-            let project = args.project.trim();
-            if project.is_empty() {
-                return Err(refuse("remove_project needs the project's name"));
-            }
-            cx.host.remove_project(cx.caller, project).await
         })
     }
 }

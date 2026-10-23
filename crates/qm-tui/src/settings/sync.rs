@@ -34,10 +34,10 @@ impl Settings {
             quartermaster_now: view.quartermaster_now.clone(),
             providers: view.providers.clone(),
             login: view.login.as_ref().map(Login::from_view),
-            workspace_folder: view.workspace_folder.clone(),
             unavailable: view.unavailable.clone(),
             tier_efforts: view.tier_efforts.clone(),
             autocompact_window: view.autocompact_window,
+            kind_tiers: view.kind_tiers.clone(),
         }
     }
 }

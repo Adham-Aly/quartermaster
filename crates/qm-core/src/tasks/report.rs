@@ -1,10 +1,12 @@
 //! A crewmate's `report`.
 //!
-//! [`check_report`] checks the shape against the task's kind, level and delivery (pure); then the
-//! facts: on a done code report the task's own commit names and the head commit; the
-//! [`ReportGate`] (checks green in direct-PR mode, the review's state, the repair limit). Then one
-//! transaction: the `reports` row, the status (`reported`, or `waiting` for a decision), and the
-//! supervisor's wake. An answer-only task's answer is kept in its report row, nowhere else.
+//! On a done report in a worktree, the task's own commits decide what it delivered: commits make it
+//! code (their names are checked and the head recorded), none make it an answer. In place, the
+//! headings decide. [`check_report`] then checks the shape against what was delivered, the kind,
+//! level and delivery (pure); then the [`ReportGate`] (checks green in direct-PR mode, the review's
+//! state, the repair limit). Then one transaction: the `reports` row, the status (`reported`, or
+//! `waiting` for a decision), and the supervisor's wake. An answer is kept in its report row,
+//! nowhere else.
 
 use super::lifecycle::{TaskEvent, next_for};
 use super::{TaskService, cut_chars, failed, new_wake, own_commits_failure, refuse};
@@ -12,6 +14,7 @@ use crate::inbox::Inbox;
 use crate::inbox::Notify;
 use jiff::Timestamp;
 use qm_git::Repo;
+use qm_policy::delivery::{Deliverable, DeliveredFacts, deliverable};
 use qm_policy::names::{Boundary, check_commits};
 use qm_store::StoreError;
 use qm_store::reports::{self, NewReport};
@@ -93,11 +96,13 @@ fn blank(s: Option<&String>) -> bool {
     s.is_none_or(|s| s.trim().is_empty())
 }
 
-/// The report's shape against the task (pure).
+/// The report's shape against the task and what it delivered (pure). The kind only adds its own
+/// parts: a review's verdict, a reproduction's `reproduced`.
 pub fn check_report(
     kind: TaskKind,
     level: Option<VerificationLevel>,
     delivery: DeliveryMode,
+    delivered: Deliverable,
     args: &ReportArgs,
 ) -> Result<(), Refusal> {
     if args.review.is_some() && kind != TaskKind::Review {
@@ -105,73 +110,27 @@ pub fn check_report(
             "only a review task reports a review; leave review out",
         ));
     }
-    if args.diagnosis && kind != TaskKind::Research {
-        return Err(Refusal::new(
-            "only a research task marks its answer as a diagnosis",
-        ));
-    }
     match args.outcome {
         ReportOutcome::Done => {
-            if kind.can_change_code() {
-                let headings_required = delivery != DeliveryMode::BuildInPlace
-                    && matches!(
-                        level,
-                        Some(VerificationLevel::Standard | VerificationLevel::Reviewed)
-                    );
-                if headings_required {
-                    let missing: Vec<&str> = [
-                        (&args.intent, "Intent"),
-                        (&args.what_changed, "What changed"),
-                        (&args.verified, "Verified"),
-                        (&args.risk, "Risk"),
-                        (&args.not_done, "Not done"),
-                    ]
-                    .into_iter()
-                    .filter(|(v, _)| blank(v.as_ref()))
-                    .map(|(_, name)| name)
-                    .collect();
-                    if !missing.is_empty() {
-                        let level = level.map_or("standard", VerificationLevel::as_str);
-                        return Err(Refusal::new(format!(
-                            "A done report at the {level} level needs all five headings; missing: {}",
-                            missing.join(", ")
-                        )));
+            if kind == TaskKind::Reproduce {
+                check_reproduced(args)?;
+            }
+            if kind == TaskKind::Review && args.review.is_none() {
+                return Err(Refusal::new(
+                    "a review's done report carries its verdict, findings and risk in review",
+                ));
+            }
+            match delivered {
+                Deliverable::Code => check_headings(level, delivery, args)?,
+                Deliverable::Answer => {
+                    if blank(args.answer.as_ref()) {
+                        let why = if delivery == DeliveryMode::Folder {
+                            "a done report carries the answer, or the five headings if you changed files"
+                        } else {
+                            "your branch has no commits of its own, so this done report delivers an answer: carry it in answer, or commit your work first"
+                        };
+                        return Err(Refusal::new(why));
                     }
-                }
-            } else {
-                if blank(args.answer.as_ref()) {
-                    return Err(Refusal::new(
-                        "a done report on an answer-only task carries the answer",
-                    ));
-                }
-                if kind == TaskKind::Reproduce {
-                    let Some(reproduced) = args.reproduced else {
-                        return Err(Refusal::new(
-                            "a reproduction's done report says reproduced: true or false",
-                        ));
-                    };
-                    let first = args
-                        .answer
-                        .as_deref()
-                        .and_then(|a| a.lines().find(|l| !l.trim().is_empty()))
-                        .unwrap_or("")
-                        .trim()
-                        .to_lowercase();
-                    let expected = if reproduced {
-                        "reproduced: yes"
-                    } else {
-                        "reproduced: no"
-                    };
-                    if first != expected {
-                        return Err(Refusal::new(format!(
-                            "a reproduction's answer opens with the line \"{expected}\", matching reproduced"
-                        )));
-                    }
-                }
-                if kind == TaskKind::Review && args.review.is_none() {
-                    return Err(Refusal::new(
-                        "a review's done report carries its verdict, findings and risk in review",
-                    ));
                 }
             }
         }
@@ -186,6 +145,68 @@ pub fn check_report(
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+/// A done report that delivers code: all five headings at standard and reviewed.
+fn check_headings(
+    level: Option<VerificationLevel>,
+    delivery: DeliveryMode,
+    args: &ReportArgs,
+) -> Result<(), Refusal> {
+    let headings_required = delivery != DeliveryMode::BuildInPlace
+        && matches!(
+            level,
+            Some(VerificationLevel::Standard | VerificationLevel::Reviewed)
+        );
+    if !headings_required {
+        return Ok(());
+    }
+    let missing: Vec<&str> = [
+        (&args.intent, "Intent"),
+        (&args.what_changed, "What changed"),
+        (&args.verified, "Verified"),
+        (&args.risk, "Risk"),
+        (&args.not_done, "Not done"),
+    ]
+    .into_iter()
+    .filter(|(v, _)| blank(v.as_ref()))
+    .map(|(_, name)| name)
+    .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let level = level.map_or("standard", VerificationLevel::as_str);
+    Err(Refusal::new(format!(
+        "A done report that delivers code at the {level} level needs all five headings; missing: {}",
+        missing.join(", ")
+    )))
+}
+
+/// A reproduction's done report says `reproduced`, and its answer opens with the matching line.
+fn check_reproduced(args: &ReportArgs) -> Result<(), Refusal> {
+    let Some(reproduced) = args.reproduced else {
+        return Err(Refusal::new(
+            "a reproduction's done report says reproduced: true or false",
+        ));
+    };
+    let first = args
+        .answer
+        .as_deref()
+        .and_then(|a| a.lines().find(|l| !l.trim().is_empty()))
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    let expected = if reproduced {
+        "reproduced: yes"
+    } else {
+        "reproduced: no"
+    };
+    if first != expected {
+        return Err(Refusal::new(format!(
+            "a reproduction's answer opens with the line \"{expected}\", matching reproduced"
+        )));
     }
     Ok(())
 }
@@ -272,18 +293,15 @@ pub(crate) async fn callers_task(
         .ok_or_else(|| refuse(format!("{task} doesn't exist")))
 }
 
-/// Why a re-report can't be taken now: the task is settling and its approval is no longer pending,
-/// so a merge or push of the reported head is under way. `None` otherwise.
-/// Whether a report must have the task's own commits checked: a done report on code work in a git
-/// mode. A folder task has no commits; its edits in the folder are the delivery.
-pub(crate) fn needs_own_commits(
-    outcome: ReportOutcome,
-    kind: TaskKind,
-    delivery: DeliveryMode,
-) -> bool {
-    outcome == ReportOutcome::Done && kind.can_change_code() && delivery != DeliveryMode::Folder
+/// Whether a done report must have the worktree's own commits read: every done report in a git
+/// mode, whatever the kind, since commits are what make it code. A folder task has no commits; its
+/// edits in the folder are the delivery.
+pub(crate) fn needs_own_commits(outcome: ReportOutcome, delivery: DeliveryMode) -> bool {
+    outcome == ReportOutcome::Done && delivery != DeliveryMode::Folder
 }
 
+/// Why a re-report can't be taken now: the task is settling and its approval is no longer pending,
+/// so a merge or push of the reported head is under way. `None` otherwise.
 fn settle_under_way(row: &TaskRow, pending_holds: usize) -> Option<String> {
     (row.status == TaskStatus::Settling && pending_holds == 0).then(|| {
         format!(
@@ -303,12 +321,6 @@ pub(crate) async fn record(
 ) -> Result<Ack, ToolFailure> {
     let row = callers_task(svc, caller).await?;
     let task = row.id;
-    check_report(
-        row.kind,
-        row.verification.map(|(l, _)| l),
-        row.delivery,
-        &args,
-    )?;
     // A plan task: `plan.md` is checked for the live mode, and a round under normal autonomy goes
     // to the user (waiting on them, no supervisor wake) rather than to the supervisor.
     let plan = if row.kind == TaskKind::Plan {
@@ -348,10 +360,11 @@ pub(crate) async fn record(
     }
     let to = next_for(task, row.status, event)?;
 
-    // On done for code work in a git mode: the task's own commit names, and the head commit. A
-    // folder task has no commits: its edits in the folder are the delivery.
+    // On done in a git mode: the task's own commits. Commits make the report code (their names
+    // are checked and the head recorded); none make it an answer. A folder task has no commits:
+    // its headings decide.
     let mut head: Option<CommitSha> = None;
-    if needs_own_commits(args.outcome, row.kind, row.delivery) {
+    if needs_own_commits(args.outcome, row.delivery) {
         let paths = svc.deps().data_dir.task(task);
         let project = svc
             .db()
@@ -359,14 +372,6 @@ pub(crate) async fn record(
             .await
             .map_err(|e| failed(&e))?
             .ok_or_else(|| refuse(format!("{task}'s project is gone")))?;
-        let models: Vec<ModelId> = svc
-            .db()
-            .call(|conn| qm_store::models::pool(conn))
-            .await
-            .map_err(|e| failed(&e))?
-            .into_iter()
-            .flat_map(|p| [p.facts.model, p.facts.canonical])
-            .collect();
         let git = svc.deps().git.clone();
         let branch = row
             .base_branch
@@ -385,18 +390,35 @@ pub(crate) async fn record(
         .await
         .map_err(|e| failed(&e))?
         .map_err(|e| own_commits_failure(&e))?;
-        if messages.is_empty() {
-            return Err(refuse(
-                "a done report on code work needs at least one commit of the task's own on its branch",
-            ));
+        if !messages.is_empty() {
+            let models: Vec<ModelId> = svc
+                .db()
+                .call(|conn| qm_store::models::pool(conn))
+                .await
+                .map_err(|e| failed(&e))?
+                .into_iter()
+                .flat_map(|p| [p.facts.model, p.facts.canonical])
+                .collect();
+            check_commits(
+                messages.iter().map(|(_, m)| m.as_str()),
+                &models,
+                Boundary::DoneReport,
+            )?;
+            head = worktree_head;
         }
-        check_commits(
-            messages.iter().map(|(_, m)| m.as_str()),
-            &models,
-            Boundary::DoneReport,
-        )?;
-        head = worktree_head;
     }
+    let delivered = deliverable(DeliveredFacts {
+        in_place: row.delivery == DeliveryMode::Folder,
+        own_commits: head.is_some(),
+        headings: crate::verification::gate::any_heading(&args),
+    });
+    check_report(
+        row.kind,
+        row.verification.map(|(l, _)| l),
+        row.delivery,
+        delivered,
+        &args,
+    )?;
     if args.outcome == ReportOutcome::Done {
         svc.deps()
             .gate
@@ -568,10 +590,118 @@ pub(crate) async fn record(
     })
     .await
     .map_err(|e| failed(&e))?;
+    svc.tell_outside(task, true);
     if let Some(plan) = plan {
         super::plan::after_report(svc, task, plan).await;
     }
     Ok(Ack {
         note: ack.to_owned(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn done() -> ReportArgs {
+        ReportArgs {
+            outcome: ReportOutcome::Done,
+            intent: None,
+            what_changed: None,
+            verified: None,
+            risk: None,
+            not_done: None,
+            answer: None,
+            reproduced: None,
+            diagnosis: false,
+            review: None,
+            blockers: Vec::new(),
+        }
+    }
+
+    fn all_headings() -> ReportArgs {
+        let h = || Some("x".to_owned());
+        ReportArgs {
+            intent: h(),
+            what_changed: h(),
+            verified: h(),
+            risk: h(),
+            not_done: h(),
+            ..done()
+        }
+    }
+
+    const STANDARD: Option<VerificationLevel> = Some(VerificationLevel::Standard);
+
+    #[test]
+    fn what_was_delivered_decides_the_shape_not_the_kind() {
+        let pr = DeliveryMode::DirectPr;
+        // A research task that committed reports like code.
+        assert!(
+            check_report(
+                TaskKind::Research,
+                STANDARD,
+                pr,
+                Deliverable::Code,
+                &all_headings()
+            )
+            .is_ok()
+        );
+        assert!(
+            check_report(TaskKind::Research, STANDARD, pr, Deliverable::Code, &done()).is_err()
+        );
+        // A build task with no commits delivers an answer.
+        let answer = ReportArgs {
+            answer: Some("it's in the docs".to_owned()),
+            ..done()
+        };
+        assert!(check_report(TaskKind::Build, STANDARD, pr, Deliverable::Answer, &answer).is_ok());
+        let refusal = check_report(TaskKind::Build, STANDARD, pr, Deliverable::Answer, &done())
+            .expect_err("no answer");
+        assert!(
+            refusal.to_string().contains("commit your work"),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn any_kind_may_mark_a_diagnosis_or_reproduced_but_only_reviews_report_a_review() {
+        let pr = DeliveryMode::DirectPr;
+        let marked = ReportArgs {
+            answer: Some("the cause".to_owned()),
+            diagnosis: true,
+            reproduced: Some(true),
+            ..done()
+        };
+        for kind in [TaskKind::Lookup, TaskKind::Fix, TaskKind::Research] {
+            assert!(check_report(kind, STANDARD, pr, Deliverable::Answer, &marked).is_ok());
+        }
+        // A reproduction still needs reproduced, matching its answer's first line.
+        let plain = ReportArgs {
+            answer: Some("reproduced: yes".to_owned()),
+            ..done()
+        };
+        assert!(
+            check_report(
+                TaskKind::Reproduce,
+                STANDARD,
+                pr,
+                Deliverable::Answer,
+                &plain
+            )
+            .is_err()
+        );
+        let review = ReportArgs {
+            answer: Some("fine".to_owned()),
+            review: Some(qm_tools::defs::ReviewReport {
+                verdict: qm_types::domain::ReviewVerdict::Pass,
+                findings: Vec::new(),
+                risk: qm_types::domain::RiskLevel::Low,
+                risk_reason: "small".to_owned(),
+            }),
+            ..done()
+        };
+        assert!(check_report(TaskKind::Build, STANDARD, pr, Deliverable::Answer, &review).is_err());
+        assert!(check_report(TaskKind::Review, STANDARD, pr, Deliverable::Answer, &review).is_ok());
+    }
 }

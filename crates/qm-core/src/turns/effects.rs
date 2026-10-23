@@ -37,7 +37,6 @@ pub fn effect_of(tool: &str, args: &serde_json::Value, result: &ToolResult) -> O
             || t == defs::AskUserTool::NAME
             || t == defs::AcknowledgeTool::NAME
             || t == defs::PresentHoldTool::NAME
-            || t == defs::ProposeProjectTool::NAME
             || t == defs::StartSecondmateTool::NAME =>
         {
             Some(Effect::Shown)

@@ -406,6 +406,13 @@ pub fn to_observe(conn: &Connection) -> Result<Vec<LaunchRow>, StoreError> {
 }
 
 /// Every launch of a task, oldest first.
+/// Every tag the app was asked to push for `project`, whatever became of it.
+pub fn tags_of_project(conn: &Connection, project: ProjectId) -> Result<Vec<String>, StoreError> {
+    let mut stmt = conn.prepare("SELECT tag FROM release_launches WHERE project_id = ?1")?;
+    let rows = stmt.query_map([project], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
 pub fn for_task(conn: &Connection, task: TaskId) -> Result<Vec<LaunchRow>, StoreError> {
     query(conn, "task_id = ?1", params![task])
 }

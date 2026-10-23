@@ -268,6 +268,23 @@ async fn reserve_leftover_secondmate_numbers(svc: &TaskService) -> Result<(), St
     Ok(())
 }
 
+/// Retires projects no open task works in, and sets each secondmate's projects from its open
+/// crewmates: what a close would have done, had the app not stopped first.
+async fn tidy_projects(svc: &TaskService) -> Result<(), StartupError> {
+    let at = svc.clock().now();
+    svc.write(move |tx, _| {
+        for project in qm_store::projects::active(tx)? {
+            crate::places::retire_if_idle(tx, project.id, at)?;
+        }
+        for sm in qm_store::secondmates::active(tx)? {
+            qm_store::secondmates::sync_projects(tx, sm.id)?;
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(())
+}
+
 /// Step 4 (before the seat opens). Deletes only the leftover files [`remove_leftover_files`] names.
 pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupError> {
     let at = svc.clock().now();
@@ -284,6 +301,8 @@ pub async fn reconcile(svc: &TaskService) -> Result<ReconcileOutcome, StartupErr
     reserve_leftover_task_numbers(svc).await?;
     remove_leftover_files(svc).await?;
     reserve_leftover_secondmate_numbers(svc).await?;
+
+    tidy_projects(svc).await?;
 
     let report = worktree_report(svc).await?;
 

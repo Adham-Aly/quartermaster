@@ -17,7 +17,7 @@ reported at startup as a `CatalogError`.
 | `crates/qm-providers/catalog/refresh.py` | the generator; `PROVIDERS` maps models.dev ids to our wire names | yes |
 | `crates/qm-providers/catalog/corrections.toml` | what models.dev lacks or gets wrong | yes |
 | `crates/qm-providers/src/catalog/starter.rs` | legacy starter tier preset definitions | yes |
-| `crates/qm-routing/routing.toml` | the routing rule table (task kind and facts → tier) | yes |
+| `qm_types::domain::KindRow` | the task-kind rows and their default tiers (`default_tier`) | yes |
 
 ## Refreshing the snapshot
 
@@ -58,12 +58,12 @@ when connecting an account. Only the Claude set is user-approved; other sets rem
 
 ## Routing rules
 
-`routing.toml` is embedded and validated at startup (`qm_routing::rules`): the first matching rule
-wins, it reads declared facts only (never task text), nothing may map to premium, `unclear` must
-route high, and every combination of facts must match some rule. Each tier's default effort lives
+Task kind → tier is `qm_routing::rules`: `row_for` maps a kind and its checked `builds_on` fact
+(never task text) to a `KindRow`, whose tier is the user's `[routing.kinds]` setting or
+`KindRow::default_tier`. Change a default there, and in `docs/routing.md`'s table. Each tier's default effort lives
 in `config.toml` (`[tiers]`, defaults in `qm_types::config::TierEfforts`).
 
 ## Verify
 
-`cargo xtask check` and `cargo build` (startup validation runs on launch), then open Settings ▸
+`cargo xtask check` and `cargo build` (the routing tests cover the defaults), then open Settings ▸
 Model levels in a throwaway run (skill `run-by-hand`) and check the tiers and efforts shown.

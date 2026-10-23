@@ -72,7 +72,7 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
   terminal belongs to the UI, so nothing is logged there.
 - `seat/`, `secondmates/SM-n/`, `tasks/T-n/` (worktree, brief, jobs; the folder goes at close; each
   has `transcript/`, the provider engine's durable sessions), `artifacts/T-n/` (`plan/`, `evidence/`,
-  kept while a task reads them; `qm-core` `retention.rs`), `attachments/`, `drafts/`, `workspace/` (the personal workspace's default folder, plain files; `[workspace] folder` moves it),
+  kept while a task reads them; `qm-core` `retention.rs`), `attachments/`, `drafts/`,
   `ui.json` (UI state, never logged; `tui.toml` is only read once for old widths), `plan-endpoint.json`
   (the plan pages' loopback port, kept so pages rendered before a restart still send).
 - Scratch, `/tmp/quartermaster/<uid>/<hash>/` (`DataDir::scratch`; owner and 0700 checked, never a
@@ -126,8 +126,9 @@ These override anything else. Security comes first.
   an allow-list of built-ins; every `system/init` is checked (skill `claude-engine`).
 - **Merging the wrong commit is the worst failure.** A merge happens only at the approved head,
   re-read from GitHub first (`qm-core` `settling/land_pr.rs`). App pushes go only through `qm-core` `delivery/push_guard.rs`,
-  the app's network git only through `qm-git` `network.rs`; crewmates can't push at all (the
-  fence in `qm-github` `fence.rs`); their work leaves only through `pr_open` (skill `git-safety`).
+  the app's network git only through `qm-git` `network.rs`. Crewmates have the user's GitHub login;
+  the prompt keeps `pr_open`, `propose_release_tag` and the cards the default path, and merges or
+  tags made outside the app are recorded (`delivery/outside.rs`; skill `git-safety`).
 - **Crewmates have helper agents on both engines** (Claude's `Agent`, the provider engine's
   `agent`); while one runs, every crewmate tool that isn't `Read` class is refused in-band.
 - **Saying no is a `Refusal`:** one plain sentence the agent can act on, naming the in-band path.
