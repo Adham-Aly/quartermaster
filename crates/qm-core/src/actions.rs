@@ -9,40 +9,63 @@ use crate::held::HeldService;
 use crate::plans::{Stage, api as plan_api};
 use crate::tasks::TaskService;
 use qm_plans::PAGE_FILE;
+use qm_store::db::Db;
 use qm_store::{agents, events, messages, secondmates, tasks as task_store};
 use qm_types::BoxFuture;
 use qm_types::api::{
     ActionItem, ActionKey, ActionKind, ActionOpen, AgentRef, Card, CardAction, CardButton,
     CardKind, CardLine, Command, Snapshot, Styled, Tone,
 };
+use qm_types::clock::Clock;
+use qm_types::data_dir::DataDir;
 use qm_types::domain::{PlanMode, Role, TaskKind};
 use qm_types::ids::{AgentId, TaskId};
 use rusqlite::Connection;
+use std::sync::Arc;
 
 /// The inbox's part. It handles no command: every button maps to one the other parts take.
 #[derive(Clone, Debug)]
 pub struct ActionsPart {
     held: HeldService,
-    tasks: TaskService,
+    db: Db,
+    clock: Arc<dyn Clock>,
+    data_dir: DataDir,
+    /// The Quartermaster's agent row.
+    seat_agent: AgentId,
+    /// Plans are listed only with the task service (crewmates on).
+    tasks: Option<TaskService>,
 }
 
 impl ActionsPart {
-    pub fn new(held: HeldService, tasks: TaskService) -> Self {
-        Self { held, tasks }
+    /// Wired whether or not crewmates are on, so held approvals always have a place to be
+    /// answered; `tasks` adds the plans.
+    pub fn new(
+        held: HeldService,
+        (db, clock, data_dir): (Db, Arc<dyn Clock>, DataDir),
+        seat_agent: AgentId,
+        tasks: Option<TaskService>,
+    ) -> Self {
+        Self {
+            held,
+            db,
+            clock,
+            data_dir,
+            seat_agent,
+            tasks,
+        }
     }
 
     async fn build(&self, snapshot: &Snapshot) -> Vec<ActionItem> {
-        let deps = self.tasks.deps();
-        let now = deps.clock.now();
+        let now = self.clock.now();
         let config = configuration(snapshot, now);
         let mut items = Vec::new();
 
         match self.held.pending_cards().await {
             Ok(rows) => {
-                let seat = deps.seat_agent;
+                let seat = self.seat_agent;
                 let asked: Vec<(Option<AgentId>, Option<TaskId>)> =
-                    rows.iter().map(|(r, _, _)| (r.asked_by, r.task)).collect();
-                let refs = deps
+                    rows.iter().map(|(r, _)| (r.asked_by, r.task)).collect();
+                let refs = self
                     .db
                     .call(move |conn| {
                         asked
@@ -55,7 +78,7 @@ impl ActionsPart {
                     })
                     .await
                     .unwrap_or_default();
-                for (i, (row, card, anchor)) in rows.into_iter().enumerate() {
+                for (i, (row, card)) in rows.into_iter().enumerate() {
                     let kind = match card.kind {
                         CardKind::Decision => ActionKind::Decision,
                         _ => ActionKind::Approval,
@@ -74,9 +97,6 @@ impl ActionsPart {
                     if let Some(task) = row.task {
                         item = item.with_task(task);
                     }
-                    if let Some(anchor) = anchor {
-                        item = item.with_anchor(anchor);
-                    }
                     items.push(item);
                 }
             }
@@ -91,8 +111,10 @@ impl ActionsPart {
 
     /// Plans open for you: an interactive plan whose round waits on your reply or approval.
     async fn plans(&self) -> Vec<ActionItem> {
-        let deps = self.tasks.deps();
-        let plans: Vec<_> = plan_api::live(&deps.data_dir)
+        let Some(tasks) = &self.tasks else {
+            return Vec::new();
+        };
+        let plans: Vec<_> = plan_api::live(&self.data_dir)
             .into_iter()
             .filter(|(_, s, _)| {
                 matches!(s.stage, Stage::WithUser | Stage::Final)
@@ -102,7 +124,7 @@ impl ActionsPart {
             .collect();
         let mut out = Vec::new();
         for (task, state, dir) in plans {
-            let Ok(Some((row, project))) = deps
+            let Ok(Some((row, project))) = self
                 .db
                 .call(move |conn| {
                     let Some(row) = task_store::load(conn, task)? else {
@@ -121,7 +143,7 @@ impl ActionsPart {
                 continue;
             }
             if !matches!(
-                self.tasks.live_plan_mode(&row).await,
+                tasks.live_plan_mode(&row).await,
                 Ok(Some(PlanMode::Interactive))
             ) {
                 continue;
@@ -129,7 +151,7 @@ impl ActionsPart {
             let card = plan_api::card(task, &row.title, &project, &state, &dir.join(PAGE_FILE));
             let title = format!("{} · {}", card.heading, row.title);
             let at = row.reported_at.or(row.started_at).unwrap_or(row.created_at);
-            let mut item = ActionItem::new(
+            let item = ActionItem::new(
                 ActionKey::Plan { task },
                 ActionKind::Plan,
                 title,
@@ -139,9 +161,6 @@ impl ActionsPart {
             )
             .with_task(task)
             .with_from(AgentRef::Crewmate { task });
-            if let Some(anchor) = state.card {
-                item = item.with_anchor(anchor);
-            }
             out.push(item);
         }
         out
@@ -149,9 +168,8 @@ impl ActionsPart {
 
     /// Questions from the Quartermaster and live secondmates, and the seat's unanswered notices.
     async fn questions_and_notices(&self) -> Vec<ActionItem> {
-        let deps = self.tasks.deps();
-        let seat = deps.seat_agent;
-        let read = deps.db.call(move |conn| open_requests(conn, seat)).await;
+        let seat = self.seat_agent;
+        let read = self.db.call(move |conn| open_requests(conn, seat)).await;
         let (questions, notices, mates) = match read {
             Ok(read) => read,
             Err(e) => {
@@ -439,7 +457,7 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys = OFF")
             .expect("no supervisor rows needed");
         let at = jiff::Timestamp::from_second(1_000).unwrap();
-        let data = qm_types::data_dir::DataDir::new("/nonexistent/qm-test");
+        let data = DataDir::new("/nonexistent/qm-test");
         let mate = |name: &str| {
             secondmates::insert(
                 &conn,

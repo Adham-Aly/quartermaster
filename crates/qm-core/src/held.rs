@@ -1,8 +1,8 @@
 //! Held actions: everything that waits for your yes.
 //!
 //! A tool call stores the **exact payload** with [`HeldService::insert`], inside the caller's
-//! transaction, and links the card to a line of the conversation with
-//! [`HeldService::link_message`]. When you answer, [`HeldService::answer`]:
+//! transaction; its card is listed in the Actions panel ([`HeldService::pending_cards`]), never in
+//! the conversation. When you answer, [`HeldService::answer`]:
 //!
 //! 1. checks the card is still pending and that your answer is one the card offers (approve or
 //!    reject for an approval; for a decision, a choice the card stored, checked with
@@ -27,14 +27,9 @@
 //!   runs the kind's [`HeldPerformer::on_reject`] (a settle hold puts its task back to reported).
 //! - **Card builders per kind** ([`HeldService::register_card`]), given the facts the hold's
 //!   `settle.held` or `task.held` event recorded.
-//! - **The conversation anchor** ([`HeldService::anchor`]): a card sits under the newest line of
-//!   the Quartermaster's conversation, or under an app note "T-0042 needs you" when that line is
-//!   taken; a pending card's line stays in the snapshot even when it's older than the last lines
-//!   shown.
 //! - **Supersession with a reason** ([`HeldService::supersede_with`]).
 //!
-//! [`HeldPart`] is the API's end: it answers `Command::AnswerHeld`, draws each held action linked
-//! to a conversation line as a card under that line. The status bar's counts come from
+//! [`HeldPart`] is the API's end: it answers `Command::AnswerHeld`. The status bar's counts come from
 //! `crew_view::CrewPart`.
 
 use crate::api::{ApiPart, Conversation, Handled};
@@ -46,31 +41,24 @@ use qm_store::StoreError;
 use qm_store::db::Db;
 use qm_store::events::{self, NewEvent};
 use qm_store::held::{HeldPayload, HeldRow, NewHeld, insert_held, load_held};
-use qm_store::messages::{self, MessageRow};
-use qm_store::seq;
 use qm_store::time::to_millis;
 use qm_store::wakes::{NewWake, insert_wake};
 use qm_types::BoxFuture;
 use qm_types::api::{
-    Card, CardAction, CardButton, CardKind, CardLine, ChatLine, Command, HeldAnswer, Snapshot,
-    Styled, Tone,
+    Card, CardAction, CardButton, CardKind, CardLine, Command, HeldAnswer, Snapshot, Styled, Tone,
 };
 use qm_types::clock::Clock;
-use qm_types::domain::{
-    HeldKind, HeldStatus, MessageKind, MessageSource, ReleaseLaunchStatus, WakeKind,
-};
+use qm_types::domain::{HeldKind, HeldStatus, ReleaseLaunchStatus, WakeKind};
 use qm_types::error::Refusal;
-use qm_types::ids::{AgentId, HeldActionId, MessageId};
+use qm_types::ids::{AgentId, HeldActionId};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 /// A held action as the performers see it: the stored row, payload exactly as written.
 pub type LoadedHeld = HeldRow;
 
-/// The event that ties a held action's card to a line of the conversation.
-pub const HELD_SHOWN: &str = "held.shown";
 /// A pending held action stopped applying, with why (`{"held", "why"}`).
 pub const HELD_SUPERSEDED: &str = "held.superseded";
 /// The events whose payload (`{"held": id, …}`) carries a card's facts.
@@ -82,9 +70,6 @@ pub const HELD_CHANGED: &str = "you.changed_held";
 
 /// What a kind without a performer answers.
 pub const NOT_AVAILABLE: &str = "That choice isn't available in this build yet";
-
-/// How many links between cards and conversation lines a snapshot looks through.
-const LINKS_READ: usize = 1_000;
 
 /// Carries out one kind of held action, exactly as stored.
 pub trait HeldPerformer: Send + Sync + fmt::Debug {
@@ -321,65 +306,6 @@ impl HeldService {
         Ok(true)
     }
 
-    /// Shows `held`'s card in the Quartermaster's conversation (`seat_agent`), inside the caller's
-    /// transaction: under its newest line, or under a new app note "{label} needs you" when that
-    /// line already carries a card (or is one that can get its own: your message, a question).
-    pub fn anchor(
-        conn: &Connection,
-        held: HeldActionId,
-        label: &str,
-        seat_agent: AgentId,
-        at: jiff::Timestamp,
-    ) -> Result<MessageId, StoreError> {
-        let newest = conn
-            .query_row(
-                "SELECT id, source, kind FROM messages
-                 WHERE agent_id = ?1 AND kind <> 'acknowledgement'
-                 ORDER BY seq DESC LIMIT 1",
-                params![seat_agent],
-                |r| {
-                    Ok((
-                        r.get::<_, MessageId>(0)?,
-                        r.get::<_, MessageSource>(1)?,
-                        r.get::<_, MessageKind>(2)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let free = match newest {
-            Some((id, source, kind))
-                if source != MessageSource::You && kind != MessageKind::Question =>
-            {
-                let taken: bool = conn.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM events WHERE kind = ?1
-                                    AND json_extract(payload, '$.message') = ?2)",
-                    params![HELD_SHOWN, id],
-                    |r| r.get(0),
-                )?;
-                (!taken).then_some(id)
-            }
-            _ => None,
-        };
-        let message = match free {
-            Some(id) => id,
-            None => messages::insert(
-                conn,
-                &messages::NewMessage {
-                    agent: seat_agent,
-                    source: MessageSource::App,
-                    kind: MessageKind::AppNote,
-                    text: &format!("{label} needs you"),
-                    options: &[],
-                    replies_to: None,
-                    turn: None,
-                    at,
-                },
-            )?,
-        };
-        Self::link_message(conn, held, message, at)?;
-        Ok(message)
-    }
-
     fn performer(&self, kind: HeldKind) -> Option<Arc<dyn HeldPerformer>> {
         self.inner
             .performers
@@ -392,29 +318,6 @@ impl HeldService {
     /// Writes a pending held action with its exact payload, inside the caller's transaction.
     pub fn insert(conn: &Connection, held: &NewHeld) -> Result<HeldActionId, StoreError> {
         insert_held(conn, held)
-    }
-
-    /// Shows `held`'s card under the conversation line `message`, inside the caller's
-    /// transaction.
-    pub fn link_message(
-        conn: &Connection,
-        held: HeldActionId,
-        message: MessageId,
-        at: jiff::Timestamp,
-    ) -> Result<(), StoreError> {
-        events::insert(
-            conn,
-            &NewEvent {
-                kind: HELD_SHOWN,
-                agent: None,
-                task: None,
-                turn: None,
-                summary: "",
-                payload: serde_json::json!({"held": held, "message": message}),
-                at,
-            },
-        )?;
-        Ok(())
     }
 
     /// The pending held actions of `kind`, oldest first.
@@ -887,11 +790,9 @@ impl HeldService {
         card
     }
 
-    /// Every pending held action, oldest first, with the card the conversation shows for it and
-    /// the line that card hangs on: the Actions inbox's held items, whatever their age.
-    pub async fn pending_cards(
-        &self,
-    ) -> Result<Vec<(HeldRow, Card, Option<MessageId>)>, StoreError> {
+    /// Every pending held action, oldest first, with its card: the Actions inbox's held items,
+    /// whatever their age.
+    pub async fn pending_cards(&self) -> Result<Vec<(HeldRow, Card)>, StoreError> {
         let rows = self
             .inner
             .db
@@ -905,26 +806,16 @@ impl HeldService {
                 for id in ids {
                     let row = load_held(conn, id)?;
                     let facts = card_facts(conn, &row)?;
-                    let anchor: Option<MessageId> = conn
-                        .query_row(
-                            "SELECT m.id FROM events e JOIN messages m
-                               ON m.id = json_extract(e.payload, '$.message')
-                             WHERE e.kind = ?1 AND json_extract(e.payload, '$.held') = ?2
-                             ORDER BY e.seq DESC LIMIT 1",
-                            params![HELD_SHOWN, id],
-                            |r| r.get(0),
-                        )
-                        .optional()?;
-                    out.push((row, facts, anchor));
+                    out.push((row, facts));
                 }
                 Ok(out)
             })
             .await?;
         Ok(rows
             .into_iter()
-            .map(|(row, facts, anchor)| {
+            .map(|(row, facts)| {
                 let card = self.card(&row, &facts);
-                (row, card, anchor)
+                (row, card)
             })
             .collect())
     }
@@ -1030,14 +921,6 @@ struct CardFacts {
     superseded: Option<String>,
 }
 
-/// What a snapshot needs from the store about held actions.
-struct HeldFacts {
-    /// The cards to draw, by the conversation line they're under.
-    cards: Vec<(MessageId, HeldRow, CardFacts)>,
-    /// Lines older than the snapshot's that carry a pending card: they stay shown.
-    older: Vec<MessageRow>,
-}
-
 /// The newest event of one of `kinds` about `held` (its payload's `held`), for its task.
 fn held_event(
     conn: &Connection,
@@ -1098,97 +981,8 @@ fn card_facts(conn: &Connection, row: &HeldRow) -> Result<CardFacts, StoreError>
     Ok(CardFacts { facts, superseded })
 }
 
-/// Rebuild volatile conversation anchors for durable pending actions. A restart keeps the exact
-/// held payload, but neither its `held.shown` event nor its conversation message.
-fn reanchor_pending(
-    conn: &Connection,
-    seat: AgentId,
-    at: jiff::Timestamp,
-) -> Result<(), StoreError> {
-    let missing = {
-        let mut stmt = conn.prepare(
-            "SELECT h.id, h.title FROM held_actions h
-             WHERE h.status = 'pending' AND NOT EXISTS (
-                 SELECT 1 FROM events e JOIN messages m
-                   ON m.id = json_extract(e.payload, '$.message')
-                 WHERE e.kind = ?1 AND json_extract(e.payload, '$.held') = h.id
-                   AND m.agent_id = ?2
-             ) ORDER BY h.seq",
-        )?;
-        stmt.query_map(params![HELD_SHOWN, seat], |r| {
-            Ok((r.get::<_, HeldActionId>(0)?, r.get::<_, String>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    for (held, title) in missing {
-        HeldService::anchor(conn, held, &title, seat, at)?;
-    }
-    Ok(())
-}
-
-fn held_facts(conn: &Connection, lines: &HashSet<MessageId>) -> Result<HeldFacts, StoreError> {
-    let mut linked: BTreeMap<MessageId, HeldActionId> = BTreeMap::new();
-    let mut older_pending: BTreeMap<MessageId, HeldActionId> = BTreeMap::new();
-    let mut seen: HashSet<HeldActionId> = HashSet::new();
-    for event in events::latest(conn, HELD_SHOWN, LINKS_READ)? {
-        let message = event
-            .payload
-            .get("message")
-            .and_then(serde_json::Value::as_i64);
-        let held = event
-            .payload
-            .get("held")
-            .and_then(serde_json::Value::as_i64);
-        if let (Some(message), Some(held)) = (message, held) {
-            let message = MessageId::new(message);
-            let held = HeldActionId::new(held);
-            let first_link = seen.insert(held);
-            if lines.contains(&message) {
-                // Newest first: the newest link for a line wins.
-                linked.entry(message).or_insert(held);
-            } else if first_link {
-                older_pending.entry(message).or_insert(held);
-            }
-        }
-    }
-    let mut cards = Vec::new();
-    for (message, held) in linked {
-        // Forgetting can leave historical links behind after deleting their held row.
-        let row = match load_held(conn, held) {
-            Ok(row) => row,
-            Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows)) => continue,
-            Err(e) => return Err(e),
-        };
-        let facts = card_facts(conn, &row)?;
-        cards.push((message, row, facts));
-    }
-    // A pending card keeps its line in the snapshot even when the line is older than those shown.
-    // Oldest first, by creation: message IDs are random, so the map's order says nothing.
-    let mut older = Vec::new();
-    for (message, held) in older_pending {
-        // Forgetting can leave historical links behind after deleting their held row.
-        let row = match load_held(conn, held) {
-            Ok(row) => row,
-            Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows)) => continue,
-            Err(e) => return Err(e),
-        };
-        if row.status != HeldStatus::Pending {
-            continue;
-        }
-        if let Some(line) = messages::get(conn, message)? {
-            let facts = card_facts(conn, &row)?;
-            cards.push((message, row, facts));
-            let seq = seq::of(conn, "messages", message.get(), 0)?;
-            older.push((seq, line));
-        }
-    }
-    older.sort_by_key(|(seq, _)| *seq);
-    let older = older.into_iter().map(|(_, line)| line).collect();
-    Ok(HeldFacts { cards, older })
-}
-
-/// The API's end of held actions: `AnswerHeld` and the cards (the status bar's counts are
-/// `crew_view::CrewPart`'s).
+/// The API's end of held actions: `AnswerHeld` (the cards are `actions::ActionsPart`'s, the
+/// status bar's counts `crew_view::CrewPart`'s).
 #[derive(Debug)]
 pub struct HeldPart {
     held: HeldService,
@@ -1215,60 +1009,17 @@ impl ApiPart for HeldPart {
         Some(Box::pin(async { Handled::Changed }))
     }
 
-    fn fill<'a>(&'a self, snapshot: &'a mut Snapshot) -> BoxFuture<'a, ()> {
-        Box::pin(async move {
-            let lines: HashSet<MessageId> = snapshot.conversation.iter().map(|l| l.id).collect();
-            let seat = self.conversation.agent();
-            let at = self.held.inner.clock.now();
-            let facts = match self
-                .held
-                .inner
-                .db
-                .call(move |conn| {
-                    let tx = conn.transaction()?;
-                    reanchor_pending(&tx, seat, at)?;
-                    let facts = held_facts(&tx, &lines)?;
-                    tx.commit()?;
-                    Ok(facts)
-                })
-                .await
-            {
-                Ok(facts) => facts,
-                Err(e) => {
-                    tracing::error!(error = %e, "couldn't read the held actions for the UI");
-                    return;
-                }
-            };
-            let cards: HashMap<MessageId, Card> = facts
-                .cards
-                .iter()
-                .map(|(message, row, card_facts)| (*message, self.held.card(row, card_facts)))
-                .collect();
-            if !facts.older.is_empty() {
-                // Older than every line shown, so they go in front, in creation order.
-                let shown: HashSet<MessageId> =
-                    snapshot.conversation.iter().map(|l| l.id).collect();
-                let mut conversation: Vec<ChatLine> = facts
-                    .older
-                    .into_iter()
-                    .filter(|row| !shown.contains(&row.id))
-                    .map(|row| ChatLine::new(row.id, row.source, row.kind, row.at, row.text))
-                    .collect();
-                conversation.append(&mut snapshot.conversation);
-                snapshot.conversation = conversation;
-            }
-            for line in &mut snapshot.conversation {
-                if let Some(card) = cards.get(&line.id) {
-                    line.card = Some(card.clone());
-                }
-            }
-        })
+    fn fill<'a>(&'a self, _: &'a mut Snapshot) -> BoxFuture<'a, ()> {
+        // Held cards reach the UI only through the Actions list (`actions::ActionsPart`).
+        Box::pin(async {})
     }
 }
 
 #[cfg(test)]
 mod restart_tests {
     use super::*;
+    use crate::actions::ActionsPart;
+    use qm_types::api::{ActionKey, ActionKind};
 
     #[derive(Debug)]
     struct NoSignal;
@@ -1278,142 +1029,59 @@ mod restart_tests {
     }
 
     #[tokio::test]
-    async fn dangling_shown_does_not_block_reconstructing_unrelated_pending_card() {
-        // Exercise both the visible-link and older-link paths through held_facts.
-        for visible in [false, true] {
-            let path = std::env::temp_dir().join(format!(
-                "qm-held-dangling-{}-{visible}-{}.db",
-                std::process::id(),
-                jiff::Timestamp::now().as_nanosecond()
-            ));
+    async fn a_pending_held_action_is_listed_after_a_restart_without_a_chat_line() {
+        let path = std::env::temp_dir().join(format!(
+            "qm-held-restart-{}-{}.db",
+            std::process::id(),
+            jiff::Timestamp::now().as_nanosecond()
+        ));
+        let seat = AgentId::new(1);
+        let new = NewHeld {
+            payload: HeldPayload::Secondmate(qm_store::held::SecondmatePayload {
+                name: "Reviewer".into(),
+                scope: "Review changes".into(),
+                projects: vec![],
+                base_branch: None,
+            }),
+            choices: vec![],
+            title: "Create Reviewer".into(),
+            task: None,
+            asked_by: Some(seat),
+            at: jiff::Timestamp::from_millisecond(1000).expect("time"),
+        };
+        let held = {
             let db = Db::open(&path).expect("database");
-            let seat = AgentId::new(1);
-            let (pending, dangling) = db
-                .call(move |conn| {
-                    conn.execute_batch(
-                        "INSERT INTO agents (id, role, home, status, created_at, seq)
-                     VALUES (1, 'quartermaster', '/h', 'idle', 0, 1);",
-                    )?;
-                    let at = jiff::Timestamp::from_millisecond(1000).expect("time");
-                    let new = NewHeld {
-                        payload: HeldPayload::Secondmate(qm_store::held::SecondmatePayload {
-                            name: "Reviewer".into(),
-                            scope: "Review changes".into(),
-                            projects: vec![],
-                            base_branch: None,
-                        }),
-                        choices: vec![],
-                        title: "Create Reviewer".into(),
-                        task: None,
-                        asked_by: Some(seat),
-                        at,
-                    };
-                    let deleted = HeldService::insert(conn, &new)?;
-                    let message = HeldService::anchor(conn, deleted, "Deleted card", seat, at)?;
-                    conn.execute("DELETE FROM held_actions WHERE id = ?1", [deleted])?;
-                    // This durable card has no message or held.shown history of its own.
-                    let pending = HeldService::insert(conn, &new)?;
-                    Ok((
-                        pending,
-                        messages::get(conn, message)?.expect("dangling anchor"),
-                    ))
-                })
-                .await
-                .expect("seed dangling link and unrelated pending row");
-            let clock: Arc<dyn Clock> = Arc::new(qm_types::clock::SystemClock);
-            let conversation = Arc::new(Conversation::new(db.clone(), clock.clone(), seat));
-            let service = HeldService::new(db.clone(), clock, Arc::new(NoSignal));
-            let part = HeldPart::new(service, conversation);
-            let mut snapshot = Snapshot::default();
-            if visible {
-                snapshot.conversation.push(ChatLine::new(
-                    dangling.id,
-                    dangling.source,
-                    dangling.kind,
-                    dangling.at,
-                    dangling.text,
-                ));
-            }
-            part.fill(&mut snapshot).await;
-            let cards: Vec<_> = snapshot
-                .conversation
-                .iter()
-                .filter_map(|line| line.card.as_ref())
-                .collect();
-            assert_eq!(cards.len(), 1, "dangling link must not abort fill");
-            assert_eq!(cards[0].held, Some(pending));
-            assert_eq!(cards[0].answered, None);
             db.call(move |conn| {
-                let facts = held_facts(conn, &HashSet::new())?;
-                assert_eq!(facts.cards.len(), 1, "reconstructed anchor was committed");
-                assert_eq!(facts.cards[0].1.id, pending);
-                Ok(())
+                conn.execute_batch(
+                    "INSERT INTO agents (id, role, home, status, created_at, seq)
+                     VALUES (1, 'quartermaster', '/h', 'idle', 0, 1);",
+                )?;
+                HeldService::insert(conn, &new)
             })
             .await
-            .expect("persisted reconstruction");
-            drop(part);
-            drop(db);
-            std::fs::remove_file(path).expect("remove test database");
-        }
-    }
-
-    #[test]
-    fn pending_row_without_messages_or_events_gets_an_accessible_anchor() {
-        let mut conn = Connection::open_in_memory().expect("memory");
-        qm_store::schema::migrate(&mut conn).expect("schema");
-        conn.execute_batch(
-            "INSERT INTO agents (id, role, home, status, created_at, seq)
-             VALUES (1, 'quartermaster', '/h', 'idle', 0, 1);",
-        )
-        .expect("seat");
-        let seat = AgentId::new(1);
-        let at = jiff::Timestamp::from_millisecond(1000).expect("time");
-        let payload = HeldPayload::Secondmate(qm_store::held::SecondmatePayload {
-            name: "Reviewer".into(),
-            scope: "Review changes".into(),
-            projects: vec![],
-            base_branch: None,
-        });
-        let held = HeldService::insert(
-            &conn,
-            &NewHeld {
-                payload: payload.clone(),
-                choices: vec![],
-                title: "Create Reviewer".into(),
-                task: None,
-                asked_by: Some(seat),
-                at,
-            },
-        )
-        .expect("durable pending row");
-        for table in ["events", "messages"] {
-            let count: i64 = conn
-                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(count, 0, "restart has no historical {table}");
-        }
-        reanchor_pending(&conn, seat, at).expect("reanchor");
-        let facts = held_facts(&conn, &HashSet::new()).expect("snapshot facts");
-        assert_eq!(facts.cards.len(), 1);
-        assert_eq!(
-            facts.older.len(),
-            1,
-            "the first snapshot includes the fresh anchor"
-        );
-        let (message, row, _) = &facts.cards[0];
-        assert_eq!(*message, facts.older[0].id);
-        assert_eq!(row.id, held);
-        assert_eq!(row.status, HeldStatus::Pending);
-        assert_eq!(
-            row.payload, payload,
-            "approval still uses the exact stored payload"
-        );
-        assert_eq!(facts.older[0].text, "Create Reviewer needs you");
-
-        reanchor_pending(&conn, seat, at).expect("next snapshot");
-        let count: i64 = conn
-            .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 1, "snapshot fills do not duplicate anchors");
+            .expect("the held action")
+        };
+        // The next run: the same database, a fresh service and Actions list, no task service.
+        let db = Db::open(&path).expect("database again");
+        let clock: Arc<dyn Clock> = Arc::new(qm_types::clock::SystemClock);
+        let service = HeldService::new(db.clone(), Arc::clone(&clock), Arc::new(NoSignal));
+        let data = qm_types::data_dir::DataDir::new("/nonexistent/qm-held-test");
+        let actions = ActionsPart::new(service, (db.clone(), clock, data), seat, None);
+        let mut snapshot = Snapshot::default();
+        actions.fill(&mut snapshot).await;
+        assert_eq!(snapshot.actions.len(), 1);
+        let item = &snapshot.actions[0];
+        assert_eq!(item.key, ActionKey::Held { id: held });
+        assert_eq!(item.kind, ActionKind::Approval);
+        assert_eq!(item.card.held, Some(held));
+        assert_eq!(item.anchor, None);
+        let messages: i64 = db
+            .call(|conn| Ok(conn.query_row("SELECT count(*) FROM messages", [], |r| r.get(0))?))
+            .await
+            .expect("count");
+        assert_eq!(messages, 0, "no chat line carries the card");
+        drop(actions);
+        drop(db);
+        std::fs::remove_file(path).expect("remove test database");
     }
 }

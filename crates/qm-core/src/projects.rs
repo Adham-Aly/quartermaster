@@ -28,7 +28,6 @@ use qm_store::StoreError;
 use qm_store::db::Db;
 use qm_store::events::{self, NewEvent};
 use qm_store::held::{AddProjectPayload, HeldPayload, NewHeld};
-use qm_store::messages::{self, NewMessage};
 use qm_store::projects::{self, NewProject, ProjectRow, SettingsChange};
 use qm_tools::defs::{Ack, ConfigureProjectArgs, Held, ProposeProjectArgs};
 use qm_tools::handler::{Caller, ToolFailure};
@@ -38,8 +37,7 @@ use qm_types::clock::Clock;
 use qm_types::config::Config;
 use qm_types::data_dir::DataDir;
 use qm_types::domain::{
-    Autonomy, DeliveryMode, HeldKind, MergeMethod, MessageKind, MessageSource, ProjectAction,
-    ProjectOrigin,
+    Autonomy, DeliveryMode, HeldKind, MergeMethod, ProjectAction, ProjectOrigin,
 };
 use qm_types::error::Refusal;
 use qm_types::ids::{HeldActionId, ProjectId};
@@ -666,15 +664,14 @@ impl ProjectService {
         })
     }
 
-    /// Stores the proposal as a pending held action, replacing an older card for the same name,
-    /// with an app line in the conversation to show its card under. One transaction.
+    /// Stores the proposal as a pending held action, replacing an older card for the same name, in
+    /// one transaction. Its card is listed in the Actions panel.
     async fn store_proposal(
         &self,
         caller: &Caller,
         payload: AddProjectPayload,
     ) -> Result<HeldActionId, ToolFailure> {
         let agent = caller.agent;
-        let turn = caller.turn.map(|t| t.turn);
         let at = self.inner.clock.now();
         let name = payload.name.clone();
         let link_path = payload.path.clone().map(PathBuf::from);
@@ -718,20 +715,6 @@ impl ProjectService {
                         at,
                     },
                 )?;
-                let message = messages::insert(
-                    &tx,
-                    &NewMessage {
-                        agent,
-                        source: MessageSource::App,
-                        kind: MessageKind::AppNote,
-                        text: "The Quartermaster proposes adding a project.",
-                        options: &[],
-                        replies_to: None,
-                        turn,
-                        at,
-                    },
-                )?;
-                HeldService::link_message(&tx, held, message, at)?;
                 tx.commit()?;
                 Ok(Ok(held))
             })

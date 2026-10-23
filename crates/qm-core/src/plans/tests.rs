@@ -169,3 +169,11 @@ fn an_auto_planner_sees_no_question_flow() {
         );
     }
 }
+
+#[test]
+fn a_state_file_with_the_old_chat_card_still_loads() {
+    let mut value = serde_json::to_value(PlanState::new()).unwrap();
+    value["card"] = serde_json::json!(12345);
+    let state: PlanState = serde_json::from_value(value).unwrap();
+    assert_eq!(state.card, Some(MessageId::new(12345)));
+}

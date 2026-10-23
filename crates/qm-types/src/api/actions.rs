@@ -20,9 +20,10 @@ pub struct ActionItem {
     pub title: String,
     /// When it started waiting on you.
     pub at: Timestamp,
-    /// The same card the conversation shows (or would show), buttons included.
+    /// The item's card, buttons included: the only place a card is shown (in the Actions popup).
     pub card: Card,
-    /// The conversation line that holds the card, when there is one.
+    /// The item's own line in the Quartermaster's chat: a question's or a notice's message.
+    /// Held actions and plans have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<MessageId>,
     /// Where "Go to" takes you.
@@ -117,7 +118,8 @@ pub enum ActionKind {
 #[serde(tag = "to", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ActionOpen {
-    /// The Quartermaster's conversation, scrolled to the item's anchor.
+    /// The Quartermaster's conversation: such an item has no "Go to"; its popup is where it's
+    /// answered.
     Conversation,
     /// A worker's session.
     Session {

@@ -802,7 +802,8 @@ pub struct ChatLine {
     /// Dim words after the time in the header ("after T-0043 reported", "reply").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
-    /// A card drawn under the message: an approval, a decision or a notice.
+    /// Never set: cards are only in [`Snapshot::actions`], and the chat draws none. Kept so an
+    /// older window still reads a newer server's snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card: Option<Card>,
     /// Your message waits for the next turn: the header shows "queued".

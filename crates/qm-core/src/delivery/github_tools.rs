@@ -127,7 +127,6 @@ pub(crate) async fn write(
             };
             let at = svc.clock().now();
             let asked_by = caller.agent;
-            let seat = svc.tasks().deps().seat_agent;
             let title = format!("{task}: {words}");
             let summary = format!("{task}'s {words} waits for the user's approval");
             let held = svc
@@ -144,7 +143,6 @@ pub(crate) async fn write(
                             at,
                         },
                     )?;
-                    HeldService::anchor(tx, held, &task.to_string(), seat, at)?;
                     task_store::event(
                         tx,
                         WRITE_HELD_EVENT,
