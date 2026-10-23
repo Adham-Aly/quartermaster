@@ -162,6 +162,7 @@ impl Fixture {
             seat_agent: AgentId::new(1),
             setup,
             probe: None,
+            monitor: crate::context_monitor::ContextMonitor::new(Arc::new(SystemClock)),
         })
         .unwrap();
         (svc, job)

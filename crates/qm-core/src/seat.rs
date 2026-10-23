@@ -202,6 +202,8 @@ pub struct SeatDeps {
     /// Every engine the binary injected, by kind; the seat never names a concrete one.
     pub engines: BTreeMap<EngineKind, Arc<dyn Engine>>,
     pub model: Arc<dyn SeatModel>,
+    /// Passive context readings for the UI; its tap goes on every session this opens.
+    pub monitor: Arc<crate::context_monitor::ContextMonitor>,
 }
 
 /// The Quartermaster's session.
@@ -213,6 +215,7 @@ pub struct Seat {
     engines: BTreeMap<EngineKind, Arc<dyn Engine>>,
     model: Arc<dyn SeatModel>,
     tz: TimeZone,
+    monitor: Arc<crate::context_monitor::ContextMonitor>,
 }
 
 impl Seat {
@@ -224,6 +227,7 @@ impl Seat {
             engines: deps.engines,
             model: deps.model,
             tz: TimeZone::system(),
+            monitor: deps.monitor,
         }
     }
 
@@ -421,7 +425,9 @@ impl SeatSession for Seat {
                     pick.engine, pick.model
                 ))
             })?;
-            let handle = engine.open(spec)?;
+            let handle = engine
+                .open(spec)?
+                .observed(self.monitor.tap(qm_types::api::AgentRef::Quartermaster));
 
             let at = self.clock.now();
             let id = agent.id;
