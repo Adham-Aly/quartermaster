@@ -178,7 +178,7 @@ pub(super) const KINDS_COPY: &str =
     "Applies to the next task routed and to waiting ones. A model you name comes first.";
 
 /// Under a row set to premium: where its work goes when no premium model can serve.
-pub(super) const PREMIUM_FALLS_BACK: &str = "falls back high, medium, low";
+pub(super) const PREMIUM_FALLS_BACK: &str = "then high, medium, low";
 
 /// The note beside a row: where its work runs while its level is empty, else whether it is the
 /// app's default.
