@@ -37,20 +37,26 @@ pub struct CrewView {
 }
 
 /// Reads the crew and builds the view at the clock's current time.
-pub async fn load(db: &Db, clock: &dyn Clock) -> Result<CrewView, StoreError> {
+/// `started` is when this server started: token totals of tasks created before it are partial,
+/// because the turns they sum are kept only in memory.
+pub async fn load(
+    db: &Db,
+    clock: &dyn Clock,
+    started: Option<Timestamp>,
+) -> Result<CrewView, StoreError> {
     let data = db.call(|conn| crew_view::crew_data(conn)).await?;
-    Ok(build(&data, clock.now()))
+    Ok(build(&data, clock.now(), started))
 }
 
 /// The view of `data` at `now` (pure, for snapshot fixtures).
-pub fn build(data: &CrewData, now: Timestamp) -> CrewView {
+pub fn build(data: &CrewData, now: Timestamp, started: Option<Timestamp>) -> CrewView {
     let secondmate_agents: Vec<AgentId> = data.secondmates.iter().filter_map(|s| s.agent).collect();
     let mut view = CrewView::default();
     // The Quartermaster's own tasks, and any whose supervisor isn't shown (so no work is hidden).
     for task in data.tasks.iter().filter(|t| {
         Some(t.supervisor) == data.quartermaster || !secondmate_agents.contains(&t.supervisor)
     }) {
-        push_task(&mut view, task, 1, now);
+        push_task(&mut view, task, 1, now, started);
     }
     for secondmate in &data.secondmates {
         let status = if secondmate.working {
@@ -70,7 +76,7 @@ pub fn build(data: &CrewData, now: Timestamp) -> CrewView {
             continue;
         };
         for task in data.tasks.iter().filter(|t| t.supervisor == agent) {
-            push_task(&mut view, task, 2, now);
+            push_task(&mut view, task, 2, now, started);
         }
     }
     view.attention = attention(data, &view.crew);
@@ -115,7 +121,13 @@ fn attention(data: &CrewData, crew: &[CrewRow]) -> Attention {
     out
 }
 
-fn push_task(view: &mut CrewView, task: &OpenTask, depth: u8, now: Timestamp) {
+fn push_task(
+    view: &mut CrewView,
+    task: &OpenTask,
+    depth: u8,
+    now: Timestamp,
+    started: Option<Timestamp>,
+) {
     let (status, waiting) = status_word(task, now);
     let mut row = CrewRow::new(
         AgentRef::Crewmate { task: task.task },
@@ -127,7 +139,8 @@ fn push_task(view: &mut CrewView, task: &OpenTask, depth: u8, now: Timestamp) {
     row.needs_you = waiting.is_some();
     row.busy = task.in_turn;
     view.crew.push(row);
-    view.tasks.push(detail(task, &status, waiting, now));
+    view.tasks
+        .push(detail(task, &status, waiting, now, started));
 }
 
 /// The status word the tree shows for a task, and the flag it carries.
@@ -169,7 +182,13 @@ pub fn minutes_label(minutes: i64) -> String {
 }
 
 /// The task pane, rows in display order.
-fn detail(task: &OpenTask, status: &str, waiting: Option<Waiting>, now: Timestamp) -> TaskDetail {
+fn detail(
+    task: &OpenTask,
+    status: &str,
+    waiting: Option<Waiting>,
+    now: Timestamp,
+    started: Option<Timestamp>,
+) -> TaskDetail {
     let text = |s: String| vec![Styled::new(s, Tone::Text)];
     let mut d = TaskDetail::new(task.task, task.title.clone());
     d.rows
@@ -228,12 +247,19 @@ fn detail(task: &OpenTask, status: &str, waiting: Option<Waiting>, now: Timestam
     };
     d.rows.push(TaskRow::new(Some("status"), status_value));
     // Counted live as each model call finishes; nothing is shown until there is something to
-    // count, never a misleading 0.
+    // count, never a misleading 0. The turns table lives only in memory, so a task older than
+    // this server shows a partial total, and says so rather than passing it off as its lifetime.
     if task.tokens.input > 0 || task.tokens.output > 0 {
-        d.rows.push(TaskRow::new(
-            Some("tokens"),
-            text(tokens_words(&task.tokens)),
-        ));
+        let mut value = text(tokens_words(&task.tokens));
+        if started.is_some_and(|started| task.created_at < started) {
+            value.push(Styled::new(" · partial: since the app started", Tone::Dim));
+        } else if task.tokens.forgotten {
+            value.push(Styled::new(
+                " · partial: since the last compaction",
+                Tone::Dim,
+            ));
+        }
+        d.rows.push(TaskRow::new(Some("tokens"), value));
     }
 
     d.activity = task
@@ -257,35 +283,34 @@ pub fn verify_words(level: Option<VerificationLevel>) -> String {
     }
 }
 
-/// `182k in · 9.1k out · $0.42`, the cost only where the engine reported one.
+/// `in 12k · cache read 1.2M · cache write 80k · out 91k · $3.10 · 42 turns`: each category
+/// only when non-zero, the cost only where the engine reported one.
 pub fn tokens_words(tokens: &TokenUse) -> String {
-    let counts = format!(
-        "{} in · {} out",
-        count_words(tokens.input),
-        count_words(tokens.output)
-    );
-    match tokens.cost_usd {
-        Some(cost) => format!("{counts} · ${cost:.2}"),
-        None => counts,
+    let mut parts = Vec::new();
+    for (label, n) in [
+        ("in", tokens.fresh_input),
+        ("cache read", tokens.cache_read),
+        ("cache write", tokens.cache_write),
+        ("out", tokens.output),
+    ] {
+        if n > 0 {
+            parts.push(format!("{label} {}", count_words(n)));
+        }
     }
+    if let Some(cost) = tokens.cost_usd {
+        parts.push(format!("${cost:.2}"));
+    }
+    match tokens.turns {
+        0 => {}
+        1 => parts.push("1 turn".to_owned()),
+        n => parts.push(format!("{n} turns")),
+    }
+    parts.join(" · ")
 }
 
 /// A token count, short: `950`, `9.1k`, `182k`, `1.2M`, `34M`.
 pub fn count_words(n: u64) -> String {
-    // Tenths, rounded, without floating point.
-    let short = |n: u64, unit: u64, suffix: &str| {
-        let tenths = (n.saturating_mul(10) + unit / 2) / unit;
-        if tenths < 100 {
-            format!("{}.{}{suffix}", tenths / 10, tenths % 10)
-        } else {
-            format!("{}{suffix}", (n + unit / 2) / unit)
-        }
-    };
-    match n {
-        0..1_000 => n.to_string(),
-        1_000..999_500 => short(n, 1_000, "k"),
-        _ => short(n, 1_000_000, "M"),
-    }
+    qm_types::api::tokens_short(n)
 }
 
 /// Puts the crew rows and the task panes into every snapshot, as its own API part so `api.rs`
@@ -293,11 +318,14 @@ pub fn count_words(n: u64) -> String {
 pub struct CrewPart {
     db: Db,
     clock: Arc<dyn Clock>,
+    /// When this server started (see [`load`]).
+    started: Option<Timestamp>,
 }
 
 impl CrewPart {
     pub fn new(db: Db, clock: Arc<dyn Clock>) -> Self {
-        Self { db, clock }
+        let started = Some(clock.now());
+        Self { db, clock, started }
     }
 }
 
@@ -314,7 +342,7 @@ impl ApiPart for CrewPart {
 
     fn fill<'a>(&'a self, snapshot: &'a mut Snapshot) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            match load(&self.db, self.clock.as_ref()).await {
+            match load(&self.db, self.clock.as_ref(), self.started).await {
                 Ok(view) => {
                     snapshot.crew.extend(view.crew);
                     snapshot.tasks = view.tasks;
@@ -356,7 +384,7 @@ mod tests {
         assert_eq!(data.tasks[0].branch, None);
         assert_eq!(data.tasks[1].branch.as_deref(), Some("qm/task-0002"));
 
-        let view = build(&data, Timestamp::UNIX_EPOCH);
+        let view = build(&data, Timestamp::UNIX_EPOCH, None);
         assert_eq!(view.crew.len(), 2);
         assert_eq!(view.tasks.len(), 2);
         for (row, task) in view.crew.iter().zip(&data.tasks) {

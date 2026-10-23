@@ -194,7 +194,13 @@ pub struct Commands(mpsc::UnboundedReceiver<Ctl>);
 /// # Errors
 /// As [`run`].
 pub async fn serve(client: CoreClient, windows: Windows, control: Commands) -> io::Result<()> {
-    drive(client, windows, Some(control), DataDir::resolve().ok()).await
+    Box::pin(drive(
+        client,
+        windows,
+        Some(control),
+        DataDir::resolve().ok(),
+    ))
+    .await
 }
 
 /// Runs the UI for the windows that arrive on `windows`, until the user quits, the core closes, or
@@ -204,7 +210,7 @@ pub async fn serve(client: CoreClient, windows: Windows, control: Commands) -> i
 /// A terminal that can't be set up for a window is turned away; this itself does not fail except
 /// on a broken runtime.
 pub async fn run(client: CoreClient, windows: Windows) -> io::Result<()> {
-    drive(client, windows, None, DataDir::resolve().ok()).await
+    Box::pin(drive(client, windows, None, DataDir::resolve().ok())).await
 }
 
 async fn drive(

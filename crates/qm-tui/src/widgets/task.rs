@@ -2,6 +2,7 @@
 //! overlay.
 
 use super::button;
+use super::context_strip;
 use super::conversation::{Row, RowText, draw_rows};
 use crate::app::App;
 use crate::bridge::{empty_lines, pane_block, pane_style};
@@ -105,12 +106,15 @@ pub(crate) fn rows(app: &App, width: u16) -> Vec<Row> {
         // A secondmate's session opens from here too, as a crewmate's does.
         if matches!(agent, AgentRef::Secondmate { .. }) {
             rows.push(Row::plain(Line::default()));
+            let context = context_strip::card_runs(app, context_strip::view_for(app, agent));
+            push_labelled(&mut rows, Some("context"), &context, usize::from(width));
+            rows.push(Row::plain(Line::default()));
             rows.push(buttons(false, app.term.hover));
         }
         return rows;
     };
     match app.snapshot.tasks.iter().find(|t| t.task == task) {
-        Some(detail) => detail_rows(detail, width, app.term.hover),
+        Some(detail) => detail_rows(app, agent, detail, width),
         // A task is selected (its id is the title), so "no task selected" would be wrong.
         None => empty_lines(&[&format!("{task}'s details haven't arrived yet.")], width)
             .into_iter()
@@ -120,7 +124,8 @@ pub(crate) fn rows(app: &App, width: u16) -> Vec<Row> {
 }
 
 /// The task's rows: title, labelled rows, activity, buttons.
-fn detail_rows(detail: &TaskDetail, max: u16, hover: Option<Hit>) -> Vec<Row> {
+fn detail_rows(app: &App, agent: AgentRef, detail: &TaskDetail, max: u16) -> Vec<Row> {
+    let hover = app.term.hover;
     let max_cells = usize::from(max);
     let mut out = Vec::new();
     let title = [(detail.title.clone(), theme::strong())];
@@ -131,26 +136,14 @@ fn detail_rows(detail: &TaskDetail, max: u16, hover: Option<Hit>) -> Vec<Row> {
             .iter()
             .map(|s| (s.text.clone(), theme::tone(s.tone)))
             .collect();
-        match &row.label {
-            Some(label) if max_cells > VALUE_AT => {
-                let first = out.len();
-                push_wrapped(&mut out, &runs, VALUE_AT, max_cells);
-                // The label goes in front of the value's first row.
-                let shown = truncate(label, LABEL_WIDTH);
-                let pad = VALUE_AT - width(&shown);
-                let lead = vec![
-                    Span::styled(shown.clone(), theme::dim()),
-                    Span::raw(" ".repeat(pad)),
-                ];
-                let row = &mut out[first];
-                row.line.spans.splice(0..1, lead);
-                if let Some(text) = &mut row.text {
-                    text.text = format!("{shown}{}{}", " ".repeat(pad), text.text);
-                    text.offset = 0;
-                }
-            }
-            _ => push_wrapped(&mut out, &runs, 0, max_cells),
-        }
+        push_labelled(&mut out, row.label.as_deref(), &runs, max_cells);
+    }
+    // Live from the engine's passive readings: occupancy against the auto-compact point. Only
+    // while the core holds a reading for a crewmate it shows, so a queued or finished task has
+    // no row rather than an "unknown" one.
+    if let Some(view) = context_strip::view_for(app, agent) {
+        let context = context_strip::card_runs(app, Some(view));
+        push_labelled(&mut out, Some("context"), &context, max_cells);
     }
     if !detail.activity.is_empty() {
         out.push(Row::plain(Line::default()));
@@ -188,6 +181,35 @@ fn buttons(running: bool, hover: Option<Hit>) -> Row {
         line: Line::from(spans),
         text: None,
         hits,
+    }
+}
+
+/// Pushes a row with `label` in the label column and `runs` wrapped beside it.
+fn push_labelled(
+    out: &mut Vec<Row>,
+    label: Option<&str>,
+    runs: &[(String, Style)],
+    max_cells: usize,
+) {
+    match label {
+        Some(label) if max_cells > VALUE_AT => {
+            let first = out.len();
+            push_wrapped(out, runs, VALUE_AT, max_cells);
+            // The label goes in front of the value's first row.
+            let shown = truncate(label, LABEL_WIDTH);
+            let pad = VALUE_AT - width(&shown);
+            let lead = vec![
+                Span::styled(shown.clone(), theme::dim()),
+                Span::raw(" ".repeat(pad)),
+            ];
+            let row = &mut out[first];
+            row.line.spans.splice(0..1, lead);
+            if let Some(text) = &mut row.text {
+                text.text = format!("{shown}{}{}", " ".repeat(pad), text.text);
+                text.offset = 0;
+            }
+        }
+        _ => push_wrapped(out, runs, 0, max_cells),
     }
 }
 

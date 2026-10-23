@@ -16,6 +16,7 @@ pub mod attachments;
 pub mod briefs;
 pub mod config_file;
 pub mod context_block;
+pub mod context_monitor;
 pub mod correlation;
 pub mod crew_view;
 pub mod decisions;

@@ -190,7 +190,10 @@ impl App {
         let inner = self.term.drawn.session_rows;
         let count = |app: &Self, width: u16| {
             let lines = app.session_view().map_or(&[][..], |v| v.lines.as_slice());
-            draw::rows(lines, width, app)
+            // As drawn: the compaction notes between the lines, the busy row unless compacting.
+            let notes = crate::widgets::context_strip::chat_notes(app, agent);
+            let busy = crate::widgets::context_strip::compacting_row(app, agent).is_none();
+            draw::rows(lines, &notes, width, app, busy)
         };
         let before = inner.map_or(0, |inner| count(self, inner.width).len());
         let key = ToolGroupKey { agent, first };

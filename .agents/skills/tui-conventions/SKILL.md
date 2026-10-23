@@ -116,7 +116,12 @@ Map core `Tone`s with `theme::tone`.
 - Streaming text shows whole lines only (`widgets/stream.rs::committed`), so nothing reflows.
 - An agent thinking or busy shows the one busy indicator, `widgets/spinner.rs` (`⣾ thinking`, or
   the glyph alone in the crew tree), never a widget's own. It redraws only while drawn: one cell,
-  8 steps a second, nothing when none is on screen.
+  8 steps a second, nothing when none is on screen. An age or running seconds count sets
+  `App::ages_shown` when drawn, so ticks redraw once a second while one is on screen.
+- The context strip (`widgets/context_strip.rs`) sits between the middle column's box and the
+  input: 1–3 dim rows (one under 24 rows, two under 34) for the shown agent's context against its
+  auto-compact point, and its current or last turn. It drops parts rather than truncating, and
+  says "unknown" or "stale" rather than show a 0. Compaction notes sit in the chat by time.
 - Markdown in messages goes through `widgets/markdown.rs`.
 - Your own prompts sit in a dim rounded box (`conversation::prompt_box`), the header in its top
   border, on the Bridge and in sessions. A run of tool calls in a session is one dim line,

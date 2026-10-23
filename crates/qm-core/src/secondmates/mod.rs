@@ -90,6 +90,8 @@ pub struct SecondmateDeps {
     /// The Quartermaster's conversation: each secondmate's is its sibling, so a change to it
     /// re-renders an open session view.
     pub ui: Arc<Conversation>,
+    /// Passive context readings for the UI; its tap goes on every session this opens.
+    pub monitor: Arc<crate::context_monitor::ContextMonitor>,
 }
 
 impl fmt::Debug for SecondmateDeps {

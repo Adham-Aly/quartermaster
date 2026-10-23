@@ -4,13 +4,13 @@
 //! Content is top-aligned while it fits and pinned to the newest line once it overflows; you
 //! scroll up from there (`App::scroll_from_bottom`).
 
-use super::{card, markdown, spinner, stream};
+use super::{card, context_strip, markdown, spinner, stream};
 use crate::app::App;
 use crate::bridge::{empty_lines, pane_block, pane_style};
 use crate::hit::{FrameMap, Hit, Pane, TextRow};
 use crate::text::{cells, truncate, width, wrap_rows};
 use crate::theme;
-use qm_types::api::ChatLine;
+use qm_types::api::{AgentRef, ChatLine, CompactionNote};
 use qm_types::domain::{MessageKind, MessageSource};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Position, Rect};
@@ -122,13 +122,18 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
         );
         return 0;
     }
+    let agent = AgentRef::Quartermaster;
     let mut rows = rows(
         &app.snapshot.conversation,
+        &context_strip::chat_notes(app, agent),
         inner.width,
         app.term.hover,
         &Voices::QUARTERMASTER,
     );
-    if thinking {
+    if let Some(row) = context_strip::compacting_row(app, agent) {
+        rows.push(Row::plain(Line::default()));
+        rows.push(row);
+    } else if thinking {
         rows.extend(thinking_rows(&app.snapshot.conversation, app));
     }
     let visible = usize::from(inner.height);
@@ -157,19 +162,27 @@ impl Voices<'static> {
 
 /// Every message's rows at `width`, one blank row between messages, except that the
 /// agent's reply to the message right above sits directly under it.
+/// Compaction notes sit between the messages by time.
 pub(crate) fn rows(
     chats: &[ChatLine],
+    notes: &[&CompactionNote],
     width: u16,
     hover: Option<Hit>,
     voices: &Voices<'_>,
 ) -> Vec<Row> {
+    let mut notes = notes;
     let mut out = Vec::new();
     for (i, chat) in chats.iter().enumerate() {
-        if i > 0 && !answers(&chats[i - 1], chat) {
+        let noted = context_strip::notes_before(&mut notes, Some(chat.at), width, out.is_empty());
+        let after_note = !noted.is_empty();
+        out.extend(noted);
+        if after_note || (i > 0 && !answers(&chats[i - 1], chat)) {
             out.push(Row::plain(Line::default()));
         }
         out.extend(message_rows(chat, width, hover, voices));
     }
+    let first = out.is_empty();
+    out.extend(context_strip::notes_before(&mut notes, None, width, first));
     out
 }
 

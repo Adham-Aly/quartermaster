@@ -24,9 +24,14 @@ use std::fmt;
 use tokio::sync::mpsc;
 
 mod actions;
+mod context;
 mod draft;
 mod image;
 pub use actions::{ActionItem, ActionKey, ActionKind, ActionOpen};
+pub use context::{
+    AgentContextView, CompactingView, CompactionNote, ContextBasisView, ContextOccupancy,
+    NoteOutcome, PointView, TurnTokens, tokens_short,
+};
 pub use draft::{DraftImage, DraftTarget, SavedDraft};
 pub use image::{
     ImageBytes, ImageFormat, MAX_IMAGE_BYTES, PastedImage, placeholder as image_placeholder,
@@ -433,6 +438,10 @@ pub struct Snapshot {
     /// The Actions inbox: every request waiting on you, configuration first, then newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<ActionItem>,
+    /// Each agent's context occupancy, turn usage and compactions, from passive engine readings
+    /// held in memory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<AgentContextView>,
 }
 
 /// The app's own updates, display-ready. `UpdateView::default()` says nothing at all.

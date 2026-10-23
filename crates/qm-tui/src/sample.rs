@@ -14,10 +14,11 @@ use jiff::Timestamp;
 use jiff::civil::date;
 use jiff::tz::TimeZone;
 use qm_types::api::{
-    AccountBadge, ActionItem, ActionKey, ActionKind, ActionOpen, AgentRef, Attention, Card,
-    CardAction, CardButton, CardKind, CardLine, ChatLine, CrewRow, HeldAnswer, HeldChoice,
-    ProjectRow, SessionLine, SessionLineKind, SessionView, Snapshot, Styled, TaskDetail, TaskRow,
-    Tone, Waiting,
+    AccountBadge, ActionItem, ActionKey, ActionKind, ActionOpen, AgentContextView, AgentRef,
+    Attention, Card, CardAction, CardButton, CardKind, CardLine, ChatLine, CompactingView,
+    CompactionNote, ContextBasisView, ContextOccupancy, CrewRow, HeldAnswer, HeldChoice,
+    NoteOutcome, PointView, ProjectRow, SessionLine, SessionLineKind, SessionView, Snapshot,
+    Styled, TaskDetail, TaskRow, Tone, TurnTokens, Waiting,
 };
 use qm_types::domain::{
     Autonomy, DeliveryMode, MessageKind, MessageSource, Provider as ProviderId,
@@ -47,6 +48,13 @@ pub const THINKING: &str = "thinking";
 /// The value of [`ENV`] that shows the sample Bridge with a badge on the menu's Settings entry
 /// (and so on the menu button).
 pub const MENU_BADGE: &str = "menu-badge";
+
+/// The Bridge with the Quartermaster compacting its context, and T-0042's last compaction
+/// failed.
+pub const COMPACTING: &str = "compacting";
+
+/// The Bridge with no context readings yet: every figure unknown, never a 0.
+pub const CONTEXT_UNKNOWN: &str = "context-unknown";
 
 /// The Bridge with the Actions inbox focused and a long list in it.
 pub const ACTIONS: &str = "actions";
@@ -158,6 +166,14 @@ pub(crate) fn install_from_env(app: &mut App) -> bool {
         Ok(DECISION) => install_decision(app),
         Ok(SECONDMATE) => install_secondmate(app),
         Ok(ACTIONS) => install_actions(app),
+        Ok(COMPACTING) => {
+            install(app);
+            app.snapshot.context = compacting_context();
+        }
+        Ok(CONTEXT_UNKNOWN) => {
+            install(app);
+            app.snapshot.context = Vec::new();
+        }
         _ => return false,
     }
     true
@@ -314,6 +330,7 @@ pub fn snapshot() -> Snapshot {
     out.conversation = conversation();
     out.tasks = tasks();
     out.actions = actions(&out.conversation);
+    out.context = context();
     // What the core answers when the approval card's Diff is pressed (the sample ignores the
     // core's snapshots, so it carries the answer already).
     out.diff = Some(diff());
@@ -1099,4 +1116,64 @@ pub(crate) fn install_actions(app: &mut App) {
     let first = app.snapshot.actions.get(1).map(|item| item.key.clone());
     app.view.selected_action = first;
     app.focus = Pane::Actions;
+}
+
+/// `seconds` before now: ages and running counts are drawn against the wall clock.
+fn ago(seconds: i64) -> Timestamp {
+    Timestamp::now() - jiff::SignedDuration::from_secs(seconds)
+}
+
+/// A reading of `tokens` against an auto-compact point of `point`, `seconds` old.
+fn occupancy(tokens: u64, point: u64, seconds: i64) -> ContextOccupancy {
+    let mut out = ContextOccupancy::default();
+    out.tokens = Some(tokens);
+    out.point = PointView::At(point);
+    out.window = Some(200_000);
+    out.model = Some(String::from("claude-sonnet-5-5"));
+    out.observed_at = Some(ago(seconds));
+    out.basis = ContextBasisView::LastCall;
+    out
+}
+
+/// The sample's context readings: the Quartermaster after a finished turn and an automatic
+/// compaction, T-0042 high and mid-turn, SM-02 not read yet.
+fn context() -> Vec<AgentContextView> {
+    let qm_turn = TurnTokens::new(false, 1_240, 880, 3)
+        .with_categories(Some(312), Some(94_000), Some(2_100))
+        .with_cost(Some(String::from("$0.04")))
+        .with_at(Some(ago(40)));
+    let compacted = CompactionNote::new(at(13, 58), true, NoteOutcome::Done)
+        .with_sizes(Some(182_000), Some(21_000), true)
+        .with_took_ms(Some(14_200));
+    let crew_turn = TurnTokens::new(true, 8_400, 3_100, 7).with_categories(
+        Some(1_900),
+        Some(121_000),
+        Some(6_300),
+    );
+    vec![
+        AgentContextView::new(AgentRef::Quartermaster, occupancy(98_000, 160_000, 40))
+            .with_turn(Some(qm_turn))
+            .with_notes(vec![compacted]),
+        AgentContextView::new(task(42), occupancy(141_000, 160_000, 6)).with_turn(Some(crew_turn)),
+        AgentContextView::new(
+            secondmate_ref(),
+            ContextOccupancy::unknown("waiting for the first model call"),
+        ),
+    ]
+}
+
+/// [`context`], with the Quartermaster compacting and T-0042's last compaction failed.
+fn compacting_context() -> Vec<AgentContextView> {
+    let mut views = context();
+    let failed = CompactionNote::new(
+        ago(300),
+        true,
+        NoteOutcome::Failed(String::from("the summary request timed out")),
+    );
+    views[0] =
+        views[0]
+            .clone()
+            .with_compacting(Some(CompactingView::new(true, ago(12), Some(163_000))));
+    views[1] = views[1].clone().with_notes(vec![failed]);
+    views
 }
