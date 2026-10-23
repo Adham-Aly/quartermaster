@@ -99,7 +99,7 @@ fn empty_note(settings: &Settings, tier: Tier) -> String {
             tier_label(tier).to_lowercase(),
             tier_label(to).to_lowercase()
         ),
-        None => String::from("empty · no model in any tier yet"),
+        None => format!("empty · no available fallback; {tier} requests wait"),
     }
 }
 
@@ -161,42 +161,103 @@ fn draw_placed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::popups::Popup;
+    use crate::settings::Tab;
     use crate::settings::model::Placement;
     use qm_types::ids::ModelId;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn settings_with_filled_tiers(mask: u8) -> Settings {
+        let mut settings = Settings::default();
+        let mut model = Model::new(ModelId::new("test-model").unwrap(), "Test", "Test");
+        for (bit, &tier) in Tier::ALL.iter().enumerate() {
+            if mask & (1 << bit) != 0 {
+                model.placements.push(Placement::new(tier, None));
+            }
+        }
+        if mask != 0 {
+            settings.models.push(model);
+        }
+        settings
+    }
 
     #[test]
-    fn empty_premium_runs_on_the_highest_filled_tier() {
-        // Every combination of non-Premium tiers, including none and High alone.
-        for mask in 0u8..8 {
-            let mut settings = Settings::default();
-            let mut model = Model::new(ModelId::new("test-model").unwrap(), "Test", "Test");
-            for (bit, tier) in [Tier::High, Tier::Medium, Tier::Low]
-                .into_iter()
-                .enumerate()
-            {
-                if mask & (1 << bit) != 0 {
-                    model.placements.push(Placement::new(tier, None));
+    fn every_tier_uses_the_first_permitted_filled_fallback() {
+        // Independent expectations: ordinary work never falls back to Premium.
+        let cases: [(Tier, &[Tier]); 4] = [
+            (Tier::Low, &[Tier::Medium, Tier::High]),
+            (Tier::Medium, &[Tier::High, Tier::Low]),
+            (Tier::High, &[Tier::Medium, Tier::Low]),
+            (Tier::Premium, &[Tier::High, Tier::Medium, Tier::Low]),
+        ];
+        for mask in 0u8..16 {
+            let settings = settings_with_filled_tiers(mask);
+            for (tier, permitted) in cases {
+                let expected = permitted
+                    .iter()
+                    .copied()
+                    .find(|&t| settings.models.iter().any(|m| m.in_tier(t)));
+                assert_eq!(
+                    fallback_tier(&settings, tier),
+                    expected,
+                    "mask {mask}, tier {tier}"
+                );
+                if !settings.models.iter().any(|m| m.in_tier(tier)) {
+                    let want = match expected {
+                        Some(to) => format!("empty · {tier} runs on {to}"),
+                        None => format!("empty · no available fallback; {tier} requests wait"),
+                    };
+                    assert_eq!(empty_note(&settings, tier), want, "mask {mask}");
                 }
             }
-            if mask != 0 {
-                settings.models.push(model);
+        }
+    }
+
+    #[test]
+    fn premium_only_board_draws_waiting_hints_at_supported_sizes() {
+        for (width, height) in [(150, 45), (120, 40), (119, 40), (100, 30)] {
+            for light in [false, true] {
+                let mut app = App::new();
+                app.open_popup(Popup::Settings);
+                app.view.settings.loaded = true;
+                app.view.settings.tab = Tab::ModelLevels;
+                app.view.settings.model = settings_with_filled_tiers(0b1000);
+                app.term.palette = theme::fit_reported(&qm_types::wire::Colors {
+                    bg: Some(if light { [255; 3] } else { [0; 3] }),
+                    ..Default::default()
+                });
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let shown: String = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect();
+                for tier in [Tier::Low, Tier::Medium, Tier::High] {
+                    assert!(
+                        shown.contains(&format!(
+                            "empty · no available fallback; {tier} requests wait"
+                        )),
+                        "{width}×{height}, light={light}, tier={tier}:\n{shown}"
+                    );
+                }
+                assert!(!shown.contains("runs on premium"));
+                assert!(!shown.contains("no model in any tier"));
             }
-            let expected = [Tier::High, Tier::Medium, Tier::Low]
-                .into_iter()
-                .enumerate()
-                .find(|(bit, _)| mask & (1 << bit) != 0)
-                .map(|(_, tier)| tier);
+        }
+    }
+
+    #[test]
+    fn only_premium_filled_leaves_ordinary_requests_waiting() {
+        let settings = settings_with_filled_tiers(0b1000);
+        for tier in [Tier::Low, Tier::Medium, Tier::High] {
+            assert_eq!(fallback_tier(&settings, tier), None, "{tier}");
             assert_eq!(
-                fallback_tier(&settings, Tier::Premium),
-                expected,
-                "mask {mask}"
+                empty_note(&settings, tier),
+                format!("empty · no available fallback; {tier} requests wait")
             );
-            let note = empty_note(&settings, Tier::Premium);
-            let want = match expected {
-                Some(t) => format!("empty · premium runs on {}", tier_label(t).to_lowercase()),
-                None => String::from("empty · no model in any tier yet"),
-            };
-            assert_eq!(note, want, "mask {mask}");
         }
     }
 }

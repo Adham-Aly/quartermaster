@@ -24,12 +24,7 @@ use qm_types::domain::Tier;
 
 /// The tiers to try, in order, for work that landed in `landed`.
 pub const fn order(landed: Tier) -> &'static [Tier] {
-    match landed {
-        Tier::Low => &[Tier::Low, Tier::Medium, Tier::High],
-        Tier::Medium => &[Tier::Medium, Tier::High, Tier::Low],
-        Tier::High => &[Tier::High, Tier::Medium, Tier::Low],
-        Tier::Premium => &[Tier::Premium, Tier::High, Tier::Medium, Tier::Low],
-    }
+    landed.fallback_order()
 }
 
 /// The tiers a stronger-model retry may use. A retry to high or medium uses its target only and

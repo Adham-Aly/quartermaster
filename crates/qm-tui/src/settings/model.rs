@@ -140,17 +140,14 @@ pub(crate) const fn tier_heading(tier: Tier) -> &'static str {
     }
 }
 
-/// Where an empty tier's work goes instead: the first tier with a model in routing's fallback
-/// order (`qm_routing::fallback::order`). Premium is never a fallback.
+/// Where an empty tier's work goes instead, using routing's shared order. Premium requests
+/// fall back to ordinary tiers, but ordinary requests never fall back to Premium.
 pub(crate) fn fallback_tier(settings: &Settings, tier: Tier) -> Option<Tier> {
-    let filled = |t: Tier| settings.models.iter().any(|m| m.in_tier(t));
-    let order: &[Tier] = match tier {
-        Tier::Premium => &[Tier::High, Tier::Medium, Tier::Low],
-        Tier::High => &[Tier::Medium, Tier::Low],
-        Tier::Medium => &[Tier::High, Tier::Low],
-        Tier::Low => &[Tier::Medium, Tier::High],
-    };
-    order.iter().copied().find(|&t| filled(t))
+    tier.fallback_order()
+        .iter()
+        .copied()
+        .skip(1)
+        .find(|&t| settings.models.iter().any(|m| m.in_tier(t)))
 }
 
 impl Settings {
