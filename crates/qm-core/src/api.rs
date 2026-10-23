@@ -382,7 +382,6 @@ pub(crate) async fn load_conversation(
             turns.dedup();
             Ok(ConversationData {
                 acknowledgements: messages::latest_acknowledgements(conn, &yours)?,
-                notices: events::notices(conn, &yours)?,
                 one_line: events::one_line(conn, &notes)?,
                 origins: messages::turn_origins(conn, &turns)?,
                 rows,
@@ -398,7 +397,6 @@ pub(crate) struct ConversationData {
     pub rows: Vec<MessageRow>,
     /// The newest acknowledgement beside each of your messages.
     pub acknowledgements: BTreeMap<MessageId, String>,
-    pub notices: BTreeMap<MessageId, NoticeState>,
     pub origins: BTreeMap<TurnId, TurnOrigin>,
     /// The app's notes drawn on one line (a plan reply sent from its page).
     pub one_line: BTreeSet<MessageId>,
@@ -439,42 +437,22 @@ pub(crate) fn thinking(data: &ConversationData, status: &SeatStatus) -> bool {
 pub(crate) fn chat_lines(data: &ConversationData, status: &SeatStatus) -> Vec<ChatLine> {
     data.rows
         .iter()
-        .enumerate()
-        .map(|(i, row)| chat_line(data, status, row, &data.rows[i + 1..]))
+        .map(|row| chat_line(data, status, row))
         .collect()
 }
 
-fn chat_line(
-    data: &ConversationData,
-    status: &SeatStatus,
-    row: &MessageRow,
-    later: &[MessageRow],
-) -> ChatLine {
+fn chat_line(data: &ConversationData, status: &SeatStatus, row: &MessageRow) -> ChatLine {
     let mut line = ChatLine::new(row.id, row.source, row.kind, row.at, row.text.clone());
     match row.source {
         MessageSource::You => {
             line.acknowledgement = data.acknowledgements.get(&row.id).cloned();
             line.queued = status.queued.contains(&row.id);
-            line.card = data.notices.get(&row.id).map(|n| notice_card(n, &row.text));
         }
         MessageSource::Agent => {
             line.context = row
                 .turn
                 .and_then(|t| data.origins.get(&t))
                 .map(|origin| context_words(origin, row.kind));
-            if row.kind == MessageKind::Question && !row.options.is_empty() {
-                // Only one of the card's own options answers it (pressed, or typed word for
-                // word); any other message you write meanwhile leaves the card open.
-                let answer = later
-                    .iter()
-                    .filter(|m| m.source == MessageSource::You && m.kind == MessageKind::Message)
-                    .find_map(|m| {
-                        row.options
-                            .iter()
-                            .find(|option| option.trim() == m.text.trim())
-                    });
-                line.card = Some(question_card(&row.options, answer.map(String::as_str)));
-            }
         }
         MessageSource::App if data.one_line.contains(&row.id) => line = line.with_one_line(),
         MessageSource::App | MessageSource::Supervisor => {}
@@ -810,6 +788,75 @@ mod tests {
         }
     }
 
+    impl Conversation {
+        /// Every notice on your messages, with its answer.
+        async fn notices(&self) -> BTreeMap<MessageId, NoticeState> {
+            self.db
+                .call(|conn| {
+                    let yours: Vec<MessageId> = conn
+                        .prepare("SELECT id FROM messages WHERE source = 'you'")?
+                        .query_map([], |r| r.get(0))?
+                        .collect::<rusqlite::Result<_>>()?;
+                    events::notices(conn, &yours)
+                })
+                .await
+                .unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_lines_never_carry_cards() {
+        let f = Fixture::new().await;
+        let message = f.store_message("what did we decide").await;
+        f.conversation
+            .db
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO turns (id, agent_id, started_by, message_id, started_at, \
+                     ended_at, status, seq) VALUES (1, 1, 'user', ?1, 1, 2, 'completed', 2)",
+                    [message],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        f.conversation
+            .notice(
+                f.conversation.agent(),
+                TurnId::new(1),
+                message,
+                Notice::NoAction,
+            )
+            .await
+            .unwrap();
+        let agent = f.conversation.agent();
+        let at = jiff::Timestamp::now();
+        f.conversation
+            .db
+            .call(move |conn| {
+                messages::insert(
+                    conn,
+                    &NewMessage {
+                        agent,
+                        source: MessageSource::Agent,
+                        kind: MessageKind::Question,
+                        text: "Which cache?",
+                        options: &["Session".to_owned(), "Page".to_owned()],
+                        replies_to: None,
+                        turn: None,
+                        at,
+                    },
+                )
+            })
+            .await
+            .unwrap();
+        let data = f.conversation.load().await.unwrap();
+        let lines = chat_lines(&data, &SeatStatus::default());
+        assert!(lines.iter().any(|line| line.id == message));
+        assert!(lines.iter().any(|line| line.kind == MessageKind::Question));
+        assert!(lines.iter().all(|line| line.card.is_none()));
+    }
+
     impl Fixture {
         async fn new() -> Self {
             static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -916,7 +963,7 @@ mod tests {
                 ));
                 assert_eq!(self.conversation.load().await.unwrap().rows.len(), before);
             }
-            let notices = self.conversation.load().await.unwrap().notices;
+            let notices = self.conversation.notices().await;
             assert!(notices.values().all(|notice| notice.answer.is_none()));
         }
     }
@@ -981,11 +1028,7 @@ mod tests {
             .await,
             Handled::Changed
         );
-        assert!(
-            f.conversation.load().await.unwrap().notices[&message]
-                .answer
-                .is_none()
-        );
+        assert!(f.conversation.notices().await[&message].answer.is_none());
         // The original notice is now answered; the blocked commands must still store nothing.
         let before = f.conversation.load().await.unwrap().rows.len();
         for command in [

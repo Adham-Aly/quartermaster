@@ -9,7 +9,6 @@ use crate::view::Flash;
 use crate::{chrome, router};
 use crossterm::event::{Event, KeyEventKind};
 use qm_types::api::{Command, Snapshot, Update};
-use qm_types::ids::MessageId;
 use qm_types::wire::ExitReason;
 use ratatui::Frame;
 use std::cell::Cell;
@@ -77,8 +76,6 @@ pub(crate) struct App {
     pub(crate) windows: usize,
     /// Set when something changed and the screen needs a new frame.
     dirty: bool,
-    /// A card to scroll into view, a step per frame, until its buttons show.
-    pub(crate) reveal: Option<MessageId>,
     /// The setup check screen: its terminal panes and what the keys act on.
     pub(crate) setup: crate::setup::SetupState,
     /// When the UI started: the busy indicator's steps count from here.
@@ -112,7 +109,6 @@ impl App {
             stop_reason: None,
             windows: 0,
             dirty: true,
-            reveal: None,
             setup: crate::setup::SetupState::default(),
             started: Instant::now(),
             spin: 0,
@@ -251,32 +247,6 @@ impl App {
         if let Some(field) = &self.term.drawn.field {
             self.view.input_scroll = field.scroll;
         }
-        self.after_draw_reveal();
-    }
-
-    fn after_draw_reveal(&mut self) {
-        let Some(message) = self.reveal else { return };
-        let shown = self
-            .term
-            .drawn
-            .hits
-            .rect_of(Hit::CardButton { message, index: 0 })
-            .is_some();
-        let max = self.term.drawn.conversation_scroll_max;
-        if shown || self.scroll_from_bottom >= max {
-            self.reveal = None;
-            return;
-        }
-        let page = self
-            .term
-            .drawn
-            .hits
-            .rect_of(Hit::Pane(Pane::Conversation))
-            .map_or(1, |area| {
-                usize::from(area.height.saturating_sub(2) / 2).max(1)
-            });
-        self.scroll_from_bottom = (self.scroll_from_bottom + page).min(max);
-        self.dirty = true;
     }
 
     /// The short notice the status bar shows instead of its counts, if any.

@@ -149,7 +149,7 @@ impl App {
         match self.focus {
             Pane::Projects => self.on_projects_key(key.code),
             Pane::Crew => self.on_crew_key(key.code, now),
-            Pane::Conversation => self.on_conversation_key(key.code, now),
+            Pane::Conversation => self.on_conversation_key(key.code),
             Pane::Task => self.on_task_key(key.code, now),
             Pane::Session => self.on_session_key(key.code),
             Pane::Actions => {
@@ -285,7 +285,7 @@ impl App {
         isize::from(i16::try_from(rows).unwrap_or(i16::MAX))
     }
 
-    fn on_conversation_key(&mut self, code: KeyCode, now: Instant) {
+    fn on_conversation_key(&mut self, code: KeyCode) {
         let max = self.term.drawn.conversation_scroll_max;
         let page = self.page(Pane::Conversation);
         // `scroll_from_bottom` counts up from the newest line, so "up" adds.
@@ -301,15 +301,6 @@ impl App {
         if let Some(delta) = delta {
             let to = scrolled(self.scroll_from_bottom, delta, max);
             self.change(|app| &mut app.scroll_from_bottom, to);
-            return;
-        }
-        match code {
-            KeyCode::Char('[') => self.step_card(false),
-            KeyCode::Char(']') => self.step_card(true),
-            KeyCode::Char(c) if c.is_ascii_alphanumeric() => {
-                self.press_card_key(c, now);
-            }
-            _ => {}
         }
     }
 

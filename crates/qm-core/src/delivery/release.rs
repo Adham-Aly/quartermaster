@@ -235,7 +235,6 @@ pub(crate) async fn propose(
     }
 
     let at = svc.clock().now();
-    let seat = svc.tasks().deps().seat_agent;
     let supervisor = loaded.row.supervisor;
     let asked = caller.agent;
     let project_id = project.id;
@@ -320,7 +319,6 @@ pub(crate) async fn propose(
                 serde_json::json!({ "held": held, "launch": launch }),
                 at,
             )?;
-            HeldService::anchor(tx, held, &task.to_string(), seat, at)?;
             Ok(Ok(held))
         })
         .await

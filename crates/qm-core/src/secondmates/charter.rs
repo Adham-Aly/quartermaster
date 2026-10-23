@@ -18,7 +18,7 @@ use qm_routing::decider::{Decided, SecondmateQuestion};
 use qm_store::StoreError;
 use qm_store::events::{self, NewEvent};
 use qm_store::held::{HeldPayload, NewHeld, SecondmatePayload};
-use qm_store::messages::{self, NewMessage};
+use qm_store::messages;
 use qm_store::projects;
 use qm_store::secondmates::{self, NewSecondmate, SecondmateRecord};
 use qm_store::wakes::NewWake;
@@ -26,7 +26,7 @@ use qm_tools::defs::{Ack, Held};
 use qm_tools::handler::{Caller, CharterChange, SecondmateProposal, ToolFailure};
 use qm_types::BoxFuture;
 use qm_types::api::{CardLine, HeldAnswer, Styled, Tone};
-use qm_types::domain::{MessageKind, MessageSource, WakeKind};
+use qm_types::domain::WakeKind;
 use qm_types::error::Refusal;
 use qm_types::ids::ProjectId;
 use rusqlite::Connection;
@@ -85,7 +85,7 @@ fn projects_words(names: &[String]) -> String {
 
 impl SecondmateService {
     /// `start_secondmate`: checks the facts, asks the decider, and stores the exact proposal as a
-    /// held action with its card in the conversation. Nothing else is created.
+    /// held action, listed in Actions. Nothing else is created.
     #[allow(clippy::too_many_lines)]
     pub async fn propose(
         &self,
@@ -198,20 +198,6 @@ impl SecondmateService {
                         at,
                     },
                 )?;
-                let line = messages::insert(
-                    &tx,
-                    &NewMessage {
-                        agent,
-                        source: MessageSource::App,
-                        kind: MessageKind::AppNote,
-                        text: "The Quartermaster proposes a secondmate.",
-                        options: &[],
-                        replies_to: None,
-                        turn,
-                        at,
-                    },
-                )?;
-                HeldService::link_message(&tx, held, line, at)?;
                 tx.commit()?;
                 Ok(Ok(held))
             })

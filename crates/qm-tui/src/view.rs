@@ -2,7 +2,7 @@
 //! only reads.
 
 use qm_types::api::AgentRef;
-use qm_types::ids::{HeldActionId, MessageId};
+use qm_types::ids::HeldActionId;
 use ratatui::layout::Position;
 use std::time::Instant;
 
@@ -113,9 +113,8 @@ pub(crate) struct View {
     pub(crate) action_wait: Option<PressWait>,
     /// How far the overlay's body is scrolled.
     pub(crate) action_scroll: usize,
-    /// The card the keys `a`/`d`/`r` and `1`/`2`/`3` act on: the newest unanswered card unless
-    /// you moved to another.
-    pub(crate) card: Option<MessageId>,
+    /// The Actions item whose Diff button opened the Diff screen: Esc there reopens its overlay.
+    pub(crate) diff_from: Option<qm_types::api::ActionKey>,
     /// "Retry with my guidance" picked: the input box collects your words for this held action.
     pub(crate) guidance_for: Option<HeldActionId>,
     /// "Change location" picked on a project proposal: the input box holds the folder for this held
