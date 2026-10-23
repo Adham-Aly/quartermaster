@@ -79,8 +79,6 @@ pub(crate) struct Settings {
     pub(crate) quartermaster_now: Option<QuartermasterNow>,
     pub(crate) providers: Vec<Provider>,
     pub(crate) login: Option<Login>,
-    /// The bell and desktop notifications are on (System).
-    pub(crate) notifications: bool,
     /// The personal workspace's folder, as Settings shows it (Projects).
     pub(crate) workspace_folder: String,
     /// Each tier's default effort as routing uses it (`config.toml`'s `[tiers]`).
@@ -280,7 +278,6 @@ impl Settings {
                 self.quartermaster = choice.clone();
             }
             Command::SetQuartermasterEffort { effort } => self.quartermaster_effort = *effort,
-            Command::SetNotifications { enabled } => self.notifications = *enabled,
             Command::SetAutocompactWindow { tokens } => {
                 self.autocompact_window = AutocompactWindow::new(*tokens);
             }

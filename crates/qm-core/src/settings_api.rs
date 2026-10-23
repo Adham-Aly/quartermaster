@@ -296,10 +296,6 @@ impl ApiPart for SettingsPart {
                 let effort = *effort;
                 Box::pin(async move { inner.set_quartermaster_effort(effort).await })
             }
-            Command::SetNotifications { enabled } => {
-                let enabled = *enabled;
-                Box::pin(async move { inner.set_notifications(enabled).await })
-            }
             Command::SetAutocompactWindow { tokens } => {
                 let tokens = *tokens;
                 Box::pin(async move { inner.set_autocompact_window(tokens).await })
@@ -479,21 +475,6 @@ impl Inner {
                     "The Quartermaster's effort couldn't be saved: {e}"
                 ))
                 .await
-            }
-        }
-    }
-
-    /// Switches the bell and desktop notifications; `NotificationsPart` reads the config channel at
-    /// each snapshot, so this applies at once.
-    async fn set_notifications(&self, enabled: bool) -> Handled {
-        match self
-            .save_config(|c| c.notifications.enabled = enabled)
-            .await
-        {
-            Ok(()) => Handled::Changed,
-            Err(e) => {
-                self.note(&format!("The notifications setting couldn't be saved: {e}"))
-                    .await
             }
         }
     }
@@ -1051,7 +1032,6 @@ impl Inner {
             Some(pin) => PinSetting::new(true, Some(pin.model.clone()), pin.fallback.clone()),
             None => PinSetting::default(),
         };
-        view.notifications = config.notifications.enabled;
         let folder = workspace_folder(&config, &self.data_dir, self.home.as_deref());
         view.workspace_folder = tilde(&folder, self.home.as_deref());
         view.tier_efforts = config.tiers.clone();

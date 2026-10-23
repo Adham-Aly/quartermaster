@@ -109,7 +109,7 @@ mod tests {
             u32::from(loaded.config.compaction.autocompact_window),
             300_000
         );
-        assert_eq!(loaded.config.notifications, Config::default().notifications);
+        assert_eq!(loaded.config.routing, Config::default().routing);
         assert_eq!(loaded.unknown_keys, Vec::<String>::new());
     }
 

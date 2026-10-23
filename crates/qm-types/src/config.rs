@@ -7,10 +7,10 @@
 //!
 //! What lives here and what lives in the database: `config.toml` holds your preferences that
 //! aren't about a particular detected model or account (the Quartermaster's model and effort, the
-//! "always use" pin, each tier's default effort, the folders `find_project_folder` searches,
-//! notifications). Which models sit in which tier at which effort (a model may sit in one tier at
-//! several efforts) are rows in `placements`; accounts, labels, the preferred account and pauses
-//! are rows in `accounts`.
+//! "always use" pin, each tier's default effort, the folders `find_project_folder` searches).
+//! Which models sit in which tier at which effort (a model may sit in one tier at several efforts)
+//! are rows in `placements`; accounts, labels, the preferred account and pauses are rows in
+//! `accounts`.
 
 use crate::domain::Effort;
 use crate::ids::ModelId;
@@ -26,7 +26,6 @@ pub struct Config {
     pub tiers: TierEfforts,
     pub projects: ProjectsConfig,
     pub workspace: WorkspaceConfig,
-    pub notifications: NotificationsConfig,
 }
 
 /// The personal workspace: a plain folder crewmates work in directly. Unset, it is
@@ -219,19 +218,6 @@ impl Default for ProjectsConfig {
             .map(String::from)
             .to_vec(),
         }
-    }
-}
-
-/// Desktop notifications for questions, decisions and approvals.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct NotificationsConfig {
-    pub enabled: bool,
-}
-
-impl Default for NotificationsConfig {
-    fn default() -> Self {
-        Self { enabled: true }
     }
 }
 

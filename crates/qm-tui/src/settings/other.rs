@@ -1,6 +1,6 @@
 //! The Projects and System tabs. Projects shows your projects and how they deliver, with each
-//! one's autonomy, normal or auto (yours alone: no agent can change it); System shows this Mac, the notifications switch and the entry
-//! to the setup check, with what it found wrong and how to fix it.
+//! one's autonomy, normal or auto (yours alone: no agent can change it); System shows this Mac and
+//! the entry to the setup check, with what it found wrong and how to fix it.
 
 use super::paint::Painter;
 use super::{SettingsHit, section};
@@ -129,7 +129,7 @@ fn setup_findings(app: &App, room: usize) -> Vec<Vec<(String, Style)>> {
 pub(super) fn draw_system(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let room = usize::from(area.width.saturating_sub(SYSTEM_COLUMN + 1));
     let findings = setup_findings(app, room);
-    let inner = section(area, 5 + cells(findings.len()));
+    let inner = section(area, 3 + cells(findings.len()));
     let x = inner.x + 1;
     let room = usize::from(inner.width.saturating_sub(2));
     let machine = if app.snapshot.machine.is_empty() {
@@ -147,27 +147,8 @@ pub(super) fn draw_system(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let right = inner.right().saturating_sub(1);
     let col = inner.x + SYSTEM_COLUMN;
 
-    // Notifications.
-    let y = inner.y + 2;
-    p.text(x, y, "Notifications", theme::strong());
-    let switch = if app.view.settings.model.notifications {
-        "● On"
-    } else {
-        "○ Off"
-    };
-    let left = p.button_left_of(right, y, switch, SettingsHit::NotificationsSwitch);
-    p.text(
-        col,
-        y,
-        &truncate(
-            "bell and desktop notification for questions, decisions and approvals",
-            usize::from(left.saturating_sub(col + 1)),
-        ),
-        theme::text(),
-    );
-
     // The setup check.
-    let y = inner.y + 4;
+    let y = inner.y + 2;
     p.text(x, y, "Setup check", theme::strong());
     let left = p.button_left_of(right, y, "Open", SettingsHit::SetupCheck);
     p.text(
@@ -196,8 +177,12 @@ fn mode_label(mode: Autonomy, current: bool) -> String {
 mod tests {
     use super::*;
     use crate::hit::{Hit, Hits};
+    use crate::popups::Popup;
+    use crate::router::Screen;
     use crate::settings::Tab;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use qm_types::api::{Command, ProjectRow};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -226,6 +211,80 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) {
         app.on_settings_key(KeyEvent::new(code, KeyModifiers::NONE), Instant::now());
+    }
+
+    #[test]
+    fn system_setup_check_opens_by_key() {
+        let mut app = App::new();
+        app.open_popup(Popup::Settings);
+        let now = Instant::now();
+        app.on_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE), now);
+        assert_eq!(app.view.settings.tab, Tab::System);
+        app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), now);
+        assert_eq!(app.screen, Screen::Setup);
+        assert_eq!(app.popup(), None);
+        assert_eq!(app.take_commands(), [] as [Command; 0]);
+    }
+
+    #[test]
+    fn former_system_shortcuts_do_not_change_settings_or_reach_the_prompt() {
+        let mut app = App::new();
+        app.view.settings.tab = Tab::System;
+        app.open_popup(Popup::Settings);
+        let before = app.view.settings.model.clone();
+        for code in [KeyCode::Char('n'), KeyCode::Char(' ')] {
+            app.on_key(KeyEvent::new(code, KeyModifiers::NONE), Instant::now());
+            assert_eq!(app.view.settings.model, before);
+            assert_eq!(
+                app.view.settings.pending,
+                [] as [super::super::sync::Pending; 0]
+            );
+            assert_eq!(app.take_commands(), [] as [Command; 0]);
+            assert_eq!(app.screen, Screen::Bridge);
+            assert_eq!(app.popup(), Some(Popup::Settings));
+            assert_eq!(app.draft.text, "");
+        }
+    }
+
+    #[test]
+    fn compact_system_setup_check_draws_and_opens_by_click_at_supported_sizes() {
+        for (width, height) in [(150, 45), (120, 40), (119, 40), (100, 30)] {
+            let mut app = App::new();
+            app.view.settings.tab = Tab::System;
+            app.open_popup(Popup::Settings);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let open = app
+                .term
+                .drawn
+                .hits
+                .rect_of(Hit::Settings(SettingsHit::SetupCheck))
+                .expect("System draws a reachable Setup check button");
+            let buffer = terminal.backend().buffer();
+            let rows: Vec<String> = (0..height)
+                .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+                .collect();
+            let machine_y = rows
+                .iter()
+                .position(|row| row.contains("This Mac"))
+                .unwrap();
+            assert_eq!(usize::from(open.y), machine_y + 2);
+            assert!(rows[usize::from(open.y)].contains("Setup check"));
+            assert!(rows[usize::from(open.y)].contains("Open"));
+            assert!(!rows.iter().any(|row| row.contains("Notifications")));
+            app.on_mouse(
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: open.x,
+                    row: open.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                Instant::now(),
+            );
+            assert_eq!(app.screen, Screen::Setup);
+            assert_eq!(app.popup(), None);
+            assert_eq!(app.take_commands(), [] as [Command; 0]);
+        }
     }
 
     #[test]

@@ -40,7 +40,6 @@ use qm_core::delivery::{DeliveryCloseFacts, DeliveryDeps, DeliveryService};
 use qm_core::drafts::DraftsPart;
 use qm_core::held::{HeldPart, HeldService, InboxSignal};
 use qm_core::inbox::{Inbox, SeatSink, WakeSink};
-use qm_core::notifications::{DesktopNotifier, NotificationsPart};
 use qm_core::parent_channel::ParentChannel;
 use qm_core::processes::StoreRecorder;
 use qm_core::projects::{AddProjectPerformer, ProjectDeps, ProjectService, ProjectsPart};
@@ -275,7 +274,6 @@ pub(crate) async fn start_core(
             tracing::error!(error = %e, "couldn't arm the pending schedules");
         }
     });
-    let notify_config = base.config.subscribe();
     // Pasted images, and their cleanup now and every hour.
     attachments.clone().spawn_sweeper(db.clone());
     // Plans, evidence and transcripts finished work no longer needs, every hour (startup's pass
@@ -320,11 +318,6 @@ pub(crate) async fn start_core(
         (db.clone(), Arc::clone(&clock), dir.clone()),
         agent,
         tasks.clone(),
-    )));
-    // Last, after the Actions list it reads.
-    parts.push(Arc::new(NotificationsPart::new(
-        notify_config,
-        Arc::new(DesktopNotifier),
     )));
     api::serve(
         server,

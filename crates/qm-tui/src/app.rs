@@ -274,9 +274,6 @@ impl App {
                 self.view
                     .settings
                     .refresh(&snapshot.settings, Instant::now());
-                if snapshot.bell > self.snapshot.bell {
-                    self.term.bells = 1;
-                }
                 self.snapshot = *snapshot;
                 self.dirty = true;
                 self.setup_after_snapshot();

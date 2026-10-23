@@ -34,7 +34,6 @@ impl Settings {
             quartermaster_now: view.quartermaster_now.clone(),
             providers: view.providers.clone(),
             login: view.login.as_ref().map(Login::from_view),
-            notifications: view.notifications,
             workspace_folder: view.workspace_folder.clone(),
             unavailable: view.unavailable.clone(),
             tier_efforts: view.tier_efforts.clone(),
