@@ -538,9 +538,12 @@ impl HeldService {
                 Ok(()) => {}
                 Err(HeldError::Store(e)) => {
                     tracing::error!(error = %e, %held, "couldn't record your answer on the card");
+                    service.remember_failure(held, "couldn't record your answer".to_owned());
                 }
                 Err(e) => {
                     tracing::info!(%held, reason = %e, "your answer on the card didn't go through");
+                    // Shown on the card while it still waits, so you see why and can retry.
+                    service.remember_failure(held, e.to_string());
                 }
             }
             done();

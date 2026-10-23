@@ -20,9 +20,6 @@ use qm_types::domain::{PlanMode, Role, TaskKind};
 use qm_types::ids::{AgentId, TaskId};
 use rusqlite::Connection;
 
-/// At most this many items in one snapshot, so a runaway source can't flood it.
-pub const MAX_ITEMS: usize = 200;
-
 /// The inbox's part. It handles no command: every button maps to one the other parts take.
 #[derive(Clone, Debug)]
 pub struct ActionsPart {
@@ -155,24 +152,7 @@ impl ActionsPart {
     async fn questions_and_notices(&self) -> Vec<ActionItem> {
         let deps = self.tasks.deps();
         let seat = deps.seat_agent;
-        let read = deps
-            .db
-            .call(move |conn| {
-                let mates = secondmates::active(conn)?;
-                let mut agents = vec![seat];
-                agents.extend(mates.iter().map(|m| m.agent));
-                let questions = messages::open_questions(conn, &agents)?;
-                let mut notices = Vec::new();
-                for (message, state) in events::pending_notices(conn)? {
-                    if let Some(row) = messages::get(conn, message)? {
-                        notices.push((row, state));
-                    }
-                }
-                let mates: Vec<(AgentId, qm_types::ids::SecondmateId)> =
-                    mates.iter().map(|m| (m.agent, m.id)).collect();
-                Ok((questions, notices, mates))
-            })
-            .await;
+        let read = deps.db.call(move |conn| open_requests(conn, seat)).await;
         let (questions, notices, mates) = match read {
             Ok(read) => read,
             Err(e) => {
@@ -220,9 +200,6 @@ impl ActionsPart {
             out.push(item);
         }
         for (row, state) in notices {
-            if row.agent != seat {
-                continue;
-            }
             let card = notice_card(&state, &row.text);
             let title = format!("{}: {}", card.heading, first_line(&row.text));
             out.push(
@@ -243,6 +220,35 @@ impl ActionsPart {
 }
 
 /// The app's own prompts: model levels, setup findings and accounts to reconnect, in that order.
+/// The open questions, the open notices with their message, and each active secondmate's agent.
+type Requests = (
+    Vec<messages::MessageRow>,
+    Vec<(messages::MessageRow, events::NoticeState)>,
+    Vec<(AgentId, qm_types::ids::SecondmateId)>,
+);
+
+/// The questions and notices still waiting on you, from the agents that can still act on your
+/// answer: the current seat (`seat`) and every active secondmate. A question from a retired
+/// secondmate, or a question or notice under an earlier seat's agent, has nobody left to read the
+/// reply, so it is not listed; the conversation it lived in is gone with it. Notices only ever
+/// come from the seat's own turns.
+fn open_requests(conn: &Connection, seat: AgentId) -> Result<Requests, qm_store::StoreError> {
+    let mates = secondmates::active(conn)?;
+    let mut agents = vec![seat];
+    agents.extend(mates.iter().map(|m| m.agent));
+    let questions = messages::open_questions(conn, &agents)?;
+    let mut notices = Vec::new();
+    for (message, state) in events::pending_notices(conn)? {
+        if let Some(row) = messages::get(conn, message)?
+            && row.agent == seat
+        {
+            notices.push((row, state));
+        }
+    }
+    let mates = mates.iter().map(|m| (m.agent, m.id)).collect();
+    Ok((questions, notices, mates))
+}
+
 fn configuration(snapshot: &Snapshot, now: jiff::Timestamp) -> Vec<ActionItem> {
     let mut out = Vec::new();
     let setup_card = |heading: &str, text: &str, button: CardButton| {
@@ -295,15 +301,14 @@ fn configuration(snapshot: &Snapshot, now: jiff::Timestamp) -> Vec<ActionItem> {
     out
 }
 
-/// The inbox's order: the app's configuration prompts first, then everything else newest first,
-/// cut to [`MAX_ITEMS`].
+/// The inbox's order: the app's configuration prompts first, then everything else newest first.
+/// Never cut: every active request stays reachable, however many there are.
 fn order(mut config: Vec<ActionItem>, mut items: Vec<ActionItem>) -> Vec<ActionItem> {
+    // Each source is read oldest first, so reversed, a stable sort keeps requests made in the
+    // same millisecond newest first too.
+    items.reverse();
     items.sort_by_key(|item| std::cmp::Reverse(item.at));
     config.append(&mut items);
-    if config.len() > MAX_ITEMS {
-        tracing::warn!(items = config.len(), "the actions inbox was cut to its cap");
-        config.truncate(MAX_ITEMS);
-    }
     config
 }
 
@@ -362,10 +367,13 @@ mod tests {
         )
     }
 
+    /// More pending requests than any screen shows.
+    const PENDING: usize = 250;
+
     #[test]
-    fn configuration_comes_first_then_newest_first_within_the_cap() {
+    fn configuration_comes_first_then_newest_first_and_nothing_is_cut() {
         let config = vec![item(ActionKey::ModelLevels, ActionKind::Setup, 0)];
-        let rest: Vec<ActionItem> = (0..MAX_ITEMS + 5)
+        let rest: Vec<ActionItem> = (0..PENDING)
             .map(|i| {
                 item(
                     ActionKey::Question {
@@ -377,13 +385,32 @@ mod tests {
             })
             .collect();
         let out = order(config, rest);
-        assert_eq!(out.len(), MAX_ITEMS);
+        assert_eq!(out.len(), PENDING + 1);
+        // Asked in the same millisecond, the later one still comes first.
+        let same = |i: i64| {
+            item(
+                ActionKey::Question {
+                    message: qm_types::ids::MessageId::new(i),
+                },
+                ActionKind::Question,
+                5,
+            )
+        };
+        let tied = order(Vec::new(), vec![same(1), same(2)]);
+        assert_eq!(tied[0].key, same(2).key);
+        // The oldest request is still there, last.
+        assert_eq!(
+            out[PENDING].key,
+            ActionKey::Question {
+                message: qm_types::ids::MessageId::new(0)
+            }
+        );
         assert_eq!(out[0].key, ActionKey::ModelLevels);
         assert!(out[1..].windows(2).all(|w| w[0].at >= w[1].at));
         assert_eq!(
             out[1].key,
             ActionKey::Question {
-                message: qm_types::ids::MessageId::new(i64::try_from(MAX_ITEMS + 4).unwrap())
+                message: qm_types::ids::MessageId::new(i64::try_from(PENDING - 1).unwrap())
             }
         );
     }
@@ -403,5 +430,81 @@ mod tests {
         assert_eq!(out[1].title, "GitHub isn't signed in.");
         assert_eq!(out[1].open, ActionOpen::Setup);
         assert!(out.iter().all(ActionItem::is_configuration));
+    }
+    #[test]
+    fn only_requests_someone_can_still_act_on_are_open() {
+        use qm_store::messages::NewMessage;
+        use qm_types::domain::{MessageKind, MessageSource};
+        let mut conn = Connection::open_in_memory().expect("memory database");
+        qm_store::schema::migrate(&mut conn).expect("the schema");
+        conn.execute_batch("PRAGMA foreign_keys = OFF")
+            .expect("no supervisor rows needed");
+        let at = jiff::Timestamp::from_second(1_000).unwrap();
+        let data = qm_types::data_dir::DataDir::new("/nonexistent/qm-test");
+        let mate = |name: &str| {
+            secondmates::insert(
+                &conn,
+                &secondmates::NewSecondmate {
+                    name,
+                    scope: "s",
+                    projects: &[],
+                    standing_branch: None,
+                    parent: AgentId::new(1),
+                    data_dir: &data,
+                    at,
+                },
+            )
+            .expect("the secondmate")
+        };
+        let active = mate("active");
+        let retired = mate("retired");
+        secondmates::retire(&conn, retired.id, at).expect("retired");
+        let (seat, old_seat) = (AgentId::new(1), AgentId::new(2));
+        let ask = |agent: AgentId, kind: MessageKind| {
+            messages::insert(
+                &conn,
+                &NewMessage {
+                    agent,
+                    source: MessageSource::Agent,
+                    kind,
+                    text: "q",
+                    options: &[],
+                    replies_to: None,
+                    turn: None,
+                    at,
+                },
+            )
+            .expect("the line")
+        };
+        let from_seat = ask(seat, MessageKind::Question);
+        let from_mate = ask(active.agent, MessageKind::Question);
+        ask(retired.agent, MessageKind::Question);
+        ask(old_seat, MessageKind::Question);
+        let notice = |agent: AgentId, message| {
+            events::insert(
+                &conn,
+                &events::NewEvent {
+                    kind: events::NOTICE,
+                    agent: Some(agent),
+                    task: None,
+                    turn: None,
+                    summary: "n",
+                    payload: serde_json::json!({"message": message, "cause": "no_action"}),
+                    at,
+                },
+            )
+            .expect("the notice")
+        };
+        let seat_reply = ask(seat, MessageKind::Reply);
+        notice(seat, seat_reply);
+        let old_reply = ask(old_seat, MessageKind::Reply);
+        notice(old_seat, old_reply);
+
+        let (questions, notices, mates) = open_requests(&conn, seat).expect("the read");
+        let asked: Vec<_> = questions.iter().map(|q| q.id).collect();
+        assert_eq!(asked, vec![from_seat, from_mate]);
+        let noticed: Vec<_> = notices.iter().map(|(m, _)| m.id).collect();
+        assert_eq!(noticed, vec![seat_reply]);
+        assert_eq!(mates, vec![(active.agent, active.id)]);
     }
 }
