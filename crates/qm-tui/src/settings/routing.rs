@@ -1,13 +1,16 @@
-//! The Routing tab: the pin and the Quartermaster's own model and effort. There is no switch to
-//! turn routing off; while a pin is on, a notice says tiers are being skipped.
+//! The Routing tab: the pin, the Quartermaster's own model and effort, Autocompact, and the level
+//! each task kind routes to. There is no switch to turn routing off; while a pin is on, a notice
+//! says tiers are being skipped.
 
-use super::model::{QuartermasterModel, Settings, effort_label};
+use super::model::{QuartermasterModel, Settings, effort_label, tier_label};
 use super::paint::Painter;
-use super::{SettingsHit, boxed, paragraph, section};
+use super::{KIND_ROWS_FROM, SettingsHit, boxed, paragraph, section};
 use crate::app::App;
 use crate::text::truncate;
 use crate::theme;
+use qm_types::api::KindTierRow;
 use qm_types::config::AutocompactWindow;
+use qm_types::domain::{KindRow, Tier};
 use qm_types::ids::ModelId;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -129,11 +132,12 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
         p.select_row(inner, y);
     }
 
-    // Autocompact, then Decisions below it.
+    // Autocompact, then Task kinds, then Decisions below them.
     autocompact(p, inner, col, inner.y + 10, settings, view.routing_row == 2);
+    let end = task_kinds(p, inner, col, inner.y + 15, settings, view.routing_row);
 
     // Decisions, not in this version.
-    let y = inner.y + 15;
+    let y = end + 1;
     p.text(x, y, "Decisions", theme::dim().add_modifier(Modifier::BOLD));
     let left = p.text_left_of(right, y, "not in this version", theme::dim());
     let text = truncate(
@@ -142,7 +146,110 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     );
     p.text(col, y, &text, theme::dim());
 
-    draw_notice(p, area, inner, settings);
+    draw_notice(p, area, y + 2, settings);
+}
+
+/// How the Task kinds rows name themselves; the two that build on finished thinking sit under
+/// their kind.
+const fn kind_name(row: KindRow) -> &'static str {
+    match row {
+        KindRow::Lookup => "lookup",
+        KindRow::Build => "build",
+        KindRow::BuildOnFinishedPlan => " on a plan",
+        KindRow::Fix => "fix",
+        KindRow::FixOnConfirmedDiagnosis => " on a diag.",
+        KindRow::Plan => "plan",
+        KindRow::Research => "research",
+        KindRow::Teach => "teach",
+        KindRow::Review => "review",
+        KindRow::Reproduce => "reproduce",
+        KindRow::Unclear => "unclear",
+    }
+}
+
+/// Where a Task kinds row's level button starts, in cells after `COLUMN`: past the longest name.
+const KIND_VALUE: u16 = 11;
+
+/// Where its note ("default", "changed") starts: past the widest level button (" Premium ▾ ").
+const KIND_NOTE: u16 = KIND_VALUE + 12;
+
+/// Under the Task kinds rows: when a change applies and what still comes first.
+pub(super) const KINDS_COPY: &str =
+    "Applies to the next task routed and to waiting ones. A model you name comes first.";
+
+/// Under a row set to premium: where its work goes when no premium model can serve.
+pub(super) const PREMIUM_FALLS_BACK: &str = "falls back high, medium, low";
+
+/// The note beside a row: where its work runs while its level is empty, else whether it is the
+/// app's default.
+fn kind_note(row: &KindTierRow) -> String {
+    match (row.empty, row.runs_on) {
+        (true, Some(t)) => format!("(empty, runs on {t})"),
+        (true, None) => String::from("(empty, waits)"),
+        _ if row.changed() => String::from("changed"),
+        _ => String::from("default"),
+    }
+}
+
+/// The Task kinds block at `y`: one row per kind, "Reset all to defaults" while a row differs
+/// from its default, then what a change applies to. Returns the row after it. The rows are dim
+/// while a pin is on (it skips tiers).
+fn task_kinds(
+    p: &mut Painter<'_, '_>,
+    inner: Rect,
+    col: u16,
+    y: u16,
+    settings: &Settings,
+    selected: usize,
+) -> u16 {
+    let pinned = settings.pin.on;
+    let (label, name_style) = if pinned {
+        (theme::dim().add_modifier(Modifier::BOLD), theme::dim())
+    } else {
+        (theme::strong(), theme::text())
+    };
+    p.text(inner.x + 1, y, "Task kinds", label);
+    let right = inner.right().saturating_sub(1);
+    let mut y = y;
+    for (i, row) in settings.kind_tiers.iter().enumerate() {
+        p.text(col, y, kind_name(row.row), name_style);
+        let value = format!("{} ▾", tier_label(row.tier));
+        p.button(col + KIND_VALUE, y, &value, SettingsHit::KindTier(row.row));
+        let room = usize::from(right.saturating_sub(col + KIND_NOTE));
+        p.text(
+            col + KIND_NOTE,
+            y,
+            &truncate(&kind_note(row), room),
+            theme::dim(),
+        );
+        if selected == KIND_ROWS_FROM + i {
+            p.select_row(inner, y);
+        }
+        y += 1;
+        if row.tier == Tier::Premium {
+            let room = usize::from(right.saturating_sub(col + KIND_VALUE + 1));
+            let text = truncate(PREMIUM_FALLS_BACK, room);
+            p.text(col + KIND_VALUE + 1, y, &text, theme::dim());
+            y += 1;
+        }
+    }
+    if settings.kind_tiers.iter().any(KindTierRow::changed) {
+        p.button(
+            col.saturating_sub(1),
+            y,
+            "Reset all to defaults",
+            SettingsHit::ResetKinds,
+        );
+        y += 1;
+    }
+    let copy = if pinned {
+        "Always use is on, so tiers are skipped until it's off."
+    } else {
+        KINDS_COPY
+    };
+    let width = right.saturating_sub(col).max(1);
+    let area = Rect::new(col, y, width, u16::MAX / 4);
+    y + paragraph(p, area, &[(copy.to_owned(), theme::dim())])
 }
 
 /// The Autocompact help, under its arrows: what it applies to and when a change lands.
@@ -196,29 +303,27 @@ fn control(p: &mut Painter<'_, '_>, col: u16, y: u16, label: &str, value: &str, 
     p.button(col + VALUE, y, value, hit);
 }
 
-/// The notice under the tab while a pin is on.
-fn draw_notice(p: &mut Painter<'_, '_>, area: Rect, inner: Rect, settings: &Settings) {
-    if let Some(notice) = pin_notice(settings) {
-        // The card goes right under the box.
-        let top = inner.bottom() + 1;
-        if top + 3 <= area.bottom() {
-            let below = Rect::new(area.x, top, area.width, area.bottom() - top);
-            let runs: Vec<(String, Style)> = vec![
-                (String::from("⚠ Always use is on. "), theme::warn()),
-                (notice, theme::text()),
-            ];
-            let width = usize::from(below.width.saturating_sub(4));
-            let rows = crate::text::wrap_styled(&runs, width.max(1)).len();
-            let rows = crate::text::cells(rows);
-            let inner = boxed(p, below, "", rows, theme::warn(), theme::warn());
-            let inner = Rect::new(
-                inner.x + 1,
-                inner.y,
-                inner.width.saturating_sub(2),
-                inner.height,
-            );
-            paragraph(p, inner, &runs);
-        }
+/// The notice under the tab while a pin is on, from page row `top`.
+fn draw_notice(p: &mut Painter<'_, '_>, area: Rect, top: u16, settings: &Settings) {
+    if let Some(notice) = pin_notice(settings)
+        && top + 3 <= area.bottom()
+    {
+        let below = Rect::new(area.x, top, area.width, area.bottom() - top);
+        let runs: Vec<(String, Style)> = vec![
+            (String::from("⚠ Always use is on. "), theme::warn()),
+            (notice, theme::text()),
+        ];
+        let width = usize::from(below.width.saturating_sub(4));
+        let rows = crate::text::wrap_styled(&runs, width.max(1)).len();
+        let rows = crate::text::cells(rows);
+        let inner = boxed(p, below, "", rows, theme::warn(), theme::warn());
+        let inner = Rect::new(
+            inner.x + 1,
+            inner.y,
+            inner.width.saturating_sub(2),
+            inner.height,
+        );
+        paragraph(p, inner, &runs);
     }
 }
 
@@ -314,12 +419,19 @@ mod tests {
     #[test]
     fn arrows_select_the_row_and_left_right_still_switch_tabs() {
         let mut app = app_at(200_000);
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
-        assert_eq!(app.view.settings.routing_row, 2, "stops at the last row");
+        for _ in 0..=super::super::ROUTING_ROWS {
+            press(&mut app, KeyCode::Down);
+        }
+        assert_eq!(
+            app.view.settings.routing_row,
+            super::super::ROUTING_ROWS - 1,
+            "stops at the last row"
+        );
         press(&mut app, KeyCode::Up);
-        assert_eq!(app.view.settings.routing_row, 1);
+        assert_eq!(
+            app.view.settings.routing_row,
+            super::super::ROUTING_ROWS - 2
+        );
         press(&mut app, KeyCode::Right);
         assert_eq!(app.view.settings.tab, Tab::Projects);
         press(&mut app, KeyCode::Left);
@@ -430,6 +542,207 @@ mod tests {
             left + keys <= 100,
             "{}",
             crate::settings::hints(Tab::Routing).1
+        );
+    }
+
+    /// A Settings popup on Routing with every Task kinds row at its default, `review` at `tier`.
+    fn app_with_review(tier: Tier) -> App {
+        let mut app = app_at(200_000);
+        app.view.settings.model.kind_tiers = KindRow::ALL
+            .iter()
+            .map(|&row| {
+                let t = if row == KindRow::Review {
+                    tier
+                } else {
+                    row.default_tier()
+                };
+                KindTierRow::new(row, t, row.default_tier())
+            })
+            .collect();
+        app
+    }
+
+    fn kind_commands(app: &App) -> Vec<Command> {
+        app.view
+            .settings
+            .outbox
+            .iter()
+            .filter(|c| matches!(c, Command::SetKindTier { .. } | Command::ResetKindTiers))
+            .cloned()
+            .collect()
+    }
+
+    fn review_row() -> usize {
+        KIND_ROWS_FROM
+            + KindRow::ALL
+                .iter()
+                .position(|&r| r == KindRow::Review)
+                .unwrap()
+    }
+
+    #[test]
+    fn every_kind_row_draws_whole_at_the_smallest_width() {
+        // 58 cells: the popup's inside at 60 columns; tall, as the page scrolls.
+        for width in [58, 98] {
+            let (buffer, hits) = render(&app_with_review(Tier::Premium), width, 60, false);
+            let screen = rows(&buffer).join("\n");
+            for &row in KindRow::ALL {
+                let name = kind_name(row).trim_start();
+                assert!(screen.contains(name), "{name} at {width}:\n{screen}");
+                assert!(target(&hits, SettingsHit::KindTier(row)).is_some(), "{row}");
+            }
+            assert!(screen.contains("Premium ▾  changed"), "{screen}");
+            assert!(screen.contains(PREMIUM_FALLS_BACK), "{screen}");
+            assert!(screen.contains("Task kinds"), "{screen}");
+            assert!(screen.contains("Reset all to defaults"), "{screen}");
+            assert!(screen.contains("Decisions"), "{screen}");
+        }
+    }
+
+    #[test]
+    fn reset_all_shows_only_while_a_row_differs() {
+        let (buffer, hits) = render(&app_with_review(Tier::High), 98, 60, false);
+        assert!(!rows(&buffer).join("\n").contains("Reset all"));
+        assert_eq!(target(&hits, SettingsHit::ResetKinds), None);
+    }
+
+    #[test]
+    fn an_empty_level_says_where_its_work_runs() {
+        let mut app = app_with_review(Tier::Low);
+        let review = app
+            .view
+            .settings
+            .model
+            .kind_tiers
+            .iter_mut()
+            .find(|r| r.row == KindRow::Review)
+            .unwrap();
+        review.empty = true;
+        review.runs_on = Some(Tier::Medium);
+        let (buffer, _) = render(&app, 98, 60, false);
+        assert!(
+            rows(&buffer)
+                .join("\n")
+                .contains("Low ▾      (empty, runs on medium)")
+        );
+    }
+
+    #[test]
+    fn the_rows_are_dim_while_a_pin_is_on() {
+        let mut app = app_with_review(Tier::High);
+        app.view.settings.model.pin.on = true;
+        let (buffer, _) = render(&app, 98, 60, false);
+        let screen = rows(&buffer);
+        let y = screen
+            .iter()
+            .position(|r| r.contains("Task kinds"))
+            .unwrap();
+        let x = screen[y].find("lookup").unwrap();
+        let x = u16::try_from(screen[y][..x].chars().count()).unwrap();
+        let y = u16::try_from(y).unwrap();
+        assert_eq!(buffer[(x, y)].fg, theme::dim().fg.unwrap());
+        assert!(screen.iter().any(|r| r.contains("Always use is on")));
+    }
+
+    #[test]
+    fn keys_pick_a_level_and_reset_a_row() {
+        let mut app = app_with_review(Tier::High);
+        for _ in 0..review_row() {
+            press(&mut app, KeyCode::Down);
+        }
+        assert_eq!(app.view.settings.routing_row, review_row());
+        press(&mut app, KeyCode::Enter);
+        let picker = app.view.settings.picker.as_ref().unwrap();
+        assert_eq!(picker.options[0].0, "Default (high)");
+        assert_eq!(picker.cursor, 0, "a row at its default has Default chosen");
+        // Default, Premium: choose premium.
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('r'));
+        // `r` on a row at its default sends nothing more.
+        press(&mut app, KeyCode::Char('r'));
+        assert_eq!(
+            kind_commands(&app),
+            [
+                Command::SetKindTier {
+                    row: KindRow::Review,
+                    tier: Some(Tier::Premium)
+                },
+                Command::SetKindTier {
+                    row: KindRow::Review,
+                    tier: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_level_opens_its_picker() {
+        let mut app = app_with_review(Tier::High);
+        app.settings_click(SettingsHit::KindTier(KindRow::Teach), false, Instant::now());
+        assert_eq!(
+            app.view.settings.picker.as_ref().map(|p| p.purpose),
+            Some(super::super::PickFor::KindTier(KindRow::Teach))
+        );
+        assert_eq!(app.view.settings.routing_row, KIND_ROWS_FROM + 7);
+    }
+
+    #[test]
+    fn reset_all_waits_for_a_yes() {
+        let mut app = app_with_review(Tier::Premium);
+        press(&mut app, KeyCode::Char('R'));
+        assert!(app.view.settings.confirm.is_some());
+        assert_eq!(
+            crate::settings::status_hints(&app).1,
+            "Reset all task kinds to defaults? ⏎ yes · esc no"
+        );
+        assert_eq!(kind_commands(&app), []);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.view.settings.confirm.is_none());
+        assert!(
+            app.view.settings.loaded,
+            "esc only said no; the popup stays"
+        );
+        assert_eq!(kind_commands(&app), []);
+
+        app.settings_click(SettingsHit::ResetKinds, false, Instant::now());
+        assert!(app.view.settings.confirm.is_some());
+        app.settings_click(SettingsHit::PinModel, false, Instant::now());
+        assert!(
+            app.view.settings.confirm.is_none(),
+            "a click elsewhere says no"
+        );
+        assert_eq!(app.view.settings.picker, None, "and does nothing else");
+        assert_eq!(kind_commands(&app), []);
+
+        press(&mut app, KeyCode::Char('R'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(kind_commands(&app), [Command::ResetKindTiers]);
+        assert!(
+            app.view
+                .settings
+                .model
+                .kind_tiers
+                .iter()
+                .all(|r| !r.changed())
+        );
+    }
+
+    #[test]
+    fn reset_all_with_nothing_changed_asks_nothing() {
+        let mut app = app_with_review(Tier::High);
+        press(&mut app, KeyCode::Char('R'));
+        assert!(app.view.settings.confirm.is_none());
+    }
+
+    #[test]
+    fn the_kind_row_hints_fit_at_100_columns() {
+        let mut app = app_with_review(Tier::High);
+        app.view.settings.routing_row = review_row();
+        let (left, keys) = crate::settings::status_hints(&app);
+        assert!(
+            left.chars().count() + 2 + keys.chars().count() < 100,
+            "{keys}"
         );
     }
 }

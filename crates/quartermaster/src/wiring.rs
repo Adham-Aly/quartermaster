@@ -165,7 +165,7 @@ pub(crate) async fn start_core(
     let gh = gh_program(registry.0.facts());
     let github = GithubClient::new(Arc::new(GhCli::following(Arc::clone(&gh))));
     let verification = verification_service(&db, &clock, &dir, &base.health, &wakes, &conversation);
-    let tasks = crew_tasks(
+    let tasks = Some(crew_tasks(
         CrewInputs {
             dir: &dir,
             db: &db,
@@ -181,7 +181,7 @@ pub(crate) async fn start_core(
         Arc::clone(&conversation),
         agent,
         verification_hooks(&verification),
-    );
+    ));
     // Every crewmate's session is recorded from its first turn.
     let recorder = tasks.as_ref().map(|tasks| {
         let recorder = Recorder::spawn(db.clone(), Arc::clone(&clock), conversation.clone());
@@ -701,15 +701,14 @@ struct CrewInputs<'a> {
     monitor: Arc<ContextMonitor>,
 }
 
-/// The task service: crewmates, the wake inbox's producers and the scheduler. `None` (and the task
-/// tools unavailable) only if the shipped routing rules can't be read.
+/// The task service: crewmates, the wake inbox's producers and the scheduler.
 fn crew_tasks(
     inputs: CrewInputs<'_>,
     wakes: Inbox,
     chat: Arc<Conversation>,
     seat_agent: AgentId,
     hooks: TaskHooks,
-) -> Option<TaskService> {
+) -> TaskService {
     let CrewInputs {
         dir,
         db,
@@ -727,7 +726,7 @@ fn crew_tasks(
     let supervisor: Arc<dyn Supervisor> = Arc::new(OsSupervisor::new(Some(Arc::new(recorder))));
     let (scheduler, _scheduler_task) = Scheduler::spawn(Arc::clone(clock));
     let home = std::env::var_os("HOME").map_or_else(|| dir.root().to_owned(), PathBuf::from);
-    match TaskService::wire_with(
+    TaskService::wire_with(
         TaskWiring {
             db: db.clone(),
             clock: Arc::clone(clock),
@@ -746,13 +745,7 @@ fn crew_tasks(
             monitor,
         },
         hooks,
-    ) {
-        Ok(tasks) => Some(tasks),
-        Err(e) => {
-            tracing::error!(error = %e, "the routing rules are unreadable; crewmates are off");
-            None
-        }
-    }
+    )
 }
 
 /// The engines this Mac can run, by kind, and the subscription type `claude` is logged in with,

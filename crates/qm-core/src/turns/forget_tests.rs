@@ -175,8 +175,7 @@ impl Fixture {
             setup,
             probe: None,
             monitor: crate::context_monitor::ContextMonitor::new(Arc::new(SystemClock)),
-        })
-        .unwrap();
+        });
         (svc, job)
     }
     async fn assert_forgotten(&self) {

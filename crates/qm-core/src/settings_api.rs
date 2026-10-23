@@ -56,14 +56,14 @@ use qm_store::db::Db;
 use qm_store::models;
 use qm_types::BoxFuture;
 use qm_types::api::{
-    AccountStatus, Command, LoginMethod, LoginProvider, LoginStatus, LoginStep, LoginView,
-    ModelPlacement, PinSetting, QuartermasterChoice, QuartermasterNow, SecretText, SettingsAccount,
-    SettingsModel, SettingsView, Snapshot,
+    AccountStatus, Command, KindTierRow, LoginMethod, LoginProvider, LoginStatus, LoginStep,
+    LoginView, ModelPlacement, PinSetting, QuartermasterChoice, QuartermasterNow, SecretText,
+    SettingsAccount, SettingsModel, SettingsView, Snapshot,
 };
 use qm_types::clock::Clock;
-use qm_types::config::{AlwaysUse, AutocompactWindow, Config, QuartermasterModel};
+use qm_types::config::{AlwaysUse, AutocompactWindow, Config, KindTiers, QuartermasterModel};
 use qm_types::data_dir::DataDir;
-use qm_types::domain::{AccountKind, Effort, EngineKind, Provider};
+use qm_types::domain::{AccountKind, Effort, EngineKind, KindRow, Provider, Tier};
 use qm_types::ids::{AccountId, ModelId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -304,6 +304,11 @@ impl ApiPart for SettingsPart {
                 let tokens = *tokens;
                 Box::pin(async move { inner.set_autocompact_window(tokens).await })
             }
+            Command::SetKindTier { row, tier } => {
+                let (row, tier) = (*row, *tier);
+                Box::pin(async move { inner.set_kind_tier(row, tier).await })
+            }
+            Command::ResetKindTiers => Box::pin(async move { inner.reset_kind_tiers().await }),
             Command::SetWorkspaceFolder { folder } => {
                 let folder = folder.clone();
                 Box::pin(async move { inner.set_workspace_folder(folder).await })
@@ -509,6 +514,32 @@ impl Inner {
             Ok(()) => Handled::Changed,
             Err(e) => {
                 self.note(&format!("The autocompact window couldn't be saved: {e}"))
+                    .await
+            }
+        }
+    }
+
+    /// Routes a Task kinds row to `tier` (`None`: its default). The next task routed uses it,
+    /// and waiting ones at the next reroute.
+    async fn set_kind_tier(&self, row: KindRow, tier: Option<Tier>) -> Handled {
+        match self.save_config(|c| c.routing.kinds.set(row, tier)).await {
+            Ok(()) => Handled::Changed,
+            Err(e) => {
+                self.note(&format!("The level for {row} work couldn't be saved: {e}"))
+                    .await
+            }
+        }
+    }
+
+    /// Puts every Task kinds row back to its default, removing `[routing.kinds]`.
+    async fn reset_kind_tiers(&self) -> Handled {
+        match self
+            .save_config(|c| c.routing.kinds = KindTiers::default())
+            .await
+        {
+            Ok(()) => Handled::Changed,
+            Err(e) => {
+                self.note(&format!("The task kinds couldn't be reset: {e}"))
                     .await
             }
         }
@@ -1056,6 +1087,7 @@ impl Inner {
         view.workspace_folder = tilde(&folder, self.home.as_deref());
         view.tier_efforts = config.tiers.clone();
         view.autocompact_window = config.compaction.autocompact_window;
+        view.kind_tiers = kind_tier_rows(&config.routing.kinds, &view.models);
         view.quartermaster = match &config.quartermaster.model {
             QuartermasterModel::Model(m) => QuartermasterChoice::Model(m.clone()),
             QuartermasterModel::Auto => QuartermasterChoice::Auto,
@@ -1111,6 +1143,27 @@ struct Login<'a> {
 }
 
 /// Who a login waits for.
+/// Every Task kinds row as Settings shows it: its tier, its default, and where its work runs
+/// while its tier has no model (routing's own fallback order).
+fn kind_tier_rows(kinds: &KindTiers, models: &[SettingsModel]) -> Vec<KindTierRow> {
+    let filled = |t: Tier| models.iter().any(|m| m.in_tier(t));
+    KindRow::ALL
+        .iter()
+        .map(|&row| {
+            let tier = kinds.tier(row);
+            let mut view = KindTierRow::new(row, tier, row.default_tier());
+            if !filled(tier) {
+                view.empty = true;
+                view.runs_on = qm_routing::fallback::order(tier)
+                    .iter()
+                    .copied()
+                    .find(|&t| filled(t));
+            }
+            view
+        })
+        .collect()
+}
+
 fn waiting_for(provider: Provider) -> String {
     match provider {
         Provider::Copilot => "GitHub".to_owned(),

@@ -130,7 +130,6 @@ impl Fixture {
     fn route(&self, facts: &CrewmateFacts) -> RouteOutcome {
         route_crewmate(
             &self.conn,
-            &RuleTable::embedded().unwrap(),
             &Config::default(),
             facts,
             &LoginHealth::new(),
