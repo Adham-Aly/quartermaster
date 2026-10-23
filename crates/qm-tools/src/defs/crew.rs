@@ -24,8 +24,17 @@ tool! {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartCrewmateArgs {
-    // The registered project's name.
-    pub project: String,
+    // The folder to work in, absolute or from `~`; its project is found or added. Or name a listed
+    // project instead. Neither: your home folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    // A listed project's name, instead of a folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    // Work in the folder itself rather than a worktree, in a git project: only when the user's own
+    // words ask for it. A plain folder is always worked in place.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_place: bool,
     pub kind: TaskKind,
     // Conventional-commit style, e.g. "fix(auth): token refresh race".
     pub title: String,
@@ -88,8 +97,14 @@ impl Tool for SecondmateStartCrewmateTool {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecondmateStartCrewmateArgs {
-    // One of the projects in the secondmate's scope.
-    pub project: String,
+    // The folder to work in, absolute or from `~`; or name a listed project instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    // Work in the folder itself rather than a worktree: only when the user's own words ask for it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_place: bool,
     // The routed request this task serves, whose stored fields the app applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation: Option<CorrelationId>,

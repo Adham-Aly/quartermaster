@@ -21,6 +21,7 @@ use super::session::{RoutedSession, Workplace};
 use super::{ProjectRow, TaskService, active_by_name, failed, load_project, refuse};
 use crate::briefs::write_brief;
 use crate::inbox::Notify;
+use crate::places::{self, Place, Resolver};
 use crate::routing::{CrewmateFacts, RouteOutcome, account_ref, route_crewmate};
 use crate::skills::{Gathered, gather};
 use jiff::Timestamp;
@@ -172,7 +173,11 @@ fn caller_authority(caller: &Caller) -> Authority {
 
 /// The facts phase A gathered.
 struct Validated {
+    /// The project the place gets: as it is, as it would come back, or as it would be added.
     project: ProjectRow,
+    /// Where the task works, and whether it works there in place.
+    place: Place,
+    in_place: bool,
     builds_on: Option<BuildsOn>,
     retry: Option<(TaskRow, Tier)>,
     review_of: Option<TaskRow>,
@@ -201,6 +206,7 @@ fn validate(
     caller: &Caller,
     req: &StartRequest,
     authority: Authority,
+    found: (Place, &Path, Timestamp),
 ) -> Result<Result<Validated, Refusal>, StoreError> {
     // Later steps: each names a model or an effort, no kind twice.
     let steps: Vec<RoutedLaterStep> = req
@@ -216,19 +222,17 @@ fn validate(
         return Ok(Err(r));
     }
 
-    // 2. The project.
-    let Some(project) = active_by_name(conn, &req.project)? else {
-        return Ok(Err(Refusal::new(format!(
-            "There's no project called {}; use find_project_folder and propose_project",
-            req.project.trim()
-        ))));
-    };
-    // A secondmate's scope, and the request its task serves must be its own.
-    if let Err(r) =
-        crate::secondmates::scope::check_project_in(conn, caller, project.id, &project.name)?
-    {
-        return Ok(Err(r));
+    // 2. The project: the place's, registered when the task is recorded. A plain folder is always
+    // worked in place; a git project only when your words asked for it.
+    let (place, home, at) = found;
+    let project = places::preview(conn, &place, home, at)?;
+    let in_place = req.in_place || project.delivery == DeliveryMode::Folder;
+    if in_place && req.kind == TaskKind::Review {
+        return Ok(Err(Refusal::new(
+            "a review works in a worktree at the reviewed head, so it can't work in place",
+        )));
     }
+    // The request a secondmate's task serves must be its own.
     if caller.role == Role::Secondmate
         && let (Some(sm), Some(c)) = (caller.secondmate, req.correlation)
         && let Err(r) = crate::secondmates::scope::request_for(conn, sm, c)?
@@ -358,11 +362,11 @@ fn validate(
     } else {
         (None, None)
     };
-    // A folder project has no branches, so there's no base to settle.
-    let request = if project.delivery == DeliveryMode::Folder {
+    // In-place work has no branches, so there's no base to settle.
+    let request = if in_place {
         if req.base_branch.is_some() {
             return Ok(Err(Refusal::new(
-                "the personal folder has no branches, so a base branch can't be named",
+                "a task working in place has no branches, so a base branch can't be named",
             )));
         }
         None
@@ -405,6 +409,8 @@ fn validate(
 
     Ok(Ok(Validated {
         project,
+        place,
+        in_place,
         builds_on,
         retry,
         review_of,
@@ -599,6 +605,78 @@ enum Recorded {
     Refused(Refusal),
 }
 
+/// The place `req` names: a listed project's folder, a folder (its project found by the git-root
+/// rule), or your home folder. A repository new to the app has its legacy task numbers reserved.
+async fn find_place(svc: &TaskService, req: &StartRequest) -> Result<Place, ToolFailure> {
+    if let Some(name) = req.project.clone() {
+        let row = svc
+            .db()
+            .call(move |conn| active_by_name(conn, &name))
+            .await
+            .map_err(|e| failed(&e))?;
+        let Some(row) = row else {
+            return Err(refuse(format!(
+                "There's no listed project called {}; name its folder instead",
+                req.project.as_deref().unwrap_or_default()
+            )));
+        };
+        return Ok(Place {
+            root: row.path.clone(),
+            folder: row.path,
+            repo: None,
+        });
+    }
+    let text = req.folder.clone().unwrap_or_else(|| "~".to_owned());
+    let plain = svc
+        .db()
+        .call(|conn| places::plain_folders(conn))
+        .await
+        .map_err(|e| failed(&e))?;
+    let home = svc.deps().home.clone();
+    let data = svc.deps().data_dir.root().to_owned();
+    let git = svc.deps().git.clone();
+    let env = svc.deps().inherited_env.clone();
+    let place = tokio::task::spawn_blocking(move || {
+        Resolver {
+            home: &home,
+            data_dir: &data,
+            git: git.program(),
+            env: &env,
+        }
+        .resolve(&text, &plain)
+    })
+    .await
+    .map_err(|e| ToolFailure::Failed(e.to_string()))?
+    .map_err(refuse)?;
+    if place.repo.is_some() {
+        let root = place.root.clone();
+        let known = svc
+            .db()
+            .call(move |conn| {
+                Ok(qm_store::projects::active_by_path(conn, &root)?.is_some()
+                    || qm_store::projects::retired_by_path(conn, &root)?.is_some())
+            })
+            .await
+            .map_err(|e| failed(&e))?;
+        if !known {
+            let git = svc.deps().git.clone();
+            let checkouts = vec![place.root.clone()];
+            let scan = tokio::task::spawn_blocking(move || {
+                super::startup::branch_task_numbers(&git, &checkouts)
+            })
+            .await
+            .map_err(|e| ToolFailure::Failed(e.to_string()))?;
+            match scan {
+                Ok(numbers) => qm_store::ids::reserve("tasks", numbers),
+                Err(reason) => {
+                    tracing::warn!(%reason, "a new repository's branches weren't scanned");
+                }
+            }
+        }
+    }
+    Ok(place)
+}
+
 /// `start_crewmate`, phases A and B and the record. Spawns the runner (or the re-route tick).
 pub async fn start(
     svc: &TaskService,
@@ -640,12 +718,29 @@ pub(crate) async fn start_as(
         .await
         .map_err(|e| failed(&e))?;
     let authority = routed_authority.unwrap_or(how.authority);
+    let place = find_place(svc, &req).await?;
     let req_copy = req.clone();
+    let home = svc.deps().home.clone();
+    let now = svc.clock().now();
     let mut validated = svc
         .db()
-        .call(move |conn| validate(conn, &caller_copy, &req_copy, authority))
+        .call(move |conn| {
+            validate(
+                conn,
+                &caller_copy,
+                &req_copy,
+                authority,
+                (place, &home, now),
+            )
+        })
         .await
         .map_err(|e| failed(&e))??;
+    let in_place = validated.in_place;
+    let delivery = if in_place {
+        DeliveryMode::Folder
+    } else {
+        validated.project.delivery
+    };
     if let (Some(tier), Some((_, landed))) = (how.retry_tier, validated.retry.as_mut()) {
         *landed = tier;
     }
@@ -662,7 +757,7 @@ pub(crate) async fn start_as(
 
     // 5. The verification level (every task has one, except build in place).
     let level = choose_level(
-        validated.project.delivery,
+        delivery,
         req.verification,
         Some(validated.project.verification),
     );
@@ -681,7 +776,7 @@ pub(crate) async fn start_as(
             base.base_ref.clone_from(r);
         }
     }
-    if req.kind.can_change_code() && validated.project.delivery == DeliveryMode::DirectPr {
+    if req.kind.can_change_code() && delivery == DeliveryMode::DirectPr {
         let readiness = svc
             .deps()
             .probe
@@ -695,7 +790,12 @@ pub(crate) async fn start_as(
         }
     }
     let ports = pick_ports(svc).await?;
-    let branch_names = free_branch_names(svc, &validated.project, &req.title).await;
+    let branch_names = if in_place {
+        None
+    } else {
+        free_branch_names(svc, &validated.project, &req.title).await
+    };
+    let home = svc.deps().home.clone();
 
     // The record, in one transaction.
     let at = svc.clock().now();
@@ -731,14 +831,10 @@ pub(crate) async fn start_as(
             let tx = conn.transaction()?;
             let mut notify = Notify::new();
             // In-place work shares its folder, so one code-kind task at a time may work there.
-            if let Err(r) = check_writer_slot(
-                &tx,
-                validated.project.delivery == DeliveryMode::Folder,
-                &validated.project.path,
-                req.kind,
-            )? {
+            if let Err(r) = check_writer_slot(&tx, in_place, &validated.place.folder, req.kind)? {
                 return Ok((Recorded::Refused(r), notify));
             }
+            let project = places::register(&tx, &validated.place, &home, at)?;
             let branch = match &branch_names {
                 None => None,
                 Some(names) => match task_store::first_free_branch(&tx, names)? {
@@ -748,7 +844,7 @@ pub(crate) async fn start_as(
             };
             let new = NewTask {
                 branch: branch.clone(),
-                project: validated.project.id,
+                project: project.id,
                 supervisor: caller.agent,
                 kind: req.kind,
                 title: req.title.clone(),
@@ -767,7 +863,8 @@ pub(crate) async fn start_as(
                     .map_or(0, |(r, _)| r.escalations.saturating_add(1)),
                 later_steps: serde_json::to_value(&req.later_steps).unwrap_or_default(),
                 secondmate_request: validated.secondmate_request,
-                delivery: validated.project.delivery,
+                delivery,
+                in_place,
                 verification: level.map(|l| (l.level, l.source)),
                 base_branch: base
                     .as_ref()
@@ -779,9 +876,10 @@ pub(crate) async fn start_as(
                 at,
             };
             let task = task_store::insert(&tx, &new)?;
-            let home = match validated.project.delivery {
-                DeliveryMode::Folder => validated.project.path.clone(),
-                _ => paths.task(task).worktree,
+            let workplace = if in_place {
+                validated.place.folder.clone()
+            } else {
+                paths.task(task).worktree
             };
             let agent = agents::insert_crewmate(
                 &tx,
@@ -789,10 +887,14 @@ pub(crate) async fn start_as(
                     task,
                     supervisor: caller.agent,
                     secondmate: caller.secondmate,
-                    home: &home,
+                    home: &workplace,
                     at,
                 },
             )?;
+            // A secondmate's projects are its open crewmates'.
+            if let Some(sm) = caller.secondmate {
+                qm_store::secondmates::sync_projects(&tx, sm)?;
+            }
             let facts = facts_for(task, Some(agent), req.kind, &route_inputs, quick);
             let outcome = route_crewmate(&tx, &rules, &config, &facts, &health, at)?;
             let (summary, routed) = match outcome {
@@ -1275,7 +1377,7 @@ pub(crate) async fn prepare(
         .map_err(|e| PrepareError::Failed(e.to_string()))?
         .ok_or_else(|| PrepareError::Failed(format!("{task}'s project is gone")))?;
     if row.delivery == DeliveryMode::Folder {
-        check_folder(task, &project.path).await?;
+        check_folder(task, &workplace(svc, task).await?.dir).await?;
     } else {
         make_worktree(svc, task, &project, &row, &paths).await?;
     }
@@ -1585,7 +1687,9 @@ pub(crate) async fn start_retry(
         .filter(|(_, source)| *source == VerificationSource::User)
         .map(|(level, _)| level);
     let req = StartRequest {
-        project: project.name.clone(),
+        folder: None,
+        project: Some(project.name.clone()),
+        in_place: row.in_place && project.delivery != DeliveryMode::Folder,
         kind: row.kind,
         title: row.title.clone(),
         goal: row.goal.clone(),

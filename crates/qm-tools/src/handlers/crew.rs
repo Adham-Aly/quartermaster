@@ -42,6 +42,7 @@ pub(crate) fn check_overrides(cx: &ToolCx<'_>, request: &StartRequest) -> Result
         (request.premium, OverrideKind::Premium),
         (!request.later_steps.is_empty(), OverrideKind::LaterSteps),
         (request.base_branch.is_some(), OverrideKind::BaseBranch),
+        (request.in_place, OverrideKind::InPlace),
         (
             request.verification.is_some(),
             OverrideKind::VerificationLevel,
@@ -60,6 +61,9 @@ pub(crate) fn check_overrides(cx: &ToolCx<'_>, request: &StartRequest) -> Result
 /// The shape of a start request, before any override or fact is checked.
 pub fn check_start_shape(request: &StartRequest) -> Result<(), Refusal> {
     check_task_title(&request.title)?;
+    if request.folder.is_some() && request.project.is_some() {
+        return Err(Refusal::new("name a folder or a listed project, not both"));
+    }
     let goal = request.goal.trim();
     if goal.is_empty() {
         return Err(Refusal::new("a task needs a goal"));
@@ -114,7 +118,15 @@ impl Handle for StartCrewmateTool {
     ) -> BoxFuture<'a, Result<TaskStarted, ToolFailure>> {
         Box::pin(async move {
             let request = StartRequest {
-                project: args.project,
+                folder: args
+                    .folder
+                    .map(|f| f.trim().to_owned())
+                    .filter(|f| !f.is_empty()),
+                project: args
+                    .project
+                    .map(|p| p.trim().to_owned())
+                    .filter(|p| !p.is_empty()),
+                in_place: args.in_place,
                 kind: args.kind,
                 title: args.title.trim().to_owned(),
                 goal: args.goal,

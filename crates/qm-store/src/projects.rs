@@ -140,6 +140,43 @@ pub fn active_by_path(
     .pop())
 }
 
+/// The most recent retired project registered at exactly `path`.
+pub fn retired_by_path(
+    conn: &Connection,
+    path: &std::path::Path,
+) -> Result<Option<ProjectRow>, StoreError> {
+    Ok(query(
+        conn,
+        "WHERE removed_at IS NOT NULL AND path = ?1 ORDER BY seq DESC LIMIT 1",
+        params![path_text(path)?],
+    )?
+    .pop())
+}
+
+/// Brings a retired project back, its settings as they were. Returns whether a row changed.
+pub fn revive(conn: &Connection, id: ProjectId) -> Result<bool, StoreError> {
+    Ok(conn.execute(
+        "UPDATE projects SET removed_at = NULL WHERE id = ?1 AND removed_at IS NOT NULL",
+        params![id],
+    )? == 1)
+}
+
+/// `base`, or `base-2`, `base-3`…: the first name no active project has.
+pub fn free_name(conn: &Connection, base: &str) -> Result<String, StoreError> {
+    let mut n = 1u32;
+    loop {
+        let name = if n == 1 {
+            base.to_owned()
+        } else {
+            format!("{base}-{n}")
+        };
+        if active_by_name(conn, &name)?.is_none() {
+            return Ok(name);
+        }
+        n += 1;
+    }
+}
+
 /// A project by ID, removed ones too.
 pub fn load(conn: &Connection, id: ProjectId) -> Result<Option<ProjectRow>, StoreError> {
     Ok(query(conn, "WHERE id = ?1", params![id])?.pop())

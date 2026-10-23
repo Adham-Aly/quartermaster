@@ -238,7 +238,15 @@ impl Handle for SecondmateStartCrewmateTool {
     ) -> BoxFuture<'a, Result<TaskStarted, ToolFailure>> {
         Box::pin(async move {
             let request = StartRequest {
-                project: args.project,
+                folder: args
+                    .folder
+                    .map(|f| f.trim().to_owned())
+                    .filter(|f| !f.is_empty()),
+                project: args
+                    .project
+                    .map(|p| p.trim().to_owned())
+                    .filter(|p| !p.is_empty()),
+                in_place: args.in_place,
                 kind: args.kind,
                 title: args.title.trim().to_owned(),
                 goal: args.goal,

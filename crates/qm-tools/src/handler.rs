@@ -477,7 +477,12 @@ pub trait ToolHost: Send + Sync {
 /// secondmate's variant sets `correlation`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartRequest {
-    pub project: String,
+    /// The folder to work in, as written (absolute or from `~`).
+    pub folder: Option<String>,
+    /// A listed project's name, instead of a folder. Neither: your home folder.
+    pub project: Option<String>,
+    /// Work in the folder itself, not a worktree (a user-words field).
+    pub in_place: bool,
     pub kind: TaskKind,
     pub title: String,
     pub goal: String,

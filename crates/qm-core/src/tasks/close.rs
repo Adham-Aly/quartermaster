@@ -336,7 +336,17 @@ pub(crate) async fn retire(
         }
         if let Some(agent) = agents::crewmate_of(tx, task)? {
             agents::set_status(tx, agent.id, AgentStatus::Retired, at)?;
+            let sm: Option<qm_types::ids::SecondmateId> = tx.query_row(
+                "SELECT secondmate_id FROM agents WHERE id = ?1",
+                rusqlite::params![agent.id],
+                |r| r.get(0),
+            )?;
+            if let Some(sm) = sm {
+                qm_store::secondmates::sync_projects(tx, sm)?;
+            }
         }
+        // A project lives while work runs in it: its last open task's close retires it.
+        crate::places::retire_if_idle(tx, now.project, at)?;
         let summary = match &folder_left {
             Some(folder) => {
                 format!("{task} closed: {outcome} · its files in {folder} are left as they are")

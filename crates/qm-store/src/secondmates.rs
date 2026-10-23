@@ -267,6 +267,29 @@ pub fn set_projects(
     Ok(())
 }
 
+/// Makes a secondmate's project list the projects of its open crewmates, changing nothing when it
+/// already is. Called in the transaction that starts, relabels or closes one of its crewmates.
+pub fn sync_projects(conn: &Connection, id: SecondmateId) -> Result<(), StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT t.project_id FROM tasks t JOIN agents a ON a.task_id = t.id
+         WHERE a.secondmate_id = ?1 AND a.role = 'crewmate' AND t.status <> 'closed'
+         ORDER BY t.project_id",
+    )?;
+    let wanted = stmt
+        .query_map(params![id], |r| r.get::<_, ProjectId>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut stmt = conn.prepare(
+        "SELECT project_id FROM secondmate_projects WHERE secondmate_id = ?1 ORDER BY project_id",
+    )?;
+    let have = stmt
+        .query_map(params![id], |r| r.get::<_, ProjectId>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if have != wanted {
+        set_projects(conn, id, &wanted)?;
+    }
+    Ok(())
+}
+
 /// Sets or clears the standing base branch (the core checked it came from your turn).
 pub fn set_standing_branch(
     conn: &Connection,

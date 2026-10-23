@@ -391,14 +391,15 @@ fn git(
 }
 
 /// What registering a repository needs to know about it.
-struct RepoFacts {
-    root: PathBuf,
-    default_branch: String,
-    github_remote: Option<String>,
-    has_remote: bool,
+#[derive(Clone, Debug)]
+pub(crate) struct RepoFacts {
+    pub(crate) root: PathBuf,
+    pub(crate) default_branch: String,
+    pub(crate) github_remote: Option<String>,
+    pub(crate) has_remote: bool,
 }
 
-fn repo_facts(
+pub(crate) fn repo_facts(
     program: &Path,
     env: &BTreeMap<String, String>,
     path: &Path,
