@@ -26,6 +26,12 @@ use std::time::Instant;
 pub(crate) const WIDTH: u16 = 76;
 /// The overlay's extra button, after the card's own.
 pub(crate) const GO_TO: &str = "Go to";
+/// How long a press waits for its item to go before the buttons come back, when the app shows
+/// no progress on it (an answer that isn't a held action's, or a press the app never took).
+pub(crate) const PRESS_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Said when a press ended with its item still waiting and no reason on the card.
+pub(crate) const NOT_TAKEN: &str = "Nothing changed yet; you can try again.";
+
 /// Said when the open item is answered somewhere else.
 pub(crate) const GONE: &str = "Answered elsewhere; nothing left to do here.";
 
@@ -195,7 +201,7 @@ impl App {
         self.change(|app| &mut app.view.selected_action, Some(key.clone()));
         self.view.action_open = Some(key);
         self.view.action_button = None;
-        self.view.action_pressed = None;
+        self.reset_press();
         self.view.action_scroll = 0;
         self.open_popup(Popup::Action);
     }
@@ -208,8 +214,62 @@ impl App {
         self.view.popups.retain(|open| open.popup != Popup::Action);
         self.view.action_open = None;
         self.view.action_button = None;
-        self.view.action_pressed = None;
+        self.reset_press();
         self.redraw();
+    }
+
+    /// Forgets a press: the overlay's buttons work again.
+    fn reset_press(&mut self) {
+        self.view.action_pressed = None;
+        self.view.action_wait = None;
+    }
+
+    /// A press whose item is still here: while the app shows it being carried out ("Working on
+    /// it…") the buttons stay dim. When it is back to waiting after that, the attempt failed or
+    /// was refused, so the buttons come back with the card's reason; with no progress shown at
+    /// all, they come back after [`PRESS_WAIT`]. The app still refuses a second answer to
+    /// anything already answered or being carried out.
+    pub(crate) fn after_press(&mut self, now: Instant) {
+        let Some(key) = self.view.action_pressed.clone() else {
+            return;
+        };
+        let Some(item) = self.snapshot.actions.iter().find(|item| item.key == key) else {
+            return;
+        };
+        if item.card.answered.is_some() {
+            if let Some(wait) = &mut self.view.action_wait {
+                wait.saw_busy = true;
+            }
+            return;
+        }
+        let ended = self.view.action_wait.is_none_or(|wait| {
+            wait.saw_busy || now.saturating_duration_since(wait.at) >= PRESS_WAIT
+        });
+        if !ended {
+            return;
+        }
+        let reason = item
+            .card
+            .lines
+            .iter()
+            .rev()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|s| s.tone == qm_types::api::Tone::Error)
+            })
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.text.as_str())
+                    .collect::<String>()
+            });
+        self.reset_press();
+        self.redraw();
+        self.flash(
+            reason.map_or_else(|| NOT_TAKEN.to_owned(), |why| format!("Not done: {why}")),
+            now,
+        );
     }
 
     /// After a snapshot: drops a selection whose item went (moving it to the nearest one), and
@@ -222,6 +282,7 @@ impl App {
                 .and_then(|i| self.snapshot.actions.get(i))
                 .map(|item| item.key.clone());
         }
+        self.after_press(now);
         if self.view.action_open.is_some() && open_item(self).is_none() {
             let pressed = self.view.action_pressed.is_some();
             let shown = self
@@ -253,6 +314,10 @@ impl App {
         let action = button.action.clone();
         if answers(&action) {
             self.view.action_pressed = Some(item.key.clone());
+            self.view.action_wait = Some(crate::view::PressWait {
+                at: now,
+                saw_busy: false,
+            });
             self.redraw();
         } else if matches!(action, CardAction::ShowDiff) {
             self.close_action();
@@ -400,6 +465,26 @@ impl App {
         true
     }
 
+    /// The inbox's height in the frame last drawn, if it was drawn.
+    pub(crate) fn actions_height(&self) -> Option<u16> {
+        self.term
+            .drawn
+            .scroll_areas
+            .iter()
+            .find(|(_, p)| *p == Pane::Actions)
+            .map(|(area, _)| area.height)
+    }
+
+    /// After a draw: when the inbox changed height (a resize, or a pane above it grew), brings
+    /// the selected row back into view. Only then, so the wheel can still scroll away from it.
+    pub(crate) fn after_actions_resize(&mut self, before: Option<u16>) {
+        if self.actions_height() != before
+            && let Some(index) = self.selected_action_index()
+        {
+            self.keep_action_visible(index);
+        }
+    }
+
     /// Scrolls the Actions list so row `index` shows.
     pub(crate) fn keep_action_visible(&mut self, index: usize) {
         let shown = self
@@ -446,9 +531,11 @@ mod tests {
     use super::*;
     use crate::sample;
     use crossterm::event::{Event, KeyEvent, KeyModifiers};
+    use qm_types::api::{Card, CardLine, Styled};
     use qm_types::api::{Command, Update};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use std::time::Duration;
 
     fn screen(app: &mut App, w: u16, h: u16) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -626,5 +713,120 @@ mod tests {
             let rows = screen(&mut app, w, h);
             assert!(rows.iter().any(|row| row.contains("Actions")), "{w}x{h}");
         }
+    }
+    /// Opens the approval and presses Approve; returns its held action.
+    fn press_approve(app: &mut App) -> qm_types::ids::HeldActionId {
+        app.view.sample = false;
+        key(app, KeyCode::Enter);
+        screen(app, 150, 45);
+        key(app, KeyCode::Char('a'));
+        let held = app.snapshot.actions[app.selected_action_index().unwrap()]
+            .card
+            .held
+            .unwrap();
+        assert_eq!(
+            app.take_commands(),
+            [Command::AnswerHeld {
+                held,
+                answer: HeldAnswer::Approve,
+            }]
+        );
+        held
+    }
+
+    /// The next snapshot, with the open item's card changed by `edit`.
+    fn with_open_card(app: &mut App, edit: impl Fn(&mut Card)) {
+        let mut next = app.snapshot.clone();
+        let open = app.view.action_open.clone();
+        for item in &mut next.actions {
+            if Some(&item.key) == open.as_ref() {
+                edit(&mut item.card);
+            }
+        }
+        app.on_update(Update::Snapshot(Box::new(next)));
+    }
+
+    #[test]
+    fn a_refused_answer_says_why_and_can_be_tried_again() {
+        let mut app = inbox();
+        let held = press_approve(&mut app);
+        // The core takes it (the card says it is working on it), then refuses: the card is back
+        // to pending with the reason as an error line.
+        with_open_card(&mut app, |card| {
+            card.answered = Some("Working on it…".to_owned());
+        });
+        assert!(app.view.action_pressed.is_some());
+        with_open_card(&mut app, |card| {
+            card.answered = None;
+            card.lines.push(CardLine::new(
+                2,
+                vec![Styled::new("the branch moved", qm_types::api::Tone::Error)],
+            ));
+        });
+        assert_eq!(app.popup(), Some(Popup::Action));
+        assert_eq!(app.view.action_pressed, None);
+        assert_eq!(
+            app.term.flash.as_ref().map(|f| f.text.as_str()),
+            Some("Not done: the branch moved")
+        );
+        // The same overlay answers again, once.
+        key(&mut app, KeyCode::Char('a'));
+        assert_eq!(
+            app.take_commands(),
+            [Command::AnswerHeld {
+                held,
+                answer: HeldAnswer::Approve,
+            }]
+        );
+        key(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.take_commands(), [] as [Command; 0]);
+    }
+
+    #[test]
+    fn a_press_nothing_came_of_resets_after_a_wait() {
+        let mut app = inbox();
+        press_approve(&mut app);
+        let now = Instant::now();
+        app.after_press(now);
+        assert!(app.view.action_pressed.is_some(), "still waiting");
+        app.after_press(now + PRESS_WAIT + Duration::from_secs(1));
+        assert_eq!(app.view.action_pressed, None);
+        assert_eq!(
+            app.term.flash.as_ref().map(|f| f.text.as_str()),
+            Some(NOT_TAKEN)
+        );
+    }
+
+    #[test]
+    fn every_request_is_reachable_however_many() {
+        let mut app = inbox();
+        let template = app.snapshot.actions[0].clone();
+        app.snapshot.actions = (0..250_i64)
+            .map(|i| {
+                let mut item = template.clone();
+                item.key = ActionKey::Question {
+                    message: qm_types::ids::MessageId::new(i),
+                };
+                item.title = format!("request number {i}");
+                item
+            })
+            .collect();
+        app.focus_pane(Pane::Actions);
+        app.select_action(0);
+        key(&mut app, KeyCode::End);
+        assert_eq!(app.selected_action_index(), Some(249));
+        // The first frame at a new size finds the row out of view; the next shows it.
+        screen(&mut app, 120, 40);
+        let rows = screen(&mut app, 120, 40);
+        assert!(
+            rows.iter().any(|row| row.contains("request number 249")),
+            "{}",
+            rows.join("\n")
+        );
+        key(&mut app, KeyCode::Home);
+        for _ in 0..249 {
+            key(&mut app, KeyCode::Down);
+        }
+        assert_eq!(app.selected_action_index(), Some(249));
     }
 }

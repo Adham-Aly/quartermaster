@@ -206,7 +206,9 @@ impl App {
                 &mut map.hits,
             );
         }
+        let actions_before = self.actions_height();
         self.term.drawn = map;
+        self.after_actions_resize(actions_before);
         // Widening past the fold shows the task pane in place, so the overlay has nothing left
         // to do.
         if !self.term.drawn.folded {
@@ -322,6 +324,7 @@ impl App {
             self.change(|app| &mut app.spin, step);
         }
         self.settings_tick(now);
+        self.after_press(now);
         self.setup_tick(now);
         self.paste_tick(now);
         if let Quit::Armed { until } = self.term.quit
