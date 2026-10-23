@@ -33,7 +33,7 @@ use crate::decider::{Decided, DecidedBy};
 use crate::effort::{EffortInput, choose_effort, tier_default};
 use crate::fallback;
 use crate::later_steps::AppliedLaterStep;
-use crate::rank::{Candidate, Needs, rank, skip_reason};
+use crate::rank::{Candidate, Needs, placement_skip_reason, rank, skip_reason};
 use crate::record::{
     BuildsOn, BuildsOnFact, DeclaredFacts, FallbackStep, RoutedChoice, RoutingRecord, SkippedModel,
     UserChoices,
@@ -84,7 +84,7 @@ pub struct Pool<'a> {
     /// Every placement: (model, account) pairs in tiers.
     pub placed: &'a [Candidate],
     /// Pairs for the "always use" model and its fallback on each account that serves them, which
-    /// need not be placed in a tier ("ignoring tiers"). Their `tier` is ignored.
+    /// need not be placed in a tier ("ignoring tiers"). Their `tier` and `effort_override` are ignored.
     pub pinned: &'a [Candidate],
 }
 
@@ -97,10 +97,11 @@ fn pick<'a>(
     needs: Needs,
     preferred: Option<AccountId>,
     skipped: &mut Vec<SkippedModel>,
+    check: fn(&Candidate, Needs) -> Option<String>,
 ) -> Option<Picked<'a>> {
     let mut ok: Vec<&Candidate> = Vec::new();
     for c in candidates {
-        match skip_reason(c, needs) {
+        match check(c, needs) {
             Some(reason) => {
                 if !skipped
                     .iter()
@@ -208,34 +209,48 @@ impl<'r, 'a> Router<'r, 'a> {
         }
     }
 
+    fn named_effort(&self) -> Option<Effort> {
+        self.req
+            .user
+            .effort
+            .or(self.later_step.as_ref().and_then(|l| l.effort))
+    }
+
+    fn placement_check(&self) -> fn(&Candidate, Needs) -> Option<String> {
+        // Your task/later-step effort deliberately replaces the combo and retains its existing
+        // cap-to-supported semantics. Otherwise the account must run the selected combo exactly.
+        if self.named_effort().is_some() {
+            skip_reason
+        } else {
+            placement_skip_reason
+        }
+    }
+
     fn pick_from<'c>(
         &mut self,
         candidates: impl Iterator<Item = &'c Candidate>,
+        check: fn(&Candidate, Needs) -> Option<String>,
     ) -> Option<&'c Candidate> {
         pick(
             candidates,
             self.req.needs,
             self.req.preferred_account,
             &mut self.skipped,
+            check,
         )
         .map(|p| p.candidate)
     }
 
-    fn effort_for(&self, c: &Candidate, base_tier: Tier) -> Effort {
-        let named = self
-            .req
-            .user
-            .effort
-            .or(self.later_step.as_ref().and_then(|l| l.effort));
-        let placement_override = if c.tier == base_tier {
-            c.effort_override
-        } else {
-            None
-        };
+    fn effort_for(
+        &self,
+        c: &Candidate,
+        base_tier: Tier,
+        placement_override: Option<Effort>,
+    ) -> Effort {
         choose_effort(EffortInput {
             tier_default: tier_default(self.req.tiers, base_tier),
             placement_override,
-            named,
+            named: self.named_effort(),
             quick_verification: self.req.quick_verification,
             supported: &c.efforts,
             resumed: None,
@@ -243,12 +258,18 @@ impl<'r, 'a> Router<'r, 'a> {
         .effort
     }
 
-    fn choice(&self, c: &Candidate, tier: Tier, effort_tier: Tier) -> RoutedChoice {
+    fn choice(
+        &self,
+        c: &Candidate,
+        tier: Tier,
+        effort_tier: Tier,
+        placement_override: Option<Effort>,
+    ) -> RoutedChoice {
         RoutedChoice {
             tier,
             model: c.model.clone(),
             account: c.account,
-            effort: self.effort_for(c, effort_tier),
+            effort: self.effort_for(c, effort_tier, placement_override),
         }
     }
 
@@ -271,14 +292,20 @@ impl<'r, 'a> Router<'r, 'a> {
             let premium = placed
                 .iter()
                 .filter(|c| c.model == model && c.tier == Tier::Premium);
-            if let Some(c) = self.pick_from(premium) {
-                return Some((self.choice(c, Tier::Premium, Tier::Premium), why));
+            if let Some(c) = self.pick_from(premium, self.placement_check()) {
+                return Some((
+                    self.choice(c, Tier::Premium, Tier::Premium, c.effort_override),
+                    why,
+                ));
             }
             self.named_premium_failed = Some(model);
             return None;
         }
-        if let Some(c) = self.pick_from(placed.iter().filter(|c| c.model == model)) {
-            return Some((self.choice(c, c.tier, c.tier), why));
+        if let Some(c) = self.pick_from(
+            placed.iter().filter(|c| c.model == model),
+            self.placement_check(),
+        ) {
+            return Some((self.choice(c, c.tier, c.tier, c.effort_override), why));
         }
         let note = if placed.iter().any(|c| c.model == model) {
             format!("The model you named ({model}) couldn't serve, so routing picked")
@@ -299,7 +326,9 @@ impl<'r, 'a> Router<'r, 'a> {
             std::iter::once((&pin.model, false)).chain(pin.fallback.iter().map(|f| (f, true)));
         let pinned = self.pool.pinned;
         for (model, is_fallback) in tries {
-            if let Some(c) = self.pick_from(pinned.iter().filter(|c| &c.model == model)) {
+            if let Some(c) =
+                self.pick_from(pinned.iter().filter(|c| &c.model == model), skip_reason)
+            {
                 let why = if is_fallback {
                     format!(
                         "You set {} to always be used; it couldn't serve, so its fallback is used",
@@ -308,7 +337,11 @@ impl<'r, 'a> Router<'r, 'a> {
                 } else {
                     "You set this model to always be used".to_owned()
                 };
-                return Some((self.choice(c, self.tier_landed, self.tier_landed), why));
+                // Pins name a model, not a tier entry; they keep the landed tier's effort rules.
+                return Some((
+                    self.choice(c, self.tier_landed, self.tier_landed, None),
+                    why,
+                ));
             }
         }
         // Neither the pin nor its fallback can serve: route normally and say so, rather than
@@ -337,7 +370,10 @@ impl<'r, 'a> Router<'r, 'a> {
                 });
                 prev = tier;
             }
-            let Some(c) = self.pick_from(placed.iter().filter(|c| c.tier == tier)) else {
+            let Some(c) = self.pick_from(
+                placed.iter().filter(|c| c.tier == tier),
+                self.placement_check(),
+            ) else {
                 continue;
             };
             let mut why = if self.retry_target.is_some() {
@@ -366,9 +402,9 @@ impl<'r, 'a> Router<'r, 'a> {
                     fallback::runs_on_line(landed, tier)
                 );
             }
-            // "A fallback keeps the effort level of the tier the work landed in, capped by the
-            // model actually used."
-            return Some((self.choice(c, tier, landed), why));
+            // A selected combo keeps its own effort, including on fallback. Legacy entries with
+            // no effort still inherit the landed tier's default (and its quick-verification rule).
+            return Some((self.choice(c, tier, landed, c.effort_override), why));
         }
         None
     }

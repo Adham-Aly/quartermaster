@@ -86,7 +86,7 @@ use qm_tools::handler::Dispatcher;
 use qm_tools::handler::ToolHost;
 use qm_types::api::CoreServer;
 use qm_types::clock::{Clock, SystemClock};
-use qm_types::config::Config;
+use qm_types::config::{Config, TierEfforts};
 use qm_types::data_dir::DataDir;
 use qm_types::domain::HeldKind;
 use qm_types::domain::{AccountKind, Effort, EngineKind, Provider};
@@ -125,6 +125,17 @@ pub(crate) async fn start_core(
     dev_script: Option<Script>,
 ) {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    // Resolve old tier-default entries with the user's loaded settings, before any routing or UI.
+    if let Err(e) = migrate_legacy_efforts(&db, config.tiers.clone()).await {
+        tracing::error!(error = %e, "couldn't migrate legacy tier efforts");
+        let problem = format!(
+            "The app couldn't preserve its saved model efforts ({e}). Nothing can be changed this \
+             run; quit, and see the log in {}.",
+            dir.logs().display()
+        );
+        crate::core_link::serve(server, machine, problem).await;
+        return;
+    }
     // Before anything can store a message: the numbers pasted images on disk already name.
     let attachments = Attachments::new(dir.attachments(), Arc::clone(&clock));
     let legacy = dir.legacy_attachments();
@@ -424,7 +435,9 @@ async fn foundations(
         }
     }
     let detected = match &catalog {
-        Some(catalog) => spawn_detection(db, &engines, Arc::clone(catalog), clock),
+        Some(catalog) => {
+            spawn_detection(db, &engines, Arc::clone(catalog), clock, config_rx.clone())
+        }
         None => watch::channel(true).1,
     };
     let model = seat_model(
@@ -830,13 +843,25 @@ pub(crate) fn provider_models() -> Arc<dyn ModelProfiles> {
     }
 }
 
+/// Resolves only legacy entries whose effort capabilities are now known, atomically.
+async fn migrate_legacy_efforts(db: &Db, tiers: TierEfforts) -> Result<usize, StoreError> {
+    db.call(move |conn| {
+        let tx = conn.transaction()?;
+        let resolved = qm_store::models::migrate_legacy_efforts(&tx, &tiers)?;
+        tx.commit()?;
+        Ok(resolved)
+    })
+    .await
+}
+
 /// Reads every account's model list in the background (never blocks startup). The
-/// receiver turns `true` when that pass has finished, however it ended.
+/// receiver turns `true` when that pass, including resolution of newly known efforts, has finished.
 fn spawn_detection(
     db: &Db,
     engines: &BTreeMap<EngineKind, Arc<dyn Engine>>,
     catalog: Arc<dyn ModelCatalog>,
     clock: &Arc<dyn Clock>,
+    config: watch::Receiver<Config>,
 ) -> watch::Receiver<bool> {
     let (done, detected) = watch::channel(false);
     let engines: Engines = engines
@@ -844,6 +869,7 @@ fn spawn_detection(
         .map(|(kind, engine)| (*kind, Arc::clone(engine)))
         .collect::<HashMap<_, _>>();
     let detection = routing::spawn_detection(db.clone(), engines, catalog, Arc::clone(clock));
+    let db = db.clone();
     tokio::spawn(async move {
         match detection.await {
             Ok(Ok(outcomes)) => {
@@ -857,6 +883,10 @@ fn spawn_detection(
             }
             Ok(Err(e)) => tracing::error!(error = %e, "model detection failed"),
             Err(e) => tracing::error!(error = %e, "model detection panicked"),
+        }
+        let tiers = config.borrow().tiers.clone();
+        if let Err(e) = migrate_legacy_efforts(&db, tiers).await {
+            tracing::error!(error = %e, "couldn't resolve newly detected legacy tier efforts");
         }
         done.send_replace(true);
     });

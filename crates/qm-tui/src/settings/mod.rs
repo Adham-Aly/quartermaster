@@ -9,7 +9,8 @@
 //!   tab scrolls when it's taller than the popup; `paint` is the small painter every tab draws through; the hints are the status
 //!   bar's (`status_hints`).
 //! - `accounts`, `levels`, `routing`, `other` and `connect` draw one tab each.
-//! - `overlay` draws the pickers (effort, model, move-to, find) and the one-line text fields.
+//! - `overlay` draws the fixed combination catalogue, add/move destinations, Routing model and
+//!   Quartermaster effort pickers, and the one-line text fields.
 //! - `input` holds the keys, clicks, drags and context-menu choices.
 
 mod accounts;
@@ -79,9 +80,7 @@ impl Tab {
     }
 }
 
-/// One item on the tier board: a tier entry (a model at an effort in a tier; `None` is the tier
-/// default), or a model in NOT IN USE. The model is an index into `Settings::models`. One model
-/// may have several entries in a tier, one per effort.
+/// One placed model+effort combination, indexed into `Settings::models`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BoardItem {
     Placed {
@@ -89,35 +88,30 @@ pub(crate) enum BoardItem {
         tier: Tier,
         effort: Option<Effort>,
     },
-    Unused {
-        model: usize,
-    },
 }
 
 impl BoardItem {
     pub(crate) const fn model(self) -> usize {
         match self {
-            Self::Placed { model, .. } | Self::Unused { model } => model,
+            Self::Placed { model, .. } => model,
         }
     }
 
-    pub(crate) const fn tier(self) -> Option<Tier> {
+    pub(crate) const fn tier(self) -> Tier {
         match self {
-            Self::Placed { tier, .. } => Some(tier),
-            Self::Unused { .. } => None,
+            Self::Placed { tier, .. } => tier,
         }
     }
 
-    /// A tier entry's effort (`None` is the tier default, and every NOT IN USE item).
+    /// The combination's effort; `None` means no effort or an unresolved default.
     pub(crate) const fn effort(self) -> Option<Effort> {
         match self {
             Self::Placed { effort, .. } => effort,
-            Self::Unused { .. } => None,
         }
     }
 }
 
-/// A drop zone on the board: a tier, or NOT IN USE.
+/// A drop zone on the board: a tier, or removal from use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Zone {
     Tier(Tier),
@@ -137,9 +131,8 @@ pub(crate) enum SettingsHit {
     AccountReconnect(usize),
     /// "+ Connect an account".
     Connect,
-    /// A board item, its effort dropdown, a drop zone, and "Find another model…".
+    /// A placed combination, a drop zone, and "Add model…".
     Board(BoardItem),
-    Effort(BoardItem),
     Zone(Zone),
     Find,
     /// Routing: the pin's switch, its model and fallback, the Quartermaster's model and effort,
@@ -196,11 +189,13 @@ pub(crate) enum AccountLogin {
 }
 
 /// What a picker chooses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PickFor {
-    Effort(BoardItem),
-    /// The effort a new entry for this model goes into the tier at ("Add to tier ▸ Low ▸ High").
-    AddAt(BoardItem, Tier),
+    /// Where to add a combination chosen from the fixed catalogue.
+    AddTo {
+        model: ModelId,
+        effort: Option<Effort>,
+    },
     MoveTo(BoardItem),
     PinModel,
     PinFallback,
@@ -218,6 +213,10 @@ pub(crate) enum PickValue {
     Effort(Option<Effort>),
     Zone(Zone),
     Model(ModelId),
+    Combo {
+        model: ModelId,
+        effort: Option<Effort>,
+    },
     /// No model ("None" for the fallback).
     NoModel,
     Auto,
@@ -245,7 +244,10 @@ impl Picker {
         self.options
             .iter()
             .enumerate()
-            .filter(|(_, (label, _))| query.is_empty() || label.to_lowercase().contains(&query))
+            .filter(|(_, (label, _))| {
+                let label = label.to_lowercase();
+                query.split_whitespace().all(|word| label.contains(word))
+            })
             .map(|(i, _)| i)
             .collect()
     }
@@ -511,7 +513,7 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
         ),
         Tab::ModelLevels => (
             "drag to move · right-click for options",
-            "m move · x remove · e effort · / find",
+            "a add · / search · m move · x remove",
         ),
         Tab::Routing => (
             "click to change",

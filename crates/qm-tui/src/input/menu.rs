@@ -58,9 +58,7 @@ pub(crate) fn items(target: MenuTarget, snapshot: &Snapshot) -> Vec<&'static str
             Some(_) => vec![AUTONOMY_NORMAL, AUTONOMY_AUTO, COPY_NAME],
             None => Vec::new(),
         },
-        MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_) => {
-            crate::settings::menu_items(target)
-        }
+        MenuTarget::Model(_) | MenuTarget::Account(_) => crate::settings::menu_items(target),
         MenuTarget::Action(i) => match snapshot.actions.get(i) {
             Some(_) => vec![OPEN_ACTION, GO_TO, COPY_TITLE],
             None => Vec::new(),
@@ -152,7 +150,7 @@ impl App {
             MenuTarget::Crew(agent) => self.select_crew(agent),
             MenuTarget::Project(i) => self.change(|app| &mut app.view.selected_project, Some(i)),
             MenuTarget::Action(i) => self.select_action(i),
-            MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_) => {
+            MenuTarget::Model(_) | MenuTarget::Account(_) => {
                 self.settings_select_target(target);
             }
             MenuTarget::Main => {}
@@ -232,7 +230,7 @@ impl App {
                     self.choose_entry(entry);
                 }
             }
-            (item, MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_)) => {
+            (item, MenuTarget::Model(_) | MenuTarget::Account(_)) => {
                 self.settings_menu_choice(item, menu.target, now);
             }
             _ => {}

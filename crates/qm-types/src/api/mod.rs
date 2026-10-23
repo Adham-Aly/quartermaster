@@ -171,9 +171,11 @@ pub enum Command {
         #[serde(default)]
         account: Option<AccountId>,
     },
-    /// Put a tier entry (the model at `effort`; `None` is the tier default) in tier `to`: moved
-    /// out of `from`, or added when `from` is `None`. One model may sit in a tier more than once
-    /// at different efforts.
+    /// Put a model + effort combination in tier `to`: moved out of `from`, or added when `from`
+    /// is `None`. An effort of `None` is for models without effort controls or unresolved legacy
+    /// tier-default entries. One model may sit in a tier at different efforts. A stale source or
+    /// duplicate destination is refused without removing the source, not merged; moving an
+    /// existing entry to its current tier is a no-op.
     PlaceModel {
         model: ModelId,
         #[serde(default)]
@@ -193,7 +195,9 @@ pub enum Command {
     TakeOutOfUse {
         model: ModelId,
     },
-    /// Change a tier entry's effort from `current` to `effort`; `None` is the tier default.
+    /// Legacy API to change a tier entry's effort from `current` to `effort`; `None` retains
+    /// tier-default semantics for effort-capable models. The current board adds and moves fixed
+    /// combinations instead of offering a separate placement-effort picker.
     SetPlacementEffort {
         model: ModelId,
         tier: Tier,
@@ -202,7 +206,8 @@ pub enum Command {
         #[serde(default)]
         effort: Option<Effort>,
     },
-    /// Show a model found with find under NOT IN USE.
+    /// Legacy API to persist listing metadata for the former NOT IN USE list. Retained for
+    /// compatibility; the current fixed catalogue includes every model regardless of this flag.
     ListModel {
         model: ModelId,
     },
@@ -218,8 +223,10 @@ pub enum Command {
     SetQuartermasterModel {
         choice: QuartermasterChoice,
     },
-    /// The Quartermaster's own effort level; `None` follows its model's tier. Saved to
-    /// `config.toml` and applied at its next idle moment. Secondmates follow it too.
+    /// The Quartermaster's own effort override; `None` uses the selected combination's effort
+    /// with Auto model, or a named model's tier default. Explicit overrides are capped to the
+    /// model's supported levels. Saved to `config.toml` and applied at its next idle moment;
+    /// secondmates follow it too.
     SetQuartermasterEffort {
         #[serde(default)]
         effort: Option<Effort>,
@@ -1209,8 +1216,9 @@ pub struct SettingsView {
     pub models: Vec<SettingsModel>,
     pub pin: PinSetting,
     pub quartermaster: QuartermasterChoice,
-    /// The Quartermaster's own effort level (`config.toml`'s `[quartermaster] effort`); `None`
-    /// follows its model's tier. Its model's supported levels still cap it.
+    /// The Quartermaster's own effort override (`config.toml`'s `[quartermaster] effort`);
+    /// `None` uses Auto's selected combination or a named model's tier default. Explicit
+    /// overrides are capped to the model's supported levels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quartermaster_effort: Option<Effort>,
     /// What the Quartermaster runs on now, when known.
@@ -1233,9 +1241,9 @@ pub struct SettingsView {
     /// settings part. The screens show it instead of an empty or loading tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable: Option<String>,
-    /// Each tier's default effort as routing uses it (`config.toml`'s `[tiers]`), so the Model
-    /// levels screen shows a placement's "Tier default" as it runs. A model's supported efforts
-    /// still cap it.
+    /// Configured tier defaults (`config.toml`'s `[tiers]`), retained for model-only choices and
+    /// unresolved legacy entries. Normal catalogue placements carry their own effort; the board
+    /// does not offer a separate "Tier default" control.
     #[serde(default)]
     pub tier_efforts: crate::config::TierEfforts,
     /// How many tokens of conversation every agent keeps before it compacts it (Settings ▸
@@ -1347,7 +1355,8 @@ impl SettingsAccount {
 #[non_exhaustive]
 pub struct ModelPlacement {
     pub tier: Tier,
-    /// The entry's effort; `None` follows the tier default.
+    /// The combination's effort; `None` means no effort for models without effort controls,
+    /// or a tier default for unresolved legacy entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
 }
@@ -1368,7 +1377,7 @@ pub struct SettingsModel {
     /// The account it runs on, by label ("Claude Max").
     #[serde(default)]
     pub account: String,
-    /// Where it sits on the board; empty is not in use.
+    /// Where its combinations sit on the board; empty means no tier placements.
     #[serde(default)]
     pub placements: Vec<ModelPlacement>,
     /// The effort levels this model supports, lowest first (a set).
@@ -1377,7 +1386,8 @@ pub struct SettingsModel {
     /// Newly found on an account and not yet placed.
     #[serde(default)]
     pub new: bool,
-    /// Listed under NOT IN USE; the rest are only reachable through find.
+    /// Legacy listing metadata for the former NOT IN USE list, retained for compatibility.
+    /// Does not control visibility: the current catalogue includes all models and supported efforts.
     #[serde(default)]
     pub listed: bool,
 }

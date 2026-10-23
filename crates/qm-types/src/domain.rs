@@ -206,6 +206,19 @@ string_enum! {
     }
 }
 
+impl Tier {
+    /// The tiers to try for a request, starting with its own tier. Prefer stronger ordinary
+    /// tiers before weaker ones; Premium is only tried when the request landed in Premium.
+    pub const fn fallback_order(self) -> &'static [Self] {
+        match self {
+            Self::Low => &[Self::Low, Self::Medium, Self::High],
+            Self::Medium => &[Self::Medium, Self::High, Self::Low],
+            Self::High => &[Self::High, Self::Medium, Self::Low],
+            Self::Premium => &[Self::Premium, Self::High, Self::Medium, Self::Low],
+        }
+    }
+}
+
 string_enum! {
     /// A row of Settings ▸ Routing ▸ Task kinds: a task kind, or a kind building on a fact the app
     /// checked. Each row routes to the tier you set for it (`config.toml`'s `[routing.kinds]`).

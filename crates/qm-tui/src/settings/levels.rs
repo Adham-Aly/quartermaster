@@ -1,46 +1,30 @@
-//! The Model levels tab: a board of tiers. Each row is a tier entry: a model plus an effort level,
-//! so one model can sit in several tiers, and in one tier more than once at different efforts.
-//! Drag an entry between tiers or select it and press `m`; its effort offers only the levels that
-//! model supports. An empty tier says where its work goes.
+//! The Model levels board contains placed model+effort combinations. Add model opens a fixed,
+//! searchable catalogue; adding never consumes its entries. Existing combinations move or remove.
 
-use super::model::{
-    BOARD, Model, Settings, effort_label, fallback_tier, model_tier_default, tier_heading,
-    tier_label,
-};
+use super::model::{BOARD, Model, Settings, combo_label, fallback_tier, tier_heading, tier_label};
 use super::paint::Painter;
 use super::{BoardItem, SettingsHit, Zone, section};
 use crate::app::App;
-use crate::text::{cells, truncate, width};
+use crate::text::{cells, truncate};
 use crate::theme;
 use qm_types::domain::{Effort, Tier};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-/// Cells between two items on the NOT IN USE row.
-const UNUSED_GAP: u16 = 6;
-
-/// The board's items in the order the keys walk them: each tier top to bottom, then NOT IN USE.
+/// Placed combinations in the order the keys walk them: each tier top to bottom.
 pub(super) fn items(settings: &Settings) -> Vec<BoardItem> {
-    let mut out = Vec::new();
-    for tier in BOARD {
-        out.extend(
-            entries(settings, tier).map(|(model, _, effort)| BoardItem::Placed {
+    BOARD
+        .into_iter()
+        .flat_map(|tier| {
+            entries(settings, tier).map(move |(model, _, effort)| BoardItem::Placed {
                 model,
                 tier,
                 effort,
-            }),
-        );
-    }
-    for (model, m) in settings.models.iter().enumerate() {
-        if m.unused() && m.listed {
-            out.push(BoardItem::Unused { model });
-        }
-    }
-    out
+            })
+        })
+        .collect()
 }
 
-/// A tier's entries, board order (by model, then in the order they were made): the model's index,
-/// the model and the entry's effort.
 fn entries(
     settings: &Settings,
     tier: Tier,
@@ -52,54 +36,20 @@ fn entries(
         .flat_map(move |(i, m)| m.placements_in(tier).map(move |p| (i, m, p.effort)))
 }
 
-/// "⠿ GPT-6.1 Sol · ChatGPT Pro" and, for a new model, " new".
-fn label_width(m: &Model) -> u16 {
-    let new = if m.new { 4 } else { 0 };
-    cells(width(&m.name) + width(&m.account) + 5 + new)
-}
-
-/// The NOT IN USE items laid out in rows `room` cells wide: (row, column offset, item).
-fn flow(settings: &Settings, room: u16) -> Vec<(u16, u16, usize)> {
-    let mut out = Vec::new();
-    let (mut row, mut x) = (0u16, 0u16);
-    for (model, m) in settings.models.iter().enumerate() {
-        if !(m.unused() && m.listed) {
-            continue;
-        }
-        let w = label_width(m);
-        if x > 0 && x + UNUSED_GAP + w > room {
-            row += 1;
-            x = 0;
-        }
-        if x > 0 {
-            x += UNUSED_GAP;
-        }
-        out.push((row, x, model));
-        x += w;
-    }
-    out
-}
-
 pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let view = &app.view.settings;
     let settings = &view.model;
-    let room = area.width.saturating_sub(7);
-    let unused = flow(settings, room);
-    let unused_rows = unused.last().map_or(0, |&(row, _, _)| row + 1);
-    let tier_rows: u16 = BOARD
+    let rows: u16 = 3 + BOARD
         .iter()
         .map(|&t| 1 + cells(entries(settings, t).count().max(1)))
-        .sum();
-    let rows = tier_rows + 1 + unused_rows + 1;
+        .sum::<u16>();
     let inner = section(area, rows);
-    // The board is indented two cells in from the padding.
     let x = inner.x + 3;
-    let right = inner.right().saturating_sub(1);
-    let dragging = view.drag;
-    let mut y = inner.y;
-
+    let end = p.button(x, inner.y, "Add model…", SettingsHit::Find);
+    p.text(end + 2, inner.y, "model + effort", theme::dim());
+    let mut y = inner.y + 2;
     for tier in BOARD {
-        let models: Vec<(usize, &Model, Option<Effort>)> = entries(settings, tier).collect();
+        let models: Vec<_> = entries(settings, tier).collect();
         let zone = Zone::Tier(tier);
         let height = 1 + cells(models.len().max(1));
         p.hit(
@@ -111,12 +61,11 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
             x,
             y,
             tier_heading(tier),
-            dragging.and_then(|d| d.over) == Some(zone),
+            view.drag.and_then(|d| d.over) == Some(zone),
         );
         y += 1;
         if models.is_empty() {
-            let note = empty_note(settings, tier);
-            p.text(x + 2, y, &note, theme::dim());
+            p.text(x + 2, y, &empty_note(settings, tier), theme::dim());
             y += 1;
         }
         for (model, m, effort) in models {
@@ -129,29 +78,17 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
             y += 1;
         }
     }
-
-    let zone = Zone::NotInUse;
     p.hit(
-        Rect::new(inner.x, y, inner.width, 1 + unused_rows),
-        SettingsHit::Zone(zone),
+        Rect::new(inner.x, y, inner.width, 1),
+        SettingsHit::Zone(Zone::NotInUse),
     );
     heading(
         p,
         x,
         y,
-        "NOT IN USE",
-        dragging.and_then(|d| d.over) == Some(zone),
+        "DROP HERE TO REMOVE",
+        view.drag.and_then(|d| d.over) == Some(Zone::NotInUse),
     );
-    y += 1;
-    draw_unused(p, x, y, &unused, app);
-    y += unused_rows;
-    let end = p.button(x, y, "Find another model…", SettingsHit::Find);
-    let more = settings.unlisted();
-    if more > 0 {
-        let text = format!("{more} more on your accounts");
-        let text = truncate(&text, usize::from(right.saturating_sub(end + 2)));
-        p.text(end + 2, y, &text, theme::dim());
-    }
 }
 
 /// The hint beneath an empty tier: where its work runs instead.
@@ -162,33 +99,7 @@ fn empty_note(settings: &Settings, tier: Tier) -> String {
             tier_label(tier).to_lowercase(),
             tier_label(to).to_lowercase()
         ),
-        None => String::from("empty · no model in any tier yet"),
-    }
-}
-
-/// The NOT IN USE items, flowed in rows from `(x, y)`.
-fn draw_unused(p: &mut Painter<'_, '_>, x: u16, y: u16, unused: &[(u16, u16, usize)], app: &App) {
-    let view = &app.view.settings;
-    let settings = &view.model;
-    for &(row, offset, model) in unused {
-        let m = &settings.models[model];
-        let item = BoardItem::Unused { model };
-        let at = x + offset;
-        let row_y = y + row;
-        let style = item_style(app, item);
-        let mut end = p.text(at, row_y, "⠿ ", theme::dim());
-        end = p.text(end, row_y, &m.name, style);
-        end = p.text(end, row_y, &format!(" · {}", m.account), theme::dim());
-        if m.new {
-            end = p.text(end, row_y, " new", theme::accent());
-        }
-        p.hit(
-            Rect::new(at, row_y, end.saturating_sub(at), 1),
-            SettingsHit::Board(item),
-        );
-        if view.board == Some(item) {
-            p.select_row(Rect::new(at, row_y, end.saturating_sub(at), 1), row_y);
-        }
+        None => format!("empty · no available fallback; {tier} requests wait"),
     }
 }
 
@@ -196,7 +107,7 @@ fn draw_unused(p: &mut Painter<'_, '_>, x: u16, y: u16, unused: &[(u16, u16, usi
 fn heading(p: &mut Painter<'_, '_>, x: u16, y: u16, text: &str, target: bool) {
     if target {
         let end = p.text(x, y, &format!(" {text} "), theme::button(true));
-        p.text(end + 1, y, "drop to place here", theme::accent());
+        p.text(end + 1, y, "release here", theme::accent());
     } else {
         p.text(x, y, text, theme::warn());
     }
@@ -216,7 +127,7 @@ fn item_style(app: &App, item: BoardItem) -> Style {
     }
 }
 
-/// One placement row: `⠿ name · account` on the left, `effort [level ▾]` on the right.
+/// One placement row: `⠿ name (effort) · account`, with no separate effort control.
 fn draw_placed(
     p: &mut Painter<'_, '_>,
     inner: Rect,
@@ -225,45 +136,22 @@ fn draw_placed(
     m: &Model,
     app: &App,
 ) {
-    let Some(tier) = item.tier() else { return };
-    let Some(placement) = m.placement(tier, item.effort()) else {
-        return;
-    };
     let x = inner.x + 3;
     let right = inner.right().saturating_sub(1);
     p.hit(
         Rect::new(inner.x, y, inner.width, 1),
         SettingsHit::Board(item),
     );
-
-    // The effort control, right-aligned.
-    let (label, own) = match placement.effort {
-        Some(effort) => (format!("{} ▾", effort_label(effort)), true),
-        None => (
-            format!(
-                "Tier default · {} ▾",
-                effort_label(model_tier_default(
-                    m,
-                    tier,
-                    &app.view.settings.model.tier_efforts
-                ))
-            ),
-            false,
-        ),
-    };
-    let mut edge = right;
-    if own {
-        edge = p.text_left_of(edge, y, "your setting", theme::dim()) - 1;
-    }
-    edge = p.button_left_of(edge, y, &label, SettingsHit::Effort(item));
-    edge = p.text_left_of(edge.saturating_sub(1), y, "effort", theme::text());
-
     let mut end = p.text(x, y, "⠿ ", theme::dim());
-    let room = usize::from(edge.saturating_sub(end + 2));
-    let name = truncate(&m.name, room);
-    end = p.text(end, y, &name, item_style(app, item));
-    let room = usize::from(edge.saturating_sub(end + 2));
-    let account = truncate(&format!(" · {}", m.account), room);
+    let label = truncate(
+        &combo_label(m, item.effort()),
+        usize::from(right.saturating_sub(end)),
+    );
+    end = p.text(end, y, &label, item_style(app, item));
+    let account = truncate(
+        &format!(" · {}", m.account),
+        usize::from(right.saturating_sub(end)),
+    );
     p.text(end, y, &account, theme::dim());
     if app.view.settings.board == Some(item) {
         p.select_row(inner, y);
@@ -273,42 +161,103 @@ fn draw_placed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::popups::Popup;
+    use crate::settings::Tab;
     use crate::settings::model::Placement;
     use qm_types::ids::ModelId;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn settings_with_filled_tiers(mask: u8) -> Settings {
+        let mut settings = Settings::default();
+        let mut model = Model::new(ModelId::new("test-model").unwrap(), "Test", "Test");
+        for (bit, &tier) in Tier::ALL.iter().enumerate() {
+            if mask & (1 << bit) != 0 {
+                model.placements.push(Placement::new(tier, None));
+            }
+        }
+        if mask != 0 {
+            settings.models.push(model);
+        }
+        settings
+    }
 
     #[test]
-    fn empty_premium_runs_on_the_highest_filled_tier() {
-        // Every combination of non-Premium tiers, including none and High alone.
-        for mask in 0u8..8 {
-            let mut settings = Settings::default();
-            let mut model = Model::new(ModelId::new("test-model").unwrap(), "Test", "Test");
-            for (bit, tier) in [Tier::High, Tier::Medium, Tier::Low]
-                .into_iter()
-                .enumerate()
-            {
-                if mask & (1 << bit) != 0 {
-                    model.placements.push(Placement::new(tier, None));
+    fn every_tier_uses_the_first_permitted_filled_fallback() {
+        // Independent expectations: ordinary work never falls back to Premium.
+        let cases: [(Tier, &[Tier]); 4] = [
+            (Tier::Low, &[Tier::Medium, Tier::High]),
+            (Tier::Medium, &[Tier::High, Tier::Low]),
+            (Tier::High, &[Tier::Medium, Tier::Low]),
+            (Tier::Premium, &[Tier::High, Tier::Medium, Tier::Low]),
+        ];
+        for mask in 0u8..16 {
+            let settings = settings_with_filled_tiers(mask);
+            for (tier, permitted) in cases {
+                let expected = permitted
+                    .iter()
+                    .copied()
+                    .find(|&t| settings.models.iter().any(|m| m.in_tier(t)));
+                assert_eq!(
+                    fallback_tier(&settings, tier),
+                    expected,
+                    "mask {mask}, tier {tier}"
+                );
+                if !settings.models.iter().any(|m| m.in_tier(tier)) {
+                    let want = match expected {
+                        Some(to) => format!("empty · {tier} runs on {to}"),
+                        None => format!("empty · no available fallback; {tier} requests wait"),
+                    };
+                    assert_eq!(empty_note(&settings, tier), want, "mask {mask}");
                 }
             }
-            if mask != 0 {
-                settings.models.push(model);
+        }
+    }
+
+    #[test]
+    fn premium_only_board_draws_waiting_hints_at_supported_sizes() {
+        for (width, height) in [(150, 45), (120, 40), (119, 40), (100, 30)] {
+            for light in [false, true] {
+                let mut app = App::new();
+                app.open_popup(Popup::Settings);
+                app.view.settings.loaded = true;
+                app.view.settings.tab = Tab::ModelLevels;
+                app.view.settings.model = settings_with_filled_tiers(0b1000);
+                app.term.palette = theme::fit_reported(&qm_types::wire::Colors {
+                    bg: Some(if light { [255; 3] } else { [0; 3] }),
+                    ..Default::default()
+                });
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let shown: String = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect();
+                for tier in [Tier::Low, Tier::Medium, Tier::High] {
+                    assert!(
+                        shown.contains(&format!(
+                            "empty · no available fallback; {tier} requests wait"
+                        )),
+                        "{width}×{height}, light={light}, tier={tier}:\n{shown}"
+                    );
+                }
+                assert!(!shown.contains("runs on premium"));
+                assert!(!shown.contains("no model in any tier"));
             }
-            let expected = [Tier::High, Tier::Medium, Tier::Low]
-                .into_iter()
-                .enumerate()
-                .find(|(bit, _)| mask & (1 << bit) != 0)
-                .map(|(_, tier)| tier);
+        }
+    }
+
+    #[test]
+    fn only_premium_filled_leaves_ordinary_requests_waiting() {
+        let settings = settings_with_filled_tiers(0b1000);
+        for tier in [Tier::Low, Tier::Medium, Tier::High] {
+            assert_eq!(fallback_tier(&settings, tier), None, "{tier}");
             assert_eq!(
-                fallback_tier(&settings, Tier::Premium),
-                expected,
-                "mask {mask}"
+                empty_note(&settings, tier),
+                format!("empty · no available fallback; {tier} requests wait")
             );
-            let note = empty_note(&settings, Tier::Premium);
-            let want = match expected {
-                Some(t) => format!("empty · premium runs on {}", tier_label(t).to_lowercase()),
-                None => String::from("empty · no model in any tier yet"),
-            };
-            assert_eq!(note, want, "mask {mask}");
         }
     }
 }
