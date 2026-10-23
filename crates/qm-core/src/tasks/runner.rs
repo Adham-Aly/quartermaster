@@ -26,8 +26,8 @@ use crate::watchdogs::{SIGNS_RECHECK, TurnEndKind, Watch, perform, signs_of_life
 use jiff::Timestamp;
 use qm_engine::supervisor::{ProcessGroup, Signal};
 use qm_engine::{
-    CloseReason, EngineEvent, FailureKind, InputBlock, RateLimitStatus, SessionHandle, ToolCallId,
-    ToolResult, TurnInput, TurnOutcome, TurnUsage,
+    CloseReason, EngineError, EngineEvent, FailureKind, InputBlock, RateLimitStatus, SessionHandle,
+    ToolCallId, ToolResult, TurnInput, TurnOutcome, TurnUsage,
 };
 use qm_policy::watchdog::SignsOfLife;
 use qm_store::agents::{self, CrewUsage, FinishedCrewTurn, REASON_TASK_CLOSED};
@@ -526,9 +526,15 @@ impl CrewRunner {
     /// Stops the crewmate and answers whoever asked.
     async fn finish(mut self) {
         let interrupted = self.stopped_mid_turn;
-        // Every runner exit is terminal, including failure: fail() retires the task after this
-        // runner unregisters, when no live handle remains to forget its transcript.
-        self.end_session().await;
+        // A quit closes the session and keeps its transcript, so the crewmate resumes its
+        // conversation at the next start. Every other exit is terminal, including failure: fail()
+        // retires the task after this runner unregisters, when no live handle remains to forget
+        // its transcript.
+        if matches!(self.ending, Some(Ending::Shutdown) | None) {
+            self.end_session_with(SessionHandle::close).await;
+        } else {
+            self.end_session().await;
+        }
         let task = self.task;
         let agent = self.agent;
         self.svc.runner_ended(task, agent);
@@ -551,9 +557,15 @@ impl CrewRunner {
     /// Forgets the session (waiting for it), stops every job or
     /// setup group still open for the task, and marks the crewmate stopped.
     async fn end_session(&mut self) {
+        self.end_session_with(SessionHandle::forget).await;
+    }
+
+    /// As [`Self::end_session`], ending the session `how`: `forget` drops its transcript, `close`
+    /// keeps it to resume.
+    async fn end_session_with(&mut self, how: fn(&SessionHandle) -> Result<(), EngineError>) {
         let clock = self.clock();
         if let Some(mut handle) = self.session.take() {
-            let _ = handle.forget();
+            let _ = how(&handle);
             let deadline = clock.instant() + INTERRUPT_GRACE;
             loop {
                 tokio::select! {
@@ -1947,8 +1959,9 @@ mod forgetting_tests {
     use super::*;
     use qm_engine::{SessionCommand, session_channel};
 
-    #[tokio::test]
-    async fn failed_runner_forgets_before_unregistering_and_retiring() {
+    /// The command a runner ending with `ending` sends its live session, answered with
+    /// `SessionClosed`.
+    async fn the_command_finish_sends(ending: Option<Ending>) -> Option<SessionCommand> {
         let fixture = crate::turns::forget_tests::Fixture::new().await;
         let (svc, scheduler) = fixture.task_service();
         let (_tx, rx) = mpsc::unbounded_channel();
@@ -1965,27 +1978,43 @@ mod forgetting_tests {
         );
         let (handle, mut side) = session_channel();
         runner.session = Some(handle);
-        runner.ending = Some(Ending::Failed(
-            "counterexample: failed with a live provider session".into(),
-        ));
+        runner.ending = ending;
         let engine = async {
-            assert_eq!(
-                side.commands.recv().await,
-                Some(SessionCommand::Forget),
-                "failure must not issue resumable Close and then unregister the only handle"
-            );
+            let command = side.commands.recv().await;
             side.events
                 .send(EngineEvent::SessionClosed {
                     reason: CloseReason::Requested,
                 })
                 .await
                 .unwrap();
+            command
         };
-        tokio::join!(runner.finish(), engine);
+        let ((), command) = tokio::join!(runner.finish(), engine);
         // A barrier lets the spawned retirement finish its read of the absent task.
         svc.db().call(|_| Ok(())).await.unwrap();
         drop(svc);
         scheduler.abort();
         let _ = scheduler.await;
+        command
+    }
+
+    #[tokio::test]
+    async fn failed_runner_forgets_before_unregistering_and_retiring() {
+        assert_eq!(
+            the_command_finish_sends(Some(Ending::Failed(
+                "counterexample: failed with a live provider session".into(),
+            )))
+            .await,
+            Some(SessionCommand::Forget),
+            "failure must not issue resumable Close and then unregister the only handle"
+        );
+    }
+
+    #[tokio::test]
+    async fn quitting_closes_the_crewmates_session_so_it_resumes_at_the_next_start() {
+        assert_eq!(
+            the_command_finish_sends(Some(Ending::Shutdown)).await,
+            Some(SessionCommand::Close)
+        );
     }
 }

@@ -5,13 +5,21 @@
 //! prunes the rows no longer kept, nulls the references that dangle, and clears the volatile tables
 //! on disk. Writes to a kept table mark it dirty (TEMP triggers on the memory database), and
 //! [`Mirror::flush`] then brings `state.db` in line with memory in one transaction. Each kept table
-//! is compared with the file row by row, keyed by `seq`, and only the difference is written. A
-//! flush never changes memory, so the file is always a copy of memory's kept rows.
+//! is compared with the file row by row, keyed by `seq`, and only the difference is written.
+//! A flush never changes memory, so the file is always a copy of memory's kept rows.
+//!
+//! The chat tables ([`kept::CHAT`]) grow with every streamed line, so comparing them whole on each
+//! flush would slow every database call as a chat gets longer. Their triggers mark the changed rows'
+//! `seq` instead, and a flush compares only those rows, plus every row of an agent whose chat
+//! started or stopped being kept (its engine, `chat_kept_from` or retirement changed), which the
+//! mirror notices by comparing each live in-house agent's `chat_kept_from` with the last flush. A
+//! stale mirror (after a failed flush) still compares every table whole.
 
-use crate::kept::{KEPT, Kept, VOLATILE};
+use crate::kept::{self, KEPT, Kept, VOLATILE};
 use crate::{StoreError, connection, schema};
-use rusqlite::{Connection, Transaction, params_from_iter, types::Value};
+use rusqlite::{Connection, Statement, Transaction, params_from_iter, types::Value};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::Path;
 
 /// The disk side of the store. Owned by the database thread, next to the working connection.
@@ -23,7 +31,15 @@ pub struct Mirror {
     /// Set when a rewrite left old contents in the WAL and the checkpoint that erases them was
     /// busy: the next flush tries again, even with nothing new to write.
     erasing: bool,
+    /// Each agent whose chat the file keeps, with its `chat_kept_from`, as of the last flush.
+    chat_agents: ChatAgents,
 }
+
+/// Agent ID to `chat_kept_from`, for the agents whose chat is kept.
+type ChatAgents = BTreeMap<i64, i64>;
+
+/// Rows keyed by their `seq`, every column's value in `columns` order.
+type Rows = BTreeMap<i64, Vec<Value>>;
 
 impl Mirror {
     /// Migrates `state.db`, loads the kept rows into a new working database, and returns both.
@@ -33,12 +49,15 @@ impl Mirror {
         let mut mem = connection::open_memory()?;
         schema::migrate(&mut mem)?;
         load(&mut mem, path)?;
-        disk.execute_batch(&format!("DELETE FROM {}", VOLATILE.join("; DELETE FROM ")))?;
+        for table in VOLATILE {
+            disk.execute(&format!("DELETE FROM {table}"), [])?;
+        }
         install_dirty_marks(&mem)?;
         let mut mirror = Mirror {
             disk,
             stale: true,
             erasing: false,
+            chat_agents: ChatAgents::new(),
         };
         mirror.flush(&mem)?;
         mirror.disk.execute_batch("VACUUM")?;
@@ -55,8 +74,11 @@ impl Mirror {
             return Ok(());
         }
         if dirty > 0 || self.stale {
-            mem.execute("DELETE FROM temp.mirror_dirty", [])?;
-            match self.sync(mem) {
+            let result = self.sync(mem);
+            mem.execute_batch(
+                "DELETE FROM temp.mirror_dirty; DELETE FROM temp.mirror_dirty_rows;",
+            )?;
+            match result {
                 Ok(rewrote) => {
                     self.stale = false;
                     self.erasing |= rewrote;
@@ -73,15 +95,42 @@ impl Mirror {
         Ok(())
     }
 
-    /// Writes the difference for every kept table in one transaction. Returns whether any row was
-    /// removed or replaced, which leaves old contents in the WAL.
+    /// Writes the difference in one transaction: every kept table, but of the chat tables (unless
+    /// the mirror is stale) only the dirty rows and the rows of agents whose chat started or
+    /// stopped being kept. Returns whether any row was removed or replaced, which
+    /// leaves old contents in the WAL.
     fn sync(&mut self, mem: &Connection) -> Result<bool, StoreError> {
+        let dirty: Vec<String> = mem
+            .prepare("SELECT name FROM temp.mirror_dirty")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let full = self.stale;
+        let chat_agents = if full || dirty.iter().any(|t| t == "agents") {
+            Some(chat_agents(mem)?)
+        } else {
+            None
+        };
         let tx = self.disk.transaction()?;
         let mut rewrote = false;
         for kept in KEPT {
-            rewrote |= sync_table(&tx, mem, kept)?;
+            // A predicate may read other tables, so every other table is compared whole.
+            if full || !kept::CHAT.contains(&kept.table) {
+                rewrote |= sync_table(&tx, mem, kept)?;
+                continue;
+            }
+            if let Some(now) = &chat_agents {
+                for agent in changed_agents(&self.chat_agents, now) {
+                    rewrote |= sync_agent_rows(&tx, mem, kept, agent)?;
+                }
+            }
+            if dirty.iter().any(|t| t == kept.table) {
+                rewrote |= sync_dirty_rows(&tx, mem, kept)?;
+            }
         }
         tx.commit()?;
+        if let Some(now) = chat_agents {
+            self.chat_agents = now;
+        }
         Ok(rewrote)
     }
 
@@ -139,6 +188,14 @@ fn load(mem: &mut Connection, path: &Path) -> Result<(), StoreError> {
         tx.execute(
             "UPDATE main.wakes SET delivered_turn_id = NULL, delivered_at = NULL \
              WHERE consumed_at IS NULL AND delivered_at IS NOT NULL",
+            [],
+        )?;
+        // A turn you started must name your message (a CHECK), so one whose message wasn't kept
+        // can't have the reference nulled: it goes. That happens when the message was written
+        // under a Claude session and the turn that took it after the switch to the provider engine.
+        tx.execute(
+            "DELETE FROM main.turns WHERE message_id IS NOT NULL \
+             AND message_id NOT IN (SELECT id FROM main.messages)",
             [],
         )?;
         tx.commit()?;
@@ -208,20 +265,70 @@ pub(crate) fn with_guards_lifted<T>(
 }
 
 /// Creates the dirty-table set and a trigger per kept table and write kind that adds the table's
-/// name to it. Done after the load, so the load itself marks nothing.
+/// name to it; a chat table's triggers also add the changed rows' `seq` (old and new) to the
+/// dirty-row set. Done after the load, so the load itself marks nothing.
 fn install_dirty_marks(mem: &Connection) -> Result<(), StoreError> {
-    mem.execute_batch("CREATE TEMP TABLE mirror_dirty (name TEXT PRIMARY KEY) WITHOUT ROWID;")?;
+    mem.execute_batch(
+        "CREATE TEMP TABLE mirror_dirty (name TEXT PRIMARY KEY) WITHOUT ROWID;
+         CREATE TEMP TABLE mirror_dirty_rows (name TEXT NOT NULL, seq INTEGER NOT NULL, \
+             PRIMARY KEY (name, seq)) WITHOUT ROWID;",
+    )?;
     for kept in KEPT {
+        let chat = kept::CHAT.contains(&kept.table);
         for event in ["INSERT", "UPDATE", "DELETE"] {
+            let seqs: &[&str] = match event {
+                _ if !chat => &[],
+                "INSERT" => &["NEW"],
+                "UPDATE" => &["OLD", "NEW"],
+                _ => &["OLD"],
+            };
+            let mut rows = String::new();
+            for row in seqs {
+                let _ = write!(
+                    rows,
+                    "INSERT OR IGNORE INTO mirror_dirty_rows (name, seq) \
+                     VALUES ('{t}', {row}.seq); ",
+                    t = kept.table
+                );
+            }
             mem.execute_batch(&format!(
                 "CREATE TEMP TRIGGER mirror_{t}_{e} AFTER {event} ON {t} BEGIN \
-                 INSERT OR IGNORE INTO mirror_dirty (name) VALUES ('{t}'); END;",
+                 INSERT OR IGNORE INTO mirror_dirty (name) VALUES ('{t}'); {rows}END;",
                 t = kept.table,
                 e = event.to_ascii_lowercase(),
             ))?;
         }
     }
     Ok(())
+}
+
+/// The agents whose chat is kept now, with their `chat_kept_from`: the agent side of
+/// `current_chat!` in `kept.rs`.
+fn chat_agents(mem: &Connection) -> Result<ChatAgents, StoreError> {
+    Ok(mem
+        .prepare(
+            "SELECT id, chat_kept_from FROM main.agents \
+             WHERE retired_at IS NULL AND engine = 'provider' AND chat_kept_from IS NOT NULL",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// The agents whose kept chat started, stopped or moved its start between `then` and `now`.
+fn changed_agents(then: &ChatAgents, now: &ChatAgents) -> Vec<i64> {
+    let mut agents: Vec<i64> = then
+        .iter()
+        .filter(|(agent, from)| now.get(agent) != Some(from))
+        .map(|(agent, _)| *agent)
+        .chain(
+            now.keys()
+                .filter(|agent| !then.contains_key(agent))
+                .copied(),
+        )
+        .collect();
+    agents.sort_unstable();
+    agents.dedup();
+    agents
 }
 
 /// The column names of `table`, with `seq` first: the key every kept row is matched by.
@@ -248,7 +355,6 @@ fn columns(conn: &Connection, table: &str) -> Result<Vec<String>, StoreError> {
 fn sync_table(disk: &Connection, mem: &Connection, kept: &Kept) -> Result<bool, StoreError> {
     let cols = columns(mem, kept.table)?;
     let list = cols.join(", ");
-    let placeholders = vec!["?"; cols.len()].join(", ");
     let wanted = read_rows(
         mem,
         &format!(
@@ -261,37 +367,117 @@ fn sync_table(disk: &Connection, mem: &Connection, kept: &Kept) -> Result<bool, 
         disk,
         &format!("SELECT {list} FROM main.{t}", t = kept.table),
     )?;
+    write_difference(disk, kept.table, &cols, &wanted, &stored)
+}
+
+/// Makes the file's `stored` rows of `table` equal `wanted`: writes the rows it lacks or holds
+/// differently and removes the rows memory no longer keeps. Returns whether it removed or replaced
+/// any row.
+fn write_difference(
+    disk: &Connection,
+    table: &str,
+    cols: &[String],
+    wanted: &Rows,
+    stored: &Rows,
+) -> Result<bool, StoreError> {
+    let list = cols.join(", ");
+    let placeholders = vec!["?"; cols.len()].join(", ");
     let mut rewrote = false;
-    for (seq, row) in &wanted {
+    for (seq, row) in wanted {
         if stored.get(seq) != Some(row) {
             if stored.contains_key(seq) {
                 rewrote = true;
             }
             disk.execute(
-                &format!(
-                    "INSERT OR REPLACE INTO {t} ({list}) VALUES ({placeholders})",
-                    t = kept.table
-                ),
+                &format!("INSERT OR REPLACE INTO {table} ({list}) VALUES ({placeholders})"),
                 params_from_iter(row.iter()),
             )?;
         }
     }
     for seq in stored.keys().filter(|seq| !wanted.contains_key(*seq)) {
-        disk.execute(
-            &format!("DELETE FROM {t} WHERE seq = ?1", t = kept.table),
-            [seq],
-        )?;
+        disk.execute(&format!("DELETE FROM {table} WHERE seq = ?1"), [seq])?;
         rewrote = true;
     }
     Ok(rewrote)
 }
 
+/// Writes the difference for one agent's rows of a chat table.
+fn sync_agent_rows(
+    disk: &Connection,
+    mem: &Connection,
+    kept: &Kept,
+    agent: i64,
+) -> Result<bool, StoreError> {
+    let cols = columns(mem, kept.table)?;
+    let list = cols.join(", ");
+    let wanted = read_rows_with(
+        mem,
+        &format!(
+            "SELECT {list} FROM main.{t} WHERE agent_id = ?1 AND COALESCE(({p}), 0)",
+            t = kept.table,
+            p = kept.predicate
+        ),
+        [agent],
+    )?;
+    let stored = read_rows_with(
+        disk,
+        &format!(
+            "SELECT {list} FROM main.{t} WHERE agent_id = ?1",
+            t = kept.table
+        ),
+        [agent],
+    )?;
+    write_difference(disk, kept.table, &cols, &wanted, &stored)
+}
+
+/// Writes the difference for the rows of a chat table its triggers marked since the last flush.
+fn sync_dirty_rows(disk: &Connection, mem: &Connection, kept: &Kept) -> Result<bool, StoreError> {
+    let cols = columns(mem, kept.table)?;
+    let list = cols.join(", ");
+    let seqs: Vec<i64> = mem
+        .prepare("SELECT seq FROM temp.mirror_dirty_rows WHERE name = ?1")?
+        .query_map([kept.table], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut wanted_one = mem.prepare(&format!(
+        "SELECT {list} FROM main.{t} WHERE seq = ?1 AND COALESCE(({p}), 0)",
+        t = kept.table,
+        p = kept.predicate
+    ))?;
+    let mut stored_one = disk.prepare(&format!(
+        "SELECT {list} FROM main.{t} WHERE seq = ?1",
+        t = kept.table
+    ))?;
+    let mut wanted = BTreeMap::new();
+    let mut stored = BTreeMap::new();
+    for seq in seqs {
+        wanted.extend(collect_rows(&mut wanted_one, [seq])?);
+        stored.extend(collect_rows(&mut stored_one, [seq])?);
+    }
+    write_difference(disk, kept.table, &cols, &wanted, &stored)
+}
+
 /// Every row of a query whose first column is `seq`, keyed by it.
-fn read_rows(conn: &Connection, sql: &str) -> Result<BTreeMap<i64, Vec<Value>>, StoreError> {
-    let mut stmt = conn.prepare(sql)?;
+fn read_rows(conn: &Connection, sql: &str) -> Result<Rows, StoreError> {
+    read_rows_with(conn, sql, [])
+}
+
+/// [`read_rows`] with parameters.
+fn read_rows_with(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Rows, StoreError> {
+    collect_rows(&mut conn.prepare(sql)?, params)
+}
+
+/// The rows of a prepared query whose first column is `seq`, keyed by it.
+fn collect_rows(
+    stmt: &mut Statement<'_>,
+    params: impl rusqlite::Params,
+) -> Result<Rows, StoreError> {
     let width = stmt.column_count();
     let mut rows = BTreeMap::new();
-    let mut query = stmt.query([])?;
+    let mut query = stmt.query(params)?;
     while let Some(row) = query.next()? {
         let values = (0..width)
             .map(|i| row.get::<_, Value>(i))
@@ -375,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn volatile_rows_never_reach_the_file_and_kept_events_do() {
+    fn a_chat_off_the_provider_engine_never_reaches_the_file_and_kept_events_do() {
         let scratch = Scratch::new("no-history");
         let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
         quartermaster(&mem);
@@ -398,7 +584,7 @@ mod tests {
         let text = String::from_utf8_lossy(&bytes);
         assert!(
             !text.contains("VOLATILE-WORDS"),
-            "a message never reaches the file"
+            "a message of an agent off the provider engine never reaches the file"
         );
         assert!(text.contains("KEPT-WORDS"), "a kept event does");
     }
@@ -733,6 +919,463 @@ mod tests {
             stored(&scratch.state()),
             before,
             "a second start changes no row"
+        );
+    }
+
+    /// Two secondmates' agents beside an in-house Quartermaster: agent 1 on the provider engine,
+    /// agent 2 on Claude, agent 3 on the provider engine; each provider agent's chat kept from its
+    /// own `seq`.
+    fn crew(mem: &Connection) {
+        mem.execute_batch(
+            "INSERT INTO accounts (id, provider, label, kind, engine, created_at, seq) \
+                 VALUES (1, 'claude', 'claude', 'subscription', 'claude', 1, 1), \
+                        (2, 'custom', 'stub', 'api_key', 'provider', 1, 2);
+             INSERT INTO secondmates (id, name, scope, created_at, seq) \
+                 VALUES (1, 'ops', 'scope', 1, 1), (2, 'research', 'scope', 1, 2);
+             INSERT INTO agents (id, role, supervisor_id, secondmate_id, engine, home, status, \
+                 created_at, seq, chat_kept_from) \
+                 VALUES (1, 'quartermaster', NULL, NULL, 'provider', '/h', 'idle', 1, 1, 1), \
+                        (2, 'secondmate', 1, 1, 'claude', '/sm', 'idle', 1, 2, NULL), \
+                        (3, 'secondmate', 1, 2, 'provider', '/sm2', 'idle', 1, 3, 3);",
+        )
+        .expect("the crew");
+        // Rows made from now on sort after the crew, as they would in the app.
+        crate::seq::observe(100);
+    }
+
+    /// One exchange of `agent`'s chat: a message, an app turn and a session line with `text`, each
+    /// with the next `seq`. Returns the message's ID; the turn and the line share it.
+    fn chat(mem: &Connection, agent: i64, text: &str) -> i64 {
+        let id = crate::seq::next_millis(0);
+        mem.execute(
+            "INSERT INTO messages (id, agent_id, source, kind, text, created_at, seq) \
+             VALUES (?1, ?2, 'agent', 'reply', ?3, 1, ?1)",
+            rusqlite::params![id, agent, text],
+        )
+        .expect("a message");
+        let seq = crate::seq::next_millis(0);
+        mem.execute(
+            "INSERT INTO turns (id, agent_id, started_by, status, started_at, ended_at, seq) \
+             VALUES (?1, ?2, 'app_event', 'completed', 1, 2, ?3)",
+            rusqlite::params![id, agent, seq],
+        )
+        .expect("a turn");
+        let seq = crate::seq::next_millis(0);
+        mem.execute(
+            "INSERT INTO session_lines (id, agent_id, kind, text, message_id, created_at, seq) \
+             VALUES (?1, ?2, 'agent', ?3, ?1, 1, ?4)",
+            rusqlite::params![id, agent, text, seq],
+        )
+        .expect("a session line");
+        id
+    }
+
+    /// `agent`'s rows in each chat table of `conn`, as `table:count` words.
+    fn chat_rows(conn: &Connection, agent: i64) -> String {
+        kept::CHAT
+            .iter()
+            .map(|t| {
+                let n: i64 = conn
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {t} WHERE agent_id = ?1"),
+                        [agent],
+                        |r| r.get(0),
+                    )
+                    .expect("a count");
+                format!("{t}:{n}")
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn an_in_house_chat_survives_a_restart_and_a_claude_chat_never_reaches_the_file() {
+        let scratch = Scratch::new("chat-restart");
+        {
+            let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
+            crew(&mem);
+            chat(&mem, 1, "IN-HOUSE-WORDS");
+            chat(&mem, 2, "CLAUDE-WORDS");
+            mirror.flush(&mem).expect("a flush");
+            mirror.checkpoint().expect("a checkpoint");
+            let text = file_text(&scratch);
+            assert!(text.contains("IN-HOUSE-WORDS"), "an in-house chat is kept");
+            assert!(
+                !text.contains("CLAUDE-WORDS"),
+                "a Claude agent's chat never reaches the file"
+            );
+        }
+        let (mem, _mirror) = Mirror::open(&scratch.state()).expect("a restart");
+        assert_eq!(
+            chat_rows(&mem, 1),
+            "messages:1 turns:1 session_lines:1",
+            "the in-house chat loads back whole"
+        );
+        assert_eq!(chat_rows(&mem, 2), "messages:0 turns:0 session_lines:0");
+        let line_message: Option<i64> = mem
+            .query_row("SELECT message_id FROM session_lines", [], |r| r.get(0))
+            .expect("the line");
+        assert!(line_message.is_some(), "the line still names its message");
+    }
+
+    #[test]
+    fn a_compacted_or_cleared_chat_leaves_only_the_current_rows_in_the_file() {
+        let scratch = Scratch::new("chat-forget");
+        let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
+        crew(&mem);
+        let old = chat(&mem, 1, "BEFORE-COMPACTION");
+        chat(&mem, 1, "AFTER-COMPACTION");
+        mirror.flush(&mem).expect("a flush");
+        // What compaction does to memory: the rows before the boundary go.
+        let mut mem = mem;
+        with_guards_lifted(&mut mem, |tx| {
+            for (table, column) in [
+                ("session_lines", "message_id"),
+                ("turns", "id"),
+                ("messages", "id"),
+            ] {
+                tx.execute(&format!("DELETE FROM {table} WHERE {column} = ?1"), [old])?;
+            }
+            Ok(())
+        })
+        .expect("the compaction");
+        mirror.flush(&mem).expect("a flush");
+        assert!(mirror.erasing || !file_text(&scratch).contains("BEFORE-COMPACTION"));
+        mirror.checkpoint().expect("a checkpoint");
+        let text = file_text(&scratch);
+        assert!(
+            !text.contains("BEFORE-COMPACTION"),
+            "no copy of the dropped history stays on disk"
+        );
+        assert!(text.contains("AFTER-COMPACTION"));
+        assert_eq!(
+            chat_rows(&mirror.disk, 1),
+            "messages:1 turns:1 session_lines:1"
+        );
+    }
+
+    #[test]
+    fn a_retired_agents_chat_leaves_the_file_with_its_next_flush() {
+        let scratch = Scratch::new("chat-retire");
+        let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
+        crew(&mem);
+        chat(&mem, 3, "RETIRING-WORDS");
+        mirror.flush(&mem).expect("a flush");
+        assert_eq!(
+            chat_rows(&mirror.disk, 3),
+            "messages:1 turns:1 session_lines:1"
+        );
+        crate::secondmates::retire(
+            &mem,
+            qm_types::ids::SecondmateId::new(2).expect("an ID"),
+            jiff::Timestamp::UNIX_EPOCH,
+        )
+        .expect("the retirement");
+        mirror.flush(&mem).expect("a flush");
+        mirror.checkpoint().expect("a checkpoint");
+        assert_eq!(
+            chat_rows(&mirror.disk, 3),
+            "messages:0 turns:0 session_lines:0",
+            "memory still has the rows; the file doesn't"
+        );
+        assert!(!file_text(&scratch).contains("RETIRING-WORDS"));
+        assert_eq!(chat_rows(&mem, 3), "messages:1 turns:1 session_lines:1");
+    }
+
+    #[test]
+    fn only_rows_made_on_the_provider_engine_reach_the_file() {
+        use qm_types::domain::{Effort, EngineKind};
+        use qm_types::ids::{AccountId, AgentId, ModelId};
+        let scratch = Scratch::new("chat-switch");
+        let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
+        crew(&mem);
+        let model = ModelId::new("stub-model").expect("a model");
+        let kept_from = |agent: i64| -> Option<i64> {
+            mem.query_row(
+                "SELECT chat_kept_from FROM agents WHERE id = ?1",
+                [agent],
+                |r| r.get(0),
+            )
+            .expect("the agent")
+        };
+        let route = |agent: i64, engine: EngineKind, account: i64| {
+            crate::agents::set_routed(
+                &mem,
+                AgentId::new(agent),
+                engine,
+                AccountId::new(account),
+                &model,
+                Effort::Medium,
+            )
+            .expect("the route");
+        };
+
+        chat(&mem, 2, "WHILE-ON-CLAUDE");
+        route(2, EngineKind::Provider, 2);
+        let from = kept_from(2).expect("a provider agent's chat is kept");
+        assert!(from > 2, "it starts after the rows made under Claude");
+        chat(&mem, 2, "AFTER-THE-SWITCH");
+        mirror.flush(&mem).expect("a flush");
+        mirror.checkpoint().expect("a checkpoint");
+        let text = file_text(&scratch);
+        assert!(!text.contains("WHILE-ON-CLAUDE"));
+        assert!(text.contains("AFTER-THE-SWITCH"));
+
+        route(2, EngineKind::Provider, 2);
+        assert_eq!(
+            kept_from(2),
+            Some(from),
+            "a new model on the same engine keeps the start"
+        );
+
+        route(2, EngineKind::Claude, 1);
+        assert_eq!(kept_from(2), None);
+        chat(&mem, 2, "BACK-ON-CLAUDE");
+        mirror.flush(&mem).expect("a flush");
+        mirror.checkpoint().expect("a checkpoint");
+        let text = file_text(&scratch);
+        assert!(
+            !text.contains("AFTER-THE-SWITCH") && !text.contains("BACK-ON-CLAUDE"),
+            "a switch to Claude takes the chat off the file"
+        );
+        assert_eq!(
+            chat_rows(&mirror.disk, 2),
+            "messages:0 turns:0 session_lines:0"
+        );
+
+        // An agent that never had an engine keeps its chat from its own start.
+        mem.execute(
+            "INSERT INTO agents (id, role, supervisor_id, secondmate_id, home, status, \
+                 created_at, seq) VALUES (4, 'secondmate', 1, 2, '/sm4', 'starting', 1, 4)",
+            [],
+        )
+        .expect("a new agent");
+        route(4, EngineKind::Provider, 2);
+        assert_eq!(kept_from(4), Some(4));
+    }
+
+    #[test]
+    fn a_turn_you_started_whose_message_wasnt_kept_does_not_load() {
+        let scratch = Scratch::new("chat-orphan-turn");
+        {
+            let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
+            crew(&mem);
+            chat(&mem, 1, "KEPT");
+            mirror.flush(&mem).expect("a flush");
+            // The message was made under Claude and never reached the file; its turn did.
+            mirror
+                .disk
+                .execute_batch(
+                    "INSERT INTO turns (id, agent_id, started_by, message_id, status, \
+                         started_at, ended_at, seq) \
+                     VALUES (77, 1, 'user', 76, 'completed', 1, 2, 9000000000000000);
+                     INSERT INTO session_lines (id, agent_id, kind, text, message_id, turn_id, \
+                         created_at, seq) \
+                     VALUES (78, 1, 'you', 'hi', 76, 77, 1, 9000000000000001);",
+                )
+                .expect("rows that name a missing message");
+        }
+        let (mem, _mirror) = Mirror::open(&scratch.state()).expect("a restart");
+        assert_eq!(count(&mem, "pragma_foreign_key_check"), 0);
+        let turn: Option<i64> = mem
+            .query_row("SELECT turn_id FROM session_lines WHERE id = 78", [], |r| {
+                r.get(0)
+            })
+            .expect("the line stays");
+        assert_eq!(turn, None, "the line forgets the turn that went");
+        assert_eq!(chat_rows(&mem, 1), "messages:1 turns:1 session_lines:2");
+    }
+
+    /// The file's chat rows are exactly memory's kept ones, however the chat changed: the row-by-row
+    /// flush agrees with comparing every table whole.
+    #[test]
+    fn the_row_by_row_flush_matches_a_whole_comparison() {
+        use qm_types::domain::{Effort, EngineKind};
+        use qm_types::ids::{AccountId, AgentId, ModelId};
+        let scratch = Scratch::new("chat-equivalence");
+        let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
+        crew(&mem);
+        let mut mem = mem;
+        let model = ModelId::new("stub-model").expect("a model");
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = move |n: u64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) % n
+        };
+        for step in 0..300 {
+            let agent = i64::try_from(next(3)).expect("small") + 1;
+            match next(10) {
+                0..=4 => {
+                    chat(&mem, agent, &format!("step {step}"));
+                }
+                5 => {
+                    mem.execute(
+                        "UPDATE turns SET effective_actions = json_array(?2) \
+                         WHERE agent_id = ?1 AND id = (SELECT MAX(id) FROM turns WHERE agent_id = ?1)",
+                        rusqlite::params![agent, step],
+                    )
+                    .expect("a turn update");
+                }
+                6 => {
+                    // Compaction or clear: everything but the newest exchange goes.
+                    with_guards_lifted(&mut mem, |tx| {
+                        let newest: Option<i64> = tx.query_row(
+                            "SELECT MAX(id) FROM messages WHERE agent_id = ?1",
+                            [agent],
+                            |r| r.get(0),
+                        )?;
+                        let newest = newest.unwrap_or(0);
+                        tx.execute(
+                            "DELETE FROM session_lines WHERE agent_id = ?1 AND message_id < ?2",
+                            [agent, newest],
+                        )?;
+                        tx.execute(
+                            "DELETE FROM turns WHERE agent_id = ?1 AND id < ?2",
+                            [agent, newest],
+                        )?;
+                        tx.execute(
+                            "DELETE FROM messages WHERE agent_id = ?1 AND id < ?2",
+                            [agent, newest],
+                        )?;
+                        Ok(())
+                    })
+                    .expect("a forget");
+                }
+                7 if agent != 1 => {
+                    let (engine, account) = if next(2) == 0 {
+                        (EngineKind::Claude, 1)
+                    } else {
+                        (EngineKind::Provider, 2)
+                    };
+                    crate::agents::set_routed(
+                        &mem,
+                        AgentId::new(agent),
+                        engine,
+                        AccountId::new(account),
+                        &model,
+                        Effort::Medium,
+                    )
+                    .expect("a route");
+                }
+                _ => {}
+            }
+            if next(3) == 0 {
+                continue; // several changes reach one flush
+            }
+            mirror.flush(&mem).expect("a flush");
+            for kept in KEPT.iter().filter(|k| kept::CHAT.contains(&k.table)) {
+                let list = columns(&mem, kept.table).expect("columns").join(", ");
+                let wanted = read_rows(
+                    &mem,
+                    &format!(
+                        "SELECT {list} FROM main.{t} WHERE COALESCE(({p}), 0)",
+                        t = kept.table,
+                        p = kept.predicate
+                    ),
+                )
+                .expect("memory");
+                let stored = read_rows(&mirror.disk, &format!("SELECT {list} FROM {}", kept.table))
+                    .expect("the file");
+                assert_eq!(stored, wanted, "{} after step {step}", kept.table);
+            }
+        }
+    }
+
+    /// A kill mid-turn leaves the in-house seat's running turn in the file; startup interrupts it,
+    /// the seat finds it cut short, and a new turn can start.
+    #[test]
+    fn a_turn_running_at_a_kill_is_interrupted_at_the_next_start() {
+        let scratch = Scratch::new("chat-kill");
+        {
+            let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
+            crew(&mem);
+            let message = chat(&mem, 1, "YOUR-QUESTION");
+            let seq = crate::seq::next_millis(0);
+            mem.execute(
+                "INSERT INTO turns (id, agent_id, started_by, message_id, started_at, seq) \
+                 VALUES (5, 1, 'user', ?1, 1, ?2)",
+                [message, seq],
+            )
+            .expect("a running turn");
+            mirror.flush(&mem).expect("a flush");
+            // No shutdown: the process is killed here.
+        }
+        let (mut mem, _mirror) = Mirror::open(&scratch.state()).expect("a restart");
+        let at = jiff::Timestamp::UNIX_EPOCH;
+        let interrupted =
+            crate::agents::interrupt_running_turns(&mut mem, at).expect("the startup interrupt");
+        assert_eq!(interrupted.len(), 1);
+        assert_eq!(interrupted[0].task, None, "the seat's turn has no task");
+        let cut = crate::turns::cut_short(&mem, qm_types::ids::AgentId::new(1)).expect("cut");
+        assert_eq!(cut.len(), 1, "the seat's recovery finds the turn cut short");
+        mem.execute(
+            "INSERT INTO turns (id, agent_id, started_by, started_at, seq) \
+             VALUES (6, 1, 'app_event', 2, ?1)",
+            [crate::seq::next_millis(0)],
+        )
+        .expect("a new turn starts");
+    }
+
+    #[test]
+    fn a_notice_under_a_kept_message_comes_back_with_its_answer() {
+        let scratch = Scratch::new("chat-notice");
+        let event = |mem: &Connection, message: i64, kind: &str, payload: &str| {
+            let seq = crate::seq::next_millis(0);
+            mem.execute(
+                "INSERT INTO events (id, at, kind, summary, payload, seq) \
+                 VALUES (?1, 1, ?2, 'notice', json_set(?3, '$.message', ?4), ?1)",
+                rusqlite::params![seq, kind, payload, message],
+            )
+            .expect("an event");
+        };
+        // Whether each message's notice was answered; a message without one is left out.
+        let answered = |conn: &Connection, messages: &[i64]| -> Vec<bool> {
+            let ids: Vec<_> = messages
+                .iter()
+                .copied()
+                .map(qm_types::ids::MessageId::new)
+                .collect();
+            crate::events::notices(conn, &ids)
+                .expect("the notices")
+                .into_values()
+                .map(|n| n.answer.is_some())
+                .collect()
+        };
+        {
+            let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
+            crew(&mem);
+            // Your messages 1 and 2 to the in-house seat, 3 to the Claude secondmate.
+            for (message, agent) in [(1, 1), (2, 1), (3, 2)] {
+                mem.execute(
+                    "INSERT INTO messages (id, agent_id, source, kind, text, created_at, seq) \
+                     VALUES (?1, ?2, 'you', 'message', 'words', 1, ?3)",
+                    rusqlite::params![message, agent, crate::seq::next_millis(0)],
+                )
+                .expect("your message");
+                event(
+                    &mem,
+                    message,
+                    crate::events::NOTICE,
+                    r#"{"cause":"failed"}"#,
+                );
+            }
+            event(
+                &mem,
+                2,
+                crate::events::NOTICE_ANSWERED,
+                r#"{"answer":"leave_it"}"#,
+            );
+            mirror.flush(&mem).expect("a flush");
+            assert_eq!(answered(&mem, &[1, 2, 3]), [false, true, false]);
+        }
+        let (mem, _mirror) = Mirror::open(&scratch.state()).expect("a restart");
+        assert_eq!(
+            answered(&mem, &[1, 2, 3]),
+            [false, true],
+            "the in-house notices come back, the answered one still answered; the Claude \
+             agent's goes with its chat"
         );
     }
 }

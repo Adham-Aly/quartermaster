@@ -148,7 +148,7 @@ impl TurnLoop {
             }
         };
         self.slash_note(agent, &note).await;
-        if self.session.is_none() && !self.shutting_down {
+        if self.session.is_none() && self.ending.is_none() {
             self.ensure_session().await;
         }
         Ok(())
