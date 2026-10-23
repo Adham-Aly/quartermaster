@@ -30,7 +30,7 @@ Levels are pools **you control**, not fixed model names:
 
 | Level | Purpose | Default effort |
 |---|---|---|
-| Premium | Above High; only used when you request it or choose a stronger-model retry | Extra high |
+| Premium | Above High; used when you ask for premium or name a premium model, or choose a stronger-model retry | Extra high |
 | High | The default for work needing thinking | Extra high |
 | Medium | Work implementing finished thinking | Medium |
 | Low | Lookups | Medium |
@@ -63,14 +63,21 @@ Tell the Quartermaster in your message, for example:
 
 - “Use [model name] at high effort for this task.”
 - “Plan this first; use [model name] at medium effort for the build afterwards.”
+- “Use premium for this.” (only this task; say so to make later steps premium too)
 
 The app records choices for later steps as `later_steps`, by task kind. They
 apply when a matching task builds on that work, directly or further down the
-`builds_on` chain. The nearest matching entry wins; a newer explicit choice for
-the task overrides it. A stronger-model retry ignores inherited choices.
+`builds_on` chain. The nearest matching entry wins; a model, effort or premium
+named for the task itself replaces the entry entirely. A stronger-model retry
+ignores inherited choices.
 
-A named model must be in a tier and able to serve the task; otherwise normal
-routing takes over and records why. Naming a model does not by itself name an effort.
+A named model must be placed in a tier; a model in none is refused, with a pointer
+to **Settings ▸ Model levels**. If it can't serve the task, normal routing takes
+over and records why. Naming a model does not by itself name an effort.
+
+Naming a model placed in Premium asks for premium. If that model can't serve,
+another Premium model runs; if none can, premium runs on High (then Medium, then
+Low), and the routing record names each Premium model skipped and why.
 
 For a standing preference, **Settings ▸ Routing ▸ Always use** pins one model,
 with an optional fallback. Task-specific model choices take priority; premium
@@ -87,6 +94,7 @@ in the same family.
 
 If no model can serve in the chosen level, it tries **Low → Medium → High**,
 **Medium → High → Low**, or **High → Medium → Low**, keeping the original level's
-default effort, capped to the model used. Premium is never an automatic fallback:
-premium requests wait for Premium, and stronger-model retries wait for their
-target level. The routing record explains the choice and any fallback.
+default effort, capped to the model used. Premium is never an automatic fallback
+for other levels. Premium requests, and stronger-model retries to Premium, try
+**Premium → High → Medium → Low** with Premium's effort; retries to High or Medium
+wait for their target level. The routing record explains the choice and any fallback.
