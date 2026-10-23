@@ -23,8 +23,10 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use tokio::sync::mpsc;
 
+mod actions;
 mod draft;
 mod image;
+pub use actions::{ActionItem, ActionKey, ActionKind, ActionOpen};
 pub use draft::{DraftImage, DraftTarget, SavedDraft};
 pub use image::{
     ImageBytes, ImageFormat, MAX_IMAGE_BYTES, PastedImage, placeholder as image_placeholder,
@@ -428,6 +430,9 @@ pub struct Snapshot {
     /// Your unsent drafts, held by the core. The UI restores them from its first snapshot.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drafts: Vec<SavedDraft>,
+    /// The Actions inbox: every request waiting on you, configuration first, then newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ActionItem>,
 }
 
 /// The app's own updates, display-ready. `UpdateView::default()` says nothing at all.
@@ -916,6 +921,12 @@ pub enum CardAction {
     CopyPlanPath { path: String },
     /// A final plan card's "Approve": sends `Command::ApprovePlan`.
     ApprovePlan { task: TaskId },
+    /// A configuration item's "Open Settings".
+    OpenSettings,
+    /// A setup item's "Open Setup".
+    OpenSetup,
+    /// An option-less question's "Reply…": opens the asking agent's chat with the input focused.
+    OpenChat { to: AgentRef },
 }
 
 /// A button on a card and the key that presses it (`a`/`d`/`r` or `1`/`2`/`3`).

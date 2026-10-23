@@ -54,6 +54,7 @@
 //! notice of its own with a Restart button below the host's window ([`Notice`]); an installed
 //! update says the same in the Update popup.
 
+mod actions;
 mod app;
 mod attach;
 mod backend;

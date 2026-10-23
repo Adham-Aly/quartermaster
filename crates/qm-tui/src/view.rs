@@ -19,6 +19,8 @@ pub(crate) struct Selection {
 pub(crate) enum MenuTarget {
     Crew(AgentRef),
     Project(usize),
+    /// An Actions inbox row, by index into `Snapshot::actions`.
+    Action(usize),
     /// A model on the Settings tier board, its "Add to tier" submenu, and an account.
     Model(crate::settings::BoardItem),
     AddToTier(crate::settings::BoardItem),
@@ -35,6 +37,7 @@ impl MenuTarget {
         match self {
             Self::Crew(agent) => Hit::Crew(agent),
             Self::Project(i) => Hit::Project(i),
+            Self::Action(i) => Hit::ActionRow(i),
             Self::Model(item) | Self::AddToTier(item) => Hit::Settings(SettingsHit::Board(item)),
             Self::Account(account) => Hit::Settings(SettingsHit::Account(account.index)),
             Self::Main => Hit::MenuButton,
@@ -69,6 +72,14 @@ pub(crate) enum Middle {
     Session(AgentRef),
 }
 
+/// How long a press in the Actions overlay has been waiting on the app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PressWait {
+    pub(crate) at: Instant,
+    /// The app has shown the request being carried out since.
+    pub(crate) saw_busy: bool,
+}
+
 /// The UI state, held in `App::view`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct View {
@@ -86,6 +97,22 @@ pub(crate) struct View {
     pub(crate) projects_scroll: usize,
     pub(crate) crew_scroll: usize,
     pub(crate) task_scroll: usize,
+    /// The highlighted Actions row. It follows its item across snapshots; never persisted, since
+    /// items are momentary.
+    pub(crate) selected_action: Option<qm_types::api::ActionKey>,
+    pub(crate) actions_scroll: usize,
+    /// The item the Actions overlay shows, while it is open.
+    pub(crate) action_open: Option<qm_types::api::ActionKey>,
+    /// The overlay's highlighted button: none when it opens, so a second Enter presses nothing.
+    pub(crate) action_button: Option<usize>,
+    /// You pressed a button on this item: its buttons dim until it goes or the attempt ends
+    /// (see `actions::after_press`), and its overlay closes without the "answered elsewhere"
+    /// flash.
+    pub(crate) action_pressed: Option<qm_types::api::ActionKey>,
+    /// When you pressed it, and whether the app has shown it being carried out since.
+    pub(crate) action_wait: Option<PressWait>,
+    /// How far the overlay's body is scrolled.
+    pub(crate) action_scroll: usize,
     /// The card the keys `a`/`d`/`r` and `1`/`2`/`3` act on: the newest unanswered card unless
     /// you moved to another.
     pub(crate) card: Option<MessageId>,

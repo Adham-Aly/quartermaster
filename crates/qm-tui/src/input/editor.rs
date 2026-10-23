@@ -232,7 +232,7 @@ impl App {
             });
             return;
         }
-        if self.snapshot.model_setup_notice.is_some() {
+        if self.model_gated() {
             return;
         }
         // A slash command typed out in full runs even with its menu closed.
@@ -281,7 +281,7 @@ impl App {
         }
         if self.screen == crate::router::Screen::Bridge
             && self.shown_session().is_none()
-            && self.snapshot.model_setup_notice.is_some()
+            && self.model_gated()
         {
             return;
         }

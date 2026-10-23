@@ -487,7 +487,7 @@ fn context_words(origin: &TurnOrigin, kind: MessageKind) -> String {
 }
 
 /// The notice under your message, with Ask again and Leave it.
-fn notice_card(notice: &NoticeState, your_text: &str) -> Card {
+pub(crate) fn notice_card(notice: &NoticeState, your_text: &str) -> Card {
     let (heading, note) = match notice.cause {
         NoticeCause::NoAction => (NO_ACTION_HEADING, NO_ACTION_NOTE.to_owned()),
         NoticeCause::Failed => (
@@ -523,7 +523,7 @@ fn notice_card(notice: &NoticeState, your_text: &str) -> Card {
 
 /// The question card: one button per option, keys 1–9; answered once you sent one of its options,
 /// which the card then shows.
-fn question_card(options: &[String], answer: Option<&str>) -> Card {
+pub(crate) fn question_card(options: &[String], answer: Option<&str>) -> Card {
     let mut card = Card::new(CardKind::Question, QUESTION_HEADING);
     card.buttons = options
         .iter()
@@ -605,11 +605,12 @@ pub async fn serve(mut server: CoreServer, deps: ApiDeps) {
                     s
                 }
             };
+            // Before the parts, so the Actions inbox sees it.
+            snap.model_setup_notice =
+                (!models_configured(&conversation).await).then(|| MODEL_SETUP_NOTICE.to_owned());
             for part in &parts {
                 part.fill(&mut snap).await;
             }
-            snap.model_setup_notice =
-                (!models_configured(&conversation).await).then(|| MODEL_SETUP_NOTICE.to_owned());
             if server.send(Update::Snapshot(Box::new(snap))).is_err() {
                 let _ = inbox.send(SeatInput::Shutdown);
                 return;

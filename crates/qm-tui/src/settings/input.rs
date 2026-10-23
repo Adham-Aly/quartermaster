@@ -81,7 +81,9 @@ pub(crate) fn menu_items(target: MenuTarget) -> Vec<&'static str> {
             }
             items
         }
-        MenuTarget::Crew(_) | MenuTarget::Project(_) | MenuTarget::Main => Vec::new(),
+        MenuTarget::Crew(_) | MenuTarget::Project(_) | MenuTarget::Action(_) | MenuTarget::Main => {
+            Vec::new()
+        }
     }
 }
 
@@ -715,7 +717,10 @@ impl App {
             MenuTarget::Account(account) => {
                 self.settings_set(|s| &mut s.account, Some(account.index));
             }
-            MenuTarget::Crew(_) | MenuTarget::Project(_) | MenuTarget::Main => {}
+            MenuTarget::Crew(_)
+            | MenuTarget::Project(_)
+            | MenuTarget::Action(_)
+            | MenuTarget::Main => {}
         }
     }
 
@@ -766,7 +771,10 @@ impl App {
                 RECONNECT => self.reconnect(account.index),
                 _ => {}
             },
-            MenuTarget::Crew(_) | MenuTarget::Project(_) | MenuTarget::Main => {}
+            MenuTarget::Crew(_)
+            | MenuTarget::Project(_)
+            | MenuTarget::Action(_)
+            | MenuTarget::Main => {}
         }
     }
 

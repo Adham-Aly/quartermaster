@@ -21,6 +21,37 @@ const BUTTONS_INDENT: u16 = 2;
 
 /// The card's rows at `width` cells (the conversation's inner width), with its buttons' hits.
 pub(crate) fn rows(card: &Card, message: MessageId, width: u16, hover: Option<Hit>) -> Vec<Row> {
+    let buttons: Vec<Button> = card
+        .buttons
+        .iter()
+        .enumerate()
+        .map(|(index, b)| Button {
+            label: b.label.clone(),
+            hit: Hit::CardButton { message, index },
+            lit: false,
+        })
+        .collect();
+    rows_with(card, width, &buttons, hover, false)
+}
+
+/// A button as one way of showing a card draws it: its label, its hit and whether it is lit
+/// (hovered, or highlighted from the keyboard).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Button {
+    pub(crate) label: String,
+    pub(crate) hit: Hit,
+    pub(crate) lit: bool,
+}
+
+/// The card's rows with `buttons` in place of its own (the Actions overlay adds "Go to" and
+/// key letters); `dimmed` draws them dim, after you pressed one.
+pub(crate) fn rows_with(
+    card: &Card,
+    width: u16,
+    buttons: &[Button],
+    hover: Option<Hit>,
+    dimmed: bool,
+) -> Vec<Row> {
     let colour = match card.kind {
         CardKind::Notice => theme::warn(),
         _ => theme::accent(),
@@ -63,7 +94,8 @@ pub(crate) fn rows(card: &Card, message: MessageId, width: u16, hover: Option<Hi
             Span::styled(text, theme::dim()),
         ];
         out.push(boxed(content, inner, colour, None, Vec::new()));
-    } else if !card.buttons.is_empty() {
+    }
+    if (card.answered.is_none() || buttons.len() > card.buttons.len()) && !buttons.is_empty() {
         let gap: u16 = if card.kind == CardKind::Approval {
             1
         } else {
@@ -72,7 +104,12 @@ pub(crate) fn rows(card: &Card, message: MessageId, width: u16, hover: Option<Hi
         let mut content: Vec<Span<'static>> = Vec::new();
         let mut hits: Vec<(u16, u16, Hit)> = Vec::new();
         let mut x = 0u16;
-        for (index, b) in card.buttons.iter().enumerate() {
+        let shown = if card.answered.is_some() {
+            &buttons[card.buttons.len()..]
+        } else {
+            buttons
+        };
+        for b in shown {
             let w = button::width_of(&b.label);
             let lead = if x == 0 { BUTTONS_INDENT } else { gap };
             if x > 0 && usize::from(x + lead + w) > inner {
@@ -83,9 +120,13 @@ pub(crate) fn rows(card: &Card, message: MessageId, width: u16, hover: Option<Hi
             let lead = if x == 0 { BUTTONS_INDENT } else { gap };
             content.push(Span::raw(" ".repeat(usize::from(lead))));
             x += lead;
-            let hit = Hit::CardButton { message, index };
-            content.push(button::span(&b.label, hover == Some(hit)));
-            hits.push((FRAME + x, w, hit));
+            let hit = b.hit;
+            if dimmed {
+                content.push(Span::styled(format!(" {} ", b.label), theme::dim()));
+            } else {
+                content.push(button::span(&b.label, b.lit || hover == Some(hit)));
+                hits.push((FRAME + x, w, hit));
+            }
             x += w;
         }
         out.push(boxed(content, inner, colour, None, hits));

@@ -13,7 +13,13 @@ pub(crate) fn order(folded: bool, overlay: bool, session: bool) -> Vec<Pane> {
     } else {
         Pane::Conversation
     };
-    let mut order = vec![Pane::Projects, Pane::Crew, middle, Pane::Input];
+    let mut order = vec![
+        Pane::Projects,
+        Pane::Crew,
+        Pane::Actions,
+        middle,
+        Pane::Input,
+    ];
     if !folded || overlay {
         order.push(Pane::Task);
     }
@@ -57,6 +63,8 @@ impl App {
         let session = self.shown_session();
         if self.view.menu.is_some() {
             self.change(|app| &mut app.view.menu, None);
+        } else if self.popup() == Some(crate::popups::Popup::Action) {
+            self.close_action();
         } else if !self.view.popups.is_empty() {
             self.close_popup();
         } else if self.view.task_overlay {
