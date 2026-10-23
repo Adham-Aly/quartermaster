@@ -52,7 +52,7 @@ pub enum BriefSupervisor {
 /// The task's verification level as the brief states it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BriefVerification {
-    /// No level: answer-only and review tasks, and any task of a build-in-place project.
+    /// No level: answering and review tasks, and any task of a build-in-place project.
     None,
     /// A level, where it came from, and whether Careful ships as standard because the project
     /// doesn't deliver by pull request (`qm_policy::verification::effective`).
@@ -104,7 +104,7 @@ pub enum BriefWorkspace {
         start_ref: String,
         start_commit: CommitSha,
     },
-    /// The folder the task edits directly: the personal workspace's folder.
+    /// The folder the task edits directly: a plain folder, or the user's checkout in place.
     Folder { path: String },
 }
 
@@ -117,7 +117,7 @@ pub struct BriefFacts {
     /// The project's name.
     pub project: String,
     pub delivery: DeliveryMode,
-    /// Whether the project has a remote (the personal workspace and local-only projects don't).
+    /// Whether the project has a remote (plain folders and local-only projects don't).
     pub has_remote: bool,
     pub verification: BriefVerification,
     /// Where the task works: its branch, or a plain folder.
@@ -212,7 +212,7 @@ fn header(out: &mut String, f: &BriefFacts) {
             let why = if is_review(f.kind) {
                 "review task"
             } else if f.kind.usually_answers() {
-                "answer-only task"
+                "usually an answer"
             } else {
                 "build in place"
             };
