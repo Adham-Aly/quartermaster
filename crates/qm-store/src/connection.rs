@@ -18,10 +18,13 @@ pub fn open(path: &Path) -> Result<Connection, StoreError> {
 
 /// Opens `state.db` as the disk mirror (`mirror.rs`). Foreign keys are not checked here: the mirror
 /// holds rows whose references may name rows it doesn't keep, and the working database is the one
-/// that checks them. Deleted pages are zeroed, so forgotten rows don't survive in the file.
+/// that checks them. Deleted pages are zeroed, so forgotten rows don't survive in the file. Each
+/// mirror write is synced (`synchronous = FULL`): a row naming a file on disk (a transcript's
+/// session, a pasted image's use) must survive a power cut as surely as the file does.
 pub fn open_disk(path: &Path) -> Result<Connection, StoreError> {
     let conn = Connection::open(path)?;
     configure_file(&conn)?;
+    conn.pragma_update(None, "synchronous", "FULL")?;
     conn.pragma_update(None, "foreign_keys", false)?;
     conn.pragma_update(None, "secure_delete", true)?;
     Ok(conn)

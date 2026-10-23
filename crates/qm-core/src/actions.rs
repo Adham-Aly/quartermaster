@@ -15,7 +15,6 @@ use qm_types::api::{
     ActionItem, ActionKey, ActionKind, ActionOpen, AgentRef, Card, CardAction, CardButton,
     CardKind, CardLine, Command, Snapshot, Styled, Tone,
 };
-use qm_types::data_dir::PLANS;
 use qm_types::domain::{PlanMode, Role, TaskKind};
 use qm_types::ids::{AgentId, TaskId};
 use rusqlite::Connection;
@@ -93,7 +92,7 @@ impl ActionsPart {
     /// Plans open for you: an interactive plan whose round waits on your reply or approval.
     async fn plans(&self) -> Vec<ActionItem> {
         let deps = self.tasks.deps();
-        let plans: Vec<_> = plan_api::live(&deps.data_dir.scratch().join(PLANS))
+        let plans: Vec<_> = plan_api::live(&deps.data_dir)
             .into_iter()
             .filter(|(_, s, _)| {
                 matches!(s.stage, Stage::WithUser | Stage::Final)

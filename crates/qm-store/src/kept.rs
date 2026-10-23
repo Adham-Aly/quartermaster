@@ -70,6 +70,11 @@ pub const KEPT: &[Kept] = &[
                               WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed'))"
         ),
     },
+    // A chat image's use lasts as long as the agent's conversation can: while it isn't retired.
+    Kept {
+        table: "attachment_uses",
+        predicate: "agent_id IN (SELECT id FROM agents WHERE retired_at IS NULL)",
+    },
     Kept {
         table: "secondmates",
         predicate: concat!(

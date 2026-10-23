@@ -274,6 +274,8 @@ impl Seat {
             },
         );
         spec.resume = resume;
+        spec.transcript_dir = Some(paths.transcript);
+        spec.protected_roots = self.data_dir.protected_roots();
         spec.tools = qm_tools::registry::descriptors(Role::Quartermaster, None);
         spec.builtins = Builtins::None;
         spec.skills_dir = None;
@@ -288,7 +290,7 @@ impl Seat {
     /// The seat's folders exist before an engine is pointed at them.
     fn make_folders(&self) -> Result<(), SeatError> {
         let paths = self.data_dir.seat();
-        for dir in [&paths.home, &paths.session] {
+        for dir in [&paths.home, &paths.session, &paths.transcript] {
             std::fs::create_dir_all(dir).map_err(|e| {
                 SeatError::Unavailable(format!(
                     "The Quartermaster's folder {} couldn't be created: {e}",

@@ -9,7 +9,7 @@
 //! to the message's text:
 //!
 //! ```text
-//! [Image #1]: /tmp/quartermaster/<uid>/<hash>/attachments/message-42/image-1.png
+//! [Image #1]: ~/.quartermaster/attachments/message-42/image-1.png
 //! ```
 //!
 //! The path is then part of what you said: the chat shows it, the agent you wrote to reads it, a
@@ -21,15 +21,14 @@
 //!
 //! [`Attachments::sweep`] runs at startup and then every [`SWEEP_EVERY`]. It removes:
 //!
-//! 1. **Over the cap.** While what is left holds more than [`SIZE_CAP`], the oldest folders go
-//!    first, except those from the last [`ALWAYS_KEEP`] and those open work mentions: no open
-//!    task's goal, words, instructions, constraints, later steps or crewmate messages, and no open
-//!    secondmate request. Nothing is removed by age: the folder lives in `/tmp`, which the system's
-//!    own cleaner empties once it has gone untouched for days.
-//! 2. **Leftovers.** A staging folder, or a `message-<id>` folder whose message doesn't name it,
-//!    once its modification time is [`LEFTOVER_AFTER`] old: what a crash between writing and
-//!    storing leaves behind. Open work protects these folders too, even when a restart has
-//!    discarded their messages.
+//! 1. **Unused.** A `message-<id>` folder that no open work mentions (no open task's goal, words,
+//!    instructions, constraints, later steps or crewmate messages, and no open secondmate request)
+//!    and no live chat holds (the message went to an agent that hasn't retired), once it is
+//!    [`LEFTOVER_AFTER`] old. A staging folder, or a folder whose message doesn't name it, goes
+//!    the same way, unless open work names it: what a crash between writing and storing leaves.
+//! 2. **Over the cap.** While what is left holds more than [`SIZE_CAP`], the oldest folders held
+//!    only by a chat go first, except those from the last [`ALWAYS_KEEP`]. Open work's are never
+//!    removed for size.
 //!
 //! Anything else in the folder is left alone. That includes `drafts/` (`DataDir::draft_images`):
 //! the images in your unsent drafts, which the UI host keeps for `ui.json` and removes itself once
@@ -40,7 +39,7 @@ use qm_store::db::Db;
 use qm_store::messages;
 use qm_types::api::{MAX_IMAGE_BYTES, PastedImage};
 use qm_types::clock::Clock;
-use qm_types::data_dir::{ensure_scratch_folder, migrate_scratch_directory};
+use qm_types::data_dir::{ensure_scratch_folder, migrate_directory};
 use qm_types::ids::MessageId;
 use rusqlite::Connection;
 use std::collections::BTreeSet;
@@ -168,20 +167,26 @@ impl Attachments {
         }
     }
 
-    /// Makes the previous layout temporary, once at startup. Its images were in the data
-    /// directory (`legacy`, `<data>/attachments`) and its drafts' in `legacy_drafts`. A
-    /// `message-<id>` folder that open work names moves here, and a link is left at its old path,
-    /// so the names already in that work still open; every other entry goes. Drafts go whole:
-    /// drafts are held by the server now, and nothing names the old files.
+    /// Moves the previous layout into the data directory, once at startup. Its images were in
+    /// the scratch root (`legacy`, `<scratch>/attachments`) and its drafts' in `legacy_drafts`;
+    /// an earlier layout's links to them may still sit here. A `message-<id>` folder that open
+    /// work names moves here, and a link is left at its old path, so the names already in that
+    /// work still open; every other old entry goes. The drafts' images move whole (the drafts in
+    /// `ui.json` name them by token, not by path).
     pub async fn migrate_legacy(&self, db: &Db, legacy: &Path, legacy_drafts: &Path) {
         if ensure_scratch_folder(&self.root).is_err() {
             return;
         }
-        let (old, drafts) = (legacy.to_path_buf(), legacy_drafts.to_path_buf());
+        let (old, root) = (legacy.to_path_buf(), self.root.clone());
         let names = tokio::task::spawn_blocking(move || {
-            let names = entry_names(&old)?;
-            let _ = fs::remove_dir_all(&drafts);
-            Ok::<_, io::Error>(names)
+            // An earlier layout's links point from here into the scratch root: only the links go.
+            for name in entry_names(&root)? {
+                let entry = root.join(&name);
+                if fs::symlink_metadata(&entry).is_ok_and(|m| m.file_type().is_symlink()) {
+                    qm_types::data_dir::remove_path(&entry)?;
+                }
+            }
+            entry_names(&old)
         })
         .await;
         let names = match names.map_err(io::Error::other).and_then(|r| r) {
@@ -191,6 +196,10 @@ impl Attachments {
                 return;
             }
         };
+        self.migrate_drafts(legacy_drafts).await;
+        if names.is_empty() {
+            return;
+        }
         let needles: Vec<String> = names
             .iter()
             .filter(|n| n.starts_with(FOLDER_PREFIX))
@@ -220,6 +229,10 @@ impl Attachments {
             .collect();
         let (old, new) = (legacy.to_path_buf(), self.root.clone());
         let _ = tokio::task::spawn_blocking(move || {
+            if ensure_scratch_folder(&old).is_err() {
+                return;
+            }
+            let mut moved = 0_usize;
             for name in names {
                 let entry = old.join(&name);
                 let link = fs::symlink_metadata(&entry).is_ok_and(|m| m.file_type().is_symlink());
@@ -228,13 +241,52 @@ impl Attachments {
                     continue;
                 }
                 if open.contains(&name) && !link {
-                    if let Err(e) = migrate_scratch_directory(&entry, &new.join(&name)) {
-                        tracing::error!(error = %e, "old image folder preserved after migration failure");
+                    match migrate_directory(&entry, &new.join(&name)) {
+                        Ok(()) => moved += 1,
+                        Err(e) => tracing::error!(error = %e, "old image folder preserved after migration failure"),
                     }
                 } else {
                     let _ = qm_types::data_dir::remove_path(&entry);
                 }
             }
+            if moved > 0 {
+                tracing::info!(moved, "moved pasted images open work names into the data directory");
+            }
+        })
+        .await;
+    }
+
+    /// Moves the drafts' images from `legacy` (the scratch root) to the data directory's
+    /// `drafts/`, unless that already holds some; the old folder goes either way.
+    async fn migrate_drafts(&self, legacy: &Path) {
+        let Some(data) = self.root.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        let (old, new) = (
+            legacy.to_path_buf(),
+            data.join(qm_types::data_dir::DRAFT_IMAGES),
+        );
+        let _ = tokio::task::spawn_blocking(move || {
+            match fs::symlink_metadata(&old) {
+                Ok(m) if m.is_dir() && ensure_scratch_folder(&old).is_ok() => {}
+                Ok(m) if m.file_type().is_symlink() => {
+                    let _ = qm_types::data_dir::remove_path(&old);
+                    return;
+                }
+                _ => return,
+            }
+            if fs::symlink_metadata(&new).is_ok_and(|m| m.file_type().is_symlink()) {
+                let _ = qm_types::data_dir::remove_path(&new);
+            }
+            if fs::symlink_metadata(&new).is_err() {
+                if let Err(e) = migrate_directory(&old, &new) {
+                    tracing::error!(error = %e, "your drafts' images stay in the old folder");
+                    return;
+                }
+                tracing::info!("moved your drafts' images into the data directory");
+            }
+            // Drafts name their images by token, so the old path needs no link.
+            let _ = qm_types::data_dir::remove_path(&old);
         })
         .await;
     }
@@ -287,13 +339,16 @@ impl Attachments {
                     // The message must name the folder, or the folder is a leftover whose ID was
                     // reused.
                     let named = messages::text(conn, message)?.is_some_and(|t| t.contains(&needle));
-                    let sent = if named {
-                        qm_store::attachments::sent_at(conn, message)?
+                    let (sent, in_chat) = if named {
+                        (
+                            qm_store::attachments::sent_at(conn, message)?,
+                            qm_store::attachments::in_live_chat(conn, message)?,
+                        )
                     } else {
-                        None
+                        (None, false)
                     };
-                    let in_use = qm_store::attachments::in_open_work(conn, &needle)?;
-                    out.push((i, sent, in_use));
+                    let in_work = qm_store::attachments::in_open_work(conn, &needle)?;
+                    out.push((i, sent, in_work, in_chat));
                 }
                 Ok(out)
             })
@@ -305,9 +360,10 @@ impl Attachments {
                 return;
             }
         };
-        for (i, sent, in_use) in facts {
+        for (i, sent, in_work, in_chat) in facts {
             folders[i].sent = sent;
-            folders[i].in_use = in_use;
+            folders[i].in_work = in_work;
+            folders[i].in_chat = in_chat;
         }
         let chosen = if startup {
             unreferenced(&folders)
@@ -410,6 +466,8 @@ impl Staged {
             }
         }
         messages::set_text(conn, id, &out)?;
+        // The recipient's conversation now holds these images: they stay while it does.
+        qm_store::attachments::record_use_by_recipient(conn, id)?;
         Ok(out)
     }
 }
@@ -529,7 +587,9 @@ struct Folder {
     /// When its message was sent, if the message exists and names the folder.
     sent: Option<jiff::Timestamp>,
     /// Whether open work mentions it.
-    in_use: bool,
+    in_work: bool,
+    /// Whether an agent that isn't retired holds it in its current conversation.
+    in_chat: bool,
 }
 
 /// The staging and message folders in `root`; anything else is skipped.
@@ -564,7 +624,8 @@ fn list(root: &Path) -> io::Result<Vec<Folder>> {
             bytes: size_of(&entry.path()),
             written,
             sent: None,
-            in_use: false,
+            in_work: false,
+            in_chat: false,
         });
     }
     Ok(out)
@@ -582,9 +643,12 @@ fn size_of(dir: &Path) -> u64 {
     })
 }
 
-/// The folders no open work references, by index: all of them, at a start.
+/// The folders neither open work nor a live conversation references, by index: all of them, at
+/// a start.
 fn unreferenced(folders: &[Folder]) -> Vec<usize> {
-    (0..folders.len()).filter(|&i| !folders[i].in_use).collect()
+    (0..folders.len())
+        .filter(|&i| !folders[i].in_work && !folders[i].in_chat)
+        .collect()
 }
 
 /// The folders the policy removes, by index.
@@ -595,12 +659,14 @@ fn plan(folders: &[Folder], now: jiff::Timestamp) -> Vec<usize> {
     let mut kept: Vec<(usize, jiff::Timestamp)> = Vec::new();
     for (i, f) in folders.iter().enumerate() {
         match (f.message, f.sent) {
-            (None, _) | (Some(_), None) => {
-                if !f.in_use && left_over(f) {
+            (Some(_), Some(sent)) if f.in_work || f.in_chat => kept.push((i, sent)),
+            _ => {
+                // Nothing needs it any more: a leftover, or images whose conversation and work
+                // are done.
+                if !f.in_work && left_over(f) {
                     remove.push(i);
                 }
             }
-            (Some(_), Some(sent)) => kept.push((i, sent)),
         }
     }
     let mut total: u64 = kept.iter().map(|&(i, _)| folders[i].bytes).sum();
@@ -610,7 +676,7 @@ fn plan(folders: &[Folder], now: jiff::Timestamp) -> Vec<usize> {
             break;
         }
         // Open work keeps its images, whatever the cap says.
-        if folders[i].in_use {
+        if folders[i].in_work {
             continue;
         }
         remove.push(i);
@@ -635,15 +701,27 @@ mod tests {
     }
 
     /// A message's folder sent `age` ago, `bytes` big.
-    fn folder(id: i64, age: jiff::SignedDuration, in_use: bool, bytes: u64) -> Folder {
+    fn folder(id: i64, age: jiff::SignedDuration, in_work: bool, bytes: u64) -> Folder {
         Folder {
             path: PathBuf::from(format!("/a/message-{id}")),
             message: Some(MessageId::new(id)),
             bytes,
             written: Some(ago(age)),
             sent: Some(ago(age)),
-            in_use,
+            in_work,
+            in_chat: !in_work,
         }
+    }
+
+    #[test]
+    fn images_no_conversation_or_open_work_holds_go_after_an_hour() {
+        let mut done = folder(1, jiff::SignedDuration::from_hours(2), false, 1);
+        done.in_chat = false;
+        let mut recent = folder(2, jiff::SignedDuration::from_mins(20), false, 1);
+        recent.in_chat = false;
+        let chat = folder(3, 30 * DAY, false, 1);
+        let work = folder(4, 30 * DAY, true, 1);
+        assert_eq!(plan(&[done, recent, chat, work], now()), vec![0]);
     }
 
     #[test]
@@ -668,7 +746,8 @@ mod tests {
             unreferenced(std::slice::from_ref(&referenced)),
             Vec::<usize>::new()
         );
-        referenced.in_use = false;
+        referenced.in_work = false;
+        referenced.in_chat = false;
         assert_eq!(plan(&[referenced], now()), vec![0]);
     }
 

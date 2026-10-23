@@ -67,6 +67,9 @@ pub(crate) fn crewmate_spec(
         crewmate_system_prompt(routed.engine, gathered, plan),
     );
     spec.resume = resume;
+    if routed.engine != EngineKind::Claude {
+        spec.transcript_dir = Some(paths.transcript.clone());
+    }
     spec.tools = qm_tools::registry::descriptors(Role::Crewmate, plan);
     spec.builtins = match routed.engine {
         EngineKind::Claude => Builtins::ClaudeCode,

@@ -57,11 +57,11 @@ SELECT id, target_agent_id, kind, dedupe_key, delivered_turn_id, consumed_at FRO
 - `tasks/T-n/`: `worktree/` (the crewmate's checkout), `brief.md` (exactly what it was told),
   `jobs/` (each background job's output log), `builds-on.md` (the whole text of the task it builds
   on). The folder goes at close, so only open tasks have one.
-- Evidence and pasted images are in the scratch root, `/tmp/quartermaster/<uid>/<hash>/`:
-  `evidence/T-n/` is removed at close; `attachments/` is swept at each start.
+- `artifacts/T-n/` holds `plan/` and `evidence/`, removed once no open task reads them
+  (`qm-core` `retention.rs`, at start, at close and hourly); `attachments/` is swept at each start.
 - `seat/` and `secondmates/SM-n/`: `home/`; `session/` is removed at each start.
-- Conversations are not on disk. A provider-engine agent's session lives in memory, so a restart
-  ends it. Claude's transcript is Claude's own, under `~/.claude/projects/`; the app keeps no copy.
+- A provider-engine agent's session is `<owner>/transcript/<session>.jsonl` (header line, then one
+  line per message; replaced whole on compaction, removed on `/clear` or retire), so a restart resumes it. Claude's transcript is Claude's own, under `~/.claude/projects/`; the app keeps no copy.
 - `state.db` holds the kept rows only (tasks, reports, events, wakes); turns and messages are not
   there, so read them from the day's log or from a running server.
 

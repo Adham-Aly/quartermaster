@@ -78,14 +78,21 @@ async fn remove_leftover_files(svc: &TaskService) -> Result<(), StartupError> {
     {
         tracing::warn!(error = %e, "sweeping leftover files stopped");
     }
+    crate::retention::sweep(
+        svc.db(),
+        &svc.deps().data_dir,
+        svc.clock(),
+        crate::retention::When::Startup,
+    )
+    .await;
     Ok(())
 }
 
 /// The blocking half of [`remove_leftover_files`]; `open` are the open tasks, `live` the active
 /// secondmates.
 fn sweep_leftovers(data: &DataDir, open: &[TaskId], live: &[SecondmateId]) {
-    if let Err(e) = data.ensure_scratch_dir(&data.scratch().join("evidence")) {
-        tracing::error!(error = %e, "unsafe scratch hierarchy; no startup file cleanup performed");
+    if let Err(e) = qm_types::data_dir::private_folder(data.root()) {
+        tracing::error!(error = %e, "unsafe data directory; no startup file cleanup performed");
         return;
     }
     let remove = |path: &Path| {
@@ -106,38 +113,18 @@ fn sweep_leftovers(data: &DataDir, open: &[TaskId], live: &[SecondmateId]) {
             continue;
         };
         let paths = data.task(id);
-        // Evidence lives in the scratch root now: an open task's old copy moves there, and a
-        // closed task's goes.
-        let legacy = paths.root.join("evidence");
+        // Plans, evidence and transcripts are the retention sweep's (`crate::retention`), which
+        // runs next and moves an open task's old evidence folder in.
         if open.contains(&id) {
-            move_legacy_evidence(&legacy, &paths.evidence);
             remove(&paths.session);
             remove(&paths.root.join("answer.md"));
         } else {
-            remove(&legacy);
+            remove(&paths.root.join(qm_types::data_dir::EVIDENCE));
+            remove(&paths.transcript);
             if !paths.worktree.exists() {
                 remove(&paths.root);
             }
         }
-    }
-    for kind in ["evidence", "scratchpad", qm_types::data_dir::PLANS] {
-        let dir = data.scratch().join(kind);
-        if let Err(e) = data.ensure_scratch_dir(&dir) {
-            tracing::error!(error = %e, kind, "unsafe scratch folder; its leftovers stay");
-            continue;
-        }
-        for (name, path) in subfolders(&dir) {
-            if !name.parse::<TaskId>().is_ok_and(|id| open.contains(&id)) {
-                remove(&path);
-            }
-        }
-    }
-}
-
-/// Preserve conflicting sources; successful moves leave an old-path compatibility link.
-fn move_legacy_evidence(legacy: &Path, evidence: &Path) {
-    if let Err(e) = qm_types::data_dir::migrate_scratch_directory(legacy, evidence) {
-        tracing::error!(error = %e, "task evidence preserved after migration failure");
     }
 }
 
@@ -762,33 +749,19 @@ mod leftover_tests {
         let open_session = folder(open.session.clone());
         let open_answer = file(open.root.join("answer.md"));
         let open_evidence = folder(open.evidence.clone());
-        // A closed task with no worktree goes whole; one whose worktree is still there keeps it.
+        let open_transcript = file(open.transcript.join("s.jsonl"));
+        // A closed task with no worktree goes whole; one whose worktree is still there keeps it,
+        // less its old evidence and its transcript.
         let closed = data.task(task(2));
-        let closed_evidence = folder(closed.evidence.clone());
         folder(closed.session.clone());
         let stuck = data.task(task(3));
         folder(stuck.worktree.clone());
+        let stuck_evidence = file(stuck.root.join("evidence/shot.png"));
+        let stuck_transcript = file(stuck.transcript.join("s.jsonl"));
         let unrelated = folder(data.tasks_dir().join("notes"));
-        // An open task's evidence from the data directory moves to the scratch root.
-        let moved = data.task(task(4));
-        file(moved.root.join("evidence").join("shot.png"));
 
-        for path in [
-            data.scratch().to_path_buf(),
-            data.scratch().join("evidence"),
-        ] {
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        sweep_leftovers(&data, &[task(1), task(4)], &[live]);
-
-        assert!(
-            moved.evidence.join("shot.png").exists(),
-            "an open task's old evidence moves to the scratch root"
-        );
-        assert!(
-            moved.root.join("evidence/shot.png").exists(),
-            "saved old paths remain usable"
-        );
+        fs::set_permissions(data.root(), fs::Permissions::from_mode(0o700)).unwrap();
+        sweep_leftovers(&data, &[task(1)], &[live]);
 
         assert!(!seat_session.exists(), "the Quartermaster's session folder");
         assert!(!live_session.exists(), "a live secondmate's session folder");
@@ -804,11 +777,11 @@ mod leftover_tests {
         assert!(!open_session.exists(), "an open task's session");
         assert!(!open_answer.exists(), "an open task's legacy answer file");
         assert!(
-            open_evidence.exists(),
-            "an open task's evidence stays until it closes"
+            open_evidence.exists() && open_transcript.exists(),
+            "an open task's evidence and transcript are the retention sweep's"
         );
         assert!(!closed.root.exists(), "a closed task's folder");
-        assert!(!closed_evidence.exists(), "a closed task's evidence");
+        assert!(!stuck_evidence.exists() && !stuck_transcript.exists());
         assert!(
             stuck.worktree.exists(),
             "a closed task whose worktree remains keeps its folder"
@@ -851,9 +824,8 @@ mod leftover_tests {
         let data = DataDir::with_scratch(base.join("home"), base.join("scratch"));
         let retired = data.secondmates_dir().join("SM-42");
         fs::create_dir_all(&retired).expect("retired folder");
-        fs::create_dir_all(data.scratch()).expect("scratch");
-        // Cleanup is best effort. An unsafe scratch root makes it leave the folders alone.
-        fs::set_permissions(data.scratch(), fs::Permissions::from_mode(0o755)).unwrap();
+        // Cleanup is best effort. An unsafe data directory makes it leave the folders alone.
+        fs::set_permissions(data.root(), fs::Permissions::from_mode(0o755)).unwrap();
         sweep_leftovers(&data, &[], &[]);
         assert!(retired.exists(), "the retired folder survived cleanup");
         let scan = leftover_secondmate_numbers(&data.secondmates_dir());

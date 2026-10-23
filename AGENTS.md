@@ -70,12 +70,12 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
   `--foreground` says so and exits non-zero. `server.sock` (0600, same-uid peers) is bound only under the lock.
 - `logs/quartermaster-YYYY-MM-DD.log`: redacted; level from `QM_LOG` (default `info`); seven days kept, a new file at local midnight. The
   terminal belongs to the UI, so nothing is logged there.
-- `seat/`, `secondmates/SM-n/`, `tasks/T-n/` (worktree, brief, jobs; the folder goes at close),
-  `workspace/` (the personal workspace's default folder, plain files; `[workspace] folder` moves it),
+- `seat/`, `secondmates/SM-n/`, `tasks/T-n/` (worktree, brief, jobs; the folder goes at close; each
+  has `transcript/`, the provider engine's durable sessions), `artifacts/T-n/` (`plan/`, `evidence/`,
+  kept while a task reads them; `qm-core` `retention.rs`), `attachments/`, `drafts/`, `workspace/` (the personal workspace's default folder, plain files; `[workspace] folder` moves it),
   `ui.json` (UI state, never logged; `tui.toml` is only read once for old widths).
 - Scratch, `/tmp/quartermaster/<uid>/<hash>/` (`DataDir::scratch`; owner and 0700 checked, never a
-  symlink): `attachments/` (pasted images), `drafts/`, `evidence/T-n/` (removed at close). Engines
-  refuse writes there.
+  symlink): only crewmates' `scratchpad/T-n/`. Provider engines refuse writes in the data dir.
 
 ## House rules
 
