@@ -218,6 +218,73 @@ impl GithubClient {
         Err(GithubError::Auth)
     }
 
+    /// A GET asking for the media type `accept`, whose answer is refused unread past `cap` bytes
+    /// (a `Decode` error). A 401 asks the token source again and retries once, as [`Self::send`].
+    pub(crate) async fn get_capped(
+        &self,
+        path: &str,
+        accept: &'static str,
+        cap: usize,
+    ) -> Result<Response, GithubError> {
+        use http_body_util::BodyExt;
+        let too_large = || {
+            GithubError::Decode(format!(
+                "GitHub's answer was larger than {} KiB, so it wasn't read",
+                cap / 1024
+            ))
+        };
+        for attempt in 0..2 {
+            let token = self.inner.tokens.token().await?;
+            let octo = self.octocrab(&token)?;
+            let mut headers = http::HeaderMap::new();
+            headers.insert(http::header::ACCEPT, http::HeaderValue::from_static(accept));
+            let call = octo._get_with_headers(path.to_owned(), Some(headers));
+            let response = match tokio::time::timeout(CALL_TIMEOUT, call).await {
+                Err(_) => {
+                    return Err(GithubError::Network(
+                        "GitHub didn't answer within 30 seconds".to_owned(),
+                    ));
+                }
+                Ok(Err(e)) => return Err(GithubError::Network(e.to_string())),
+                Ok(Ok(response)) => response,
+            };
+            let status = response.status().as_u16();
+            let declared = {
+                let headers = response.headers();
+                let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+                self.note_rate(header("x-ratelimit-remaining"), header("x-ratelimit-reset"));
+                header("content-length").and_then(|v| v.trim().parse::<u64>().ok())
+            };
+            if declared.is_some_and(|n| n > u64::try_from(cap).unwrap_or(u64::MAX)) {
+                return Err(too_large());
+            }
+            let limited = http_body_util::Limited::new(response.into_body(), cap);
+            let bytes = match tokio::time::timeout(CALL_TIMEOUT, limited.collect()).await {
+                Err(_) => {
+                    return Err(GithubError::Network(
+                        "GitHub's answer didn't arrive within 30 seconds".to_owned(),
+                    ));
+                }
+                Ok(Err(e)) if e.is::<http_body_util::LengthLimitError>() => {
+                    return Err(too_large());
+                }
+                Ok(Err(e)) => return Err(GithubError::Network(e.to_string())),
+                Ok(Ok(collected)) => collected.to_bytes(),
+            };
+            let body = String::from_utf8(bytes.to_vec())
+                .map_err(|_| GithubError::Decode("GitHub's answer wasn't UTF-8".to_owned()))?;
+            if status == 401 && attempt == 0 {
+                self.inner.tokens.invalidate();
+                continue;
+            }
+            if status == 401 {
+                return Err(GithubError::Auth);
+            }
+            return Ok(Response { status, body });
+        }
+        Err(GithubError::Auth)
+    }
+
     /// A GET whose success is decoded as `T`; anything else is an error naming `what`.
     pub(crate) async fn get_json<T: DeserializeOwned>(
         &self,

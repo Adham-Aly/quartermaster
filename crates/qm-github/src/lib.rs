@@ -17,6 +17,8 @@
 //! - [`client`]: [`GithubClient`] (octocrab per token, the rate limit).
 //! - [`pulls`], [`checks`], [`logs`], [`content`]: the calls.
 //! - [`fence`]: the crewmate fence's constants and their check.
+//! - [`release_meta`]: what GitHub shows after a release tag is pushed (the tag, its release
+//!   and the workflow runs on its commit), through closed, capped, metadata-only reads.
 //! - [`releases`]: a public repository's newest release, read without a login (the app's update
 //!   check).
 
@@ -27,6 +29,7 @@ mod error;
 pub mod fence;
 pub mod logs;
 pub mod pulls;
+pub mod release_meta;
 pub mod releases;
 pub mod repo;
 pub mod token;

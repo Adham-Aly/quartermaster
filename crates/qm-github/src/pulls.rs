@@ -116,6 +116,37 @@ pub struct TagRef {
     pub sha: String,
 }
 
+/// A `git/ref/tags/{tag}` answer, which must name exactly that ref.
+pub(crate) fn parse_tag_ref(body: &str, tag: &str, what: &str) -> Result<TagRef, GithubError> {
+    #[derive(Deserialize)]
+    struct RawObject {
+        sha: String,
+        #[serde(rename = "type")]
+        kind: String,
+    }
+    #[derive(Deserialize)]
+    struct RawGitRef {
+        #[serde(rename = "ref")]
+        name: String,
+        object: RawObject,
+    }
+    let raw: RawGitRef =
+        serde_json::from_str(body).map_err(|e| GithubError::Decode(e.to_string()))?;
+    if raw.name != format!("refs/tags/{tag}")
+        || !matches!(raw.object.kind.as_str(), "tag" | "commit")
+    {
+        return Err(GithubError::Decode(format!(
+            "GitHub answered for {what} with {} ({}), not that tag",
+            raw.name, raw.object.kind
+        )));
+    }
+    let sha = sha(&raw.object.sha)?;
+    Ok(TagRef {
+        kind: raw.object.kind,
+        sha: sha.as_str().to_owned(),
+    })
+}
+
 /// A repository's facts the delivery probe needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepoInfo {
@@ -479,18 +510,6 @@ impl GithubClient {
     /// `GET /repos/{o}/{r}/git/ref/tags/{tag}`, the singular `ref` (an exact match, never a
     /// prefix); the answer must name exactly that ref. How the app confirms a tag it pushed.
     pub async fn tag_ref(&self, r: &RepoRef, tag: &str) -> Result<Option<TagRef>, GithubError> {
-        #[derive(Deserialize)]
-        struct RawObject {
-            sha: String,
-            #[serde(rename = "type")]
-            kind: String,
-        }
-        #[derive(Deserialize)]
-        struct RawGitRef {
-            #[serde(rename = "ref")]
-            name: String,
-            object: RawObject,
-        }
         let what = format!("{r}'s tag {tag}");
         let response = self
             .send(
@@ -505,20 +524,7 @@ impl GithubClient {
         if !response.ok() {
             return Err(response.error(&what, self.rate()));
         }
-        let raw: RawGitRef = response.json()?;
-        if raw.name != format!("refs/tags/{tag}")
-            || !matches!(raw.object.kind.as_str(), "tag" | "commit")
-        {
-            return Err(GithubError::Decode(format!(
-                "GitHub answered for {what} with {} ({}), not that tag",
-                raw.name, raw.object.kind
-            )));
-        }
-        let sha = sha(&raw.object.sha)?;
-        Ok(Some(TagRef {
-            kind: raw.object.kind,
-            sha: sha.as_str().to_owned(),
-        }))
+        parse_tag_ref(&response.body, tag, &what).map(Some)
     }
 
     /// Deletes a branch on GitHub; a branch already gone is fine.

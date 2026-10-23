@@ -4,6 +4,10 @@
 //! the tag and the commit. Its status only moves forward, and [`begin_push`] (the one move from
 //! `proposed` to `pushing`) is the only gate in front of sending a tag: whoever wins it sends the
 //! tag once, and nobody ever sends it again, after a retry or a restart alike.
+//!
+//! Once a launch is `published`, the app watches what GitHub shows for it (its release and the
+//! workflow runs on its commit): [`start_observing`] marks it `observing`, [`save_observation`]
+//! stores each reading as JSON (its shape belongs to `qm-core`), and the last one marks it `done`.
 
 use crate::StoreError;
 use crate::ids;
@@ -57,11 +61,42 @@ pub struct LaunchRow {
     pub pushed_at: Option<Timestamp>,
     pub published_at: Option<Timestamp>,
     pub ended_at: Option<Timestamp>,
+    /// Whether the app is watching the published tag's release and workflow runs.
+    pub observe_state: Option<ObserveState>,
+    /// The last reading, as `qm-core` wrote it.
+    pub observation: Option<serde_json::Value>,
+    pub observed_at: Option<Timestamp>,
+}
+
+/// Whether a published launch's release and workflow runs are being watched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObserveState {
+    /// Read again until it settles or the watch runs out.
+    Observing,
+    /// The watch ended; only an explicit ask reads it again.
+    Done,
+}
+
+impl ObserveState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Observing => "observing",
+            Self::Done => "done",
+        }
+    }
+
+    fn parse(s: &str) -> Result<Self, StoreError> {
+        match s {
+            "observing" => Ok(Self::Observing),
+            "done" => Ok(Self::Done),
+            other => Err(invalid("release_launches.observe_state", other)),
+        }
+    }
 }
 
 const COLUMNS: &str = "id, task_id, project_id, held_id, asked_by, repo, repo_id, tag, commit_sha, \
      branch, tag_kind, message, status, tag_object, remote_object, remote_words, proposed_at, \
-     pushed_at, published_at, ended_at";
+     pushed_at, published_at, ended_at, observe_state, observation, observed_at";
 
 fn invalid(column: &'static str, message: impl Into<String>) -> StoreError {
     StoreError::Invalid {
@@ -91,6 +126,7 @@ type Raw = (
         Option<String>,
     ),
     (i64, Option<i64>, Option<i64>, Option<i64>),
+    (Option<String>, Option<String>, Option<i64>),
 );
 
 fn raw(r: &Row<'_>) -> rusqlite::Result<Raw> {
@@ -106,12 +142,18 @@ fn raw(r: &Row<'_>) -> rusqlite::Result<Raw> {
         ),
         (r.get(11)?, r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?),
         (r.get(16)?, r.get(17)?, r.get(18)?, r.get(19)?),
+        (r.get(20)?, r.get(21)?, r.get(22)?),
     ))
 }
 
 fn row(raw: Raw) -> Result<LaunchRow, StoreError> {
-    let ((id, task, project, held, asked_by), (repo, repo_id, tag, commit, branch, kind), rest, at) =
-        raw;
+    let (
+        (id, task, project, held, asked_by),
+        (repo, repo_id, tag, commit, branch, kind),
+        rest,
+        at,
+        (observe_state, observation, observed),
+    ) = raw;
     let (message, status, tag_object, remote_object, remote_words) = rest;
     let (proposed, pushed, published, ended) = at;
     Ok(LaunchRow {
@@ -138,6 +180,17 @@ fn row(raw: Raw) -> Result<LaunchRow, StoreError> {
         pushed_at: millis("release_launches.pushed_at", pushed)?,
         published_at: millis("release_launches.published_at", published)?,
         ended_at: millis("release_launches.ended_at", ended)?,
+        observe_state: observe_state
+            .as_deref()
+            .map(ObserveState::parse)
+            .transpose()?,
+        observation: observation
+            .map(|o| {
+                serde_json::from_str(&o)
+                    .map_err(|e| invalid("release_launches.observation", e.to_string()))
+            })
+            .transpose()?,
+        observed_at: millis("release_launches.observed_at", observed)?,
     })
 }
 
@@ -305,6 +358,53 @@ pub fn set_outcome(
     Ok(moved == 1)
 }
 
+/// Starts watching a `published` launch that was never watched. True if it started.
+pub fn start_observing(conn: &Connection, id: ReleaseLaunchId) -> Result<bool, StoreError> {
+    let moved = conn.execute(
+        "UPDATE release_launches SET observe_state = 'observing'
+         WHERE id = ?1 AND status = 'published' AND observe_state IS NULL",
+        params![id],
+    )?;
+    Ok(moved == 1)
+}
+
+/// Stores a reading of a launch whose watch is in state `from`, leaving it in `to` (a watch never
+/// goes from `done` back to `observing`). True if it was stored.
+pub fn save_observation(
+    conn: &Connection,
+    id: ReleaseLaunchId,
+    from: ObserveState,
+    to: ObserveState,
+    observation: &serde_json::Value,
+    at: Timestamp,
+) -> Result<bool, StoreError> {
+    if from == ObserveState::Done && to == ObserveState::Observing {
+        return Ok(false);
+    }
+    let moved = conn.execute(
+        "UPDATE release_launches SET observe_state = ?3, observation = ?4, observed_at = ?5
+         WHERE id = ?1 AND status = 'published' AND observe_state = ?2",
+        params![
+            id,
+            from.as_str(),
+            to.as_str(),
+            observation.to_string(),
+            to_millis(at)
+        ],
+    )?;
+    Ok(moved == 1)
+}
+
+/// Published launches still to be watched: those `observing`, and those never watched (published
+/// before the app watched releases, or the app stopped before it started).
+pub fn to_observe(conn: &Connection) -> Result<Vec<LaunchRow>, StoreError> {
+    query(
+        conn,
+        "status = 'published' AND (observe_state IS NULL OR observe_state = 'observing')",
+        [],
+    )
+}
+
 /// Every launch of a task, oldest first.
 pub fn for_task(conn: &Connection, task: TaskId) -> Result<Vec<LaunchRow>, StoreError> {
     query(conn, "task_id = ?1", params![task])
@@ -389,6 +489,37 @@ mod tests {
         assert_eq!(row.status, S::Published);
         assert!(row.published_at.is_some() && row.ended_at.is_some());
         assert_eq!(unfinished(&conn).expect("unfinished"), vec![]);
+    }
+
+    #[test]
+    fn a_watch_starts_once_on_a_published_launch_and_never_restarts() {
+        let conn = db();
+        let id = insert_launch(&conn, &launch("v3")).expect("insert");
+        assert!(
+            !start_observing(&conn, id).expect("proposed"),
+            "not published"
+        );
+        conn.execute(
+            "UPDATE release_launches SET status = 'published', published_at = 1 WHERE id = ?1",
+            params![id],
+        )
+        .expect("publish");
+        assert_eq!(to_observe(&conn).expect("list").len(), 1, "never watched");
+        assert!(start_observing(&conn, id).expect("start"));
+        assert!(!start_observing(&conn, id).expect("again"), "once");
+        let at = Timestamp::from_second(1_700_000_200).expect("at");
+        let seen = serde_json::json!({ "reads": 1 });
+        use ObserveState::{Done, Observing};
+        assert!(save_observation(&conn, id, Observing, Observing, &seen, at).expect("save"));
+        let row = load(&conn, id).expect("load").expect("row");
+        assert_eq!(row.observe_state, Some(Observing));
+        assert_eq!(row.observation, Some(seen.clone()));
+        assert_eq!(row.observed_at, Some(at));
+        assert!(save_observation(&conn, id, Observing, Done, &seen, at).expect("end"));
+        assert!(to_observe(&conn).expect("list").is_empty());
+        assert!(!save_observation(&conn, id, Done, Observing, &seen, at).expect("back"));
+        assert!(!save_observation(&conn, id, Observing, Done, &seen, at).expect("stale"));
+        assert!(save_observation(&conn, id, Done, Done, &seen, at).expect("refresh"));
     }
 
     #[test]
