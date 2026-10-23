@@ -567,4 +567,6 @@ pub fn copy_for_build(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 #[cfg(test)]
+mod page_reply_tests;
+#[cfg(test)]
 mod tests;

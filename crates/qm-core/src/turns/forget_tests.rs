@@ -147,6 +147,10 @@ impl Fixture {
             dir: TempDir(dir),
         }
     }
+    /// The fixture's database.
+    pub(crate) fn db(&self) -> &Db {
+        &self.loop_.deps.db
+    }
     pub(crate) fn task_service(&self) -> (crate::tasks::TaskService, tokio::task::JoinHandle<()>) {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let (scheduler, job) = crate::scheduler::Scheduler::spawn(clock.clone());
