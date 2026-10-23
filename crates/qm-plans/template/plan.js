@@ -53,6 +53,7 @@ if (typeof document !== "undefined") (function () {
   var meta = JSON.parse(document.getElementById("plan-meta").textContent);
   var closed = meta.state === "approved" || meta.state === "locked";
   var key = "quartermaster.plan." + meta.plan + ".r" + meta.round;
+  var sentKey = key + ".sent";
   var state = { questions: {}, sections: {} };
   function store() { try { return window.localStorage; } catch (e) { return null; } }
 
@@ -80,14 +81,19 @@ if (typeof document !== "undefined") (function () {
     return;
   }
 
-  // Saved work for this round only; older rounds' drafts are dropped.
+  var send = meta.submit ? document.getElementById("send") : null;
+  var sendStatus = document.getElementById("send-status");
+  var sending = false, sendShut = false;
+
+  // Saved work for this round only; older rounds' drafts and its sent mark are kept, older
+  // rounds' dropped.
   var s = store();
   if (s) {
     try {
       var prefix = "quartermaster.plan." + meta.plan + ".";
       for (var i = s.length - 1; i >= 0; i -= 1) {
         var k = s.key(i);
-        if (k && k.indexOf(prefix) === 0 && k !== key) s.removeItem(k);
+        if (k && k.indexOf(prefix) === 0 && k !== key && k !== sentKey) s.removeItem(k);
       }
       var saved = JSON.parse(s.getItem(key) || "null");
       if (saved && saved.questions && saved.sections) state = saved;
@@ -145,6 +151,7 @@ if (typeof document !== "undefined") (function () {
     var rec = document.getElementById("take-recommended");
     rec.hidden = !meta.questions.some(function (q) { return q.choices.some(function (c) { return c.recommended; }); });
     document.getElementById("copy").disabled = !(answered || notes);
+    if (send) send.disabled = sending || sendShut || !(answered || notes);
   }
 
   function box(tools, kind) {
@@ -227,6 +234,55 @@ if (typeof document !== "undefined") (function () {
       fallback(text);
     }
   });
+
+  // Send to Quartermaster: only when the app gave this page its endpoint and the round's key.
+  // The app answers every request with { status, message }; only "sent" means the planner has
+  // the reply.
+  function sendSays(text, tone) { sendStatus.textContent = text; sendStatus.className = "send-status " + tone; }
+  function shutSend(text, tone) { sendShut = true; sendSays(text, tone); refresh(); }
+  function lockForm() {
+    document.body.classList.add("sent");
+    document.querySelectorAll(".plan button, .plan textarea, #take-recommended, #clear").forEach(function (el) { el.disabled = true; });
+  }
+  function clock() {
+    var d = new Date();
+    return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+  }
+  var unreachable = "Couldn't reach Quartermaster. Reload this page (\u2318R); your answers are saved. Or use Copy reply.";
+  if (send) {
+    var sentAt = null;
+    if (s) try { sentAt = s.getItem(sentKey); } catch (e) {}
+    if (sentAt) { lockForm(); shutSend("Sent to Quartermaster at " + sentAt + ".", "ok"); }
+    send.addEventListener("click", function () {
+      if (sending || sendShut) return;
+      if (!window.confirm("Send your reply to round " + meta.round + "? You can't change it after sending; the planner answers with round " + (meta.round + 1) + ".")) return;
+      var body = JSON.stringify({ v: 1, task: meta.task, plan: meta.plan, round: meta.round, token: meta.submit.token, reply: buildReply(state, meta) });
+      sending = true; sendSays("Sending\u2026", "busy"); refresh();
+      fetch(meta.submit.url, {
+        method: "POST", mode: "cors", credentials: "omit", cache: "no-store", redirect: "error",
+        referrerPolicy: "no-referrer", headers: { "Content-Type": "text/plain;charset=UTF-8" }, body: body
+      }).then(function (r) {
+        return r.json().then(function (b) { return b || {}; }, function () { return {}; }).then(function (b) {
+          return { ok: r.status === 200, status: String(b.status || ""), message: String(b.message || "") };
+        });
+      }).then(function (res) {
+        sending = false;
+        if (res.ok && res.status === "sent") {
+          var at = clock();
+          if (s) try { s.setItem(sentKey, at); } catch (e) {}
+          lockForm(); shutSend("Sent to Quartermaster at " + at + ".", "ok");
+        } else if (res.status === "duplicate") {
+          lockForm(); shutSend(res.message || "This round already has your reply.", "bad");
+        } else if (res.status === "stale" || res.status === "closed") {
+          shutSend(res.message || "This page is out of date; reopen the plan.", "bad");
+        } else {
+          sendSays(res.message || "Quartermaster didn't take the reply. Try again, or use Copy reply.", "bad"); refresh();
+        }
+      }, function () {
+        sending = false; sendSays(unreachable, "bad"); refresh();
+      });
+    });
+  }
 
   paint(); refresh();
 })();

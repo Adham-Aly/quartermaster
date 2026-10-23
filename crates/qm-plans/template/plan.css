@@ -87,9 +87,10 @@ img { max-width: 100%; height: auto; }
 .t-b4 { background: #2472c8; } .t-b5 { background: #bc3fbc; } .t-b6 { background: #11a8cd; } .t-b7 { background: #e5e5e5; }
 .t-b8 { background: #666666; } .t-b9 { background: #f14c4c; } .t-b10 { background: #23d18b; } .t-b11 { background: #f5f543; }
 .t-b12 { background: #3b8eea; } .t-b13 { background: #d670d6; } .t-b14 { background: #29b8db; } .t-b15 { background: #ffffff; }
-.reply-bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 0.6rem; align-items: center; justify-content: flex-end; padding: 0.6rem 1.5rem; background: var(--bg); border-top: 1px solid var(--line); }
+.reply-bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; justify-content: flex-end; padding: 0.6rem 1.5rem; background: var(--bg); border-top: 1px solid var(--line); }
 .reply-bar .count { margin-right: auto; color: var(--muted); font-size: 0.9rem; }
 .copy-status { color: var(--ok); font-size: 0.85rem; min-width: 4rem; }
+.send-status { font-size: 0.85rem; } .send-status.ok { color: var(--ok); } .send-status.bad { color: var(--bad); } .send-status.busy { color: var(--muted); }
 dialog { max-width: 40rem; width: 90vw; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; }
 body.closed .reply-bar, body.closed .sec-tools, body.closed .q-add-note { display: none; }
 @media print {
