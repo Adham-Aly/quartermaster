@@ -38,7 +38,7 @@ pub use client::GithubClient;
 pub use content::{GithubRead, GithubWrite};
 pub use error::{GithubError, RateState};
 pub use pulls::{
-    MergeResult, PrState, PullRequest, RepoInfo, SquashCommit, SquashRules, squash_request,
+    MergeResult, PrState, PullRequest, RepoInfo, SquashCommit, SquashRules, TagRef, squash_request,
 };
 pub use releases::{Release, latest_release};
 pub use repo::{RepoRef, redact_url};

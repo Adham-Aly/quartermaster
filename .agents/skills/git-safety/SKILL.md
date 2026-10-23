@@ -35,6 +35,16 @@ config key that can name a program gets pinned off there.
 counts the push only once GitHub's API shows the pushed commit on the branch. Never record
 `pushed_head` from git's word alone when the project has a GitHub repository.
 
+## Release tags: `crates/qm-core/src/delivery/release.rs`
+
+A crewmate's `propose_release_tag` binds project, repo id and name, tag and commit to a
+`release_tag` card that is held under every autonomy and approved only from the UI. On approval
+the app re-checks every binding, passes `releases::begin_push` (the one gate; a launch is never
+sent twice), then `Repo::push_tag` (`qm-git` `tag.rs`): create-only, a lease that needs the tag
+absent, through `push_guard`'s checked URL and the app's credentials. Published is claimed only
+when GitHub's `tag_ref` shows exactly our object; otherwise it is unconfirmed and `reconcile`
+reads it back for ten minutes, also after a restart (`release::recover`).
+
 ## Crewmates can't push: `crates/qm-github/src/fence.rs`
 
 `fence::apply` sets up a crewmate's environment and `fence::check` holds it to it, in independent

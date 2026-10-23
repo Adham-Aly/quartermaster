@@ -254,6 +254,10 @@ row_id!(
     /// A row in `processes`: one recorded process group.
     ProcessRecordId
 );
+row_id!(
+    /// A row in `release_launches`: one proposed release tag.
+    ReleaseLaunchId
+);
 
 /// A git commit, as a full lowercase hex SHA (40 characters, or 64 in a SHA-256 repository).
 ///

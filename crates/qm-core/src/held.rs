@@ -433,11 +433,26 @@ impl HeldService {
         held: HeldActionId,
         at: jiff::Timestamp,
     ) -> Result<bool, StoreError> {
-        Ok(conn.execute(
+        let voided = conn.execute(
             "UPDATE held_actions SET status = 'superseded', decided_at = ?2
              WHERE id = ?1 AND status = 'pending'",
             params![held, to_millis(at)],
-        )? == 1)
+        )? == 1;
+        // A release tag's launch ends with its card, so the tag can be proposed again.
+        if voided && let Some(launch) = qm_store::releases::for_held(conn, held)? {
+            qm_store::releases::set_outcome(
+                conn,
+                launch.id,
+                &[qm_types::domain::ReleaseLaunchStatus::Proposed],
+                &qm_store::releases::Outcome {
+                    status: qm_types::domain::ReleaseLaunchStatus::Superseded,
+                    remote_object: None,
+                    words: "its card no longer applies",
+                    at,
+                },
+            )?;
+        }
+        Ok(voided)
     }
 
     /// Your change to a pending card's stored payload before you answer it (a project proposal's
@@ -456,6 +471,13 @@ impl HeldService {
         };
         if before.kind() != after.kind() {
             return Err(Refusal::new("a card's kind can't change").into());
+        }
+        if before.kind() == HeldKind::ReleaseTag {
+            // A release tag's card is bound to the exact tag and commit the crewmate proposed.
+            return Err(Refusal::new(
+                "a release tag's card can't be changed; reject it and ask for a new proposal",
+            )
+            .into());
         }
         let to_json = |p: &HeldPayload| {
             serde_json::to_string(p).map_err(|source| StoreError::Json {
@@ -611,6 +633,35 @@ impl HeldService {
         };
         let target = self.record(&row, &answer, claim, decided).await?;
         if let Some(target) = target {
+            self.inner.signal.signal(target);
+        }
+        Ok(())
+    }
+
+    /// Startup: records the answer on a card the last run claimed (`approved` or `rejected`, its
+    /// answer not yet recorded) whose performer got far enough that it can't be given back, with
+    /// the outcome it came to, and wakes whoever asked.
+    pub async fn finish_claimed(
+        &self,
+        row: &HeldRow,
+        outcome: HeldOutcome,
+    ) -> Result<(), HeldError> {
+        let (answer, verb) = match row.status {
+            HeldStatus::Approved => (HeldAnswer::Approve, "approved"),
+            HeldStatus::Rejected => (HeldAnswer::Reject, "rejected"),
+            other => return Err(Refusal::new(format!("this card was already {other}")).into()),
+        };
+        let decided = Decided {
+            status: if outcome.superseded {
+                HeldStatus::Superseded
+            } else {
+                row.status
+            },
+            verb: verb.to_owned(),
+            note: Some(outcome.note),
+            you: outcome.you,
+        };
+        if let Some(target) = self.record(row, &answer, row.status, decided).await? {
             self.inner.signal.signal(target);
         }
         Ok(())
@@ -1018,7 +1069,18 @@ fn held_event(
 }
 
 fn card_facts(conn: &Connection, row: &HeldRow) -> Result<CardFacts, StoreError> {
-    let facts = held_event(conn, row.task, CARD_FACT_EVENTS, row.id)?.unwrap_or_default();
+    let facts = if row.kind == HeldKind::ReleaseTag {
+        // A release tag's card shows its launch as it stands now.
+        qm_store::releases::for_held(conn, row.id)?.map_or(serde_json::Value::Null, |l| {
+            serde_json::json!({
+                "status": l.status,
+                "words": l.remote_words,
+                "remote_object": l.remote_object,
+            })
+        })
+    } else {
+        held_event(conn, row.task, CARD_FACT_EVENTS, row.id)?.unwrap_or_default()
+    };
     let superseded = if row.status == HeldStatus::Superseded {
         held_event(conn, row.task, &[HELD_SUPERSEDED], row.id)?
             .and_then(|p| p.get("why").and_then(|w| w.as_str()).map(str::to_owned))

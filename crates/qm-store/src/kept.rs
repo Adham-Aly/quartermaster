@@ -108,6 +108,13 @@ pub const KEPT: &[Kept] = &[
                     OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed')",
     },
     Kept {
+        // A launch still in flight is kept whatever its task: the next start reconciles it
+        // against the remote.
+        table: "release_launches",
+        predicate: "status IN ('proposed', 'pushing', 'unconfirmed') \
+                    OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed')",
+    },
+    Kept {
         table: "wakes",
         predicate: "consumed_at IS NULL \
                     OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed')",
