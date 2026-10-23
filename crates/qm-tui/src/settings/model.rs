@@ -81,8 +81,6 @@ pub(crate) struct Settings {
     pub(crate) login: Option<Login>,
     /// The bell and desktop notifications are on (System).
     pub(crate) notifications: bool,
-    /// The personal workspace's folder, as Settings shows it (Projects).
-    pub(crate) workspace_folder: String,
     /// Each tier's default effort as routing uses it (`config.toml`'s `[tiers]`).
     pub(crate) tier_efforts: TierEfforts,
     /// The autocompact window every agent compacts at (Routing).
