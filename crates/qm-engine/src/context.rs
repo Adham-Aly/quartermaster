@@ -80,9 +80,14 @@ pub enum AutocompactPoint {
     Unknown { why: String },
 }
 
-/// Which usage categories an engine reports separately.
+/// Which usage categories an engine reports separately. Build it from [`ReportedUsage::NONE`]:
+/// `ReportedUsage::NONE.with_thinking().with_cache_read()`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "four independent yes/no facts about an engine, not a state machine"
+)]
 pub struct ReportedUsage {
     pub thinking: bool,
     pub cache_read: bool,
@@ -91,12 +96,35 @@ pub struct ReportedUsage {
 }
 
 impl ReportedUsage {
-    pub const fn new(thinking: bool, cache_read: bool, cache_write: bool, cost: bool) -> Self {
-        Self {
-            thinking,
-            cache_read,
-            cache_write,
-            cost,
-        }
+    /// Only input and output.
+    pub const NONE: Self = Self {
+        thinking: false,
+        cache_read: false,
+        cache_write: false,
+        cost: false,
+    };
+
+    #[must_use]
+    pub const fn with_thinking(mut self) -> Self {
+        self.thinking = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_cache_read(mut self) -> Self {
+        self.cache_read = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_cache_write(mut self) -> Self {
+        self.cache_write = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_cost(mut self) -> Self {
+        self.cost = true;
+        self
     }
 }
