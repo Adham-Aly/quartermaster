@@ -41,8 +41,7 @@ pub struct CharterFacts<'a> {
     pub name: &'a str,
     /// The scope words, e.g. "web-app frontend".
     pub scope: &'a str,
-    /// The projects it may work in, by name, in the order stored. Empty: words only, any
-    /// registered project (`qm_policy::scope::ProjectScope::Unrestricted`).
+    /// The projects its open crewmates work in, by name. They refuse nothing.
     pub projects: &'a [&'a str],
     /// The standing base branch, if one is set.
     pub standing_branch: Option<&'a str>,
@@ -54,7 +53,7 @@ pub struct CharterFacts<'a> {
 /// # Your charter · SM-02 · web-app
 ///
 /// - Scope: web-app frontend
-/// - Projects: web-app, design-system. The app refuses work in any other project.
+/// - Projects: web-app, design-system, where your crewmates work now. They may work in any folder.
 /// - Standing base branch: release/2.4. Your crewmates start from it unless a request names
 ///   another branch.
 /// ```
@@ -90,7 +89,7 @@ pub fn secondmate_prompt(f: &CharterFacts<'_>) -> String {
 
 fn projects_line(projects: &[&str]) -> String {
     if projects.is_empty() {
-        return "- Projects: any registered project; your scope words decide which fit.".to_owned();
+        return "- Projects: none yet. Your crewmates may work in any folder; your scope words decide what fits.".to_owned();
     }
     let mut names: Vec<String> = projects
         .iter()
@@ -101,7 +100,7 @@ fn projects_line(projects: &[&str]) -> String {
         names.push(format!("and {} more", projects.len() - LISTED_PROJECTS));
     }
     format!(
-        "- Projects: {}. The app refuses work in any other project.",
+        "- Projects: {}, where your crewmates work now. They may work in any folder.",
         names.join(", ")
     )
 }

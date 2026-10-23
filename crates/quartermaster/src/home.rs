@@ -20,7 +20,6 @@ pub fn prepare(dir: &DataDir) -> io::Result<()> {
     for path in [
         dir.root(),
         dir.logs().as_path(),
-        dir.workspace().as_path(),
         seat.root.as_path(),
         seat.home.as_path(),
         seat.session.as_path(),

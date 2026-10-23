@@ -3,7 +3,7 @@
 //! commit, never over an existing one. Nothing here knows a project's tag or version scheme: any
 //! name git accepts as a tag is allowed.
 
-use qm_types::domain::{Autonomy, TagKind, TaskKind};
+use qm_types::domain::{Autonomy, TagKind};
 use qm_types::error::Refusal;
 use qm_types::ids::CommitSha;
 
@@ -36,7 +36,6 @@ pub struct ReleaseTagArgs {
 /// Checks a proposal from the outside in: the task, then each argument. Git's own name check
 /// (`check-ref-format`) runs later, in the repository.
 pub fn check_release_tag(
-    task_kind: TaskKind,
     tag: &str,
     commit: &str,
     branch: Option<&str>,
@@ -44,11 +43,6 @@ pub fn check_release_tag(
     message: Option<&str>,
     summary: &str,
 ) -> Result<ReleaseTagArgs, Refusal> {
-    if task_kind.is_answer_only() {
-        return Err(Refusal::new(
-            "An answer-only task can't propose a release tag; say in your report what to tag and at which commit.",
-        ));
-    }
     check_tag_name(tag)?;
     let commit = check_commit(commit)?;
     let branch = branch.map(str::trim).filter(|b| !b.is_empty());
@@ -160,7 +154,7 @@ mod tests {
     const SHA: &str = "0123456789ABCDEF0123456789abcdef01234567";
 
     fn check(tag: &str, commit: &str) -> Result<ReleaseTagArgs, Refusal> {
-        check_release_tag(TaskKind::Build, tag, commit, None, None, None, "Ship it.")
+        check_release_tag(tag, commit, None, None, None, "Ship it.")
     }
 
     #[test]
@@ -208,31 +202,22 @@ mod tests {
     }
 
     #[test]
-    fn answer_only_tasks_task_branches_and_messages_on_lightweight_tags_are_refused() {
-        let refuse = |kind, branch, tag_kind, message| {
-            check_release_tag(kind, "v1", SHA, branch, tag_kind, message, "s").is_err()
+    fn task_branches_and_messages_on_lightweight_tags_are_refused_for_any_kind() {
+        let refuse = |branch, tag_kind, message| {
+            check_release_tag("v1", SHA, branch, tag_kind, message, "s").is_err()
         };
-        assert!(refuse(TaskKind::Research, None, None, None));
+        // A task's kind no longer matters: an answer kind may propose a tag too.
+        assert!(!refuse(None, None, None));
         assert!(check_not_task_branch(true).is_err());
         assert!(check_not_task_branch(false).is_ok());
-        assert!(refuse(TaskKind::Build, Some("-main"), None, None));
-        assert!(refuse(
-            TaskKind::Build,
-            None,
-            Some(TagKind::Lightweight),
-            Some("m")
-        ));
-        assert!(!refuse(
-            TaskKind::Build,
-            Some("main"),
-            Some(TagKind::Lightweight),
-            None
-        ));
+        assert!(refuse(Some("-main"), None, None));
+        assert!(refuse(None, Some(TagKind::Lightweight), Some("m")));
+        assert!(!refuse(Some("main"), Some(TagKind::Lightweight), None));
         assert!(
-            check_release_tag(TaskKind::Build, "v1", SHA, None, None, None, " ").is_err(),
+            check_release_tag("v1", SHA, None, None, None, " ").is_err(),
             "a summary is required"
         );
         let long = "m".repeat(MAX_MESSAGE + 1);
-        assert!(refuse(TaskKind::Build, None, None, Some(long.as_str())));
+        assert!(refuse(None, None, Some(long.as_str())));
     }
 }

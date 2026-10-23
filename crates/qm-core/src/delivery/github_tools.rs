@@ -74,7 +74,7 @@ pub(crate) async fn read(
     })
 }
 
-/// `github_write`: performed at once in the crewmate's own project, else held (the fence).
+/// `github_write`: performed at once in the crewmate's own project, else held.
 pub(crate) async fn write(
     svc: &DeliveryService,
     caller: &Caller,
@@ -85,7 +85,6 @@ pub(crate) async fn write(
     let own = loaded.repo();
     let repo = target_repo(args.repo.as_deref(), own.as_ref())?;
     let decision = write_decision(
-        loaded.row.kind,
         own.as_ref().map(|r| PolicyRepo {
             owner: &r.owner,
             name: &r.name,

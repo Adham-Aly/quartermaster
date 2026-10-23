@@ -1,7 +1,7 @@
-//! Projects: finding, proposing, configuring and removing them.
+//! Projects: finding and configuring them, and cloning a repository.
 
-use super::{Ack, Held};
-use qm_types::domain::{DeliveryMode, MergeMethod, ProjectAction};
+use super::Ack;
+use qm_types::domain::{DeliveryMode, MergeMethod};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -29,29 +29,23 @@ pub struct FoundFolders {
 }
 
 tool! {
-    /// Proposes linking, cloning or creating a project; always a held action, with the location for
-    /// you to confirm or change.
-    ProposeProjectTool {
-        name: "propose_project",
+    /// Clones a repository onto this Mac, with no card. Nothing is registered: a task started in
+    /// the folder it returns makes it a project.
+    CloneRepositoryTool {
+        name: "clone_repository",
         class: Act,
-        roles: [Quartermaster],
-        args: ProposeProjectArgs,
-        output: Held,
+        roles: [Quartermaster, Secondmate],
+        args: CloneRepositoryArgs,
+        output: Ack,
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct ProposeProjectArgs {
-    pub action: ProjectAction,
-    pub name: String,
-    // link: the folder to link.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    // clone: the repository URL.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    // clone and create: the parent folder; the app suggests one when absent.
+pub struct CloneRepositoryArgs {
+    // The repository: a URL, or owner/name for GitHub.
+    pub url: String,
+    // The parent folder; the first search root from settings, else your home folder, when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
 }
@@ -85,21 +79,4 @@ pub struct ConfigureProjectArgs {
     pub setup_command: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub clear_setup_command: bool,
-}
-
-tool! {
-    /// Unregisters a project; never deletes files.
-    RemoveProjectTool {
-        name: "remove_project",
-        class: Act,
-        roles: [Quartermaster],
-        args: RemoveProjectArgs,
-        output: Ack,
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RemoveProjectArgs {
-    pub project: String,
 }

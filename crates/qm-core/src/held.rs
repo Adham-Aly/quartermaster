@@ -1040,7 +1040,6 @@ mod restart_tests {
             payload: HeldPayload::Secondmate(qm_store::held::SecondmatePayload {
                 name: "Reviewer".into(),
                 scope: "Review changes".into(),
-                projects: vec![],
                 base_branch: None,
             }),
             choices: vec![],

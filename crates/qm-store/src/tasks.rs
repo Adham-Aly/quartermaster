@@ -45,6 +45,8 @@ pub struct NewTask {
     pub later_steps: serde_json::Value,
     pub secondmate_request: Option<i64>,
     pub delivery: DeliveryMode,
+    /// The task works in its folder itself, not a worktree (`delivery` is then `Folder`).
+    pub in_place: bool,
     pub verification: Option<(VerificationLevel, VerificationSource)>,
     pub base_branch: Option<String>,
     pub base_ref: Option<String>,
@@ -75,6 +77,8 @@ pub struct TaskRow {
     pub later_steps: serde_json::Value,
     pub secondmate_request: Option<i64>,
     pub delivery: DeliveryMode,
+    /// The task works in its folder itself, not a worktree.
+    pub in_place: bool,
     pub verification: Option<(VerificationLevel, VerificationSource)>,
     pub base_branch: Option<String>,
     pub base_ref: Option<String>,
@@ -100,7 +104,7 @@ const COLUMNS: &str = "id, project_id, supervisor_id, kind, title, goal, user_wo
     retry_of, later_steps, secondmate_request_id, delivery_mode, verification_level,
     verification_source, base_branch, base_ref, base_commit, branch, port_base, status, outcome,
     waiting_on, pr_number, head_commit, escalations, created_at, started_at, reported_at,
-    closed_at";
+    closed_at, in_place";
 
 fn json_text(column: &'static str, v: &serde_json::Value) -> Result<String, StoreError> {
     serde_json::to_string(v).map_err(|source| StoreError::Json { column, source })
@@ -170,6 +174,7 @@ struct Raw {
     started_at: Option<i64>,
     reported_at: Option<i64>,
     closed_at: Option<i64>,
+    in_place: bool,
 }
 
 fn raw(r: &rusqlite::Row<'_>) -> rusqlite::Result<Raw> {
@@ -208,6 +213,7 @@ fn raw(r: &rusqlite::Row<'_>) -> rusqlite::Result<Raw> {
         started_at: r.get(31)?,
         reported_at: r.get(32)?,
         closed_at: r.get(33)?,
+        in_place: r.get(34)?,
     })
 }
 
@@ -231,6 +237,7 @@ impl Raw {
             later_steps: json_value("tasks.later_steps", &self.later_steps)?,
             secondmate_request: self.secondmate_request,
             delivery: self.delivery,
+            in_place: self.in_place,
             verification: self.level.zip(self.source),
             base_branch: self.base_branch,
             base_ref: self.base_ref,
@@ -278,9 +285,9 @@ pub fn insert(conn: &Connection, task: &NewTask) -> Result<TaskId, StoreError> {
              user_words_message_id, instructions, constraints, tests_required, builds_on,
              parent_task_id, retry_of, later_steps, secondmate_request_id, delivery_mode,
              verification_level, verification_source, base_branch, base_ref, base_commit, branch,
-             port_base, status, escalations, created_at, seq)
+             port_base, status, escalations, created_at, seq, in_place)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20, ?21, ?22, ?23, ?24, 'queued', ?25, ?26, ?27)",
+                 ?19, ?20, ?21, ?22, ?23, ?24, 'queued', ?25, ?26, ?27, ?28)",
         params![
             id,
             task.project,
@@ -311,6 +318,7 @@ pub fn insert(conn: &Connection, task: &NewTask) -> Result<TaskId, StoreError> {
             i64::from(task.escalations),
             to_millis(task.at),
             seq::next(task.at),
+            task.in_place,
         ],
     )?;
     Ok(id)
@@ -577,6 +585,40 @@ pub fn open_in_project(
     Ok(rows)
 }
 
+/// Every open task working in place, across all projects: its ID, its
+/// crewmate's folder and its kind, in creation order.
+pub fn open_in_place(
+    conn: &Connection,
+) -> Result<Vec<(TaskId, std::path::PathBuf, TaskKind)>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, a.home, t.kind FROM tasks AS t JOIN agents AS a ON a.task_id = t.id
+         WHERE t.status <> 'closed' AND t.in_place = 1 ORDER BY t.seq",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                std::path::PathBuf::from(r.get::<_, String>(1)?),
+                r.get(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Relabels an open in-place task with another project. Returns whether a row changed.
+pub fn set_project(
+    conn: &Connection,
+    task: TaskId,
+    project: ProjectId,
+) -> Result<bool, StoreError> {
+    Ok(conn.execute(
+        "UPDATE tasks SET project_id = ?2
+         WHERE id = ?1 AND in_place = 1 AND status <> 'closed' AND project_id <> ?2",
+        params![task, project],
+    )? == 1)
+}
+
 /// The port blocks of tasks closed since `since`, newest first, at most `limit`.
 pub fn recently_closed_ports(
     conn: &Connection,
@@ -769,6 +811,18 @@ pub fn history(conn: &Connection, task: TaskId) -> Result<Vec<EventRow>, StoreEr
 }
 
 /// The newest event of `kind` for `task`, if any.
+/// The payloads of every `kind` event of `task`, oldest first.
+pub fn event_payloads(
+    conn: &Connection,
+    task: TaskId,
+    kind: &str,
+) -> Result<Vec<serde_json::Value>, StoreError> {
+    let mut stmt =
+        conn.prepare("SELECT payload FROM events WHERE task_id = ?1 AND kind = ?2 ORDER BY seq")?;
+    let rows = stmt.query_map(params![task, kind], |r| r.get::<_, String>(0))?;
+    rows.map(|p| json_value("events.payload", &p?)).collect()
+}
+
 pub fn last_event(
     conn: &Connection,
     task: TaskId,
@@ -831,6 +885,7 @@ mod branch_tests {
             later_steps: serde_json::json!([]),
             secondmate_request: None,
             delivery: DeliveryMode::DirectPr,
+            in_place: false,
             verification: None,
             base_branch: None,
             base_ref: None,

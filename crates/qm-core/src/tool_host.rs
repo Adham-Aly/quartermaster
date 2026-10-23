@@ -22,8 +22,7 @@ use qm_store::messages::{self, NewMessage as MessageRow};
 use qm_store::standing_instructions;
 use qm_tools::defs::Routed;
 use qm_tools::defs::{
-    Ack, ConfigureProjectArgs, Held, ProposeProjectArgs, ProposeReleaseTagArgs, ReleaseStatus,
-    ReleaseStatusArgs,
+    Ack, ConfigureProjectArgs, Held, ProposeReleaseTagArgs, ReleaseStatus, ReleaseStatusArgs,
 };
 use qm_tools::defs::{
     CiReport, GithubContent, GithubReadArgs, GithubWriteArgs, GithubWriteOutcome, PrOpened,
@@ -469,6 +468,20 @@ impl ToolHost for CoreToolHost {
         })
     }
 
+    fn set_task_project<'a>(
+        &'a self,
+        caller: &'a Caller,
+        task: TaskId,
+        project: Option<String>,
+        folder: Option<String>,
+    ) -> BoxFuture<'a, Result<TaskUpdated, ToolFailure>> {
+        Box::pin(async move {
+            self.tasks("set_task_project")?
+                .set_task_project(caller, task, project, folder)
+                .await
+        })
+    }
+
     fn close_task<'a>(
         &'a self,
         caller: &'a Caller,
@@ -642,19 +655,17 @@ impl ToolHost for CoreToolHost {
                 .await
         })
     }
-    fn propose_project<'a>(
+    fn clone_repository<'a>(
         &'a self,
         caller: &'a Caller,
-        proposal: &'a ProposeProjectArgs,
-    ) -> BoxFuture<'a, Result<Held, ToolFailure>> {
+        url: &'a str,
+        location: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
         Box::pin(async move {
-            offered_to(caller, "propose_project")?;
-            let held = self
-                .projects("propose_project")?
-                .propose(caller, proposal)
-                .await?;
-            self.conversation.changed();
-            Ok(held)
+            offered_to(caller, "clone_repository")?;
+            self.projects("clone_repository")?
+                .clone_repository(url, location)
+                .await
         })
     }
 
@@ -668,22 +679,6 @@ impl ToolHost for CoreToolHost {
             let ack = self
                 .projects("configure_project")?
                 .configure(caller, change)
-                .await?;
-            self.conversation.changed();
-            Ok(ack)
-        })
-    }
-
-    fn remove_project<'a>(
-        &'a self,
-        caller: &'a Caller,
-        project: &'a str,
-    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
-        Box::pin(async move {
-            offered_to(caller, "remove_project")?;
-            let ack = self
-                .projects("remove_project")?
-                .remove(caller, project)
                 .await?;
             self.conversation.changed();
             Ok(ack)

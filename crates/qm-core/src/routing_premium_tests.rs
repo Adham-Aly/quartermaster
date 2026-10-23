@@ -291,7 +291,9 @@ fn request(f: &Fixture, overrides: &RequestOverrides) -> (Caller, StartRequest) 
     .unwrap();
     let caller = secondmate_caller(sm.agent, sm.id);
     let start = StartRequest {
-        project: "p".into(),
+        folder: None,
+        project: Some("p".into()),
+        in_place: false,
         kind: TaskKind::Build,
         title: "feat(x): y".into(),
         goal: "g".into(),

@@ -49,6 +49,8 @@ pub enum OverrideKind {
     DropInstruction,
     /// Approving a plan for the user (`approve_plan`).
     PlanApproval,
+    /// Working in a git project's folder itself rather than a worktree (`start_crewmate`).
+    InPlace,
 }
 
 impl OverrideKind {
@@ -64,6 +66,7 @@ impl OverrideKind {
         Self::SaveInstruction,
         Self::DropInstruction,
         Self::PlanApproval,
+        Self::InPlace,
     ];
 
     /// The override in a few words, as the refusal names it.
@@ -80,6 +83,7 @@ impl OverrideKind {
             Self::SaveInstruction => "saving a standing instruction",
             Self::DropInstruction => "dropping a standing instruction",
             Self::PlanApproval => "approving a plan",
+            Self::InPlace => "working in place",
         }
     }
 }

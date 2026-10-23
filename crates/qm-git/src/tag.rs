@@ -187,6 +187,27 @@ impl Repo {
             .transpose()
     }
 
+    /// Every tag name on `remote` now (`git ls-remote --tags --refs`), asked over the app's own
+    /// transport with your own credential helpers; sorted.
+    pub fn remote_tags(&self, remote: &str) -> Result<Vec<String>, GitError> {
+        let out = self
+            .network_command(
+                remote,
+                None,
+                Credentials::Yours,
+                ["ls-remote", "--tags", "--refs", remote],
+            )?
+            .text()?;
+        let mut tags: Vec<String> = out
+            .lines()
+            .filter_map(|line| line.split_once('\t')?.1.strip_prefix("refs/tags/"))
+            .map(str::to_owned)
+            .collect();
+        tags.sort();
+        tags.dedup();
+        Ok(tags)
+    }
+
     /// Pushes exactly `spec.object` to `refs/tags/<spec.tag>` on `remote`, create-only: the lease
     /// requires the tag to be absent, so an existing tag is reported
     /// ([`TagPushOutcome::Exists`]) and never moved. Same guards as [`Repo::push`].

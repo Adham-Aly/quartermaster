@@ -28,6 +28,7 @@ pub mod jobs;
 pub mod markers;
 pub mod notifications;
 pub mod parent_channel;
+pub mod places;
 pub mod plans;
 pub mod processes;
 pub mod projects;

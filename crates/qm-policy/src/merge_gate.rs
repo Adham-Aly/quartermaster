@@ -4,17 +4,18 @@
 //!   every required check is present."
 //! - "Every current check must pass before the task finishes. A project with no CI checks counts as
 //!   green when Verified names the local checks that ran on the final commit."
-//! - `pr_open`: "Direct-PR mode only; never for answer-only tasks; refused under `reviewed`
+//! - `pr_open`: "Direct-PR mode only; for any kind of task with commits of its own; refused under `reviewed`
 //!   until the review passes; names checked." "Pushing a fix without declaring a diagnosis
 //!   is refused by `pr_open`" ([`crate::repair::RepairState::on_push`]).
-//! - `settle_task`: "Answer-only tasks can't land; review must have passed for `reviewed`;
+//! - `settle_task`: "Work that delivered an answer can't land; review must have passed for `reviewed`;
 //!   autonomy normal → held action; only the approved commit is merged."
 //! - Merging under normal autonomy: "The app checks that the PR head is still `a1b2c3d`
 //!   and that every required check passed on exactly that commit."
 //! - Changing the level on a running task: "Raising it means the missing validation or
 //!   review must happen before the next push or merge, even if a pull request is already open."
 
-use qm_types::domain::{DeliveryMode, TaskKind, VerificationLevel};
+use crate::delivery::Deliverable;
+use qm_types::domain::{DeliveryMode, VerificationLevel};
 use qm_types::error::Refusal;
 use qm_types::ids::CommitSha;
 
@@ -106,7 +107,8 @@ pub fn check_green(verdict: &ChecksVerdict, local_checks_named: bool) -> Result<
 /// A task's verification state, as the gates read it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskGate {
-    pub kind: TaskKind,
+    /// What the task delivered, by what its crewmate did ([`crate::delivery::deliverable`]).
+    pub deliverable: Deliverable,
     pub delivery: DeliveryMode,
     /// The level the task runs under (after Careful ships as standard off direct PR); `None`
     /// for tasks with no level.
@@ -124,11 +126,6 @@ fn needs_review(g: TaskGate) -> bool {
 
 /// `pr_open`.
 pub fn check_pr_open(g: &TaskGate) -> Result<(), Refusal> {
-    if g.kind.is_answer_only() {
-        return Err(Refusal::new(
-            "answer-only tasks deliver an answer, never a pull request",
-        ));
-    }
     if g.delivery != DeliveryMode::DirectPr {
         return Err(Refusal::new(
             "pr_open works only in direct pull-request delivery",
@@ -152,8 +149,8 @@ pub fn check_pr_open(g: &TaskGate) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// A "done" report: the task may finish. `checks` is the verdict on the final head (ignored for
-/// tasks with no level and for answer-only work).
+/// A "done" report on code: the task may finish. `checks` is the verdict on the final head (ignored
+/// for tasks with no level). A report that delivers an answer never reaches this gate.
 pub fn check_finish(
     g: &TaskGate,
     checks: &ChecksVerdict,
@@ -189,8 +186,10 @@ pub fn check_mergeable(
     checks: &ChecksVerdict,
     local_checks_named: bool,
 ) -> Result<(), Refusal> {
-    if g.kind.is_answer_only() {
-        return Err(Refusal::new("answer-only tasks can't land"));
+    if g.deliverable == Deliverable::Answer {
+        return Err(Refusal::new(
+            "the task delivered an answer, not code, so there's nothing to land",
+        ));
     }
     if needs_review(*g) {
         return Err(Refusal::new(
@@ -319,5 +318,33 @@ mod squash_tests {
             merge_refused_reason(4, "Pull Request is not mergeable"),
             "GitHub won't merge PR #4: Pull Request is not mergeable"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gate(deliverable: Deliverable) -> TaskGate {
+        TaskGate {
+            deliverable,
+            delivery: DeliveryMode::DirectPr,
+            level: Some(VerificationLevel::Standard),
+            review_passed: false,
+            validation_pending: false,
+            held: false,
+        }
+    }
+
+    #[test]
+    fn pr_open_and_landing_follow_what_was_delivered() {
+        // Any kind with commits may open a pull request: the gate no longer reads the kind.
+        assert!(check_pr_open(&gate(Deliverable::Answer)).is_ok());
+        assert!(check_pr_open(&gate(Deliverable::Code)).is_ok());
+        assert!(check_mergeable(&gate(Deliverable::Answer), &ChecksVerdict::Passed, true).is_err());
+        assert!(check_mergeable(&gate(Deliverable::Code), &ChecksVerdict::Passed, true).is_ok());
+        let mut branch = gate(Deliverable::Code);
+        branch.delivery = DeliveryMode::BranchOnly;
+        assert!(check_pr_open(&branch).is_err());
     }
 }

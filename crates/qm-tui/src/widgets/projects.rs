@@ -34,7 +34,10 @@ pub(crate) fn rows(app: &App, inner_width: u16) -> Vec<ListRow> {
     let projects = &app.snapshot.projects;
     if projects.is_empty() {
         return empty_lines(
-            &["No projects yet.", "Ask the Quartermaster to add one."],
+            &[
+                "No projects yet.",
+                "Projects appear when work starts in a folder.",
+            ],
             inner_width,
         )
         .into_iter()

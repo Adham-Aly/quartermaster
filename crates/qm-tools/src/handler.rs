@@ -119,6 +119,18 @@ pub trait ToolHost: Send + Sync {
         Box::pin(async { Err(ToolFailure::not_available("stop_task")) })
     }
 
+    /// Changes the project label of a direct report's in-place task.
+    fn set_task_project<'a>(
+        &'a self,
+        caller: &'a Caller,
+        task: TaskId,
+        project: Option<String>,
+        folder: Option<String>,
+    ) -> BoxFuture<'a, Result<TaskUpdated, ToolFailure>> {
+        let _ = (caller, task, project, folder);
+        Box::pin(async { Err(ToolFailure::not_available("set_task_project")) })
+    }
+
     /// Closes a direct report's finished task and retires its worktree.
     fn close_task<'a>(
         &'a self,
@@ -293,15 +305,15 @@ pub trait ToolHost: Send + Sync {
         Box::pin(async { Err(ToolFailure::not_available("find_project_folder")) })
     }
 
-    /// `propose_project`: stores the proposal as a held action with its location filled in, for you
-    /// to approve; nothing is linked, cloned or created before that.
-    fn propose_project<'a>(
+    /// `clone_repository`: clones a repository and returns its folder; nothing is registered.
+    fn clone_repository<'a>(
         &'a self,
         caller: &'a Caller,
-        proposal: &'a crate::defs::ProposeProjectArgs,
-    ) -> BoxFuture<'a, Result<crate::defs::Held, ToolFailure>> {
-        let _ = (caller, proposal);
-        Box::pin(async { Err(ToolFailure::not_available("propose_project")) })
+        url: &'a str,
+        location: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
+        let _ = (caller, url, location);
+        Box::pin(async { Err(ToolFailure::not_available("clone_repository")) })
     }
 
     /// `configure_project`: changes a registered project's settings; autonomy and the verification
@@ -313,16 +325,6 @@ pub trait ToolHost: Send + Sync {
     ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
         let _ = (caller, change);
         Box::pin(async { Err(ToolFailure::not_available("configure_project")) })
-    }
-
-    /// `remove_project`: unregisters a project; its files are never touched.
-    fn remove_project<'a>(
-        &'a self,
-        caller: &'a Caller,
-        project: &'a str,
-    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
-        let _ = (caller, project);
-        Box::pin(async { Err(ToolFailure::not_available("remove_project")) })
     }
 
     /// `pr_open`: pushes the caller's branch and opens or updates its pull request, after the gate,
@@ -477,7 +479,12 @@ pub trait ToolHost: Send + Sync {
 /// secondmate's variant sets `correlation`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartRequest {
-    pub project: String,
+    /// The folder to work in, as written (absolute or from `~`).
+    pub folder: Option<String>,
+    /// A listed project's name, instead of a folder. Neither: your home folder.
+    pub project: Option<String>,
+    /// Work in the folder itself, not a worktree (a user-words field).
+    pub in_place: bool,
     pub kind: TaskKind,
     pub title: String,
     pub goal: String,
@@ -500,7 +507,6 @@ pub struct StartRequest {
 pub struct SecondmateProposal {
     pub name: String,
     pub scope: String,
-    pub projects: Vec<String>,
     pub base_branch: Option<String>,
 }
 
@@ -522,7 +528,6 @@ pub struct RouteRequest {
 pub struct CharterChange {
     pub secondmate: SecondmateId,
     pub scope: Option<String>,
-    pub projects: Option<Vec<String>>,
     /// `Some(None)` clears the standing branch.
     pub standing_branch: Option<Option<String>>,
 }
