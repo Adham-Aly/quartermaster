@@ -19,7 +19,7 @@ pub(crate) mod slash;
 
 use crate::app::App;
 use crate::hit::Pane;
-use qm_types::api::{AgentRef, Card, CardAction, Command, HeldAnswer, HeldChoice, NoticeAnswer};
+use qm_types::api::{AgentRef, CardAction, Command, HeldAnswer, HeldChoice, NoticeAnswer};
 use qm_types::ids::MessageId;
 use std::time::Instant;
 
@@ -27,99 +27,8 @@ use std::time::Instant;
 pub(crate) const NOT_BUILT: &str = "Not built yet.";
 
 impl App {
-    /// The messages whose card still has buttons to press, oldest first.
-    pub(crate) fn live_cards(&self) -> Vec<MessageId> {
-        self.snapshot
-            .conversation
-            .iter()
-            .filter(|line| {
-                line.card
-                    .as_ref()
-                    .is_some_and(|card| card.answered.is_none() && !card.buttons.is_empty())
-            })
-            .map(|line| line.id)
-            .collect()
-    }
-
-    /// The card the card keys act on: the one you made current while it still has buttons,
-    /// otherwise the newest that has.
-    pub(crate) fn current_card(&self) -> Option<MessageId> {
-        let live = self.live_cards();
-        self.view
-            .card
-            .filter(|id| live.contains(id))
-            .or_else(|| live.last().copied())
-    }
-
-    fn card_of(&self, message: MessageId) -> Option<&Card> {
-        self.snapshot
-            .conversation
-            .iter()
-            .find(|line| line.id == message)
-            .and_then(|line| line.card.as_ref())
-            // A card older than the conversation window still answers from the Actions inbox.
-            .or_else(|| {
-                self.snapshot
-                    .actions
-                    .iter()
-                    .find(|item| item.anchor == Some(message))
-                    .map(|item| &item.card)
-            })
-    }
-
-    /// Makes the previous (`forward == false`) or next live card current.
-    pub(crate) fn step_card(&mut self, forward: bool) {
-        let live = self.live_cards();
-        let Some(current) = self.current_card() else {
-            return;
-        };
-        let at = live.iter().position(|&id| id == current).unwrap_or(0);
-        let next = if forward {
-            (at + 1).min(live.len() - 1)
-        } else {
-            at.saturating_sub(1)
-        };
-        self.change(|app| &mut app.view.card, Some(live[next]));
-        self.reveal = Some(live[next]);
-    }
-
-    /// Presses the current card's button whose key is `key`; returns whether one matched.
-    pub(crate) fn press_card_key(&mut self, key: char, now: Instant) -> bool {
-        let Some(message) = self.current_card() else {
-            return false;
-        };
-        let index = self.card_of(message).and_then(|card| {
-            card.buttons
-                .iter()
-                .position(|button| button.key.eq_ignore_ascii_case(&key))
-        });
-        match index {
-            Some(index) => {
-                self.press_card_button(message, index, now);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Presses button `index` of the card under `message`, and makes that card current.
-    pub(crate) fn press_card_button(&mut self, message: MessageId, index: usize, now: Instant) {
-        let Some(card) = self.card_of(message) else {
-            return;
-        };
-        if card.answered.is_some() {
-            return;
-        }
-        let held = card.held;
-        let Some(action) = card.buttons.get(index).map(|button| button.action.clone()) else {
-            return;
-        };
-        self.change(|app| &mut app.view.card, Some(message));
-        self.run_card_action(action, held, Some(message), AgentRef::Quartermaster, now);
-    }
-
-    /// Carries out one card button, from the conversation or the Actions overlay. `message` is
-    /// the card's message, when it has one; `reply_to` is who a reply goes to.
+    /// Carries out one card button from the Actions overlay or the Diff screen. `message` is the
+    /// item's own chat line, when it has one; `reply_to` is who a reply goes to.
     pub(crate) fn run_card_action(
         &mut self,
         action: CardAction,

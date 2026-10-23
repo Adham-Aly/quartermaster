@@ -447,7 +447,7 @@ fn stuck(
     if !task_store::pending_decision(tx, task)? {
         let (tier, model) = tier_and_model(tx, task, agent)?;
         let project = load_project(tx, row.project)?.map_or_else(String::new, |p| p.name);
-        let held = HeldService::insert(
+        HeldService::insert(
             tx,
             &NewHeld {
                 payload: HeldPayload::Decision(DecisionPayload {
@@ -463,10 +463,6 @@ fn stuck(
                 at,
             },
         )?;
-        // The stuck notice sits in the Quartermaster's conversation.
-        if let Some(seat) = qm_store::seat::quartermaster(tx)? {
-            HeldService::anchor(tx, held, &task.to_string(), seat.id, at)?;
-        }
     }
     task_store::event(
         tx,

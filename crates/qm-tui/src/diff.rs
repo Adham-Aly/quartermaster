@@ -22,8 +22,8 @@ use crate::router::Screen;
 use crate::text::{cells, truncate, width};
 use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
-use qm_types::api::Command;
-use qm_types::ids::{HeldActionId, MessageId};
+use qm_types::api::{ActionItem, AgentRef, Command};
+use qm_types::ids::HeldActionId;
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
@@ -60,11 +60,21 @@ impl App {
         self.show(Screen::Diff);
     }
 
-    /// Closes the Diff screen and returns to the Bridge.
+    /// Closes the Diff screen and returns to the Bridge, with the Actions overlay its Diff button
+    /// came from open again while that item still waits.
     pub(crate) fn close_diff(&mut self) {
         self.view.diff_scroll = 0;
         self.command(Command::ShowDiff { held: None });
         self.show(Screen::Bridge);
+        let from = self.view.diff_from.take();
+        if let Some(index) = from.and_then(|key| {
+            self.snapshot
+                .actions
+                .iter()
+                .position(|item| item.key == key)
+        }) {
+            self.open_action(index);
+        }
     }
 
     /// How far the diff can scroll, from the last frame.
@@ -92,14 +102,13 @@ impl App {
         self.change(|app| &mut app.view.diff_scroll, to);
     }
 
-    /// The card under which the diff's held action sits, if it's in the conversation.
-    fn diff_card(&self) -> Option<MessageId> {
+    /// The Actions item of the diff's held action, while it waits.
+    fn diff_item(&self) -> Option<&ActionItem> {
         let held = self.snapshot.diff.as_ref()?.held;
         self.snapshot
-            .conversation
+            .actions
             .iter()
-            .find(|line| line.card.as_ref().is_some_and(|c| c.held == Some(held)))
-            .map(|line| line.id)
+            .find(|item| item.card.held == Some(held))
     }
 
     /// A key on the Diff screen; `false` when it isn't the screen's (the global keys follow).
@@ -114,26 +123,28 @@ impl App {
             KeyCode::Home | KeyCode::Char('g') => self.scroll_diff_to(0),
             KeyCode::End | KeyCode::Char('G') => self.scroll_diff_to(usize::MAX),
             KeyCode::Char(c) => {
-                // The card's keys answer it from here, and return to the Bridge.
-                let Some(message) = self.diff_card() else {
+                // The card's keys answer it from here, and return to the Bridge without
+                // reopening its overlay.
+                let Some(item) = self.diff_item() else {
                     return false;
                 };
-                let index = self
-                    .snapshot
-                    .conversation
+                if item.card.answered.is_some() {
+                    return false;
+                }
+                let Some(action) = item
+                    .card
+                    .buttons
                     .iter()
-                    .find(|line| line.id == message)
-                    .and_then(|line| line.card.as_ref())
-                    .and_then(|card| {
-                        card.buttons
-                            .iter()
-                            .position(|b| b.key.eq_ignore_ascii_case(&c))
-                    });
-                let Some(index) = index else {
+                    .find(|b| b.key.eq_ignore_ascii_case(&c))
+                    .map(|b| b.action.clone())
+                else {
                     return false;
                 };
+                let held = item.card.held;
+                let reply_to = item.from.unwrap_or(AgentRef::Quartermaster);
+                self.view.diff_from = None;
                 self.close_diff();
-                self.press_card_button(message, index, now);
+                self.run_card_action(action, held, None, reply_to, now);
             }
             _ => return false,
         }
