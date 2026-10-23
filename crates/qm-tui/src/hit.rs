@@ -26,6 +26,10 @@ pub(crate) enum Pane {
     Settings,
     /// The Help popup: it scrolls.
     Help,
+    /// The Actions inbox, below the crew.
+    Actions,
+    /// The Actions overlay's body: it scrolls.
+    ActionOverlay,
 }
 
 /// A draggable border between two Bridge columns.
@@ -77,6 +81,10 @@ pub(crate) enum Hit {
     Project(usize),
     /// A crew row.
     Crew(AgentRef),
+    /// Row `index` of the Actions inbox, by index into `Snapshot::actions`.
+    ActionRow(usize),
+    /// Button `index` of the Actions overlay: the card's buttons, then "Go to".
+    ActionButton(usize),
     /// Button `index` (into `Card::buttons`) of the card under message `message`.
     CardButton { message: MessageId, index: usize },
     /// A task-pane button.

@@ -8,7 +8,7 @@ use crate::hit::{Hit, Pane, StatusItem, TaskButton};
 use crate::input::select;
 use crate::view::{MenuTarget, Selection};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use qm_types::api::{AgentRef, CardKind};
+use qm_types::api::AgentRef;
 use ratatui::layout::Position;
 use std::time::{Duration, Instant};
 
@@ -195,10 +195,23 @@ impl App {
                 self.open_crew(agent, double || back, now);
             }
             Hit::CardButton { message, index } => self.press_card_button(message, index, now),
+            // A row only selects; a double-click opens its detail, where the buttons are.
+            Hit::ActionRow(i) => {
+                self.focus_pane(Pane::Actions);
+                self.select_action(i);
+                if double {
+                    self.open_action(i);
+                }
+            }
+            Hit::ActionButton(i) => self.press_action_button(i, now),
             Hit::TaskButton(TaskButton::OpenSession) => self.open_session(now),
             Hit::TaskButton(TaskButton::Stop) => self.stop_selected(),
-            Hit::Status(StatusItem::Approvals) => self.jump_to_card(CardKind::Approval),
-            Hit::Status(StatusItem::Decisions) => self.jump_to_card(CardKind::Decision),
+            Hit::Status(StatusItem::Approvals) => {
+                self.jump_to_action(qm_types::api::ActionKind::Approval);
+            }
+            Hit::Status(StatusItem::Decisions) => {
+                self.jump_to_action(qm_types::api::ActionKind::Decision);
+            }
             Hit::Status(StatusItem::Running) => self.focus_pane(Pane::Crew),
             Hit::CloseOverlay => self.close_overlay(),
             Hit::Settings(hit) => self.settings_click(hit, double, now),
@@ -268,6 +281,10 @@ impl App {
         let target = match hit {
             Some(Hit::Crew(agent)) => MenuTarget::Crew(agent),
             Some(Hit::Project(i)) => MenuTarget::Project(i),
+            Some(Hit::ActionRow(i)) => {
+                self.focus_pane(Pane::Actions);
+                MenuTarget::Action(i)
+            }
             Some(Hit::Settings(hit)) => return self.settings_right_click(hit, at),
             _ => return,
         };
@@ -315,6 +332,8 @@ impl App {
             Pane::Task => |app| &mut app.view.task_scroll,
             Pane::Settings => |app| &mut app.view.settings.scroll,
             Pane::Help => |app| &mut app.view.help_scroll,
+            Pane::Actions => |app| &mut app.view.actions_scroll,
+            Pane::ActionOverlay => |app| &mut app.view.action_scroll,
             Pane::Conversation | Pane::Input | Pane::Session => return,
         };
         let current = *slot(self);

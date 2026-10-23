@@ -21,6 +21,9 @@ const INTERRUPT: &str = "Interrupt";
 const COPY_TASK_ID: &str = "Copy task ID";
 const COPY_ID: &str = "Copy ID";
 const COPY_NAME: &str = "Copy name";
+const OPEN_ACTION: &str = "Open";
+const GO_TO: &str = crate::actions::GO_TO;
+const COPY_TITLE: &str = "Copy title";
 const AUTONOMY_NORMAL: &str = "Autonomy: normal";
 const AUTONOMY_AUTO: &str = "Autonomy: auto";
 
@@ -58,6 +61,10 @@ pub(crate) fn items(target: MenuTarget, snapshot: &Snapshot) -> Vec<&'static str
         MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_) => {
             crate::settings::menu_items(target)
         }
+        MenuTarget::Action(i) => match snapshot.actions.get(i) {
+            Some(_) => vec![OPEN_ACTION, GO_TO, COPY_TITLE],
+            None => Vec::new(),
+        },
         MenuTarget::Main => MenuEntry::ALL.into_iter().map(MenuEntry::label).collect(),
     }
 }
@@ -144,6 +151,7 @@ impl App {
         match target {
             MenuTarget::Crew(agent) => self.select_crew(agent),
             MenuTarget::Project(i) => self.change(|app| &mut app.view.selected_project, Some(i)),
+            MenuTarget::Action(i) => self.select_action(i),
             MenuTarget::Model(_) | MenuTarget::AddToTier(_) | MenuTarget::Account(_) => {
                 self.settings_select_target(target);
             }
@@ -195,6 +203,23 @@ impl App {
                     && current != Some(autonomy)
                 {
                     self.set_project_autonomy(i, autonomy);
+                }
+            }
+            (OPEN_ACTION, MenuTarget::Action(i)) => self.open_action(i),
+            (GO_TO, MenuTarget::Action(i)) => {
+                self.open_action(i);
+                let go = self
+                    .snapshot
+                    .actions
+                    .get(i)
+                    .map(|item| item.card.buttons.len());
+                if let Some(go) = go {
+                    self.press_action_button(go, now);
+                }
+            }
+            (COPY_TITLE, MenuTarget::Action(i)) => {
+                if let Some(title) = self.snapshot.actions.get(i).map(|item| item.title.clone()) {
+                    self.copy(&title, now);
                 }
             }
             (COPY_NAME, MenuTarget::Project(i)) => {

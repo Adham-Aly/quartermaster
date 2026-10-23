@@ -180,6 +180,6 @@ mod tests {
         let mut value = serde_json::to_value(&snapshot).unwrap();
         value.as_object_mut().unwrap().remove("actions");
         let old: Snapshot = serde_json::from_value(value).unwrap();
-        assert!(old.actions.is_empty());
+        assert_eq!(old.actions, [] as [ActionItem; 0]);
     }
 }

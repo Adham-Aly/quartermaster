@@ -29,6 +29,12 @@ const SESSION_HINTS: &str = "esc back to quartermaster · ⏎ send · ? help";
 const HELP_HINTS: &str = "↑↓ pgup pgdn scroll · esc close";
 /// The status bar's right side under the projects hint.
 const PROJECTS_HINT_HINTS: &str = "esc or click to close";
+
+/// The keys while the Actions pane has focus.
+const ACTIONS_HINTS: &str = "⏎ open · ↑↓ move · ⇥ next pane";
+
+/// The keys in an Actions item's detail.
+const ACTION_HINTS: &str = "←→ pick · ⏎ press · letters press · esc close";
 /// The menu button's label.
 const MENU: &str = "☰ Menu";
 
@@ -183,6 +189,10 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits
         (Some(Popup::Help), _) => HELP_HINTS.to_owned(),
         (Some(Popup::Update), _) => crate::update::hints(app),
         (Some(Popup::ProjectsHint), _) => PROJECTS_HINT_HINTS.to_owned(),
+        (Some(Popup::Action), _) => ACTION_HINTS.to_owned(),
+        (None, Screen::Bridge) if app.focus == crate::hit::Pane::Actions => {
+            ACTIONS_HINTS.to_owned()
+        }
         (None, Screen::Bridge) if app.slash_menu().is_some() => SLASH_HINTS.to_owned(),
         (None, Screen::Bridge) if app.shown_session().is_some() => SESSION_HINTS.to_owned(),
         (None, Screen::Bridge) if app.snapshot.model_setup_notice.is_some() => {

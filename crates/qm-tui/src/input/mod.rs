@@ -19,9 +19,7 @@ pub(crate) mod slash;
 
 use crate::app::App;
 use crate::hit::Pane;
-use qm_types::api::{
-    AgentRef, Card, CardAction, CardKind, Command, HeldAnswer, HeldChoice, NoticeAnswer,
-};
+use qm_types::api::{AgentRef, Card, CardAction, Command, HeldAnswer, HeldChoice, NoticeAnswer};
 use qm_types::ids::MessageId;
 use std::time::Instant;
 
@@ -59,6 +57,14 @@ impl App {
             .iter()
             .find(|line| line.id == message)
             .and_then(|line| line.card.as_ref())
+            // A card older than the conversation window still answers from the Actions inbox.
+            .or_else(|| {
+                self.snapshot
+                    .actions
+                    .iter()
+                    .find(|item| item.anchor == Some(message))
+                    .map(|item| &item.card)
+            })
     }
 
     /// Makes the previous (`forward == false`) or next live card current.
@@ -109,6 +115,19 @@ impl App {
             return;
         };
         self.change(|app| &mut app.view.card, Some(message));
+        self.run_card_action(action, held, Some(message), AgentRef::Quartermaster, now);
+    }
+
+    /// Carries out one card button, from the conversation or the Actions overlay. `message` is
+    /// the card's message, when it has one; `reply_to` is who a reply goes to.
+    pub(crate) fn run_card_action(
+        &mut self,
+        action: CardAction,
+        held: Option<qm_types::ids::HeldActionId>,
+        message: Option<MessageId>,
+        reply_to: AgentRef,
+        now: Instant,
+    ) {
         match action {
             CardAction::Answer {
                 answer:
@@ -118,6 +137,8 @@ impl App {
                     },
             } => {
                 if let Some(held) = held {
+                    self.show_input();
+                    self.change(|app| &mut app.view.location_for, None);
                     self.change(|app| &mut app.view.guidance_for, Some(held));
                     self.focus_pane(Pane::Input);
                 }
@@ -127,21 +148,24 @@ impl App {
                     self.command(Command::AnswerHeld { held, answer });
                 }
             }
-            CardAction::AskAgain => self.command(Command::AnswerNotice {
-                message,
-                answer: NoticeAnswer::AskAgain,
-            }),
-            CardAction::LeaveIt => self.command(Command::AnswerNotice {
-                message,
-                answer: NoticeAnswer::LeaveIt,
-            }),
+            CardAction::AskAgain | CardAction::LeaveIt => {
+                if let Some(message) = message {
+                    let answer = if matches!(action, CardAction::AskAgain) {
+                        NoticeAnswer::AskAgain
+                    } else {
+                        NoticeAnswer::LeaveIt
+                    };
+                    self.command(Command::AnswerNotice { message, answer });
+                }
+            }
             CardAction::Reply { text } => self.command(Command::Send {
-                to: AgentRef::Quartermaster,
+                to: reply_to,
                 text,
                 images: Vec::new(),
             }),
             CardAction::ChangeLocation { location } => {
                 if let Some(held) = held {
+                    self.show_input();
                     self.change(|app| &mut app.view.guidance_for, None);
                     self.change(|app| &mut app.view.location_for, Some(held));
                     self.set_input(location);
@@ -152,33 +176,20 @@ impl App {
             CardAction::OpenPlan { task } => self.command(Command::OpenPlan { task }),
             CardAction::CopyPlanPath { path } => self.copy(&path, now),
             CardAction::ApprovePlan { task } => self.command(Command::ApprovePlan { task }),
+            CardAction::OpenSettings => {
+                self.close_action();
+                self.choose_entry(crate::popups::MenuEntry::Settings);
+            }
+            CardAction::OpenSetup => {
+                self.close_action();
+                self.show(crate::router::Screen::Setup);
+            }
+            CardAction::OpenChat { to } => {
+                self.close_action();
+                self.open_worker_session(to);
+            }
             // Any action this build doesn't know.
             _ => self.flash(NOT_BUILT, now),
-        }
-    }
-
-    /// The status bar's approvals or decisions count was clicked: focus the conversation and make
-    /// the newest card of that kind current, scrolled into view.
-    pub(crate) fn jump_to_card(&mut self, kind: CardKind) {
-        // From a session or the Diff screen, the card is in the Quartermaster's conversation.
-        self.show(crate::router::Screen::Bridge);
-        self.leave_session();
-        self.focus_pane(Pane::Conversation);
-        let newest = self
-            .snapshot
-            .conversation
-            .iter()
-            .rev()
-            .find(|line| {
-                line.card.as_ref().is_some_and(|card| {
-                    card.kind == kind && card.answered.is_none() && !card.buttons.is_empty()
-                })
-            })
-            .map(|line| line.id);
-        if let Some(message) = newest {
-            self.change(|app| &mut app.view.card, Some(message));
-            self.change(|app| &mut app.scroll_from_bottom, 0);
-            self.reveal = Some(message);
         }
     }
 

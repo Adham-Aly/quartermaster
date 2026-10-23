@@ -152,13 +152,22 @@ impl App {
             Pane::Conversation => self.on_conversation_key(key.code, now),
             Pane::Task => self.on_task_key(key.code, now),
             Pane::Session => self.on_session_key(key.code),
+            Pane::Actions => {
+                if !self.on_actions_key(key.code)
+                    && key.code == KeyCode::Char(' ')
+                    && let Some(i) = self.selected_action_index()
+                {
+                    let target = MenuTarget::Action(i);
+                    self.open_menu(target, crate::popups::Anchor::Row { dx: 2, dy: 1 });
+                }
+            }
             // Popups' panes: their keys are theirs.
-            Pane::Settings | Pane::Help | Pane::Input => {}
+            Pane::Settings | Pane::Help | Pane::ActionOverlay | Pane::Input => {}
         }
     }
 
     fn on_model_setup_key(&mut self, code: KeyCode) -> bool {
-        if self.snapshot.model_setup_notice.is_none() || self.shown_session().is_some() {
+        if !self.model_gated() || self.shown_session().is_some() {
             return false;
         }
         let entry = match code {

@@ -301,6 +301,7 @@ impl App {
                 self.snapshot = *snapshot;
                 self.dirty = true;
                 self.setup_after_snapshot();
+                self.actions_after_snapshot(Instant::now());
             }
             Update::ConfirmQuit { working } => {
                 self.term.quit = Quit::Confirm { working };
@@ -414,6 +415,10 @@ impl App {
 
     pub(crate) fn focus_pane(&mut self, pane: Pane) {
         Self::set(&mut self.dirty, &mut self.focus, pane);
+        // The Actions pane always has a row to act on while it has any.
+        if pane == Pane::Actions && self.selected_action_index().is_none() {
+            self.select_action(0);
+        }
     }
 
     pub(crate) fn click(&mut self, hit: Hit) {

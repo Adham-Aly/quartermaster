@@ -467,11 +467,7 @@ mod tests {
         line(&conn, 1, MessageSource::Agent, MessageKind::Reply, 3_500);
         assert_eq!(open(&conn), vec![asked]);
         line(&conn, 1, MessageSource::You, MessageKind::Message, 4_000);
-        assert!(open(&conn).is_empty());
-        assert!(
-            open_questions(&conn, &[])
-                .expect("the query runs")
-                .is_empty()
-        );
+        assert_eq!(open(&conn).len(), 0);
+        assert_eq!(open_questions(&conn, &[]).expect("the query runs").len(), 0);
     }
 }

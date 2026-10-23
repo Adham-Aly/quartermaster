@@ -81,25 +81,31 @@ pub(crate) fn draw_body(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut 
     let cols = columns(body, app);
     map.folded = cols.right.is_none();
 
-    // Left column: projects, then crew right below it, each as tall as its rows; the space below
-    // stays empty.
+    // Left column: projects and crew as tall as their rows, then the Actions inbox to the bottom.
     let inner_width = cols.left.width.saturating_sub(4);
-    let projects_rows = cells(projects::rows(app, inner_width).len());
-    let projects_height = (projects_rows + 2)
-        .min(cols.left.height / 2)
-        .max(3.min(cols.left.height));
+    let (projects_height, crew_height, actions_height) = crate::widgets::sidebar::heights(
+        cols.left.height,
+        cells(projects::rows(app, inner_width).len()),
+        cells(crew::rows(app, inner_width).len()),
+        cells(app.snapshot.actions.len()),
+    );
     let projects_area = Rect {
         height: projects_height,
         ..cols.left
     };
-    let crew_rows = cells(crew::rows(app, inner_width).len());
     let crew_area = Rect {
         y: projects_area.bottom(),
-        height: (crew_rows + 2).min(cols.left.height - projects_height),
+        height: crew_height,
+        ..cols.left
+    };
+    let actions_area = Rect {
+        y: crew_area.bottom(),
+        height: actions_height,
         ..cols.left
     };
     projects::draw(frame, projects_area, app, map);
     crew::draw(frame, crew_area, app, map);
+    crate::widgets::actions::draw(frame, actions_area, app, map);
 
     // Middle column: a worker's session, when one is open, or the conversation above your input.
     if let Some(agent) = app.shown_session() {
@@ -140,7 +146,12 @@ pub(crate) fn draw_body(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut 
 /// The middle column's Quartermaster: the conversation above your input, and the slash-command
 /// menu while it shows.
 fn draw_conversation(frame: &mut Frame<'_>, middle: Rect, app: &App, map: &mut FrameMap) {
-    if let Some(notice) = &app.snapshot.model_setup_notice {
+    if let Some(notice) = app
+        .snapshot
+        .model_setup_notice
+        .as_ref()
+        .filter(|_| app.model_gated())
+    {
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(theme::dim())

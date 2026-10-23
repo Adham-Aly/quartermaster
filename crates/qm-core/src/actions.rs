@@ -38,7 +38,7 @@ impl ActionsPart {
     async fn build(&self, snapshot: &Snapshot) -> Vec<ActionItem> {
         let deps = self.tasks.deps();
         let now = deps.clock.now();
-        let mut config = configuration(snapshot, now);
+        let config = configuration(snapshot, now);
         let mut items = Vec::new();
 
         match self.held.pending_cards().await {
@@ -90,13 +90,7 @@ impl ActionsPart {
         items.extend(self.plans().await);
         items.extend(self.questions_and_notices().await);
 
-        items.sort_by(|a, b| b.at.cmp(&a.at));
-        config.append(&mut items);
-        if config.len() > MAX_ITEMS {
-            tracing::warn!(items = config.len(), "the actions inbox was cut to its cap");
-            config.truncate(MAX_ITEMS);
-        }
-        config
+        order(config, items)
     }
 
     /// Plans open for you: an interactive plan whose round waits on your reply or approval.
@@ -112,7 +106,7 @@ impl ActionsPart {
             .collect();
         let mut out = Vec::new();
         for (task, state, dir) in plans {
-            let row = match deps
+            let Ok(Some((row, project))) = deps
                 .db
                 .call(move |conn| {
                     let Some(row) = task_store::load(conn, task)? else {
@@ -124,11 +118,9 @@ impl ActionsPart {
                     Ok(Some((row, project)))
                 })
                 .await
-            {
-                Ok(Some(row)) => row,
-                _ => continue,
+            else {
+                continue;
             };
-            let (row, project) = row;
             if row.kind != TaskKind::Plan || row.closed_at.is_some() {
                 continue;
             }
@@ -303,6 +295,18 @@ fn configuration(snapshot: &Snapshot, now: jiff::Timestamp) -> Vec<ActionItem> {
     out
 }
 
+/// The inbox's order: the app's configuration prompts first, then everything else newest first,
+/// cut to [`MAX_ITEMS`].
+fn order(mut config: Vec<ActionItem>, mut items: Vec<ActionItem>) -> Vec<ActionItem> {
+    items.sort_by_key(|item| std::cmp::Reverse(item.at));
+    config.append(&mut items);
+    if config.len() > MAX_ITEMS {
+        tracing::warn!(items = config.len(), "the actions inbox was cut to its cap");
+        config.truncate(MAX_ITEMS);
+    }
+    config
+}
+
 /// Who an agent is, as the UI addresses it.
 fn agent_ref(
     conn: &Connection,
@@ -340,5 +344,64 @@ impl ApiPart for ActionsPart {
         Box::pin(async move {
             snapshot.actions = self.build(snapshot).await;
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(key: ActionKey, kind: ActionKind, second: i64) -> ActionItem {
+        ActionItem::new(
+            key,
+            kind,
+            "t",
+            jiff::Timestamp::from_second(second).unwrap(),
+            Card::new(CardKind::Question, "Question"),
+            ActionOpen::Conversation,
+        )
+    }
+
+    #[test]
+    fn configuration_comes_first_then_newest_first_within_the_cap() {
+        let config = vec![item(ActionKey::ModelLevels, ActionKind::Setup, 0)];
+        let rest: Vec<ActionItem> = (0..MAX_ITEMS + 5)
+            .map(|i| {
+                item(
+                    ActionKey::Question {
+                        message: qm_types::ids::MessageId::new(i64::try_from(i).unwrap()),
+                    },
+                    ActionKind::Question,
+                    i64::try_from(i).unwrap() + 100,
+                )
+            })
+            .collect();
+        let out = order(config, rest);
+        assert_eq!(out.len(), MAX_ITEMS);
+        assert_eq!(out[0].key, ActionKey::ModelLevels);
+        assert!(out[1..].windows(2).all(|w| w[0].at >= w[1].at));
+        assert_eq!(
+            out[1].key,
+            ActionKey::Question {
+                message: qm_types::ids::MessageId::new(i64::try_from(MAX_ITEMS + 4).unwrap())
+            }
+        );
+    }
+
+    #[test]
+    fn model_levels_and_setup_issues_become_items_that_open_settings_or_setup() {
+        let mut snapshot = Snapshot::default();
+        snapshot.model_setup_notice = Some("x".to_owned());
+        snapshot.setup_issues = vec!["GitHub isn't signed in.\nMore.".to_owned()];
+        let out = configuration(&snapshot, jiff::Timestamp::UNIX_EPOCH);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].open, ActionOpen::Settings);
+        assert!(matches!(
+            out[0].card.buttons[0].action,
+            CardAction::OpenSettings
+        ));
+        assert_eq!(out[1].title, "GitHub isn't signed in.");
+        assert_eq!(out[1].open, ActionOpen::Setup);
+        assert!(out.iter().all(ActionItem::is_configuration));
     }
 }

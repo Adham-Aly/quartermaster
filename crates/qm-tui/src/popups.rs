@@ -132,6 +132,8 @@ pub(crate) enum Popup {
     Update,
     /// How to add a project: opened from the Projects pane; `Esc` or any click closes it.
     ProjectsHint,
+    /// An Actions inbox item's detail (`View::action_open`), opened from the Actions pane.
+    Action,
 }
 
 impl Popup {
@@ -142,6 +144,7 @@ impl Popup {
             Self::Help => "Help",
             Self::Update => "Update",
             Self::ProjectsHint => "Add a project",
+            Self::Action => "Action",
         }
     }
 
@@ -151,7 +154,7 @@ impl Popup {
             Self::Settings => Some(MenuEntry::Settings),
             Self::Help => Some(MenuEntry::Help),
             Self::Update => Some(MenuEntry::Update),
-            Self::ProjectsHint => None,
+            Self::ProjectsHint | Self::Action => None,
         }
     }
 }
@@ -222,6 +225,7 @@ fn size(popup: Popup, body: Rect, app: &App) -> (u16, u16) {
             let longest = lines.iter().map(|line| width(line)).max().unwrap_or(0);
             (cells(longest) + 4, cells(lines.len()) + 2)
         }
+        Popup::Action => crate::actions::size(app, body),
     }
 }
 
@@ -243,7 +247,11 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
         };
         let popup = open.popup;
         let badge = popup.entry().is_some_and(|entry| app.entry_badge(entry));
-        let window = Window::new(popup.title()).badge(badge);
+        let title = match popup {
+            Popup::Action => crate::actions::title(app),
+            _ => popup.title().to_owned(),
+        };
+        let window = Window::new(&title).badge(badge);
         let inner = window::draw(frame, area, window, app.term.hover, map);
         // One cell of padding left and right, as in every box.
         let content = Rect::new(
@@ -263,6 +271,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
                     .collect();
                 frame.render_widget(Paragraph::new(lines), content);
             }
+            Popup::Action => crate::actions::draw(frame, content, app, map),
         }
     }
 }
@@ -380,6 +389,12 @@ impl App {
         if popup == Popup::Update && self.on_update_key(key.code) {
             return;
         }
+        if popup == Popup::Action
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && self.on_action_key(key.code, now)
+        {
+            return;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return;
         }
@@ -402,6 +417,9 @@ impl App {
             && (settings.picker.is_some() || settings.field.is_some());
         match hit {
             PopupHit::Backdrop | PopupHit::Window if overlay => self.close_settings_overlays(),
+            PopupHit::Close | PopupHit::Backdrop if self.popup() == Some(Popup::Action) => {
+                self.close_action();
+            }
             PopupHit::Close | PopupHit::Backdrop => self.close_popup(),
             PopupHit::Window if self.popup() == Some(Popup::ProjectsHint) => self.close_popup(),
             PopupHit::Window => {}
