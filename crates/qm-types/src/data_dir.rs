@@ -6,15 +6,22 @@
 //!
 //! ```text
 //! config.toml   state.db   auth.json   run.lock   server.sock   logs/   workspace/
-//! seat/{home,session}/                      the Quartermaster
-//! secondmates/SM-02/{home,session}/
-//! tasks/T-0042/{worktree/,brief.md,skills/,session/,jobs/}
+//! seat/{home,session,transcript}/           the Quartermaster
+//! secondmates/SM-02/{home,session,transcript}/
+//! tasks/T-0042/{worktree/,brief.md,skills/,session/,transcript/,jobs/}
+//! artifacts/T-0042/{plan,evidence}/         a task's plan and evidence, kept while anyone uses them
+//! attachments/message-<id>/                 images pasted into a chat
+//! drafts/                                   images in unsent drafts
 //! ```
 //!
-//! Temporary files live elsewhere, in the scratch root: `/tmp/quartermaster/<uid>/<hash>/`, where
-//! `<hash>` is the first 12 hex digits of the SHA-256 of the data directory's path. It holds
-//! `attachments/` (pasted images), `drafts/` (images in unsent drafts) and `evidence/<task>/`.
-//! Nothing in it outlives the machine's own `/tmp` cleaner by design; see [`DataDir::ensure_scratch`].
+//! `transcript/` holds the provider engine's own conversation files (`<session>.jsonl`); Claude
+//! keeps its own transcripts, which the app never reads. What may be deleted, and when, is decided
+//! in one place, `qm_core::retention`.
+//!
+//! Only scratchpads live elsewhere, in the scratch root: `/tmp/quartermaster/<uid>/<hash>/`, where
+//! `<hash>` is the first 12 hex digits of the SHA-256 of the data directory's path. Older versions
+//! also kept attachments, drafts, plans and evidence there; startup moves them into the data
+//! directory (the `legacy_*` paths). See [`DataDir::ensure_scratch`].
 
 use crate::env::QUARTERMASTER_HOME;
 use crate::ids::{SecondmateId, TaskId};
@@ -115,7 +122,8 @@ impl DataDir {
         &self.root
     }
 
-    /// This data directory's scratch root: attachments, drafts, task evidence and scratchpads.
+    /// This data directory's scratch root: crewmates' scratchpads (and, from older versions, files
+    /// startup moves into the data directory).
     pub fn scratch(&self) -> &Path {
         &self.scratch
     }
@@ -202,13 +210,44 @@ impl DataDir {
     /// Images you pasted into a chat: `attachments/message-<id>/image-<n>.<ext>`, one folder per
     /// message, removed by the cleanup policy in `qm_core::attachments`.
     pub fn attachments(&self) -> PathBuf {
-        self.scratch.join("attachments")
+        self.root.join(ATTACHMENTS)
     }
 
     /// The images in unsent drafts: `drafts/<token>.<ext>`, written and removed by the UI host,
     /// and left alone by the cleanup in `qm_core::attachments`.
     pub fn draft_images(&self) -> PathBuf {
+        self.root.join(DRAFT_IMAGES)
+    }
+
+    /// Where older versions kept pasted images, in the scratch root.
+    pub fn legacy_attachments(&self) -> PathBuf {
+        self.scratch.join(ATTACHMENTS)
+    }
+
+    /// Where older versions kept draft images, in the scratch root.
+    pub fn legacy_draft_images(&self) -> PathBuf {
         self.scratch.join(DRAFT_IMAGES)
+    }
+
+    /// Where older versions kept a task's plan, in the scratch root.
+    pub fn legacy_plan(&self, id: TaskId) -> PathBuf {
+        self.scratch.join(PLANS).join(id.to_string())
+    }
+
+    /// Where older versions kept a task's evidence, in the scratch root.
+    pub fn legacy_evidence(&self, id: TaskId) -> PathBuf {
+        self.scratch.join(EVIDENCE).join(id.to_string())
+    }
+
+    /// The app's own folders, the data directory and the scratch root: an agent writes inside them
+    /// only through a write root strictly inside one (its worktree, evidence folder, scratchpad).
+    pub fn protected_roots(&self) -> Vec<PathBuf> {
+        vec![self.root.clone(), self.scratch.clone()]
+    }
+
+    /// `artifacts/`: each task's plan and evidence, `artifacts/T-0042/{plan,evidence}`.
+    pub fn artifacts_dir(&self) -> PathBuf {
+        self.root.join(ARTIFACTS)
     }
 
     /// The UI's remembered state: layout, popups, drafts (`qm-tui` writes it).
@@ -220,13 +259,14 @@ impl DataDir {
         self.root.join("tasks")
     }
 
-    /// A task's folders and files. Its evidence lives in the scratch root, not the data directory.
+    /// A task's folders and files. Its plan and evidence live in `artifacts/`, apart from its
+    /// folder, because they can outlive the task (a build reads its plan task's plan); only its
+    /// scratchpad is in the scratch root.
     pub fn task(&self, id: TaskId) -> TaskPaths {
         TaskPaths::at(
             self.tasks_dir().join(id.to_string()),
-            self.scratch.join("evidence").join(id.to_string()),
-            self.scratch.join(PLANS).join(id.to_string()),
-            self.scratch.join("scratchpad").join(id.to_string()),
+            self.artifacts_dir().join(id.to_string()),
+            self.scratch.join(SCRATCHPAD).join(id.to_string()),
         )
     }
 }
@@ -275,11 +315,30 @@ fn development_scratch(
     Ok(scratch)
 }
 
-/// The folder of task plans, inside the scratch root.
+/// The folder of every task's plan and evidence, in the data directory.
+pub const ARTIFACTS: &str = "artifacts";
+
+/// A task's plan folder, inside its `artifacts/T-n/`; also older versions' folder of plans in
+/// the scratch root.
 pub const PLANS: &str = "plans";
 
-/// The folder of draft images, inside the scratch root.
+/// A task's plan folder name inside `artifacts/T-n/`.
+pub const PLAN: &str = "plan";
+
+/// A task's evidence folder name inside `artifacts/T-n/` (and in older scratch roots).
+pub const EVIDENCE: &str = "evidence";
+
+/// The folder of pasted images, in the data directory.
+pub const ATTACHMENTS: &str = "attachments";
+
+/// The folder of draft images, in the data directory.
 pub const DRAFT_IMAGES: &str = "drafts";
+
+/// An agent's or task's folder of provider-engine transcripts.
+pub const TRANSCRIPT: &str = "transcript";
+
+/// The folder of scratchpads, in the scratch root.
+pub const SCRATCHPAD: &str = "scratchpad";
 
 /// Makes `path` (and any folder above it) if absent, then checks that it is a real folder this
 /// user owns, with mode 0700. A symlink, another owner or a wider mode is refused with a plain
@@ -325,7 +384,8 @@ pub fn private_folder(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Validate an attachment/draft directory, including the shared scratch hierarchy if applicable.
+/// Validates (creating privately) an attachments, drafts or evidence folder and every folder above
+/// it up to its trust root: the data directory, or the shared scratch hierarchy for a path in it.
 pub fn ensure_scratch_folder(path: &Path) -> io::Result<()> {
     if let Ok(relative) = path.strip_prefix(SCRATCH_BASE) {
         let parts: Vec<_> = relative.components().collect();
@@ -351,10 +411,11 @@ pub fn ensure_scratch_folder(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Move a legacy directory without overwriting any existing destination, leaving old paths usable.
-/// On cross-device moves copy and verify every regular file before removing the source.
-/// Conflicts and unsupported entries preserve the original directory intact.
-pub fn migrate_scratch_directory(source: &Path, target: &Path) -> io::Result<()> {
+/// Moves a legacy directory without overwriting any existing destination, leaving a symlink at the
+/// old path so absolute paths an agent was given keep working. A cross-device move copies and
+/// verifies every regular file before removing the source. A conflict or an unsupported entry
+/// keeps the original directory intact.
+pub fn migrate_directory(source: &Path, target: &Path) -> io::Result<()> {
     migrate_directory_with(source, target, |source, target| fs::rename(source, target))
 }
 
@@ -488,6 +549,8 @@ pub struct AgentPaths {
     pub home: PathBuf,
     /// The engine's own state for this agent.
     pub session: PathBuf,
+    /// The provider engine's transcripts of its conversation (`<session>.jsonl`).
+    pub transcript: PathBuf,
 }
 
 impl AgentPaths {
@@ -495,6 +558,7 @@ impl AgentPaths {
         Self {
             home: root.join("home"),
             session: root.join("session"),
+            transcript: root.join(TRANSCRIPT),
             root,
         }
     }
@@ -512,13 +576,16 @@ pub struct TaskPaths {
     pub skills: PathBuf,
     /// The engine's own state for this crewmate.
     pub session: PathBuf,
+    /// The provider engine's transcripts of this crewmate's conversation.
+    pub transcript: PathBuf,
+    /// `artifacts/T-0042/`: this task's plan and evidence, which can outlive the task.
+    pub artifacts: PathBuf,
     /// Screenshots, recordings, logs, reproduction output; never committed (`QM_EVIDENCE_DIR`).
-    /// In the scratch root, so it is temporary.
     pub evidence: PathBuf,
     /// Background shell job output.
     pub jobs: PathBuf,
     /// The plan this task writes or builds from: `plan.md`, `plan.html`, `assets/`, the app's
-    /// `state.json` (`QM_PLAN_DIR`). In the scratch root, so plans never outlive `/tmp`.
+    /// `state.json` (`QM_PLAN_DIR`).
     pub plan: PathBuf,
     /// The provider-engine crewmate's private scratchpad (and its helpers'), for temporary files.
     /// In the scratch root; made only for provider sessions and removed when the task closes.
@@ -526,14 +593,16 @@ pub struct TaskPaths {
 }
 
 impl TaskPaths {
-    fn at(root: PathBuf, evidence: PathBuf, plan: PathBuf, scratchpad: PathBuf) -> Self {
+    fn at(root: PathBuf, artifacts: PathBuf, scratchpad: PathBuf) -> Self {
         Self {
-            plan,
+            plan: artifacts.join(PLAN),
+            evidence: artifacts.join(EVIDENCE),
+            artifacts,
             worktree: root.join("worktree"),
             brief: root.join("brief.md"),
             skills: root.join("skills"),
             session: root.join("session"),
-            evidence,
+            transcript: root.join(TRANSCRIPT),
             jobs: root.join("jobs"),
             scratchpad,
             root,
@@ -626,9 +695,12 @@ mod tests {
         let victim = folder.0.join("victim");
         fs::create_dir(&victim).unwrap();
         fs::write(victim.join("unrelated"), b"safe").unwrap();
-        std::os::unix::fs::symlink(&victim, data.draft_images()).unwrap();
-        assert!(data.ensure_scratch_dir(&data.draft_images()).is_err());
-        assert!(private_folder(&data.draft_images().join("nested")).is_err());
+        std::os::unix::fs::symlink(&victim, data.legacy_draft_images()).unwrap();
+        assert!(
+            data.ensure_scratch_dir(&data.legacy_draft_images())
+                .is_err()
+        );
+        assert!(private_folder(&data.legacy_draft_images().join("nested")).is_err());
         assert!(!victim.join("nested").exists());
         assert_eq!(fs::read(victim.join("unrelated")).unwrap(), b"safe");
         assert!(
@@ -646,11 +718,11 @@ mod tests {
         fs::create_dir(&source).unwrap();
         fs::write(source.join("unique"), b"original").unwrap();
         fs::create_dir(&target).unwrap();
-        assert!(migrate_scratch_directory(&source, &target).is_err());
+        assert!(migrate_directory(&source, &target).is_err());
         assert_eq!(fs::read(source.join("unique")).unwrap(), b"original");
         fs::remove_dir(&target).unwrap();
         std::os::unix::fs::symlink(&source, &target).unwrap();
-        assert!(migrate_scratch_directory(&source, &target).is_err());
+        assert!(migrate_directory(&source, &target).is_err());
         assert_eq!(fs::read(source.join("unique")).unwrap(), b"original");
     }
 
@@ -661,7 +733,7 @@ mod tests {
         let target = folder.0.join("scratch/evidence/T-0001");
         fs::create_dir(&source).unwrap();
         fs::write(source.join("unique"), b"original").unwrap();
-        migrate_scratch_directory(&source, &target).unwrap();
+        migrate_directory(&source, &target).unwrap();
         assert!(
             fs::symlink_metadata(&source)
                 .unwrap()
@@ -670,7 +742,7 @@ mod tests {
         );
         assert_eq!(fs::read(source.join("unique")).unwrap(), b"original");
         assert_eq!(fs::read(target.join("unique")).unwrap(), b"original");
-        migrate_scratch_directory(&source, &target).unwrap();
+        migrate_directory(&source, &target).unwrap();
     }
 
     #[test]
@@ -789,12 +861,23 @@ mod tests {
     }
 
     #[test]
-    fn attachments_drafts_and_task_evidence_live_under_the_scratch_root() {
+    fn active_artifacts_live_in_the_data_directory_and_only_scratchpads_in_scratch() {
         let dir = DataDir::with_scratch("/data", "/scratch");
-        let task = dir.task(TaskId::new(42).expect("a task number"));
-        assert_eq!(dir.attachments(), Path::new("/scratch/attachments"));
-        assert_eq!(dir.draft_images(), Path::new("/scratch/drafts"));
-        assert_eq!(task.evidence, Path::new("/scratch/evidence/T-0042"));
+        let id = TaskId::new(42).expect("a task number");
+        let task = dir.task(id);
+        assert_eq!(dir.attachments(), Path::new("/data/attachments"));
+        assert_eq!(dir.draft_images(), Path::new("/data/drafts"));
+        assert_eq!(task.evidence, Path::new("/data/artifacts/T-0042/evidence"));
+        assert_eq!(task.plan, Path::new("/data/artifacts/T-0042/plan"));
+        assert_eq!(task.transcript, Path::new("/data/tasks/T-0042/transcript"));
+        assert_eq!(task.scratchpad, Path::new("/scratch/scratchpad/T-0042"));
+        assert_eq!(dir.seat().transcript, Path::new("/data/seat/transcript"));
+        assert_eq!(dir.legacy_attachments(), Path::new("/scratch/attachments"));
+        assert_eq!(dir.legacy_plan(id), Path::new("/scratch/plans/T-0042"));
+        assert_eq!(
+            dir.legacy_evidence(id),
+            Path::new("/scratch/evidence/T-0042")
+        );
         assert_eq!(task.jobs, Path::new("/data/tasks/T-0042/jobs"));
     }
 

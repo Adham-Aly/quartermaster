@@ -27,8 +27,9 @@ pub struct SessionSpec {
     pub effort: Effort,
     /// The agent's working folder: its `home/`, or the task's worktree.
     pub cwd: PathBuf,
-    /// The agent's `session/` folder: the provider engine's JSONL lives here, and the Claude engine
-    /// mirrors its transcript here after every turn and restores it before resuming.
+    /// The agent's `session/` folder: the engine's working state for the process. The Claude
+    /// engine mirrors its transcript here after every turn and restores it before resuming; the
+    /// provider engine keeps background job output beside it.
     pub session_dir: PathBuf,
     /// Resume this session instead of starting a new one.
     #[serde(default)]
@@ -65,6 +66,16 @@ pub struct SessionSpec {
     /// `None` for crewmates, whose turns have no limits of ours.
     #[serde(default)]
     pub limits: Option<SessionLimits>,
+    /// The provider engine keeps this session's current transcript here (`<session>.jsonl`), so it
+    /// can be resumed after the app stops; `None` keeps it in memory only (helpers). The Claude
+    /// engine ignores it: `claude` keeps its own transcripts.
+    #[serde(default)]
+    pub transcript_dir: Option<PathBuf>,
+    /// Folders the provider engine's file tools never write into except through a write root
+    /// inside them: the app's data directory and scratch root. Empty protects only the default
+    /// scratch base.
+    #[serde(default)]
+    pub protected_roots: Vec<PathBuf>,
 }
 
 impl SessionSpec {
@@ -97,7 +108,23 @@ impl SessionSpec {
             env: BTreeMap::new(),
             idle_shutdown: None,
             limits: None,
+            transcript_dir: None,
+            protected_roots: Vec::new(),
         }
+    }
+
+    /// Keeps the provider engine's transcript of this session in `dir`.
+    #[must_use]
+    pub fn with_transcript_dir(mut self, dir: PathBuf) -> Self {
+        self.transcript_dir = Some(dir);
+        self
+    }
+
+    /// Protects `roots` from the provider engine's file tools (see [`Self::protected_roots`]).
+    #[must_use]
+    pub fn with_protected_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.protected_roots = roots;
+        self
     }
 }
 
@@ -147,7 +174,9 @@ pub enum Builtins {
     /// Claude Code's built-in tools, permission prompts off: crewmates on the Claude engine.
     ClaudeCode,
     /// Our file and shell tools: crewmates on the provider engine. Writes are refused outside these
-    /// folders (the worktree, the evidence folder, the system temporary folder). `scratchpad`, when
+    /// folders (the worktree, the evidence folder, the plan folder for a planner, the scratchpad)
+    /// and the system temporary folder, and inside the spec's `protected_roots` only these folders
+    /// are writable. `scratchpad`, when
     /// set, is the agent's private scratch folder: it is also a write root, and the engine tells
     /// the model to use it for temporary files.
     ProviderFileTools {

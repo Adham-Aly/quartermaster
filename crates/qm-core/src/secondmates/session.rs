@@ -109,6 +109,8 @@ impl SecondmateSeat {
             SystemPrompt::Replace { text: prompt },
         );
         spec.resume = resume;
+        spec.transcript_dir = Some(paths.transcript);
+        spec.protected_roots = self.svc.deps().data_dir.protected_roots();
         spec.tools = qm_tools::registry::descriptors(Role::Secondmate, None);
         spec.builtins = Builtins::None;
         spec.skills_dir = None;
@@ -123,7 +125,7 @@ impl SecondmateSeat {
     fn make_folders(&self) -> Result<(), SeatError> {
         use std::os::unix::fs::DirBuilderExt;
         let paths = self.svc.deps().data_dir.secondmate(self.id);
-        for dir in [&paths.home, &paths.session] {
+        for dir in [&paths.home, &paths.session, &paths.transcript] {
             std::fs::DirBuilder::new()
                 .recursive(true)
                 .mode(0o700)

@@ -1,4 +1,5 @@
-//! Terminal histories must go away, but an ordinary model/effort reopen can still resume.
+//! Terminal histories must go away, but an ordinary model/effort reopen can still resume, and an
+//! abandoned session's transcript file stays for the next run.
 use super::*;
 use crate::engine::{ProviderEngine, ProviderEngineConfig};
 use qm_auth::{
@@ -82,10 +83,10 @@ async fn terminal_forget_erases_history_before_closed_and_prevents_resume() {
     let engine = engine();
     let mut handle = engine.open(spec()).unwrap();
     let id = ready(&mut handle).await;
-    assert!(SessionStore::resume(id.as_str()).is_ok());
+    assert!(SessionStore::resume(id.as_str(), None).is_ok());
     handle.forget().unwrap();
     closed(&mut handle).await;
-    assert!(SessionStore::resume(id.as_str()).is_err());
+    assert!(SessionStore::resume(id.as_str(), None).is_err());
     let mut resume = spec();
     resume.resume = Some(id);
     let mut handle = engine.open(resume).unwrap();
@@ -98,13 +99,13 @@ async fn terminal_forget_erases_history_before_closed_and_prevents_resume() {
 }
 
 #[tokio::test]
-async fn ordinary_close_remains_resumable_but_abandoning_the_handle_forgets() {
+async fn ordinary_close_remains_resumable_but_abandoning_the_handle_lets_go_of_memory() {
     let engine = engine();
     let mut handle = engine.open(spec()).unwrap();
     let id = ready(&mut handle).await;
     handle.close().unwrap();
     closed(&mut handle).await;
-    assert!(SessionStore::resume(id.as_str()).is_ok());
+    assert!(SessionStore::resume(id.as_str(), None).is_ok());
     let mut resume = spec();
     resume.resume = Some(id.clone());
     let mut handle = engine.open(resume).unwrap();
@@ -112,10 +113,47 @@ async fn ordinary_close_remains_resumable_but_abandoning_the_handle_forgets() {
     drop(handle);
     // No timer or external state: let the session observe its disconnected command channel.
     for _ in 0..1000 {
-        if SessionStore::resume(id.as_str()).is_err() {
+        if SessionStore::resume(id.as_str(), None).is_err() {
             return;
         }
         tokio::task::yield_now().await;
     }
     panic!("abandoned session still holds its history");
+}
+
+#[tokio::test]
+async fn an_abandoned_session_keeps_its_transcript_file_and_forget_deletes_it() {
+    let dir = std::env::temp_dir().join(format!("qm-forget-disk-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let engine = engine();
+    let mut handle = engine
+        .open(spec().with_transcript_dir(dir.clone()))
+        .unwrap();
+    let id = ready(&mut handle).await;
+    let file = session_store::transcript_path(&dir, id.as_str()).unwrap();
+    assert!(
+        file.is_file(),
+        "the header is on disk once the session is ready"
+    );
+    drop(handle);
+    for _ in 0..1000 {
+        if SessionStore::resume(id.as_str(), None).is_err() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        SessionStore::resume(id.as_str(), None).is_err(),
+        "memory let go"
+    );
+    assert!(file.is_file(), "an abandoned session keeps its file");
+
+    let mut resume = spec().with_transcript_dir(dir.clone());
+    resume.resume = Some(id.clone());
+    let mut handle = engine.open(resume).unwrap();
+    assert_eq!(ready(&mut handle).await, id, "it resumes from disk");
+    handle.forget().unwrap();
+    closed(&mut handle).await;
+    assert!(!file.exists(), "forget deletes the file");
+    let _ = std::fs::remove_dir_all(&dir);
 }

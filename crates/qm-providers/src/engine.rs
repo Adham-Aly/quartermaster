@@ -218,6 +218,7 @@ impl Engine for ProviderEngine {
                     agent: spec.agent,
                     cwd: spec.cwd.clone(),
                     write_roots: write_roots.iter().chain(scratchpad).cloned().collect(),
+                    protected_roots: spec.protected_roots.clone(),
                     jobs_dir,
                     env: self.bash_env(&spec),
                     supervisor: Arc::clone(&self.shared.supervisor),

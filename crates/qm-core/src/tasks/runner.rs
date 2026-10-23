@@ -831,7 +831,16 @@ impl CrewRunner {
             None => gathered,
         };
         let told = super::session::Told { gathered, plan };
-        let spec = crewmate_spec(agent, routed, &paths, &place, *ports, told, resume);
+        let spec = crewmate_spec(
+            agent,
+            routed,
+            &paths,
+            &place,
+            *ports,
+            told,
+            resume,
+            &self.svc.deps().data_dir.protected_roots(),
+        );
         let engine =
             self.svc.deps().engines.get(&routed.engine).ok_or_else(|| {
                 format!("the {} engine isn't available on this Mac", routed.engine)

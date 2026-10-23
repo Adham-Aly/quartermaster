@@ -94,6 +94,9 @@ pub(crate) struct Session {
     close_requested: bool,
     /// The session ends for good: its transcript goes with it.
     forget_requested: bool,
+    /// The core dropped its handle (the app is stopping, or the agent was let go without a
+    /// `Forget`): the history leaves memory, but its transcript file stays to resume from.
+    abandoned: bool,
     pub(crate) in_turn: bool,
     /// The last rate-limit status reported per window, so only changes are reported.
     pub(crate) rate_limits: HashMap<String, RateLimitStatus>,
@@ -231,15 +234,19 @@ async fn run(
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // A panic/aborted task cannot receive a later Forget. Only an orderly Close is
-        // resumable (for example an effort change); terminal and abandoned sessions are not.
+        // Only a `Forget` deletes the history for good. An orderly `Close` keeps it in memory to
+        // resume (an effort change); a panic, an abort (the runtime stopping) or an abandoned
+        // handle lets go of the memory but keeps the transcript file, which resumes after a
+        // restart. A session with no transcript folder is then gone, as before.
         let closed = self
             .status
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .closed;
-        if self.forget_requested || !closed {
+        if self.forget_requested {
             SessionStore::forget(&self.id);
+        } else if self.abandoned || !closed {
+            SessionStore::release(&self.id);
         }
     }
 }
@@ -258,23 +265,33 @@ impl Session {
         let now = shared.clock.now();
         let model = shared.models.profile(spec.account.provider, &spec.model);
         let (session_id, history, context) = if let Some(reference) = &spec.resume {
-            let loaded =
-                SessionStore::resume(reference.as_str()).map_err(|e: SessionStoreError| {
-                    CloseReason::ResumeFailed {
-                        message: e.to_string(),
-                    }
-                })?;
+            let loaded = SessionStore::resume(reference.as_str(), spec.transcript_dir.as_deref())
+                .map_err(|e: SessionStoreError| CloseReason::ResumeFailed {
+                message: e.to_string(),
+            })?;
             // The core passes the model to use; a model change in the history is history.
             let (context, _model) = session_store::rebuild_context(&loaded.entries);
             (reference.as_str().to_owned(), loaded.store, context)
         } else {
             let id = uuid::Uuid::now_v7().hyphenated().to_string();
+            let dir = spec.transcript_dir.as_deref().filter(|dir| {
+                qm_types::data_dir::private_folder(dir)
+                    .inspect_err(|e| {
+                        tracing::error!(
+                            dir = %dir.display(),
+                            error = %e,
+                            "the transcript folder isn't usable; this conversation is kept in memory only"
+                        );
+                    })
+                    .is_ok()
+            });
             let history = SessionStore::create(
                 &id,
                 now,
                 spec.account.provider,
                 spec.model.clone(),
                 spec.effort,
+                dir,
             );
             (id, history, Context::default())
         };
@@ -322,6 +339,7 @@ impl Session {
             pending_results: HashMap::new(),
             close_requested: false,
             forget_requested: false,
+            abandoned: false,
             in_turn: false,
             rate_limits: HashMap::new(),
             spec,
@@ -400,7 +418,11 @@ impl Session {
     /// A command between turns.
     async fn idle_command(&mut self, command: Option<SessionCommand>) {
         match command {
-            None | Some(SessionCommand::Forget) => {
+            None => {
+                self.abandoned = true;
+                self.close_requested = true;
+            }
+            Some(SessionCommand::Forget) => {
                 self.forget_requested = true;
                 self.close_requested = true;
             }
@@ -435,7 +457,12 @@ impl Session {
                 self.close_requested = true;
                 Some(Cancel::Close)
             }
-            None | Some(SessionCommand::Forget) => {
+            None => {
+                self.abandoned = true;
+                self.close_requested = true;
+                Some(Cancel::Close)
+            }
+            Some(SessionCommand::Forget) => {
                 self.forget_requested = true;
                 self.close_requested = true;
                 Some(Cancel::Close)

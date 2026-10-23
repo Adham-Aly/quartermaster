@@ -1,5 +1,5 @@
 use super::*;
-use qm_types::data_dir::{DataDir, migrate_scratch_directory};
+use qm_types::data_dir::{DataDir, migrate_directory};
 use qm_types::ids::TaskId;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::PathBuf;
@@ -34,7 +34,7 @@ fn conflict_includes_unique_legacy_evidence_and_scratch_files() {
     let paths = &fixture.paths;
     let legacy = paths.root.join("evidence");
     ensure_scratch_folder(&paths.evidence).unwrap();
-    assert!(migrate_scratch_directory(&legacy, &paths.evidence).is_err());
+    assert!(migrate_directory(&legacy, &paths.evidence).is_err());
     let files = manifest(paths);
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, legacy.join("unique.png").to_string_lossy());
@@ -53,19 +53,19 @@ fn conflict_includes_unique_legacy_evidence_and_scratch_files() {
 fn successful_migration_does_not_duplicate_compatibility_link() {
     let fixture = Fixture::new("success");
     let paths = &fixture.paths;
-    migrate_scratch_directory(&paths.root.join("evidence"), &paths.evidence).unwrap();
+    migrate_directory(&paths.root.join("evidence"), &paths.evidence).unwrap();
     let files = manifest(paths);
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, "unique.png");
 }
 
 #[test]
-fn unsafe_scratch_is_not_read_but_legacy_is_still_listed() {
-    let fixture = Fixture::new("unsafe-scratch");
+fn an_unsafe_artifacts_folder_is_not_read_but_legacy_is_still_listed() {
+    let fixture = Fixture::new("unsafe-artifacts");
     let paths = &fixture.paths;
     ensure_scratch_folder(&paths.evidence).unwrap();
     fs::write(paths.evidence.join("untrusted.png"), b"untrusted").unwrap();
-    let scratch = fixture.root.join("scratch");
+    let scratch = paths.artifacts.clone();
     fs::set_permissions(&scratch, fs::Permissions::from_mode(0o755)).unwrap();
     let files = manifest(paths);
     assert_eq!(files.len(), 1);

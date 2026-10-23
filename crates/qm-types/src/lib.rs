@@ -13,12 +13,13 @@
 //! - [`config`]: the schema of `config.toml` (no secrets);
 //! - [`api`]: the messages between the core and the terminal UI;
 //! - [`wire`]: the frames between the UI host and a terminal client;
+//! - [`fsio`]: atomic file replacement and append-only logs;
 //! - [`error`]: [`error::Refusal`], the plain reason a rule gives an agent;
 //! - [`rules`]: what the rules in `qm-policy` judge: [`rules::TurnCounters`], [`rules::ToolClass`]
 //!   and [`rules::HoldReason`].
 //!
-//! No logic beyond parsing, formatting and these small rules; no I/O beyond reading the clock and
-//! the environment.
+//! No logic beyond parsing, formatting and these small rules; no I/O beyond reading the clock,
+//! the environment and the data directory's own folders and files.
 
 pub mod api;
 pub mod clock;
@@ -27,6 +28,7 @@ pub mod data_dir;
 pub mod domain;
 pub mod env;
 pub mod error;
+pub mod fsio;
 pub mod ids;
 pub mod rules;
 pub mod wire;

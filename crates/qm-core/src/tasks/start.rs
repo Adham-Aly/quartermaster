@@ -1177,26 +1177,31 @@ pub(crate) async fn prepare(
 
     // 1. Folders.
     let gh = super::env::gh_dir(&paths);
-    let dirs = [
+    let mut dirs = vec![
         paths.root.clone(),
         paths.session.clone(),
+        paths.artifacts.clone(),
         paths.evidence.clone(),
         paths.jobs.clone(),
         paths.skills.clone(),
         gh,
     ];
-    // Claude Code makes its own scratchpad; the provider engine's crewmate gets this one.
-    let scratchpad = (routed.engine != EngineKind::Claude).then(|| paths.scratchpad.clone());
+    // Claude Code keeps its own transcript and scratchpad; the provider engine's crewmate gets
+    // these.
+    let provider = routed.engine != EngineKind::Claude;
+    if provider {
+        dirs.push(paths.transcript.clone());
+    }
+    let scratchpad = provider.then(|| paths.scratchpad.clone());
     let scratch = svc.deps().data_dir.clone();
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
-        // The evidence folder is under the scratch root, so that root is checked first.
-        scratch.ensure_scratch()?;
         for dir in &dirs {
             std::fs::create_dir_all(dir)?;
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
         }
         if let Some(dir) = &scratchpad {
+            scratch.ensure_scratch()?;
             // Made private, every folder on the way checked: no link can redirect it.
             scratch.ensure_scratch_dir(dir)?;
         }

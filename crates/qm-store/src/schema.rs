@@ -23,6 +23,7 @@ const SQL: &[&str] = &[
     include_str!("../migrations/0012_forgotten_parent_facts.sql"),
     include_str!("../migrations/0013_autonomy_modes.sql"),
     include_str!("../migrations/0014_release_launches.sql"),
+    include_str!("../migrations/0015_attachment_uses.sql"),
 ];
 
 /// Every migration, in order.

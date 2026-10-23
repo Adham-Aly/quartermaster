@@ -28,6 +28,7 @@ impl BuiltinToolsFactory for FileToolsFactory {
             agent: cx.agent,
             cwd: cx.cwd,
             write_roots: cx.write_roots,
+            protected_roots: cx.protected_roots,
             jobs_dir: cx.jobs_dir,
             env: cx.env,
             supervisor: cx.supervisor,

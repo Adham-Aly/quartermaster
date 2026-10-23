@@ -46,6 +46,7 @@ pub mod processes;
 pub mod projects;
 pub mod releases;
 pub mod reports;
+pub mod retention;
 pub mod routing_decisions;
 pub mod schedules;
 pub mod schema;

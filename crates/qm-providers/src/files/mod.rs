@@ -66,6 +66,9 @@ pub struct FileToolsConfig {
     /// Where writes are allowed besides the system temporary folder (from
     /// `Builtins::ProviderFileTools`: the worktree and the evidence folder).
     pub write_roots: Vec<PathBuf>,
+    /// The app's data folder and anything else no write may reach except through a write root
+    /// strictly inside it.
+    pub protected_roots: Vec<PathBuf>,
     /// The task's `jobs/` folder, where every `bash` command logs to `J<n>.log`.
     pub jobs_dir: PathBuf,
     /// The complete environment for `bash`, built by the engine from scratch.
@@ -152,7 +155,7 @@ impl FileTools {
     ];
 
     pub fn new(config: FileToolsConfig) -> Self {
-        let policy = WritePolicy::new(&config.write_roots);
+        let policy = WritePolicy::new(&config.write_roots, &config.protected_roots);
         let (tx, rx) = mpsc::unbounded_channel();
         let jobs = Arc::new(JobTable::new(tx));
         Self {

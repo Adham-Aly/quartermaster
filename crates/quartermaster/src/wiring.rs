@@ -125,10 +125,10 @@ pub(crate) async fn start_core(
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     // Before anything can store a message: the numbers pasted images on disk already name.
     let attachments = Attachments::new(dir.attachments(), Arc::clone(&clock));
-    let legacy = dir.root().join("attachments");
+    let legacy = dir.legacy_attachments();
     attachments.reserve_numbers(&db, &legacy).await;
     attachments
-        .migrate_legacy(&db, &legacy, &dir.root().join("drafts"))
+        .migrate_legacy(&db, &legacy, &dir.legacy_draft_images())
         .await;
     let base = foundations(&dir, &db, config, &clock, dev_script).await;
     let seat = Arc::new(Seat::new(SeatDeps {
@@ -267,6 +267,9 @@ pub(crate) async fn start_core(
     let notify_config = base.config.subscribe();
     // Pasted images, and their cleanup now and every hour.
     attachments.clone().spawn_sweeper(db.clone());
+    // Plans, evidence and transcripts finished work no longer needs, every hour (startup's pass
+    // ran with the reconcile).
+    qm_core::retention::spawn_sweeper(db.clone(), dir.clone(), Arc::clone(&clock));
 
     let mut parts = settings_parts(&db, &clock, &dir, base, &conversation);
     parts.extend(registry_parts(
