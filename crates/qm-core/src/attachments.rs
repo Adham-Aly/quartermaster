@@ -888,10 +888,10 @@ mod tests {
             root.0.join("scratch"),
         );
         let named = old.join("message-7");
-        fs::create_dir_all(&named).unwrap();
+        qm_types::data_dir::private_folder(&named).unwrap();
         fs::write(named.join("image-1.png"), b"kept").unwrap();
-        fs::create_dir_all(old.join("message-8")).unwrap();
-        fs::create_dir_all(&drafts).unwrap();
+        qm_types::data_dir::private_folder(&old.join("message-8")).unwrap();
+        qm_types::data_dir::private_folder(&drafts).unwrap();
         fs::write(drafts.join("0123456789abcdef-1.png"), b"draft").unwrap();
 
         let db = Db::open(&root.0.join("state.db")).expect("a database");

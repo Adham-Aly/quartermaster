@@ -1,5 +1,6 @@
 use super::*;
 use qm_store::retention::{LiveSession, OpenTask};
+use qm_types::data_dir::private_folder;
 use qm_types::domain::{EngineKind, TaskKind};
 use qm_types::ids::{SecondmateId, SessionRef};
 use std::os::unix::fs::PermissionsExt as _;
@@ -24,9 +25,9 @@ impl Home {
     }
 }
 
-/// Writes a one-byte file, making its folders.
+/// Writes a one-byte file, making its folders private, as the app's umask 077 would.
 fn touch(path: &Path) {
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    private_folder(path.parent().unwrap()).unwrap();
     fs::write(path, b"x").unwrap();
 }
 
@@ -157,13 +158,13 @@ fn the_sweep_never_follows_a_link() {
     let data = &home.data;
     let outside = home.base.join("outside");
     touch(&outside.join("precious"));
-    fs::create_dir_all(data.artifacts_dir()).unwrap();
+    private_folder(&data.artifacts_dir()).unwrap();
     std::os::unix::fs::symlink(&outside, data.artifacts_dir().join("T-0009")).unwrap();
     let evidence = data.task(id(10)).evidence;
-    fs::create_dir_all(evidence.parent().unwrap()).unwrap();
+    private_folder(evidence.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&outside, &evidence).unwrap();
     let transcript = data.seat().transcript;
-    fs::create_dir_all(&transcript).unwrap();
+    private_folder(&transcript).unwrap();
     std::os::unix::fs::symlink(outside.join("precious"), transcript.join("x.jsonl")).unwrap();
 
     apply(data, &Facts::default(), SystemTime::now(), When::Startup);

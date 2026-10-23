@@ -3,7 +3,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// A fresh data directory and scratch folder under the system's temporary folder.
+/// A fresh private data directory and scratch folder under the system's temporary folder.
 struct Home(PathBuf);
 
 impl Home {
@@ -14,7 +14,7 @@ impl Home {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir_all(&root).unwrap();
+        private_folder(&root).unwrap();
         Self(root)
     }
 
