@@ -1,5 +1,5 @@
 //! The Actions inbox in the left column: one row per request waiting on you, newest first after
-//! the app's own configuration prompts. A row only selects; buttons are pressed in the overlay.
+//! the app's own configuration prompts. A click on a row opens its overlay, the only place its card and buttons are.
 
 use crate::app::App;
 use crate::bridge::{ListRow, draw_list, empty_lines, pane_block, pane_style};

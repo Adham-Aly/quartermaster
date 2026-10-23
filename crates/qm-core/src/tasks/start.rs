@@ -52,6 +52,7 @@ use qm_types::error::Refusal;
 use qm_types::ids::{AgentId, CommitSha, MessageId, ModelId, PortBlock, SecondmateId, TaskId};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
@@ -137,6 +138,8 @@ pub(crate) struct LaterStepRecord {
     pub message: Option<MessageId>,
     pub model: Option<ModelId>,
     pub effort: Option<Effort>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub premium: bool,
 }
 
 impl RouteInputs {
@@ -154,6 +157,7 @@ impl RouteInputs {
             message: l.message,
             model: l.model.clone(),
             effort: l.effort,
+            premium: l.premium,
         })
     }
 }
@@ -208,7 +212,8 @@ fn validate(
     authority: Authority,
     found: (Place, &Path, Timestamp),
 ) -> Result<Result<Validated, Refusal>, StoreError> {
-    // Later steps: each names a model or an effort, no kind twice.
+    // Later steps: each names a model, an effort or premium, no kind twice, and a named model is
+    // placed in some tier (premium in premium).
     let steps: Vec<RoutedLaterStep> = req
         .later_steps
         .iter()
@@ -216,9 +221,15 @@ fn validate(
             kind: s.kind,
             model: s.model.clone(),
             effort: s.effort,
+            premium: s.premium,
         })
         .collect();
-    if let Err(r) = check_later_steps(&steps) {
+    let mut placed_tiers = HashMap::new();
+    for model in steps.iter().filter_map(|s| s.model.as_ref()) {
+        placed_tiers.insert(model.clone(), crate::routing::tiers_of(conn, model)?);
+    }
+    if let Err(r) = check_later_steps(&steps, |m| placed_tiers.get(m).cloned().unwrap_or_default())
+    {
         return Ok(Err(r));
     }
 
@@ -401,7 +412,8 @@ fn validate(
             message: *message,
         })
         .collect();
-    let later_step = applicable(req.kind, retry.is_some(), &links);
+    let named_now = req.model.is_some() || req.effort.is_some() || req.premium;
+    let later_step = applicable(req.kind, retry.is_some(), named_now, &links);
     let builder_provider = match &review_of {
         Some(row) => provider_of(conn, row.id)?,
         None => None,
@@ -717,10 +729,10 @@ pub(crate) async fn start_as(
             let mut req = req;
             let authority =
                 crate::secondmates::scope::apply_request_overrides(conn, &caller_copy, &mut req)?;
-            Ok((req, authority))
+            Ok(authority.map(|a| (req, a)))
         })
         .await
-        .map_err(|e| failed(&e))?;
+        .map_err(|e| failed(&e))??;
     let authority = routed_authority.unwrap_or(how.authority);
     let place = find_place(svc, req.project.clone(), req.folder.clone()).await?;
     let req_copy = req.clone();
@@ -824,6 +836,7 @@ pub(crate) async fn start_as(
                 message: l.message,
                 model: l.model.clone(),
                 effort: l.effort,
+                premium: l.premium,
             }),
             prefer_provider_other_than: validated.builder_provider,
         }
@@ -1091,8 +1104,12 @@ pub(crate) async fn reroute_tick(svc: &TaskService) {
     }
 }
 
-/// Routes one queued task again; `Ok(true)` when it left the queue.
-async fn reroute_one(svc: &TaskService, row: TaskRow) -> Result<bool, String> {
+/// A dry run of routing a queued task (rolled back: a waiting re-route records nothing): `None`
+/// while a blocker is unfinished, else whether it routes (a refusal when it can't run as asked),
+/// with its inputs and crewmate.
+type Probe = Option<(Result<bool, Refusal>, RouteInputs, Option<AgentId>)>;
+
+async fn probe_route(svc: &TaskService, row: &TaskRow) -> Result<Probe, String> {
     let task = row.id;
     let rules = svc.deps().rules.clone();
     let health = Arc::clone(&svc.deps().health);
@@ -1100,11 +1117,9 @@ async fn reroute_one(svc: &TaskService, row: TaskRow) -> Result<bool, String> {
         .verification
         .is_some_and(|(l, _)| l == VerificationLevel::Quick);
     let kind = row.kind;
-    // Read the inputs and dry-run routing (rolled back: a waiting re-route records nothing).
     let config = svc.deps().config.borrow().clone();
     let now = svc.clock().now();
-    let probe = svc
-        .db()
+    svc.db()
         .call(move |conn| {
             let blockers = task_store::blockers_of(conn, task)?;
             let mut blocked = false;
@@ -1118,16 +1133,32 @@ async fn reroute_one(svc: &TaskService, row: TaskRow) -> Result<bool, String> {
             let agent = agents::crewmate_of(conn, task)?.map(|a| a.id);
             let tx = conn.transaction()?;
             let facts = facts_for(task, agent, kind, &inputs, quick);
-            let routes = matches!(
-                route_crewmate(&tx, &rules, &config, &facts, &health, now)?,
-                RouteOutcome::Routed(_)
-            );
+            let routes = match route_crewmate(&tx, &rules, &config, &facts, &health, now)? {
+                RouteOutcome::Routed(_) => Ok(true),
+                RouteOutcome::Waiting { .. } => Ok(false),
+                RouteOutcome::Refused(refusal) => Err(refusal),
+            };
             drop(tx);
             Ok(Some((routes, inputs, agent)))
         })
         .await
-        .map_err(|e| e.to_string())?;
-    let Some((true, inputs, Some(agent))) = probe else {
+        .map_err(|e| e.to_string())
+}
+
+/// Routes one queued task again; `Ok(true)` when it left the queue.
+async fn reroute_one(svc: &TaskService, row: TaskRow) -> Result<bool, String> {
+    let task = row.id;
+    let quick = row
+        .verification
+        .is_some_and(|(l, _)| l == VerificationLevel::Quick);
+    let kind = row.kind;
+    let probe = probe_route(svc, &row).await?;
+    // The model it was started with left every tier while it waited: it can't run as asked.
+    if let Some((Err(refusal), _, _)) = probe {
+        svc.fail(task, refusal.reason).await;
+        return Ok(true);
+    }
+    let Some((Ok(true), inputs, Some(agent))) = probe else {
         return Ok(false);
     };
     let project = svc

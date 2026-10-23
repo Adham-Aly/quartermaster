@@ -4,7 +4,7 @@
 //! Content is top-aligned while it fits and pinned to the newest line once it overflows; you
 //! scroll up from there (`App::scroll_from_bottom`).
 
-use super::{card, context_strip, markdown, spinner, stream};
+use super::{context_strip, markdown, spinner, stream};
 use crate::app::App;
 use crate::bridge::{empty_lines, pane_block, pane_style};
 use crate::hit::{FrameMap, Hit, Pane, TextRow};
@@ -127,7 +127,6 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
         &app.snapshot.conversation,
         &context_strip::chat_notes(app, agent),
         inner.width,
-        app.term.hover,
         &Voices::QUARTERMASTER,
     );
     if let Some(row) = context_strip::compacting_row(app, agent) {
@@ -168,7 +167,6 @@ pub(crate) fn rows(
     chats: &[ChatLine],
     notes: &[&CompactionNote],
     width: u16,
-    hover: Option<Hit>,
     voices: &Voices<'_>,
 ) -> Vec<Row> {
     let mut notes = notes;
@@ -181,7 +179,7 @@ pub(crate) fn rows(
         if after_note || (i > 0 && !answers(&chats[i - 1], chat) && !stacked) {
             out.push(Row::plain(Line::default()));
         }
-        out.extend(message_rows(chat, width, hover, voices));
+        out.extend(message_rows(chat, width, voices));
     }
     let first = out.is_empty();
     out.extend(context_strip::notes_before(&mut notes, None, width, first));
@@ -194,7 +192,7 @@ pub(crate) fn rows(
 pub(crate) fn thinking_rows(chats: &[ChatLine], app: &App) -> Vec<Row> {
     let answering = chats
         .last()
-        .is_none_or(|c| c.source == MessageSource::You && c.card.is_none() && !c.queued);
+        .is_none_or(|c| c.source == MessageSource::You && !c.queued);
     let mut out = Vec::new();
     if !answering {
         out.push(Row::plain(Line::default()));
@@ -206,10 +204,9 @@ pub(crate) fn thinking_rows(chats: &[ChatLine], app: &App) -> Vec<Row> {
 /// The words in a reply's header that mark it as the answer to the message before it.
 const REPLY_CONTEXT: &str = "reply";
 
-/// Whether `chat` is the Quartermaster's reply to `before`, your message with no card under it.
+/// Whether `chat` is the Quartermaster's reply to `before`, your message.
 fn answers(before: &ChatLine, chat: &ChatLine) -> bool {
     before.source == MessageSource::You
-        && before.card.is_none()
         && chat.source == MessageSource::Agent
         && chat.kind == MessageKind::Reply
         && chat.context.as_deref() == Some(REPLY_CONTEXT)
@@ -221,18 +218,15 @@ fn is_markdown(chat: &ChatLine) -> bool {
         && matches!(chat.kind, MessageKind::Reply | MessageKind::Question)
 }
 
-/// One message: its header, its body, and its card. Your own messages sit in a box; a one-line
-/// note is a single row.
-fn message_rows(chat: &ChatLine, max: u16, hover: Option<Hit>, voices: &Voices<'_>) -> Vec<Row> {
+/// One message: its header and its body; never a card, even if the line carries one (cards show
+/// only in the Actions overlay). Your own messages sit in a box; a one-line note is a single row.
+fn message_rows(chat: &ChatLine, max: u16, voices: &Voices<'_>) -> Vec<Row> {
     if chat.one_line {
         return vec![one_line_row(chat, max)];
     }
     if chat.source == MessageSource::You
-        && let Some(mut out) = prompt_box(title(chat, voices), right(chat), &chat.text, max)
+        && let Some(out) = prompt_box(title(chat, voices), right(chat), &chat.text, max)
     {
-        if let Some(card) = &chat.card {
-            out.extend(card::rows(card, chat.id, max, hover));
-        }
         return out;
     }
     let mut out = vec![Row::text(header(chat, max, voices), false)];
@@ -255,9 +249,6 @@ fn message_rows(chat: &ChatLine, max: u16, hover: Option<Hit>, voices: &Voices<'
                 out.push(Row::text(Line::styled(row, body_style), continues));
             }
         }
-    }
-    if let Some(card) = &chat.card {
-        out.extend(card::rows(card, chat.id, max, hover));
     }
     out
 }
@@ -515,7 +506,7 @@ mod tests {
             ),
         ];
         let voices = Voices::QUARTERMASTER;
-        let drawn = texts(&rows(&chats, &[], 80, None, &voices));
+        let drawn = texts(&rows(&chats, &[], 80, &voices));
         let at_note = drawn.iter().position(|r| r.starts_with('✓')).unwrap();
         // A blank row before the run, none inside it, one after it; no header for either note.
         assert_eq!(drawn[at_note - 1], "");

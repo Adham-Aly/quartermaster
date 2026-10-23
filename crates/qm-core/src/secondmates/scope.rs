@@ -100,49 +100,78 @@ pub fn request_for(
     Ok(Ok(row))
 }
 
-/// A routed request's overrides on a secondmate's start request: when the secondmate typed none of
-/// its own, the request's model, effort, premium and later steps apply, with the routing turn's
-/// authority (they were checked when the request was stored). Returns that authority when it
-/// applied them. Nothing happens for other callers, a start without a correlation, or a correlation
-/// that isn't the caller's (validation refuses those).
+/// A routed request's overrides on a secondmate's start request, field by field: a field the
+/// secondmate typed wins, and every field it left empty (model, effort, premium, each `later_steps`
+/// kind) comes from the request, with the routing turn's authority (they were checked when the
+/// request was stored; what the secondmate typed was checked against its own turn). Returns that
+/// authority when anything came from the request. A model the secondmate typed that isn't premium
+/// is refused when the request asked for premium, rather than quietly running lower. Nothing
+/// happens for other callers, a start without a correlation, or a correlation that isn't the
+/// caller's (validation refuses those).
 pub fn apply_request_overrides(
     conn: &Connection,
     caller: &Caller,
     start: &mut qm_tools::handler::StartRequest,
-) -> Result<Option<qm_policy::overrides::Authority>, StoreError> {
+) -> Result<Result<Option<qm_policy::overrides::Authority>, Refusal>, StoreError> {
     use qm_policy::overrides::Authority;
-    use qm_types::domain::StartedBy;
+    use qm_types::domain::{StartedBy, Tier};
     let (Role::Secondmate, Some(secondmate), Some(correlation)) =
         (caller.role, caller.secondmate, start.correlation)
     else {
-        return Ok(None);
+        return Ok(Ok(None));
     };
     let Ok(row) = request_for(conn, secondmate, correlation)? else {
-        return Ok(None);
+        return Ok(Ok(None));
     };
-    let typed_any = start.model.is_some()
-        || start.effort.is_some()
-        || start.premium
-        || !start.later_steps.is_empty();
-    if typed_any || row.overrides.is_empty() {
-        return Ok(None);
+    let asked = &row.overrides;
+    if asked.is_empty() {
+        return Ok(Ok(None));
     }
-    start.model.clone_from(&row.overrides.model);
-    start.effort = row.overrides.effort;
-    start.premium = row.overrides.premium;
-    start.later_steps = row
-        .overrides
-        .later_steps
-        .iter()
-        .map(|s| qm_tools::defs::LaterStep {
-            kind: s.kind,
-            model: s.model.clone(),
-            effort: s.effort,
-        })
-        .collect();
+    let request_premium = asked.premium
+        || match &asked.model {
+            Some(m) => crate::routing::tiers_of(conn, m)?.contains(&Tier::Premium),
+            None => false,
+        };
+    if request_premium
+        && let Some(typed) = &start.model
+        && !crate::routing::tiers_of(conn, typed)?.contains(&Tier::Premium)
+    {
+        return Ok(Err(Refusal::new(format!(
+            "{typed} isn't in the premium level and the request asked for premium; leave the \
+             model out or name a premium model"
+        ))));
+    }
+    let mut applied = false;
+    if start.model.is_none() && asked.model.is_some() {
+        start.model.clone_from(&asked.model);
+        applied = true;
+    }
+    if start.effort.is_none() && asked.effort.is_some() {
+        start.effort = asked.effort;
+        applied = true;
+    }
+    if !start.premium && asked.premium {
+        start.premium = true;
+        applied = true;
+    }
+    for step in &asked.later_steps {
+        if start.later_steps.iter().any(|s| s.kind == step.kind) {
+            continue;
+        }
+        start.later_steps.push(qm_tools::defs::LaterStep {
+            kind: step.kind,
+            model: step.model.clone(),
+            effort: step.effort,
+            premium: step.premium,
+        });
+        applied = true;
+    }
+    if !applied {
+        return Ok(Ok(None));
+    }
     let started_by = match secondmates::turn_message(conn, row.turn)? {
         Some(message) => StartedBy::User { message },
         None => StartedBy::AppEvent,
     };
-    Ok(Some(Authority::Turn(started_by)))
+    Ok(Ok(Some(Authority::Turn(started_by))))
 }

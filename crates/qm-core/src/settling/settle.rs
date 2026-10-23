@@ -474,7 +474,6 @@ pub(crate) async fn settle(
     let at = svc.delivery().clock().now();
     let title = row.title.clone();
     let asked_by = caller.agent;
-    let seat = tasks.deps().seat_agent;
     let parent = svc.delivery().parent();
     let record_head = head.clone();
     let record_branch = row.branch.clone();
@@ -531,7 +530,6 @@ pub(crate) async fn settle(
                     at,
                 },
             )?;
-            HeldService::anchor(tx, held, &task.to_string(), seat, at)?;
             let mut facts = facts_json;
             if let Some(map) = facts.as_object_mut() {
                 map.insert("held".to_owned(), serde_json::json!(held));

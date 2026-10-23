@@ -2,4 +2,4 @@ Send a request into one of your secondmates' scope, instead of starting the work
 - secondmate: its ID, e.g. SM-02.
 - request: what to do, in plain words.
 - instructions: one-time instructions for this request only.
-- base_branch, model, effort, premium, later_steps: only when the user's own message on this turn asked for them; refused on turns started by an app event.
+- base_branch, model, effort, premium, later_steps: only when the user's own message on this turn asked for them; refused on turns started by an app event. Premium covers every crewmate the request starts. Set `premium`, rather than naming the premium model. When the user asks for premium only on some steps, add `premium: true` to `later_steps` for those kinds instead.

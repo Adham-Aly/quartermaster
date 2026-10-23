@@ -194,14 +194,10 @@ impl App {
                 let back = agent == AgentRef::Quartermaster && self.shown_session().is_some();
                 self.open_crew(agent, double || back, now);
             }
-            Hit::CardButton { message, index } => self.press_card_button(message, index, now),
-            // A row only selects; a double-click opens its detail, where the buttons are.
+            // A click opens the row's detail, the only place its card and buttons are.
             Hit::ActionRow(i) => {
                 self.focus_pane(Pane::Actions);
-                self.select_action(i);
-                if double {
-                    self.open_action(i);
-                }
+                self.open_action(i);
             }
             Hit::ActionButton(i) => self.press_action_button(i, now),
             Hit::TaskButton(TaskButton::OpenSession) => self.open_session(now),

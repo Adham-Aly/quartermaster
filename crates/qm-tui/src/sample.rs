@@ -249,7 +249,6 @@ pub(crate) fn install_chat(app: &mut App) {
     app.snapshot = chat();
     app.focus = Pane::Input;
     app.draft.text = String::new();
-    app.view.card = None;
 }
 
 /// Puts the thinking sample into `app`: the sample Bridge after you sent your reply, the
@@ -259,10 +258,9 @@ pub(crate) fn install_thinking(app: &mut App) {
     app.snapshot = thinking();
     app.focus = Pane::Input;
     app.draft.text = String::new();
-    app.view.card = None;
 }
 
-/// The thinking sample's data: the sample Bridge, your reply to its card sent, the
+/// The thinking sample's data: the sample Bridge, your reply sent, the
 /// Quartermaster's row busy.
 #[doc(hidden)]
 pub fn thinking() -> Snapshot {
@@ -290,7 +288,6 @@ pub(crate) fn install(app: &mut App) {
     app.focus = Pane::Crew;
     app.draft.text = String::from("yes, start the rate limiting build");
     app.view.selected_crew = Some(task(42));
-    app.view.card = Some(MessageId::new(2));
     app.view.sample = true;
     app.view.settings.model = settings();
     app.view.settings.loaded = true;
@@ -329,7 +326,7 @@ pub fn snapshot() -> Snapshot {
     out.crew = crew();
     out.conversation = conversation();
     out.tasks = tasks();
-    out.actions = actions(&out.conversation);
+    out.actions = actions(vec![held_item(approval_card(), at(14, 2))]);
     out.context = context();
     // What the core answers when the approval card's Diff is pressed (the sample ignores the
     // core's snapshots, so it carries the answer already).
@@ -391,7 +388,20 @@ fn conversation() -> Vec<ChatLine> {
          is solid, go ahead and fix it",
     );
     yours.acknowledgement = Some(String::from("Started: T-0042"));
+    let mut reply = ChatLine::new(
+        MessageId::new(2),
+        MessageSource::Agent,
+        MessageKind::Reply,
+        at(14, 2),
+        "The rate-limiting plan for api-server is back: a token bucket per API key in Redis, \
+         100 requests a minute by default. Want me to start the build?",
+    );
+    reply.context = Some(String::from("after T-0043 reported"));
+    vec![yours, reply]
+}
 
+/// The sample approval for T-0039, listed in Actions.
+fn approval_card() -> Card {
     let mut card = Card::new(CardKind::Approval, "Approval needed");
     card.held = Some(HeldActionId::new(1));
     card.title = Some(String::from("T-0039"));
@@ -430,27 +440,23 @@ fn conversation() -> Vec<ChatLine> {
             },
         ),
     ];
-    let mut reply = ChatLine::new(
-        MessageId::new(2),
-        MessageSource::Agent,
-        MessageKind::Reply,
-        at(14, 2),
-        "The rate-limiting plan for api-server is back: a token bucket per API key in Redis, \
-         100 requests a minute by default. Want me to start the build?",
-    );
-    reply.context = Some(String::from("after T-0043 reported"));
-    reply.card = Some(card);
-    vec![yours, reply]
+    card
 }
 
 /// The chat sample (the reply, the app's `✓ Steered: T-0042`, the
-/// Quartermaster's `✓ Noted for next time`, your 14:20 message with the notice), a plan reply
-/// sent from its page as one line, then a question card and a message of yours queued behind the
-/// turn that asked it.
+/// Quartermaster's `✓ Noted for next time`, your 14:20 message that nothing came of), a plan
+/// reply sent from its page as one line, then a question and a message of yours queued behind the
+/// turn that asked it. The notice, the question and a plan's round wait in Actions.
 #[doc(hidden)]
 pub fn chat() -> Snapshot {
     let mut out = snapshot();
     out.conversation = chat_conversation();
+    out.actions = actions(vec![
+        held_item(approval_card(), at(14, 2)),
+        notice_item(),
+        question_item(),
+        plan_item(),
+    ]);
     out
 }
 
@@ -487,16 +493,7 @@ fn chat_conversation() -> Vec<ChatLine> {
     let mut noted = you(4, 14, 13, "don't ping me for lint-only CI failures");
     noted.acknowledgement = Some(String::from("Noted for next time"));
 
-    let ttl = "what did we decide about the cache TTL";
-    let mut nothing = you(5, 14, 20, ttl);
-    let mut notice = Card::new(CardKind::Notice, "Nothing came of your message");
-    notice.note = Some(String::from("· after one retry"));
-    notice.lines = vec![CardLine::new(2, vec![s(&format!("“{ttl}”"), Tone::Text)])];
-    notice.buttons = vec![
-        CardButton::new("Ask again", 'a', CardAction::AskAgain),
-        CardButton::new("Leave it", 'l', CardAction::LeaveIt),
-    ];
-    nothing.card = Some(notice);
+    let nothing = you(5, 14, 20, TTL);
 
     let sent = ChatLine::new(
         MessageId::new(9),
@@ -516,7 +513,48 @@ fn chat_conversation() -> Vec<ChatLine> {
          the *page cache* in web-app.",
     );
     question.context = Some(String::from("question"));
+
+    let mut queued = you(7, 14, 25, "also, what is the TTL set to now?");
+    queued.queued = true;
+
+    vec![
+        asked, reply, steered, noted, nothing, sent, question, queued,
+    ]
+}
+
+/// The chat sample's message that nothing came of.
+const TTL: &str = "what did we decide about the cache TTL";
+
+/// The notice on [`TTL`], as Actions lists it.
+fn notice_item() -> ActionItem {
+    let mut notice = Card::new(CardKind::Notice, "Nothing came of your message");
+    notice.note = Some(String::from("· after one retry"));
+    notice.lines = vec![CardLine::new(2, vec![s(&format!("“{TTL}”"), Tone::Text)])];
+    notice.buttons = vec![
+        CardButton::new("Ask again", 'a', CardAction::AskAgain),
+        CardButton::new("Leave it", 'l', CardAction::LeaveIt),
+    ];
+    let title = format!("{}: {TTL}", notice.heading);
+    ActionItem::new(
+        ActionKey::Notice {
+            message: MessageId::new(5),
+        },
+        ActionKind::Notice,
+        title,
+        at(14, 20),
+        notice,
+        ActionOpen::Conversation,
+    )
+    .with_from(AgentRef::Quartermaster)
+    .with_anchor(MessageId::new(5))
+}
+
+/// The Quartermaster's question with options, as Actions lists it: the card carries the question.
+fn question_item() -> ActionItem {
+    let text = "Which cache should the new TTL apply to? The session cache lives in api-server, \
+                the page cache in web-app.";
     let mut card = Card::new(CardKind::Question, "Pick an answer, or type your own");
+    card.lines = vec![CardLine::new(2, vec![s(text, Tone::Text)])];
     let options = ["The session cache", "The page cache", "Both"];
     card.buttons = options
         .iter()
@@ -531,27 +569,22 @@ fn chat_conversation() -> Vec<ChatLine> {
             )
         })
         .collect();
-    question.card = Some(card);
-
-    let plan = plan_line();
-
-    let mut queued = you(7, 14, 25, "also, what is the TTL set to now?");
-    queued.queued = true;
-
-    vec![
-        asked, reply, steered, noted, nothing, sent, question, plan, queued,
-    ]
+    ActionItem::new(
+        ActionKey::Question {
+            message: MessageId::new(6),
+        },
+        ActionKind::Question,
+        "Which cache should the new TTL apply to?",
+        at(14, 24),
+        card,
+        ActionOpen::Conversation,
+    )
+    .with_from(AgentRef::Quartermaster)
+    .with_anchor(MessageId::new(6))
 }
 
-/// An app note with a plan's card: a round's questions waiting on you.
-fn plan_line() -> ChatLine {
-    let mut plan = ChatLine::new(
-        MessageId::new(8),
-        MessageSource::App,
-        MessageKind::Message,
-        at(14, 24),
-        "T-0044's plan, round 2, has 3 questions for you",
-    );
+/// A plan's round whose questions wait on you, as Actions lists it.
+fn plan_item() -> ActionItem {
     let page = "/tmp/quartermaster/plans/T-0044/plan.html";
     let mut card = Card::new(CardKind::Plan, "Plan questions");
     card.title = Some(String::from("T-0044 plan(auth): session store"));
@@ -577,8 +610,17 @@ fn plan_line() -> ChatLine {
             },
         ),
     ];
-    plan.card = Some(card);
-    plan
+    let task = task_id(44);
+    ActionItem::new(
+        ActionKey::Plan { task },
+        ActionKind::Plan,
+        "Plan questions · plan(auth): session store",
+        at(14, 24),
+        card,
+        ActionOpen::Plan { task },
+    )
+    .with_task(task)
+    .with_from(AgentRef::Crewmate { task })
 }
 
 fn tasks() -> Vec<TaskDetail> {
@@ -922,14 +964,22 @@ pub(crate) fn settings_with(login: SampleLogin) -> Settings {
     }
 }
 
-/// Puts the decision sample into `app`: the sample Bridge with the sample decision card under the
-/// newest line, current.
+/// Puts the decision sample into `app`: the sample Bridge with the sample decision open in its
+/// Actions popup.
 pub(crate) fn install_decision(app: &mut App) {
     install(app);
     app.snapshot = decision();
-    app.focus = Pane::Conversation;
+    app.focus = Pane::Actions;
     app.draft.text = String::new();
-    app.view.card = Some(MessageId::new(3));
+    let held = decision_card().held;
+    if let Some(index) = app
+        .snapshot
+        .actions
+        .iter()
+        .position(|item| item.card.held == held)
+    {
+        app.open_action(index);
+    }
 }
 
 /// The sample decision card, as the app builds it.
@@ -984,19 +1034,14 @@ pub fn decision_card() -> Card {
     card
 }
 
-/// The sample Bridge with the decision card under an app line about T-0047.
+/// The sample Bridge with T-0047's decision waiting in Actions.
 #[doc(hidden)]
 pub fn decision() -> Snapshot {
     let mut out = snapshot();
-    let mut line = ChatLine::new(
-        MessageId::new(3),
-        MessageSource::App,
-        MessageKind::Message,
-        at(14, 9),
-        "T-0047 needs you",
-    );
-    line.card = Some(decision_card());
-    out.conversation.push(line);
+    out.actions = actions(vec![
+        held_item(approval_card(), at(14, 2)),
+        held_item(decision_card(), at(14, 9)),
+    ]);
     out
 }
 
@@ -1029,9 +1074,38 @@ pub fn diff() -> qm_types::api::DiffView {
     view
 }
 
-/// The inbox the core would build from the sample: a configuration prompt, then each live card in
-/// the conversation, then a secondmate's question, newest first.
-fn actions(conversation: &[ChatLine]) -> Vec<ActionItem> {
+/// A held action's item, as the core lists it: an approval is titled with its first line, a
+/// decision with its card's title.
+fn held_item(card: Card, at: Timestamp) -> ActionItem {
+    let kind = match card.kind {
+        CardKind::Approval => ActionKind::Approval,
+        _ => ActionKind::Decision,
+    };
+    let first = card.lines.first().map(|line| {
+        line.spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<String>()
+    });
+    let title = match kind {
+        ActionKind::Approval => first,
+        _ => card.title.clone(),
+    }
+    .unwrap_or_else(|| card.heading.clone());
+    let id = card.held.unwrap_or_else(|| HeldActionId::new(0));
+    ActionItem::new(
+        ActionKey::Held { id },
+        kind,
+        title.trim(),
+        at,
+        card,
+        ActionOpen::Conversation,
+    )
+}
+
+/// The inbox the core would build from the sample: a configuration prompt, then `items` and a
+/// secondmate's question, newest first.
+fn actions(items: Vec<ActionItem>) -> Vec<ActionItem> {
     let mut setup = Card::new(CardKind::Notice, "Setup");
     setup.lines = vec![CardLine::new(
         0,
@@ -1051,42 +1125,7 @@ fn actions(conversation: &[ChatLine]) -> Vec<ActionItem> {
         setup,
         ActionOpen::Setup,
     )];
-    let mut rest: Vec<ActionItem> = conversation
-        .iter()
-        .filter_map(|line| {
-            let card = line.card.as_ref()?;
-            let held = card.held?;
-            if card.answered.is_some() || card.buttons.is_empty() {
-                return None;
-            }
-            let kind = match card.kind {
-                CardKind::Approval => ActionKind::Approval,
-                _ => ActionKind::Decision,
-            };
-            // The core titles a held item with its task's title.
-            let title = card.lines.first().map_or_else(
-                || card.heading.clone(),
-                |line| {
-                    line.spans
-                        .iter()
-                        .map(|s| s.text.as_str())
-                        .collect::<String>()
-                },
-            );
-            let title = title.trim().to_owned();
-            Some(
-                ActionItem::new(
-                    ActionKey::Held { id: held },
-                    kind,
-                    title,
-                    line.at,
-                    card.clone(),
-                    ActionOpen::Conversation,
-                )
-                .with_anchor(line.id),
-            )
-        })
-        .collect();
+    let mut rest = items;
     let mut question = Card::new(CardKind::Question, "Question");
     question.lines = vec![CardLine::new(
         0,

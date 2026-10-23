@@ -1,10 +1,12 @@
 //! The Actions inbox's behaviour: its selection, its keys and the detail overlay (`Popup::Action`)
-//! that Enter opens. The list itself is `widgets::actions`.
+//! that opens an item. The list itself is `widgets::actions`.
 //!
-//! Nothing in the list answers anything: a row only selects, and Enter or a click opens the
-//! overlay. The overlay shows the item's card with the same buttons, and the same keys, as the
-//! card in the conversation; no button is highlighted when it opens, so Enter does nothing until
-//! you pick one with ←→. Answers go through the same commands the conversation's cards send.
+//! The overlay is the only place a card is shown: the chat draws none. Nothing in the list answers
+//! anything: a click on a row, Enter or `o` opens the overlay, which shows the item's card with
+//! its buttons and their keys; no button is highlighted when it opens, so Enter does nothing until
+//! you pick one with ←→. "Go to" follows the card's buttons only for items that live elsewhere (a
+//! plan's page, a secondmate's session, Settings or Setup). Diff remembers the item, so Esc on the
+//! Diff screen brings its overlay back.
 
 use crate::app::App;
 use crate::hit::{FrameMap, Hit, Pane};
@@ -35,7 +37,13 @@ pub(crate) const NOT_TAKEN: &str = "Nothing changed yet; you can try again.";
 /// Said when the open item is answered somewhere else.
 pub(crate) const GONE: &str = "Answered elsewhere; nothing left to do here.";
 
-/// The overlay's buttons for `item`: the card's own, unless answered, then "Go to".
+/// Whether the overlay offers "Go to": only for items that live somewhere else than the
+/// Quartermaster's chat.
+fn has_go_to(item: &ActionItem) -> bool {
+    item.open != ActionOpen::Conversation
+}
+
+/// The overlay's buttons for `item`: the card's own, then "Go to" when it has one.
 fn buttons(item: &ActionItem, lit: Option<usize>, hover: Option<Hit>) -> Vec<Button> {
     let mut out: Vec<Button> = Vec::new();
     if item.card.answered.is_none() {
@@ -58,11 +66,13 @@ fn buttons(item: &ActionItem, lit: Option<usize>, hover: Option<Hit>) -> Vec<But
             lit: false,
         }));
     }
-    out.push(Button {
-        label: GO_TO.to_owned(),
-        hit: Hit::ActionButton(0),
-        lit: false,
-    });
+    if has_go_to(item) {
+        out.push(Button {
+            label: GO_TO.to_owned(),
+            hit: Hit::ActionButton(0),
+            lit: false,
+        });
+    }
     for (i, b) in out.iter_mut().enumerate() {
         b.hit = Hit::ActionButton(i);
         b.lit = lit == Some(i) || hover == Some(b.hit);
@@ -78,7 +88,9 @@ fn pressable(item: &ActionItem) -> Vec<usize> {
     } else {
         Vec::new()
     };
-    out.push(own);
+    if has_go_to(item) {
+        out.push(own);
+    }
     out
 }
 
@@ -321,6 +333,8 @@ impl App {
             self.redraw();
         } else if matches!(action, CardAction::ShowDiff) {
             self.close_action();
+            // Esc on the Diff screen brings this overlay back.
+            self.view.diff_from = Some(item.key.clone());
         }
         let reply_to = item.from.unwrap_or(AgentRef::Quartermaster);
         let message = item.anchor.or(match item.key {
@@ -332,7 +346,6 @@ impl App {
 
     /// "Go to": where the item lives.
     fn go_to_action(&mut self, item: &ActionItem) {
-        let anchor = item.anchor;
         self.close_action();
         match item.open {
             ActionOpen::Settings => self.choose_entry(crate::popups::MenuEntry::Settings),
@@ -340,20 +353,6 @@ impl App {
             ActionOpen::Session { agent } => self.open_worker_session(agent),
             ActionOpen::Plan { task } => {
                 self.command(qm_types::api::Command::OpenPlan { task });
-            }
-            ActionOpen::Conversation => {
-                self.show_conversation();
-                if let Some(message) = anchor
-                    && self
-                        .snapshot
-                        .conversation
-                        .iter()
-                        .any(|line| line.id == message)
-                {
-                    self.change(|app| &mut app.view.card, Some(message));
-                    self.change(|app| &mut app.scroll_from_bottom, 0);
-                    self.reveal = Some(message);
-                }
             }
             // Anything this build doesn't know: the conversation.
             _ => self.show_conversation(),
@@ -382,6 +381,8 @@ impl App {
         let pressable = pressable(&item);
         let max = self.term.drawn.scroll_max_of(Pane::ActionOverlay);
         match code {
+            KeyCode::Left | KeyCode::BackTab | KeyCode::Right | KeyCode::Tab
+                if pressable.is_empty() => {}
             KeyCode::Left | KeyCode::BackTab => {
                 let at = self
                     .view
@@ -828,5 +829,363 @@ mod tests {
             key(&mut app, KeyCode::Down);
         }
         assert_eq!(app.selected_action_index(), Some(249));
+    }
+}
+
+/// The overlay as the only place cards show: every card type, Go to, Diff and back.
+#[cfg(test)]
+mod popup_tests {
+    use super::*;
+    use crate::router::Screen;
+    use crate::sample;
+    use crossterm::event::{
+        Event, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    use qm_types::api::{
+        ActionKind, Card, CardButton, CardKind, ChatLine, Command, NoticeAnswer, Update,
+    };
+    use qm_types::ids::MessageId;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn screen(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        app.after_draw();
+        let buffer = terminal.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    fn key(app: &mut App, code: KeyCode) {
+        app.on_event(
+            Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+            Instant::now(),
+        );
+    }
+
+    fn click(app: &mut App, hit: Hit) {
+        let area = app.term.drawn.hits.rect_of(hit).expect("drawn");
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            let mouse = MouseEvent {
+                kind,
+                column: area.x,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            };
+            app.on_event(Event::Mouse(mouse), Instant::now());
+        }
+    }
+
+    /// The chat sample, whose Actions hold an approval, a notice, a question from the
+    /// Quartermaster, a plan, a secondmate's question and a setup item.
+    fn chat() -> App {
+        let mut app = App::new();
+        sample::install_chat(&mut app);
+        app.view.sample = false;
+        screen(&mut app, 150, 45);
+        app.take_commands();
+        app
+    }
+
+    fn index(app: &App, pick: impl Fn(&ActionItem) -> bool) -> usize {
+        app.snapshot
+            .actions
+            .iter()
+            .position(pick)
+            .expect("the item")
+    }
+
+    /// Opens the first item `pick` matches, draws it, and returns its index.
+    fn open(app: &mut App, pick: impl Fn(&ActionItem) -> bool) -> usize {
+        let i = index(app, pick);
+        app.open_action(i);
+        screen(app, 150, 45);
+        i
+    }
+
+    fn labels(app: &mut App) -> Vec<String> {
+        let rows = screen(app, 150, 45);
+        let item = open_item(app).cloned().expect("open");
+        buttons(&item, None, None)
+            .into_iter()
+            .map(|b| b.label)
+            .filter(|label| rows.iter().any(|row| row.contains(label.as_str())))
+            .collect()
+    }
+
+    #[test]
+    fn the_chat_draws_no_card_of_any_kind() {
+        for kind in [
+            CardKind::Approval,
+            CardKind::Decision,
+            CardKind::Notice,
+            CardKind::Question,
+            CardKind::Plan,
+        ] {
+            for answered in [None, Some("Approved".to_owned())] {
+                let mut app = App::new();
+                sample::install_chat(&mut app);
+                let mut card = Card::new(kind, "Zzheading");
+                card.answered.clone_from(&answered);
+                card.buttons = vec![CardButton::new("Zzbutton", 'z', CardAction::LeaveIt)];
+                let mut line = ChatLine::new(
+                    MessageId::new(77),
+                    qm_types::domain::MessageSource::App,
+                    qm_types::domain::MessageKind::Message,
+                    jiff::Timestamp::now(),
+                    "a line with a card",
+                );
+                line.card = Some(card);
+                app.snapshot.conversation.push(line);
+                let rows = screen(&mut app, 150, 45);
+                assert!(rows.iter().any(|r| r.contains("a line with a card")));
+                assert!(
+                    !rows
+                        .iter()
+                        .any(|r| r.contains("Zzheading") || r.contains("Zzbutton")),
+                    "{kind:?} {answered:?}"
+                );
+            }
+        }
+        // Nor the sample's own requests: they wait in Actions only.
+        let mut app = chat();
+        let rows = screen(&mut app, 150, 45);
+        for text in ["Ask again", "1 · The session cache", "Copy path", "Approve"] {
+            assert!(!rows.iter().any(|r| r.contains(text)), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_single_click_or_enter_or_o_opens_a_row() {
+        let mut app = chat();
+        let i = index(&app, |item| item.kind == ActionKind::Notice);
+        click(&mut app, Hit::ActionRow(i));
+        assert_eq!(app.popup(), Some(Popup::Action));
+        assert_eq!(
+            app.view.action_open,
+            Some(app.snapshot.actions[i].key.clone())
+        );
+        assert_eq!(app.take_commands(), [] as [Command; 0]);
+        for code in [KeyCode::Enter, KeyCode::Char('o')] {
+            let mut app = chat();
+            app.focus_pane(Pane::Actions);
+            app.select_action(i);
+            key(&mut app, code);
+            assert_eq!(app.popup(), Some(Popup::Action), "{code:?}");
+        }
+    }
+
+    #[test]
+    fn go_to_shows_only_for_items_that_live_elsewhere() {
+        let mut app = chat();
+        for kind in [ActionKind::Approval, ActionKind::Notice] {
+            open(&mut app, |item| item.kind == kind);
+            assert!(!labels(&mut app).contains(&GO_TO.to_owned()), "{kind:?}");
+        }
+        open(&mut app, |item| {
+            item.kind == ActionKind::Question && item.from == Some(AgentRef::Quartermaster)
+        });
+        assert!(!labels(&mut app).contains(&GO_TO.to_owned()));
+        for kind in [ActionKind::Plan, ActionKind::Setup] {
+            open(&mut app, |item| item.kind == kind);
+            assert!(labels(&mut app).contains(&GO_TO.to_owned()), "{kind:?}");
+        }
+        // The secondmate's question: Go to opens its session.
+        open(&mut app, |item| {
+            item.kind == ActionKind::Question && item.from != Some(AgentRef::Quartermaster)
+        });
+        let own = open_item(&app).unwrap().card.buttons.len();
+        app.press_action_button(own, Instant::now());
+        assert_eq!(app.popup(), None);
+        assert!(matches!(
+            app.shown_session(),
+            Some(AgentRef::Secondmate { .. })
+        ));
+        // A plan's Go to opens its page.
+        let mut app = chat();
+        open(&mut app, |item| item.kind == ActionKind::Plan);
+        let own = open_item(&app).unwrap().card.buttons.len();
+        app.press_action_button(own, Instant::now());
+        assert!(matches!(
+            app.take_commands().as_slice(),
+            [Command::OpenPlan { .. }]
+        ));
+    }
+
+    #[test]
+    fn diff_then_esc_reopens_the_popup_on_the_same_item() {
+        let mut app = chat();
+        let i = open(&mut app, |item| item.kind == ActionKind::Approval);
+        let opened = app.snapshot.actions[i].key.clone();
+        key(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.screen, Screen::Diff);
+        assert_eq!(app.popup(), None);
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.screen, Screen::Bridge);
+        assert_eq!(app.popup(), Some(Popup::Action));
+        assert_eq!(app.view.action_open, Some(opened));
+        assert_eq!(app.view.action_button, None);
+    }
+
+    #[test]
+    fn esc_after_diff_reopens_nothing_once_the_item_went() {
+        let mut app = chat();
+        open(&mut app, |item| item.kind == ActionKind::Approval);
+        key(&mut app, KeyCode::Char('d'));
+        let mut next = app.snapshot.clone();
+        next.actions
+            .retain(|item| item.kind != ActionKind::Approval);
+        app.on_update(Update::Snapshot(Box::new(next)));
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.screen, Screen::Bridge);
+        assert_eq!(app.popup(), None);
+    }
+
+    #[test]
+    fn answering_from_the_diff_closes_it_without_reopening() {
+        let mut app = chat();
+        let i = open(&mut app, |item| item.kind == ActionKind::Approval);
+        let held = app.snapshot.actions[i].card.held.unwrap();
+        key(&mut app, KeyCode::Char('d'));
+        app.snapshot.diff = Some(sample::diff());
+        app.take_commands();
+        key(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.screen, Screen::Bridge);
+        assert_eq!(app.popup(), None);
+        assert!(app.take_commands().contains(&Command::AnswerHeld {
+            held,
+            answer: HeldAnswer::Approve,
+        }));
+    }
+
+    #[test]
+    fn a_decision_answers_and_its_guidance_names_the_card() {
+        let mut app = App::new();
+        sample::install_decision(&mut app);
+        app.view.sample = false;
+        screen(&mut app, 150, 45);
+        assert_eq!(app.popup(), Some(Popup::Action));
+        let item = open_item(&app).cloned().unwrap();
+        assert_eq!(item.kind, ActionKind::Decision);
+        key(&mut app, KeyCode::Char('3'));
+        assert_eq!(
+            app.take_commands(),
+            [Command::AnswerHeld {
+                held: item.card.held.unwrap(),
+                answer: HeldAnswer::Choose {
+                    choice: HeldChoice::Discard,
+                    words: None,
+                },
+            }]
+        );
+        // Retry with guidance: the input, named after the card from Actions.
+        let mut app = App::new();
+        sample::install_decision(&mut app);
+        app.view.sample = false;
+        screen(&mut app, 150, 45);
+        key(&mut app, KeyCode::Char('1'));
+        assert_eq!(app.popup(), None);
+        assert_eq!(app.focus, Pane::Input);
+        let rows = screen(&mut app, 150, 45);
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("your guidance for T-0047 fix(ci): flaky upload test")),
+            "{rows:#?}"
+        );
+    }
+
+    #[test]
+    fn a_question_option_sends_it_and_a_notice_answers() {
+        let mut app = chat();
+        open(&mut app, |item| {
+            item.kind == ActionKind::Question && item.from == Some(AgentRef::Quartermaster)
+        });
+        key(&mut app, KeyCode::Char('2'));
+        assert!(matches!(
+            app.take_commands().as_slice(),
+            [Command::Send { to: AgentRef::Quartermaster, text, .. }] if text == "The page cache"
+        ));
+        for (letter, answer) in [('a', NoticeAnswer::AskAgain), ('l', NoticeAnswer::LeaveIt)] {
+            let mut app = chat();
+            let i = open(&mut app, |item| item.kind == ActionKind::Notice);
+            let ActionKey::Notice { message } = app.snapshot.actions[i].key else {
+                panic!("a notice");
+            };
+            key(&mut app, KeyCode::Char(letter));
+            assert_eq!(
+                app.take_commands(),
+                [Command::AnswerNotice { message, answer }]
+            );
+        }
+    }
+
+    #[test]
+    fn a_question_without_options_opens_the_chat() {
+        let mut app = chat();
+        let i = index(&app, |item| item.kind == ActionKind::Notice);
+        let mut card = Card::new(CardKind::Question, "Question");
+        card.buttons = vec![CardButton::new(
+            "Reply…",
+            'r',
+            CardAction::OpenChat {
+                to: AgentRef::Quartermaster,
+            },
+        )];
+        app.snapshot.actions[i].card = card;
+        app.snapshot.actions[i].kind = ActionKind::Question;
+        app.open_action(i);
+        screen(&mut app, 150, 45);
+        key(&mut app, KeyCode::Char('r'));
+        assert_eq!(app.popup(), None);
+        assert_eq!(app.screen, Screen::Bridge);
+        assert_eq!(app.shown_session(), None);
+    }
+
+    #[test]
+    fn a_plan_opens_and_approves() {
+        let mut app = chat();
+        let i = open(&mut app, |item| item.kind == ActionKind::Plan);
+        let ActionKey::Plan { task } = app.snapshot.actions[i].key else {
+            panic!("a plan");
+        };
+        assert!(labels(&mut app).contains(&"Copy path".to_owned()));
+        key(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.take_commands(), [Command::OpenPlan { task }]);
+        let mut app = chat();
+        let i = index(&app, |item| item.kind == ActionKind::Plan);
+        app.snapshot.actions[i].card.buttons.push(CardButton::new(
+            "Approve plan",
+            'p',
+            CardAction::ApprovePlan { task },
+        ));
+        app.open_action(i);
+        screen(&mut app, 150, 45);
+        key(&mut app, KeyCode::Char('p'));
+        assert_eq!(app.take_commands(), [Command::ApprovePlan { task }]);
+    }
+
+    #[test]
+    fn a_setup_item_opens_setup() {
+        let mut app = chat();
+        open(&mut app, |item| item.kind == ActionKind::Setup);
+        key(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.popup(), None);
+        assert_eq!(app.screen, Screen::Setup);
+    }
+
+    #[test]
+    fn card_keys_in_the_chat_send_nothing() {
+        let mut app = chat();
+        app.focus_pane(Pane::Conversation);
+        for code in ['[', ']', 'a', 'd', 'r', 'l', '1', '2', '3'] {
+            key(&mut app, KeyCode::Char(code));
+            assert_eq!(app.take_commands(), [] as [Command; 0], "{code}");
+        }
+        assert_eq!(app.popup(), None);
     }
 }

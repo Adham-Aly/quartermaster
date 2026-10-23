@@ -1,23 +1,17 @@
-//! The plan's card in the Quartermaster's chat, and its buttons: Open (the page, in your browser
-//! on this Mac), Copy path (in the UI) and Approve.
-//!
-//! The card hangs on the app note the plan's last round posted ([`super::PlanState::card`]); the
-//! note's words say what the round asked, and the card says where the plan stands now.
+//! The plan's card, listed in the Actions panel, and its buttons: Open (the page, in your browser
+//! on this Mac), Copy path (in the UI) and Approve. The card says where the plan stands now.
 
 use super::{PlanState, Stage};
 use crate::api::{ApiPart, Handled};
 use crate::tasks::TaskService;
 use crate::tasks::plan::Approver;
 use qm_plans::PAGE_FILE;
-use qm_store::tasks as task_store;
 use qm_types::BoxFuture;
 use qm_types::api::{
     Card, CardAction, CardButton, CardKind, CardLine, Command, Snapshot, Styled, Tone,
 };
 use qm_types::data_dir::DataDir;
-use qm_types::domain::TaskKind;
-use qm_types::ids::{MessageId, TaskId};
-use std::collections::HashMap;
+use qm_types::ids::TaskId;
 use std::path::{Path, PathBuf};
 
 /// The card's heading while a round's questions wait on you.
@@ -27,7 +21,7 @@ pub const FINAL_HEADING: &str = "Plan ready";
 /// The card's heading otherwise.
 pub const HEADING: &str = "Plan";
 
-/// The plans' commands and cards.
+/// The plans' commands.
 #[derive(Clone, Debug)]
 pub struct PlanPart {
     svc: TaskService,
@@ -39,13 +33,6 @@ impl PlanPart {
     }
 
     /// Every plan with a card: the card's message, the task, its state and its folder.
-    fn plans(&self) -> Vec<(MessageId, TaskId, PlanState, PathBuf)> {
-        live(&self.svc.deps().data_dir)
-            .into_iter()
-            .filter_map(|(task, state, dir)| Some((state.card?, task, state, dir)))
-            .collect()
-    }
-
     async fn open(&self, task: TaskId) {
         let page = self.svc.deps().data_dir.task(task).plan.join(PAGE_FILE);
         let problem = match std::fs::symlink_metadata(&page) {
@@ -204,47 +191,8 @@ impl ApiPart for PlanPart {
         }
     }
 
-    fn fill<'a>(&'a self, snapshot: &'a mut Snapshot) -> BoxFuture<'a, ()> {
-        Box::pin(async move {
-            let plans = self.plans();
-            if plans.is_empty() {
-                return;
-            }
-            let ids: Vec<TaskId> = plans.iter().map(|p| p.1).collect();
-            let rows = self
-                .svc
-                .db()
-                .call(move |conn| {
-                    let mut out = HashMap::new();
-                    for id in ids {
-                        if let Some(row) = task_store::load(conn, id)?
-                            && row.kind == TaskKind::Plan
-                        {
-                            let project = crate::tasks::load_project(conn, row.project)?
-                                .map(|p| p.name)
-                                .unwrap_or_default();
-                            out.insert(id, (row.title, project));
-                        }
-                    }
-                    Ok(out)
-                })
-                .await
-                .unwrap_or_default();
-            let cards: HashMap<MessageId, Card> = plans
-                .into_iter()
-                .filter_map(|(message, task, state, dir)| {
-                    let (title, project) = rows.get(&task)?;
-                    Some((
-                        message,
-                        card(task, title, project, &state, &dir.join(PAGE_FILE)),
-                    ))
-                })
-                .collect();
-            for line in &mut snapshot.conversation {
-                if let Some(card) = cards.get(&line.id) {
-                    line.card = Some(card.clone());
-                }
-            }
-        })
+    fn fill<'a>(&'a self, _: &'a mut Snapshot) -> BoxFuture<'a, ()> {
+        // Plan cards reach the UI only through the Actions list (`actions::ActionsPart`).
+        Box::pin(async {})
     }
 }

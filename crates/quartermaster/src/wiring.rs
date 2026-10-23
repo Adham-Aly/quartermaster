@@ -314,13 +314,14 @@ pub(crate) async fn start_core(
     parts.push(Arc::new(updates_part(&dir, &clock, &conversation)));
     parts.push(Arc::new(DraftsPart::new()));
     // After every other part, so it sees the setup findings, the settings and the model notice.
-    if let Some(tasks) = &tasks {
-        parts.push(Arc::new(qm_core::actions::ActionsPart::new(
-            held.clone(),
-            tasks.clone(),
-        )));
-    }
-    // Last, so it sees every card the other parts add.
+    // Always wired, so held approvals stay answerable when crewmates are off.
+    parts.push(Arc::new(qm_core::actions::ActionsPart::new(
+        held.clone(),
+        (db.clone(), Arc::clone(&clock), dir.clone()),
+        agent,
+        tasks.clone(),
+    )));
+    // Last, after the Actions list it reads.
     parts.push(Arc::new(NotificationsPart::new(
         notify_config,
         Arc::new(DesktopNotifier),
