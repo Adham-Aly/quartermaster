@@ -41,6 +41,7 @@ pub static MIGRATIONS: &[M<'static>] = &[
     M::up(SQL[10]).foreign_key_check(),
     M::up(SQL[11]).foreign_key_check(),
     M::up(SQL[12]).foreign_key_check(),
+    M::up(SQL[13]).foreign_key_check(),
 ];
 
 /// Upgrades an intentionally incomplete mirror. Its foreign keys are repaired and validated only
