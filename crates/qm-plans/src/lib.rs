@@ -14,7 +14,8 @@
 //!   same text. Each h2/h3 section has a fingerprint over its Markdown and the bytes of the assets
 //!   it shows, so a changed section (or a changed image in it) is badged "updated" next round.
 //! - **Questions and replies.** A question is a ```` ```question ```` TOML block ([`question`]).
-//!   The page builds a reply the user copies and pastes into a chat; [`reply`] parses it back.
+//!   The page builds a reply the user sends to the app from the page ([`Submit`]), or copies and
+//!   pastes into a chat; [`reply`] parses it back.
 //! - **Mode rules** ([`check`]): interactive plans must ask in round 1, list `## Assumptions`, and
 //!   go final only after the user answered a round; internal plans may not ask at all and list
 //!   `## Decisions made without the user`.
@@ -370,6 +371,37 @@ pub enum PageState {
     Locked { reason: String },
 }
 
+/// The path the app's plan endpoint answers on, on `127.0.0.1:<port>`.
+pub const SUBMIT_PATH: &str = "/v1/plan-reply";
+
+/// Where the page sends its reply: the app's endpoint on this Mac, and the round's key.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Submit {
+    pub port: u16,
+    /// The round's capability token, 64 hex digits. Never logged, so `Debug` leaves it out.
+    pub token: String,
+}
+
+impl Submit {
+    /// `http://127.0.0.1:<port>`, the page's only `connect-src`.
+    pub fn origin(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// The URL the page posts to.
+    pub fn url(&self) -> String {
+        format!("{}{SUBMIT_PATH}", self.origin())
+    }
+}
+
+impl fmt::Debug for Submit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Submit")
+            .field("port", &self.port)
+            .finish_non_exhaustive()
+    }
+}
+
 /// What the page shows besides `plan.md`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Meta {
@@ -383,6 +415,19 @@ pub struct Meta {
     pub state: PageState,
     /// The previous round's section fingerprints, for "updated" badges.
     pub previous: BTreeMap<String, String>,
+    /// Where Send to Quartermaster posts; `None` leaves the page with Copy reply only. Used only
+    /// while the page takes replies ([`PageState::Open`] or [`PageState::Final`]).
+    pub submit: Option<Submit>,
+}
+
+impl Meta {
+    /// The endpoint the page may send to: [`Meta::submit`] while the page takes replies.
+    pub(crate) fn sends_to(&self) -> Option<&Submit> {
+        match self.state {
+            PageState::Open | PageState::Final => self.submit.as_ref(),
+            PageState::Approved { .. } | PageState::Locked { .. } => None,
+        }
+    }
 }
 
 /// A rendered page.
@@ -401,6 +446,22 @@ pub fn render(md: &str, assets: &Assets, meta: &Meta) -> Result<Rendered, Proble
         html,
         checked: parsed.checked,
     })
+}
+
+/// The sha256 of `plan.md` and every asset's name and bytes, in hex: what a page was rendered
+/// from, so the app can tell whether re-rendering it would show the user something new.
+pub fn digest(md: &str, assets: &Assets) -> String {
+    let mut hasher = Sha256::new();
+    let mut part = |bytes: &[u8]| {
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    };
+    part(md.as_bytes());
+    for (name, bytes) in assets.iter() {
+        part(name.as_bytes());
+        part(bytes);
+    }
+    hex(&hasher.finalize())
 }
 
 /// A short hex digest (16 digits) of `parts`, each length-prefixed so boundaries count.

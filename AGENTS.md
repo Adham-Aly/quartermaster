@@ -73,7 +73,8 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
 - `seat/`, `secondmates/SM-n/`, `tasks/T-n/` (worktree, brief, jobs; the folder goes at close; each
   has `transcript/`, the provider engine's durable sessions), `artifacts/T-n/` (`plan/`, `evidence/`,
   kept while a task reads them; `qm-core` `retention.rs`), `attachments/`, `drafts/`, `workspace/` (the personal workspace's default folder, plain files; `[workspace] folder` moves it),
-  `ui.json` (UI state, never logged; `tui.toml` is only read once for old widths).
+  `ui.json` (UI state, never logged; `tui.toml` is only read once for old widths), `plan-endpoint.json`
+  (the plan pages' loopback port, kept so pages rendered before a restart still send).
 - Scratch, `/tmp/quartermaster/<uid>/<hash>/` (`DataDir::scratch`; owner and 0700 checked, never a
   symlink): only crewmates' `scratchpad/T-n/`. Provider engines refuse writes in the data dir.
 

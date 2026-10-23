@@ -41,6 +41,7 @@ fn main() -> ExitCode {
         project: "example".into(),
         state,
         previous: BTreeMap::new(),
+        submit: None,
     };
     match render(&md, &assets, &meta) {
         Ok(page) => {

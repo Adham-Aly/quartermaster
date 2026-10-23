@@ -18,7 +18,7 @@ use jiff::Timestamp;
 use qm_types::ids::space;
 use qm_types::ids::{AgentId, EventId, MessageId, TaskId, TurnId};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// `seat.notice`: a notice under one of your messages (the seam's `event_kind::NOTICE`).
 pub const NOTICE: &str = "seat.notice";
@@ -280,6 +280,54 @@ pub struct NoticeState {
     /// One plain sentence, for a failed turn.
     pub reason: Option<String>,
     pub answer: Option<NoticeChoice>,
+}
+
+/// `plan.page_reply_note`: the app note acknowledging a plan reply sent from its page, which the
+/// conversation draws on one line (`payload.message`).
+pub const PLAN_REPLY_NOTE: &str = "plan.page_reply_note";
+
+/// Whether `task` has an event of `kind` whose `payload.round` is `round`.
+pub fn has_round(
+    conn: &Connection,
+    kind: &str,
+    task: TaskId,
+    round: u32,
+) -> Result<bool, StoreError> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM events WHERE kind = ?1 AND task_id = ?2
+                        AND json_extract(payload, '$.round') = ?3)",
+        params![kind, task, round],
+        |r| r.get(0),
+    )?)
+}
+
+/// The messages in `messages` the conversation draws on one line ([`PLAN_REPLY_NOTE`]).
+pub fn one_line(
+    conn: &Connection,
+    messages: &[MessageId],
+) -> Result<BTreeSet<MessageId>, StoreError> {
+    if messages.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let placeholders = (0..messages.len())
+        .map(|i| format!("?{}", i + 2))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut values: Vec<rusqlite::types::Value> = vec![PLAN_REPLY_NOTE.to_owned().into()];
+    values.extend(
+        messages
+            .iter()
+            .map(|m| rusqlite::types::Value::from(m.get())),
+    );
+    let mut stmt = conn.prepare(&format!(
+        "SELECT json_extract(payload, '$.message') FROM events
+         WHERE kind = ?1 AND json_extract(payload, '$.message') IN ({placeholders})"
+    ))?;
+    Ok(stmt
+        .query_map(params_from_iter(values.iter()), |r| {
+            r.get::<_, MessageId>(0)
+        })?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?)
 }
 
 /// Every notice still waiting on your answer, whatever its age: the unwindowed sibling of

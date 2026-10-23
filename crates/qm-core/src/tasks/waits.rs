@@ -26,7 +26,7 @@ use qm_store::tasks::{self as task_store, TaskRow};
 use qm_tools::defs::{Ack, DeliveryCheck, FileFollowupArgs, Linked, TaskUpdated};
 use qm_tools::handler::{Caller, DeclaredWait, ToolFailure};
 use qm_types::domain::{DeliveryMode, MessageKind, MessageSource, TaskStatus, WakeKind};
-use qm_types::ids::TaskId;
+use qm_types::ids::{AgentId, MessageId, TaskId};
 use rusqlite::Connection;
 use std::fmt::Write as _;
 
@@ -380,68 +380,7 @@ pub(crate) async fn message_task(
     let supervisor = caller.agent;
     let status = svc
         .write(move |tx, notify| {
-            let Some(row) = task_store::load(tx, task)? else {
-                return Ok(TaskStatus::Closed);
-            };
-            let Some(crewmate) = agents::crewmate_of(tx, task)? else {
-                return Ok(row.status);
-            };
-            let message = messages::insert(
-                tx,
-                &NewMessage {
-                    agent: crewmate.id,
-                    source: MessageSource::Supervisor,
-                    kind: MessageKind::Message,
-                    text: &text,
-                    options: &[],
-                    replies_to: None,
-                    turn: None,
-                    at,
-                },
-            )?;
-            // A crewmate waiting on a decision, or a planner on the user's reply to its page.
-            let waiting_on_decision = row.status == TaskStatus::Waiting
-                && row
-                    .waiting_on
-                    .as_ref()
-                    .is_some_and(|w| w.get("decision").is_some() || w.get("plan").is_some());
-            let mut status = row.status;
-            if waiting_on_decision || row.status == TaskStatus::Reported {
-                task_store::set_status(tx, task, row.status, TaskStatus::Running, at)?;
-                status = TaskStatus::Running;
-            }
-            // The review's findings passed to a builder in review, or a steer to a stuck crewmate,
-            // whose pending stuck notice no longer applies.
-            if matches!(row.status, TaskStatus::InReview | TaskStatus::Stuck)
-                && let Ok(to) = next_for(task, row.status, TaskEvent::Steered)
-            {
-                task_store::set_status(tx, task, row.status, to, at)?;
-                status = to;
-                if row.status == TaskStatus::Stuck {
-                    crate::decisions::hold::supersede_stuck(tx, task, at)?;
-                }
-            }
-            task_store::event(
-                tx,
-                STEERED_EVENT,
-                task,
-                Some(supervisor),
-                &format!("{task} was steered by its supervisor"),
-                serde_json::json!({ "message": message }),
-                at,
-            )?;
-            let wake = new_wake(
-                crewmate.id,
-                WakeKind::Steer,
-                task,
-                format!("steer:{task}:{message}"),
-                &text,
-                "your supervisor wrote",
-                serde_json::json!({ "message": message }),
-                at,
-            );
-            Inbox::post(tx, &wake, notify)?;
-            Ok(status)
+            deliver_to_crewmate(tx, notify, task, supervisor, &text, at).map(|d| d.status)
         })
         .await
         .map_err(|e| failed(&e))?;
@@ -450,6 +389,100 @@ pub(crate) async fn message_task(
         tracing::info!(%task, "{note}");
     }
     Ok(TaskUpdated { task, status })
+}
+
+/// A supervisor's message delivered to a task's crewmate.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Delivered {
+    /// The task's status after it.
+    pub status: TaskStatus,
+    /// The message, `None` when the task has no crewmate (or is gone).
+    pub message: Option<MessageId>,
+}
+
+/// Delivers `text` (already neutralised) to `task`'s crewmate as a message from its supervisor
+/// `from`, in the caller's transaction: the message, the `steer` wake, and the status change a
+/// steer makes (a decision or plan wait, or a report, back to running; review or stuck on). The
+/// one path for `message_task` and a reply sent from a plan's page.
+pub(crate) fn deliver_to_crewmate(
+    tx: &Connection,
+    notify: &mut Notify,
+    task: TaskId,
+    from: AgentId,
+    text: &str,
+    at: Timestamp,
+) -> Result<Delivered, StoreError> {
+    let Some(row) = task_store::load(tx, task)? else {
+        return Ok(Delivered {
+            status: TaskStatus::Closed,
+            message: None,
+        });
+    };
+    let Some(crewmate) = agents::crewmate_of(tx, task)? else {
+        return Ok(Delivered {
+            status: row.status,
+            message: None,
+        });
+    };
+    let message = messages::insert(
+        tx,
+        &NewMessage {
+            agent: crewmate.id,
+            source: MessageSource::Supervisor,
+            kind: MessageKind::Message,
+            text,
+            options: &[],
+            replies_to: None,
+            turn: None,
+            at,
+        },
+    )?;
+    // A crewmate waiting on a decision, or a planner on the user's reply to its page.
+    let waiting_on_decision = row.status == TaskStatus::Waiting
+        && row
+            .waiting_on
+            .as_ref()
+            .is_some_and(|w| w.get("decision").is_some() || w.get("plan").is_some());
+    let mut status = row.status;
+    if waiting_on_decision || row.status == TaskStatus::Reported {
+        task_store::set_status(tx, task, row.status, TaskStatus::Running, at)?;
+        status = TaskStatus::Running;
+    }
+    // The review's findings passed to a builder in review, or a steer to a stuck crewmate,
+    // whose pending stuck notice no longer applies.
+    if matches!(row.status, TaskStatus::InReview | TaskStatus::Stuck)
+        && let Ok(to) = next_for(task, row.status, TaskEvent::Steered)
+    {
+        task_store::set_status(tx, task, row.status, to, at)?;
+        status = to;
+        if row.status == TaskStatus::Stuck {
+            crate::decisions::hold::supersede_stuck(tx, task, at)?;
+        }
+    }
+    task_store::event(
+        tx,
+        STEERED_EVENT,
+        task,
+        Some(from),
+        &format!("{task} was steered by its supervisor"),
+        serde_json::json!({ "message": message }),
+        at,
+    )?;
+    let wake = new_wake(
+        crewmate.id,
+        WakeKind::Steer,
+        task,
+        format!("steer:{task}:{message}"),
+        text,
+        "your supervisor wrote",
+        serde_json::json!({ "message": message }),
+        at,
+    );
+    Inbox::post(tx, &wake, notify)?;
+    Ok(Delivered {
+        status,
+        message: Some(message),
+    })
 }
 
 /// The user's plan replies in a message to a task, checked and recorded; a message without one

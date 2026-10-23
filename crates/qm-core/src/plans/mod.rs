@@ -1,6 +1,6 @@
-//! Plan tasks' plans, kept only in the scratch root (`/tmp/quartermaster/…/plans/T-n/`), never in
-//! the database: plans last hours or days, not weeks, and the user wants nothing of them outside
-//! `/tmp`.
+//! Plan tasks' plans, kept in each task's plan folder (`artifacts/T-n/plan/` in the data
+//! directory), never in the database. The retention sweep ([`crate::retention`]) keeps a folder
+//! while its task, or a build that reads it, is open.
 //!
 //! A plan folder holds:
 //!
@@ -9,16 +9,21 @@
 //! | `plan.md` | the planner | the plan, the one source of truth |
 //! | `assets/` | the planner | images it shows |
 //! | `plan.html` | the app, normal autonomy only | the user's page, rendered by `qm-plans` |
-//! | `state.json` | the app | [`PlanState`]: the plan's id, stage, round and card |
+//! | `state.json` | the app | [`PlanState`]: the plan's id, stage, round, card and page key |
 //!
 //! A build that builds on a plan gets its own copy of `plan.md` and `assets/` in its own plan
-//! folder, so the plan task can close (and its folder go) while the build runs. Every plan folder
-//! goes when its task closes; a startup sweep removes any a crash left behind.
+//! folder, so the plan task can close while the build runs.
+//!
+//! The user answers a round on its page and sends the reply to the app's loopback endpoint
+//! ([`endpoint`], [`submit`]) or copies it into the Quartermaster's chat. Either way one reply per
+//! round reaches the planner, as a message from its supervisor.
 //!
 //! The plan mode a planner's session runs in is the app's choice, from the project's autonomy when
 //! the session starts ([`PlanState::session_mode`]); nothing the planner says changes it.
 
 pub mod api;
+pub mod endpoint;
+pub mod submit;
 
 use qm_plans::{ASSETS_DIR, Assets, Checked, PAGE_FILE, PLAN_FILE, Problems, Rules};
 use qm_types::data_dir::private_folder;
@@ -89,6 +94,99 @@ pub struct PlanState {
     /// Why the page takes no more replies, when it doesn't.
     #[serde(default)]
     pub locked: Option<String>,
+    /// The current round's page key, a new one each round: what lets the page send its reply.
+    #[serde(default)]
+    pub page_token: Option<PageToken>,
+    /// A reply sent from the page for this round is being delivered.
+    #[serde(default)]
+    pub page_claim: Option<u32>,
+    /// The round whose reply the page sent, and when.
+    #[serde(default)]
+    pub page_sent: Option<PageSent>,
+    /// What the page on disk was rendered from ([`qm_plans::digest`]): the app renders it again
+    /// (for a new port, or once its reply is sent) only while `plan.md` and the assets still match,
+    /// so the user never sees plan text appear that the planner didn't report.
+    #[serde(default)]
+    pub rendered_digest: Option<String>,
+    /// The endpoint port the page on disk sends to; `None` when it can't send.
+    #[serde(default)]
+    pub page_port: Option<u16>,
+    /// The fingerprints the page on disk was badged against, so rendering it again keeps its
+    /// "updated" badges.
+    #[serde(default)]
+    pub page_previous: BTreeMap<String, String>,
+}
+
+/// A round's page key: 32 random bytes from the system's generator, in hex. It lives only in
+/// `state.json` (0600) and the page itself; `Debug` leaves it out, and it is never logged.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PageToken(String);
+
+impl PageToken {
+    /// A fresh key; `None` if the system's generator fails (the page then offers Copy reply only).
+    pub fn fresh() -> Option<Self> {
+        use rand::TryRngCore as _;
+        let mut bytes = [0_u8; 32];
+        rand::rngs::OsRng.try_fill_bytes(&mut bytes).ok()?;
+        let mut hex = String::with_capacity(64);
+        for b in bytes {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{b:02x}");
+        }
+        Some(Self(hex))
+    }
+
+    /// Whether `given` is this key, compared in time that doesn't depend on where they differ.
+    pub fn matches(&self, given: &str) -> bool {
+        let (a, b) = (self.0.as_bytes(), given.as_bytes());
+        if a.len() != b.len() {
+            return false;
+        }
+        a.iter().zip(b).fold(0_u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    }
+
+    /// The key itself, for the page.
+    fn reveal(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for PageToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PageToken(…)")
+    }
+}
+
+/// The page's reply to a round reached the planner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageSent {
+    pub round: u32,
+    /// When, as shown ("14:02").
+    pub at: String,
+}
+
+impl PlanState {
+    /// Whether the page for the current round may send a reply now: the round is with the user,
+    /// the page is open, and no reply for it has been sent, from the page or pasted.
+    pub fn takes_page_reply(&self) -> bool {
+        matches!(self.stage, Stage::WithUser | Stage::Final)
+            && self.locked.is_none()
+            && !self.pending_reply
+            && self.page_claim.is_none()
+            && self
+                .page_sent
+                .as_ref()
+                .is_none_or(|s| s.round != self.round)
+            && self.last_answered_round < self.round
+    }
+
+    /// Whether the current round's reply was sent from the page.
+    pub fn sent_from_page(&self) -> bool {
+        self.page_sent
+            .as_ref()
+            .is_some_and(|s| s.round == self.round)
+    }
 }
 
 impl PlanState {
@@ -113,6 +211,12 @@ impl PlanState {
             session_mode: None,
             card: None,
             locked: None,
+            page_token: None,
+            page_claim: None,
+            page_sent: None,
+            rendered_digest: None,
+            page_port: None,
+            page_previous: BTreeMap::new(),
         }
     }
 }
@@ -173,6 +277,37 @@ pub fn update<T>(
     Ok(Some((state, out)))
 }
 
+/// Records the user's reply to `round` in `state`, the same for a pasted reply and one sent from
+/// the page: the round counts as answered once, and the planner is now working on it.
+pub fn record_answer(state: &mut PlanState, round: u32) {
+    if state.last_answered_round < round {
+        state.last_answered_round = round;
+        state.user_rounds += 1;
+    }
+    state.pending_reply = true;
+}
+
+/// Changes the plan's state under the write lock when `change` says yes, and saves it only then;
+/// `None` when the folder has none.
+pub fn try_update<T, E>(
+    dir: &Path,
+    change: impl FnOnce(&mut PlanState) -> Result<T, E>,
+) -> io::Result<Option<Result<(PlanState, T), E>>> {
+    let _guard = WRITING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mut state) = load(dir)? else {
+        return Ok(None);
+    };
+    match change(&mut state) {
+        Ok(out) => {
+            save(dir, &state)?;
+            Ok(Some(Ok((state, out))))
+        }
+        Err(e) => Ok(Some(Err(e))),
+    }
+}
+
 fn save(dir: &Path, state: &PlanState) -> io::Result<()> {
     let text = serde_json::to_string_pretty(state).map_err(io::Error::other)?;
     write_private(&dir.join(STATE_FILE), text.as_bytes())
@@ -226,16 +361,56 @@ pub fn check(dir: &Path, mode: PlanMode, state: &PlanState) -> Result<Checked, S
     qm_plans::check(&md, &assets, &rules).map_err(|p| problems(&p))
 }
 
+/// A page written to the plan folder.
+#[derive(Clone, Debug)]
+pub struct Rendered {
+    pub checked: Checked,
+    /// What it was rendered from ([`qm_plans::digest`]).
+    pub digest: String,
+    /// The endpoint port it sends to, if it can send.
+    pub port: Option<u16>,
+    /// The fingerprints its "updated" badges compare against.
+    pub previous: BTreeMap<String, String>,
+}
+
+impl Rendered {
+    /// Notes in `state` what the page on disk shows, for rendering it again later.
+    pub fn record(&self, state: &mut PlanState) {
+        state.rendered_digest = Some(self.digest.clone());
+        state.page_port = self.port;
+        state.page_previous.clone_from(&self.previous);
+    }
+}
+
 /// Renders the folder's plan as the user's page, for the round and stage in `state`, and writes
-/// `plan.html`.
+/// `plan.html`. With the endpoint's `port`, a page that takes a reply ([`PlanState::takes_page_reply`])
+/// can send it there with the round's key; without one it offers Copy reply only.
 pub fn render(
     dir: &Path,
     task: TaskId,
     project: &str,
     state: &PlanState,
     previous: BTreeMap<String, String>,
-) -> Result<Checked, String> {
+    port: Option<u16>,
+) -> Result<Rendered, String> {
     let (md, assets) = read(dir)?;
+    render_from(dir, &md, &assets, task, project, state, previous, port)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the page's inputs, passed through from render and rerender"
+)]
+fn render_from(
+    dir: &Path,
+    md: &str,
+    assets: &Assets,
+    task: TaskId,
+    project: &str,
+    state: &PlanState,
+    previous: BTreeMap<String, String>,
+    port: Option<u16>,
+) -> Result<Rendered, String> {
     let page_state = match (&state.locked, state.stage, &state.approved_at) {
         (Some(reason), _, _) => qm_plans::PageState::Locked {
             reason: reason.clone(),
@@ -243,21 +418,106 @@ pub fn render(
         (None, Stage::Approved, at) => qm_plans::PageState::Approved {
             at: at.clone().unwrap_or_default(),
         },
+        (None, _, _) if state.sent_from_page() => qm_plans::PageState::Locked {
+            reason: format!(
+                "Your reply to round {} went to the planner at {}. The next round will appear here.",
+                state.round,
+                state.page_sent.as_ref().map_or("", |s| s.at.as_str())
+            ),
+        },
         (None, Stage::Final, _) => qm_plans::PageState::Final,
         (None, Stage::Drafting | Stage::WithUser, _) => qm_plans::PageState::Open,
     };
+    let submit = match (port, &state.page_token) {
+        (Some(port), Some(token)) if state.takes_page_reply() => Some(qm_plans::Submit {
+            port,
+            token: token.reveal().to_owned(),
+        }),
+        _ => None,
+    };
+    let sends_to = submit.as_ref().map(|s| s.port);
     let meta = qm_plans::Meta {
         task: task.to_string(),
         plan_uid: state.uid.clone(),
         round: state.round.max(1),
         project: project.to_owned(),
         state: page_state,
-        previous,
+        previous: previous.clone(),
+        submit,
     };
-    let rendered = qm_plans::render(&md, &assets, &meta).map_err(|p| problems(&p))?;
+    let rendered = qm_plans::render(md, assets, &meta).map_err(|p| problems(&p))?;
     write_private(&dir.join(PAGE_FILE), rendered.html.as_bytes())
         .map_err(|e| format!("the page couldn't be written: {e}"))?;
-    Ok(rendered.checked)
+    Ok(Rendered {
+        checked: rendered.checked,
+        digest: qm_plans::digest(md, assets),
+        port: sends_to,
+        previous,
+    })
+}
+
+/// Renders the page for the saved state again (after its stage changed), badged against
+/// `previous`, for the endpoint on `port`, and records it. `Ok(false)` when the folder has no
+/// state or no round's page yet.
+pub fn render_saved(
+    dir: &Path,
+    task: TaskId,
+    project: &str,
+    port: Option<u16>,
+    previous: impl FnOnce(&PlanState) -> BTreeMap<String, String>,
+) -> Result<bool, String> {
+    render_again(dir, task, project, port, Some(previous))
+}
+
+/// Renders the page of the round in the saved state again, for the endpoint on `port` or once
+/// its reply was sent, keeping its badges; only while `plan.md` and its assets are what the page
+/// on disk was rendered from. `Ok(false)` when it was left alone.
+pub fn rerender(
+    dir: &Path,
+    task: TaskId,
+    project: &str,
+    port: Option<u16>,
+) -> Result<bool, String> {
+    render_again(
+        dir,
+        task,
+        project,
+        port,
+        None::<fn(&PlanState) -> BTreeMap<String, String>>,
+    )
+}
+
+/// `render_saved` with `previous`, else `rerender`.
+fn render_again(
+    dir: &Path,
+    task: TaskId,
+    project: &str,
+    port: Option<u16>,
+    previous: Option<impl FnOnce(&PlanState) -> BTreeMap<String, String>>,
+) -> Result<bool, String> {
+    let _guard = WRITING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mut state) = load(dir).map_err(|e| e.to_string())? else {
+        return Ok(false);
+    };
+    if state.round == 0 || !dir.join(PAGE_FILE).is_file() {
+        return Ok(false);
+    }
+    let (md, assets) = read(dir)?;
+    let previous = match previous {
+        Some(previous) => previous(&state),
+        None if state.rendered_digest.as_deref()
+            == Some(qm_plans::digest(&md, &assets).as_str()) =>
+        {
+            state.page_previous.clone()
+        }
+        None => return Ok(false),
+    };
+    let rendered = render_from(dir, &md, &assets, task, project, &state, previous, port)?;
+    rendered.record(&mut state);
+    save(dir, &state).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// Copies a plan's `plan.md` and `assets/` into a build's own plan folder, replacing what was
@@ -306,5 +566,7 @@ pub fn copy_for_build(from: &Path, to: &Path) -> io::Result<()> {
     made
 }
 
+#[cfg(test)]
+mod page_reply_tests;
 #[cfg(test)]
 mod tests;

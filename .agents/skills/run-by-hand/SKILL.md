@@ -88,6 +88,10 @@ QM_DEV=1 QM_DEV_RUNNING_VERSION=0.0.1 quartermaster  # look older, so the newest
 The scripted engine plays a TOML script (format in `crates/qm-engine/src/scripted/script.rs`):
 text, tool calls, stalls, crashes, jobs and provider errors, with no model and no cost. It suits
 reproducing turn-loop and UI behaviour.
+A scripted seat still needs a model level (Settings ▸ Model levels), and its `start_crewmate`
+titles must be conventional (`docs(notes): …`); add `expect_result_contains` to a tool call to see
+why a refused call failed. Plan pages send to `127.0.0.1:<port>` from `<home>/plan-endpoint.json`
+(`{"port":N}`); write it before starting so the endpoint binds inside your port block.
 
 ## After the run
 

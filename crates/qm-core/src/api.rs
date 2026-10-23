@@ -28,7 +28,7 @@ use qm_types::api::{
 use qm_types::clock::Clock;
 use qm_types::domain::{MessageKind, MessageSource};
 use qm_types::ids::{AgentId, MessageId, TurnId};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -372,12 +372,18 @@ pub(crate) async fn load_conversation(
                 .filter(|r| r.source == MessageSource::You)
                 .map(|r| r.id)
                 .collect();
+            let notes: Vec<MessageId> = rows
+                .iter()
+                .filter(|r| r.source == MessageSource::App)
+                .map(|r| r.id)
+                .collect();
             let mut turns: Vec<TurnId> = rows.iter().filter_map(|r| r.turn).collect();
             turns.sort_unstable();
             turns.dedup();
             Ok(ConversationData {
                 acknowledgements: messages::latest_acknowledgements(conn, &yours)?,
                 notices: events::notices(conn, &yours)?,
+                one_line: events::one_line(conn, &notes)?,
                 origins: messages::turn_origins(conn, &turns)?,
                 rows,
             })
@@ -394,6 +400,8 @@ pub(crate) struct ConversationData {
     pub acknowledgements: BTreeMap<MessageId, String>,
     pub notices: BTreeMap<MessageId, NoticeState>,
     pub origins: BTreeMap<TurnId, TurnOrigin>,
+    /// The app's notes drawn on one line (a plan reply sent from its page).
+    pub one_line: BTreeSet<MessageId>,
 }
 
 /// The snapshot the Bridge shows, from the loaded conversation and the loop's state.
@@ -468,6 +476,7 @@ fn chat_line(
                 line.card = Some(question_card(&row.options, answer.map(String::as_str)));
             }
         }
+        MessageSource::App if data.one_line.contains(&row.id) => line = line.with_one_line(),
         MessageSource::App | MessageSource::Supervisor => {}
     }
     line
