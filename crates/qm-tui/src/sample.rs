@@ -14,9 +14,10 @@ use jiff::Timestamp;
 use jiff::civil::date;
 use jiff::tz::TimeZone;
 use qm_types::api::{
-    AccountBadge, AgentRef, Attention, Card, CardAction, CardButton, CardKind, CardLine, ChatLine,
-    CrewRow, HeldAnswer, HeldChoice, ProjectRow, SessionLine, SessionLineKind, SessionView,
-    Snapshot, Styled, TaskDetail, TaskRow, Tone, Waiting,
+    AccountBadge, ActionItem, ActionKey, ActionKind, ActionOpen, AgentRef, Attention, Card,
+    CardAction, CardButton, CardKind, CardLine, ChatLine, CrewRow, HeldAnswer, HeldChoice,
+    ProjectRow, SessionLine, SessionLineKind, SessionView, Snapshot, Styled, TaskDetail, TaskRow,
+    Tone, Waiting,
 };
 use qm_types::domain::{
     Autonomy, DeliveryMode, MessageKind, MessageSource, Provider as ProviderId,
@@ -46,6 +47,9 @@ pub const THINKING: &str = "thinking";
 /// The value of [`ENV`] that shows the sample Bridge with a badge on the menu's Settings entry
 /// (and so on the menu button).
 pub const MENU_BADGE: &str = "menu-badge";
+
+/// The Bridge with the Actions inbox focused and a long list in it.
+pub const ACTIONS: &str = "actions";
 
 /// Puts the sample worker session into `app`: T-0042's session in the Bridge sample's middle
 /// panel, the input focused and empty. Nothing waits for you.
@@ -153,6 +157,7 @@ pub(crate) fn install_from_env(app: &mut App) -> bool {
         Ok(THINKING) => install_thinking(app),
         Ok(DECISION) => install_decision(app),
         Ok(SECONDMATE) => install_secondmate(app),
+        Ok(ACTIONS) => install_actions(app),
         _ => return false,
     }
     true
@@ -308,6 +313,7 @@ pub fn snapshot() -> Snapshot {
     out.crew = crew();
     out.conversation = conversation();
     out.tasks = tasks();
+    out.actions = actions(&out.conversation);
     // What the core answers when the approval card's Diff is pressed (the sample ignores the
     // core's snapshots, so it carries the answer already).
     out.diff = Some(diff());
@@ -992,4 +998,105 @@ pub fn diff() -> qm_types::api::DiffView {
         s(" }", Tone::Text),
     ];
     view
+}
+
+/// The inbox the core would build from the sample: a configuration prompt, then each live card in
+/// the conversation, then a secondmate's question, newest first.
+fn actions(conversation: &[ChatLine]) -> Vec<ActionItem> {
+    let mut setup = Card::new(CardKind::Notice, "Setup");
+    setup.lines = vec![CardLine::new(
+        0,
+        vec![s(
+            "GitHub isn't signed in: pull requests can't open.",
+            Tone::Text,
+        )],
+    )];
+    setup.buttons = vec![CardButton::new("Open Setup", 's', CardAction::OpenSetup)];
+    let mut out = vec![ActionItem::new(
+        ActionKey::Setup {
+            issue: String::from("github"),
+        },
+        ActionKind::Setup,
+        "Sign in to GitHub",
+        at(13, 2),
+        setup,
+        ActionOpen::Setup,
+    )];
+    let mut rest: Vec<ActionItem> = conversation
+        .iter()
+        .filter_map(|line| {
+            let card = line.card.as_ref()?;
+            let held = card.held?;
+            if card.answered.is_some() || card.buttons.is_empty() {
+                return None;
+            }
+            let kind = match card.kind {
+                CardKind::Approval => ActionKind::Approval,
+                _ => ActionKind::Decision,
+            };
+            // The core titles a held item with its task's title.
+            let title = card.lines.first().map_or_else(
+                || card.heading.clone(),
+                |line| {
+                    line.spans
+                        .iter()
+                        .map(|s| s.text.as_str())
+                        .collect::<String>()
+                },
+            );
+            let title = title.trim().to_owned();
+            Some(
+                ActionItem::new(
+                    ActionKey::Held { id: held },
+                    kind,
+                    title,
+                    line.at,
+                    card.clone(),
+                    ActionOpen::Conversation,
+                )
+                .with_anchor(line.id),
+            )
+        })
+        .collect();
+    let mut question = Card::new(CardKind::Question, "Question");
+    question.lines = vec![CardLine::new(
+        0,
+        vec![s(
+            "Should the nightly report include the staging deploys, or production only?",
+            Tone::Text,
+        )],
+    )];
+    question.buttons = vec![CardButton::new(
+        "Reply…",
+        'r',
+        CardAction::OpenChat {
+            to: secondmate_ref(),
+        },
+    )];
+    rest.push(
+        ActionItem::new(
+            ActionKey::Question {
+                message: MessageId::new(90),
+            },
+            ActionKind::Question,
+            "Staging deploys in the nightly report?",
+            at(14, 20),
+            question,
+            ActionOpen::Session {
+                agent: secondmate_ref(),
+            },
+        )
+        .with_from(secondmate_ref()),
+    );
+    rest.sort_by_key(|item| std::cmp::Reverse(item.at));
+    out.extend(rest);
+    out
+}
+
+/// The sample Bridge with the Actions pane focused on its newest item.
+pub(crate) fn install_actions(app: &mut App) {
+    install(app);
+    let first = app.snapshot.actions.get(1).map(|item| item.key.clone());
+    app.view.selected_action = first;
+    app.focus = Pane::Actions;
 }

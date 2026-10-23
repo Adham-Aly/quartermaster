@@ -40,18 +40,9 @@ impl PlanPart {
 
     /// Every plan with a card: the card's message, the task, its state and its folder.
     fn plans(&self) -> Vec<(MessageId, TaskId, PlanState, PathBuf)> {
-        let root = self.svc.deps().data_dir.scratch().join(PLANS);
-        let Ok(entries) = std::fs::read_dir(&root) else {
-            return Vec::new();
-        };
-        entries
-            .flatten()
-            .filter_map(|e| {
-                let task = e.file_name().to_str()?.parse::<TaskId>().ok()?;
-                let dir = e.path();
-                let state = super::load(&dir).ok()??;
-                Some((state.card?, task, state, dir))
-            })
+        live(&self.svc.deps().data_dir.scratch().join(PLANS))
+            .into_iter()
+            .filter_map(|(task, state, dir)| Some((state.card?, task, state, dir)))
             .collect()
     }
 
@@ -82,6 +73,23 @@ impl PlanPart {
             tracing::error!(error = %e, "couldn't post a plan note");
         }
     }
+}
+
+/// Every plan folder under `root` (the scratch `plans/` folder) with a readable state: its task,
+/// state and folder.
+pub(crate) fn live(root: &Path) -> Vec<(TaskId, PlanState, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| {
+            let task = e.file_name().to_str()?.parse::<TaskId>().ok()?;
+            let dir = e.path();
+            let state = super::load(&dir).ok()??;
+            Some((task, state, dir))
+        })
+        .collect()
 }
 
 /// Opens the page with macOS's `open`, which hands it to your default browser.

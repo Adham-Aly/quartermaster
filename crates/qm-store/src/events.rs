@@ -282,6 +282,20 @@ pub struct NoticeState {
     pub answer: Option<NoticeChoice>,
 }
 
+/// Every notice still waiting on your answer, whatever its age: the unwindowed sibling of
+/// [`notices`], for the Actions inbox.
+pub fn pending_notices(conn: &Connection) -> Result<BTreeMap<MessageId, NoticeState>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT json_extract(payload, '$.message') FROM events WHERE kind = ?1",
+    )?;
+    let messages = stmt
+        .query_map(params![NOTICE], |r| r.get::<_, MessageId>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = notices(conn, &messages)?;
+    out.retain(|_, state| state.answer.is_none());
+    Ok(out)
+}
+
 /// The notice state of each message in `messages` that has one.
 pub fn notices(
     conn: &Connection,
@@ -346,4 +360,66 @@ pub fn notices(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema;
+
+    fn event(conn: &Connection, kind: &str, payload: serde_json::Value, ms: i64) {
+        insert(
+            conn,
+            &NewEvent {
+                kind,
+                agent: None,
+                task: None,
+                turn: None,
+                summary: "",
+                payload,
+                at: Timestamp::from_millisecond(ms).expect("a time"),
+            },
+        )
+        .expect("the event is stored");
+    }
+
+    #[test]
+    fn pending_notices_drop_answered_ones_and_keep_the_newest() {
+        let mut conn = Connection::open_in_memory().expect("memory database");
+        schema::migrate(&mut conn).expect("the schema");
+        conn.execute_batch("PRAGMA foreign_keys = OFF")
+            .expect("no rows behind the events");
+        assert!(pending_notices(&conn).expect("the query runs").is_empty());
+        let (one, two) = (MessageId::new(1), MessageId::new(2));
+        event(
+            &conn,
+            NOTICE,
+            serde_json::json!({"message": 1, "cause": "no_action"}),
+            1,
+        );
+        event(
+            &conn,
+            NOTICE,
+            serde_json::json!({"message": 2, "cause": "no_action"}),
+            2,
+        );
+        event(
+            &conn,
+            NOTICE_ANSWERED,
+            serde_json::json!({"message": 1, "answer": "leave_it"}),
+            3,
+        );
+        let pending = pending_notices(&conn).expect("the query runs");
+        assert_eq!(pending.keys().copied().collect::<Vec<_>>(), vec![two]);
+        // Ask again led to a turn that again did nothing: a newer notice is pending once more.
+        event(
+            &conn,
+            NOTICE,
+            serde_json::json!({"message": 1, "cause": "failed", "reason": "x"}),
+            4,
+        );
+        let pending = pending_notices(&conn).expect("the query runs");
+        assert_eq!(pending.keys().copied().collect::<Vec<_>>(), vec![one, two]);
+        assert_eq!(pending[&one].cause, NoticeCause::Failed);
+    }
 }

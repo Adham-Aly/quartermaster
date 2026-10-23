@@ -116,6 +116,19 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "Actions",
+        &[
+            ("↑ ↓ · k j", "move the selection; nothing is answered here"),
+            ("⏎ · o · double-click", "open the item's detail"),
+            ("space", "the selected item's menu"),
+            ("in the detail: ← →", "pick a button; ⏎ presses it"),
+            (
+                "in the detail: a d r · 1 2 3",
+                "press that button, as on the card",
+            ),
+        ],
+    ),
+    (
         "Conversation",
         &[
             ("↑ ↓ · k j", "scroll a line"),
