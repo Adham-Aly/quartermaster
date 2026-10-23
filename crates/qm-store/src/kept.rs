@@ -226,25 +226,32 @@ pub const KEPT: &[Kept] = &[
         // and the one before it, 0 for a first turn, so a turn that is rolled back still finds its
         // lines and a reload shows what a first turn showed); the newest
         // five global outcomes plus each secondmate's own five (`payload.supervisor`);
-        // everything of an open task; and the two facts the app keeps for good.
-        predicate: "(kind LIKE 'you.%' OR kind LIKE 'task.%' OR kind LIKE 'pr.%' \
-                     OR kind LIKE 'checks.%' OR kind LIKE 'secondmate.%' OR kind LIKE 'model.%' \
-                     OR kind IN ('model_new', 'model_gone')) \
-                    AND seq > (SELECT COALESCE(MIN(floor), 0) FROM \
-                               (SELECT MIN(event_seq, COALESCE(prev_event_seq, 0)) AS floor \
-                                FROM block_watermarks)) \
-                    OR seq IN (SELECT seq FROM events WHERE kind LIKE 'outcome.%' \
-                               ORDER BY seq DESC LIMIT 5) \
-                    OR seq IN (SELECT seq FROM (SELECT seq, ROW_NUMBER() OVER ( \
-                                   PARTITION BY json_extract(payload, '$.supervisor') \
-                                   ORDER BY seq DESC) AS rank \
-                               FROM events WHERE kind LIKE 'outcome.%' \
-                               AND json_extract(payload, '$.supervisor') IN \
-                                   (SELECT id FROM agents WHERE role = 'secondmate')) WHERE rank <= 5) \
-                    OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed') \
-                    OR (task_id IN (SELECT id FROM tasks) \
-                        AND seq > (SELECT COALESCE(MAX(event_seq), 0) FROM parent_channel_cursor)) \
-                    OR kind IN ('starter_tiers_seeded', 'settings.model_listed')",
+        // everything of an open task; the notices under the messages of a kept chat, and your
+        // answers on them; and the two facts the app keeps for good.
+        predicate: concat!(
+            "(kind LIKE 'you.%' OR kind LIKE 'task.%' OR kind LIKE 'pr.%' \
+                         OR kind LIKE 'checks.%' OR kind LIKE 'secondmate.%' OR kind LIKE 'model.%' \
+                         OR kind IN ('model_new', 'model_gone')) \
+                        AND seq > (SELECT COALESCE(MIN(floor), 0) FROM \
+                                   (SELECT MIN(event_seq, COALESCE(prev_event_seq, 0)) AS floor \
+                                    FROM block_watermarks)) \
+                        OR seq IN (SELECT seq FROM events WHERE kind LIKE 'outcome.%' \
+                                   ORDER BY seq DESC LIMIT 5) \
+                        OR seq IN (SELECT seq FROM (SELECT seq, ROW_NUMBER() OVER ( \
+                                       PARTITION BY json_extract(payload, '$.supervisor') \
+                                       ORDER BY seq DESC) AS rank \
+                                   FROM events WHERE kind LIKE 'outcome.%' \
+                                   AND json_extract(payload, '$.supervisor') IN \
+                                       (SELECT id FROM agents WHERE role = 'secondmate')) WHERE rank <= 5) \
+                        OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed') \
+                        OR (task_id IN (SELECT id FROM tasks) \
+                            AND seq > (SELECT COALESCE(MAX(event_seq), 0) FROM parent_channel_cursor)) \
+                        OR (kind IN ('seat.notice', 'you.answered_notice') \
+                            AND json_extract(payload, '$.message') IN \
+                                (SELECT id FROM messages WHERE ",
+            current_chat!("messages"),
+            ")) OR kind IN ('starter_tiers_seeded', 'settings.model_listed')"
+        ),
     },
 ];
 

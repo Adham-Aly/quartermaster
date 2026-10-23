@@ -1317,4 +1317,65 @@ mod tests {
         )
         .expect("a new turn starts");
     }
+
+    #[test]
+    fn a_notice_under_a_kept_message_comes_back_with_its_answer() {
+        let scratch = Scratch::new("chat-notice");
+        let event = |mem: &Connection, message: i64, kind: &str, payload: &str| {
+            let seq = crate::seq::next_millis(0);
+            mem.execute(
+                "INSERT INTO events (id, at, kind, summary, payload, seq) \
+                 VALUES (?1, 1, ?2, 'notice', json_set(?3, '$.message', ?4), ?1)",
+                rusqlite::params![seq, kind, payload, message],
+            )
+            .expect("an event");
+        };
+        // Whether each message's notice was answered; a message without one is left out.
+        let answered = |conn: &Connection, messages: &[i64]| -> Vec<bool> {
+            let ids: Vec<_> = messages
+                .iter()
+                .copied()
+                .map(qm_types::ids::MessageId::new)
+                .collect();
+            crate::events::notices(conn, &ids)
+                .expect("the notices")
+                .into_values()
+                .map(|n| n.answer.is_some())
+                .collect()
+        };
+        {
+            let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
+            crew(&mem);
+            // Your messages 1 and 2 to the in-house seat, 3 to the Claude secondmate.
+            for (message, agent) in [(1, 1), (2, 1), (3, 2)] {
+                mem.execute(
+                    "INSERT INTO messages (id, agent_id, source, kind, text, created_at, seq) \
+                     VALUES (?1, ?2, 'you', 'message', 'words', 1, ?3)",
+                    rusqlite::params![message, agent, crate::seq::next_millis(0)],
+                )
+                .expect("your message");
+                event(
+                    &mem,
+                    message,
+                    crate::events::NOTICE,
+                    r#"{"cause":"failed"}"#,
+                );
+            }
+            event(
+                &mem,
+                2,
+                crate::events::NOTICE_ANSWERED,
+                r#"{"answer":"leave_it"}"#,
+            );
+            mirror.flush(&mem).expect("a flush");
+            assert_eq!(answered(&mem, &[1, 2, 3]), [false, true, false]);
+        }
+        let (mem, _mirror) = Mirror::open(&scratch.state()).expect("a restart");
+        assert_eq!(
+            answered(&mem, &[1, 2, 3]),
+            [false, true],
+            "the in-house notices come back, the answered one still answered; the Claude \
+             agent's goes with its chat"
+        );
+    }
 }
