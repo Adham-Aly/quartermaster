@@ -194,8 +194,10 @@ pub enum SeatInput {
     /// queued messages, in order.
     Slash(SlashCommand),
     /// The app is quitting: interrupt a running turn, record it, close the session, and end the
-    /// loop.
+    /// loop. An in-house session's transcript stays, so the next start resumes the conversation.
     Shutdown,
+    /// The secondmate was retired: as `Shutdown`, but the session is forgotten, transcript and all.
+    Retire,
 }
 
 /// The loop's state, for the Bridge.

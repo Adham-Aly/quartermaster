@@ -144,7 +144,7 @@ impl TurnLoop {
                             self.notice(&cx, Notice::NoAction).await;
                             break Decision::completed(Some("no_action"));
                         }
-                        TurnEnd::Retry if self.shutting_down => break Decision::quit(),
+                        TurnEnd::Retry if self.ending.is_some() => break Decision::quit(),
                         TurnEnd::Retry if self.session.is_none() || totals.end_conversation => {
                             let reason = format!(
                                 "{} session closed before it answered",
@@ -354,7 +354,7 @@ impl TurnLoop {
         self.deps.chat.changed();
         self.publish();
 
-        if self.shutting_down {
+        if self.ending.is_some() {
             return Ok(());
         }
         if end_conversation {

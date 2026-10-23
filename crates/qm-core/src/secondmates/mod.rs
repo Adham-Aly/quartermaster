@@ -288,14 +288,14 @@ impl SecondmateService {
         }
     }
 
-    /// Stops secondmate `id`'s loop for good (it was retired): no more wakes, then `Shutdown`.
+    /// Stops secondmate `id`'s loop for good (it was retired): no more wakes, then `Retire`.
     /// The loop finishes on its own; nothing waits for it.
     pub(crate) fn stop_loop(&self, id: SecondmateId) {
         let Some(l) = self.loops().remove(&id) else {
             return;
         };
         self.inner.deps.inbox.unregister(l.agent);
-        let _ = l.inbox.send(SeatInput::Shutdown);
+        let _ = l.inbox.send(SeatInput::Retire);
     }
 
     /// Whether secondmate `id`'s loop runs, so a message to it can be delivered.
