@@ -65,6 +65,12 @@ impl GeminiAdapter {
 }
 
 impl WireAdapter for GeminiAdapter {
+    fn reported_usage(&self) -> qm_engine::ReportedUsage {
+        qm_engine::ReportedUsage::NONE
+            .with_thinking()
+            .with_cache_read()
+    }
+
     fn api(&self) -> WireApi {
         WireApi::GoogleGenerativeAi
     }

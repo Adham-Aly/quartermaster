@@ -27,9 +27,9 @@ use crate::retry::RetryPolicy;
 use crate::session_store::{self, Entry, SessionStore, SessionStoreError};
 use crate::transcript::Message;
 use qm_engine::{
-    ACTIVITY_EVERY, ActivityGate, Builtins, CloseReason, EngineEvent, EngineSide, FailureKind,
-    InitReport, RateLimitStatus, SessionCommand, SessionSpec, SystemPrompt, ToolDescriptor,
-    ToolResult, TurnFailure, TurnInput, TurnOutcome, TurnUsage,
+    ACTIVITY_EVERY, ActivityGate, Builtins, CloseReason, ContextBasis, EngineEvent, EngineSide,
+    FailureKind, InitReport, RateLimitStatus, SessionCommand, SessionSpec, SystemPrompt,
+    ToolDescriptor, ToolResult, TurnFailure, TurnInput, TurnOutcome, TurnUsage,
 };
 use qm_types::ids::{JobLabel, ModelId, SessionRef};
 use serde_json::json;
@@ -369,6 +369,9 @@ impl Session {
             init,
         })
         .await;
+        // Passive: the point and window are known; the size is unknown until the first call.
+        let reading = self.context_reading(None, ContextBasis::SessionStart);
+        self.emit(EngineEvent::ContextObserved { reading }).await;
         loop {
             if self.close_requested {
                 self.close().await;
@@ -388,14 +391,14 @@ impl Session {
                 None => {}
             }
             tokio::select! {
-                command = self.commands.recv() => self.idle_command(command),
+                command = self.commands.recv() => self.idle_command(command).await,
                 notice = recv_notice(&mut self.job_notices) => self.on_notice(notice).await,
             }
         }
     }
 
     /// A command between turns.
-    fn idle_command(&mut self, command: Option<SessionCommand>) {
+    async fn idle_command(&mut self, command: Option<SessionCommand>) {
         match command {
             None | Some(SessionCommand::Forget) => {
                 self.forget_requested = true;
@@ -417,7 +420,9 @@ impl Session {
             }
             Some(SessionCommand::SetModel { model }) => {
                 self.pending_model = Some(model);
-                self.apply_pending_model();
+                if self.apply_pending_model() {
+                    self.emit_model_changed_reading().await;
+                }
             }
             Some(other) => tracing::debug!(?other, "ignoring a command this engine doesn't know"),
         }
@@ -475,7 +480,9 @@ impl Session {
     /// After every turn: the model switch asked for during it, then compaction if the context
     /// is over the threshold, then steering left over becomes the next turn.
     async fn after_turn(&mut self) {
-        self.apply_pending_model();
+        if self.apply_pending_model() {
+            self.emit_model_changed_reading().await;
+        }
         if !self.close_requested {
             match self.compact_if_due().await {
                 Ok(()) | Err(CompactError::Nothing | CompactError::Cancelled(_)) => {}
@@ -489,12 +496,19 @@ impl Session {
         }
     }
 
-    fn apply_pending_model(&mut self) {
+    /// The old size doesn't apply to a new model's window, so the reading starts unknown.
+    async fn emit_model_changed_reading(&mut self) {
+        let reading = self.context_reading(None, ContextBasis::SessionStart);
+        self.emit(EngineEvent::ContextObserved { reading }).await;
+    }
+
+    /// Applies a pending model change; whether the model changed.
+    fn apply_pending_model(&mut self) -> bool {
         let Some(model) = self.pending_model.take() else {
-            return;
+            return false;
         };
         if model == self.spec.model {
-            return;
+            return false;
         }
         self.model = self
             .shared
@@ -509,6 +523,7 @@ impl Session {
         if let Err(e) = self.history.write(&Entry::ModelChange { id, at, model }) {
             tracing::warn!(error = %e, "couldn't record a model change");
         }
+        true
     }
 
     /// Closes the session: jobs stopped and reported, then `SessionClosed`.

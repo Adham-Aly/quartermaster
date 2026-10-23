@@ -52,9 +52,9 @@ use futures_util::StreamExt as _;
 use futures_util::stream::FuturesUnordered;
 use qm_auth::Secret;
 use qm_engine::{
-    ActivityKind, CallUsage, EngineEvent, FailureKind, InputBlock, LineBuffer, ProviderError,
-    ProviderErrorKind, RateLimitInfo, RateLimitStatus, StopReason, ToolCallId, TurnFailure,
-    TurnInput, TurnOutcome, TurnUsage,
+    ActivityKind, AutocompactPoint, CallUsage, ContextBasis, ContextReading, EngineEvent,
+    FailureKind, InputBlock, LineBuffer, ProviderError, ProviderErrorKind, RateLimitInfo,
+    RateLimitStatus, StopReason, ToolCallId, TurnFailure, TurnInput, TurnOutcome, TurnUsage,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -258,6 +258,13 @@ impl Session {
             };
             self.emit(EngineEvent::ModelCallFinished { call, usage, stop })
                 .await;
+            // Passive: this call's own prompt plus reply, the size the next request re-sends.
+            let tokens = usage.input_tokens
+                + usage.cache_read_tokens
+                + usage.cache_write_tokens
+                + usage.output_tokens;
+            let reading = self.context_reading(Some(tokens), ContextBasis::LastCall);
+            self.emit(EngineEvent::ContextObserved { reading }).await;
             totals.add(&usage);
             final_text = message.text();
             let calls: Vec<(String, String, serde_json::Value)> = message
@@ -930,32 +937,20 @@ impl Session {
             self.context.summary.as_deref(),
             split,
         );
-        let summary = match self.call_model(CallMode::Summary, Some(&prompt)).await {
-            CallOutcome::Done(message) => {
-                if !message.tool_calls().is_empty() {
-                    return Err(CompactError::Failed(
-                        "the summary request tried to call a tool".into(),
-                    ));
-                }
-                if matches!(
-                    &message,
-                    Message::Assistant {
-                        stop: StopReason::MaxTokens,
-                        ..
-                    }
-                ) {
-                    return Err(CompactError::Failed(
-                        "the summary hit the output limit".into(),
-                    ));
-                }
-                message.text()
+        self.emit(EngineEvent::CompactionStarted { automatic })
+            .await;
+        let summary = match self.summarise(&prompt).await {
+            Ok(summary) => summary,
+            Err(e) => {
+                let message = match &e {
+                    CompactError::Failed(reason) => reason.clone(),
+                    CompactError::Cancelled(_) | CompactError::Nothing => "stopped".to_owned(),
+                };
+                self.emit(EngineEvent::CompactionFailed { automatic, message })
+                    .await;
+                return Err(e);
             }
-            CallOutcome::Cancelled(cancel, _) => return Err(CompactError::Cancelled(cancel)),
-            CallOutcome::Failed(failure) => return Err(CompactError::Failed(failure.message)),
         };
-        if summary.trim().is_empty() {
-            return Err(CompactError::Failed("the summary came back empty".into()));
-        }
         let first_kept = self.context.items[cut].entry_id.clone();
         self.context = compaction::compacted(&self.context, cut, summary.clone());
         let tokens_after = self
@@ -984,6 +979,55 @@ impl Session {
         })
         .await;
         Ok(())
+    }
+
+    /// The summary request and its checks; any error leaves the context unchanged.
+    async fn summarise(&mut self, prompt: &str) -> Result<String, CompactError> {
+        let summary = match self.call_model(CallMode::Summary, Some(prompt)).await {
+            CallOutcome::Done(message) => {
+                if !message.tool_calls().is_empty() {
+                    return Err(CompactError::Failed(
+                        "the summary request tried to call a tool".into(),
+                    ));
+                }
+                if matches!(
+                    &message,
+                    Message::Assistant {
+                        stop: StopReason::MaxTokens,
+                        ..
+                    }
+                ) {
+                    return Err(CompactError::Failed(
+                        "the summary hit the output limit".into(),
+                    ));
+                }
+                message.text()
+            }
+            CallOutcome::Cancelled(cancel, _) => return Err(CompactError::Cancelled(cancel)),
+            CallOutcome::Failed(failure) => return Err(CompactError::Failed(failure.message)),
+        };
+        if summary.trim().is_empty() {
+            return Err(CompactError::Failed("the summary came back empty".into()));
+        }
+        Ok(summary)
+    }
+
+    /// A passive context reading for the UI: the auto-compact point mirrors
+    /// [`compaction::auto_compaction_due`], guard included, and changes nothing.
+    pub(crate) fn context_reading(
+        &self,
+        tokens: Option<u64>,
+        basis: ContextBasis,
+    ) -> ContextReading {
+        let setting = u32::from(self.shared.settings.borrow().compaction.autocompact_window);
+        let threshold = compaction::threshold(self.model.context_window, setting);
+        let point = compaction::trigger_point(threshold, self.compaction_guard);
+        ContextReading::new(tokens, basis, false, AutocompactPoint::At { tokens: point })
+            .with_window(Some(u64::from(self.model.context_window)))
+            .with_model(Some(self.spec.model.to_string()))
+            .with_reports(crate::adapters::reported_usage_for(
+                self.spec.account.provider,
+            ))
     }
 }
 

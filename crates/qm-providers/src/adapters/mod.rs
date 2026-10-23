@@ -46,7 +46,7 @@ use crate::model::ModelProfile;
 use crate::sse::SseEvent;
 use crate::transcript::{AssistantBlock, Message};
 use jiff::Timestamp;
-use qm_engine::{ProviderError, RateLimitInfo, ToolDescriptor, UsageWindow};
+use qm_engine::{ProviderError, RateLimitInfo, ReportedUsage, ToolDescriptor, UsageWindow};
 use qm_types::domain::{Effort, Provider};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -255,6 +255,18 @@ pub trait WireAdapter: Send + Sync + fmt::Debug {
     fn credential_header(&self, _credential: &CredentialKind) -> CredentialHeader {
         CredentialHeader::Bearer
     }
+
+    /// The usage categories this API reports separately, beyond input and output.
+    fn reported_usage(&self) -> ReportedUsage {
+        ReportedUsage::NONE
+    }
+}
+
+/// The usage categories a provider's adapter reports separately. Every credential kind of a
+/// provider uses the same wire API family, so the provider alone decides it.
+pub fn reported_usage_for(provider: Provider) -> ReportedUsage {
+    adapter_for(provider, &CredentialKind::ApiKey)
+        .map_or(ReportedUsage::NONE, |a| a.reported_usage())
 }
 
 /// The adapter for an account's provider and credential, or `None` for a provider the engine
