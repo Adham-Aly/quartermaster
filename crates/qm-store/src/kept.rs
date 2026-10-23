@@ -227,8 +227,9 @@ pub const KEPT: &[Kept] = &[
         // and the one before it, 0 for a first turn, so a turn that is rolled back still finds its
         // lines and a reload shows what a first turn showed); the newest
         // five global outcomes plus each secondmate's own five (`payload.supervisor`);
-        // everything of an open task; the notices under the messages of a kept chat, and your
-        // answers on them; and the two facts the app keeps for good.
+        // everything of an open task; the notices under the messages of a kept chat, your answers
+        // on them and the marks that draw a plan reply's note on one line; and the two facts the
+        // app keeps for good.
         predicate: concat!(
             "(kind LIKE 'you.%' OR kind LIKE 'task.%' OR kind LIKE 'pr.%' \
                          OR kind LIKE 'checks.%' OR kind LIKE 'secondmate.%' OR kind LIKE 'model.%' \
@@ -247,7 +248,7 @@ pub const KEPT: &[Kept] = &[
                         OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed') \
                         OR (task_id IN (SELECT id FROM tasks) \
                             AND seq > (SELECT COALESCE(MAX(event_seq), 0) FROM parent_channel_cursor)) \
-                        OR (kind IN ('seat.notice', 'you.answered_notice') \
+                        OR (kind IN ('seat.notice', 'you.answered_notice', 'plan.page_reply_note') \
                             AND json_extract(payload, '$.message') IN \
                                 (SELECT id FROM messages WHERE ",
             current_chat!("messages"),

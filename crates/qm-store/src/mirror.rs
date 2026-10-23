@@ -1378,4 +1378,47 @@ mod tests {
              agent's goes with its chat"
         );
     }
+
+    #[test]
+    fn a_plan_reply_note_in_a_kept_chat_stays_on_one_line_after_its_task_closes() {
+        let scratch = Scratch::new("chat-plan-note");
+        let one_line = |conn: &Connection| -> Vec<i64> {
+            let ids = [1, 2].map(qm_types::ids::MessageId::new);
+            crate::events::one_line(conn, &ids)
+                .expect("the one-line notes")
+                .into_iter()
+                .map(qm_types::ids::MessageId::get)
+                .collect()
+        };
+        {
+            let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
+            crew(&mem);
+            // The app's note on the in-house seat (1) and on the Claude secondmate (2), each
+            // marked as a plan reply's; the marks carry no open task.
+            for (message, agent) in [(1, 1), (2, 2)] {
+                let seq = crate::seq::next_millis(0);
+                mem.execute(
+                    "INSERT INTO messages (id, agent_id, source, kind, text, created_at, seq) \
+                     VALUES (?1, ?2, 'app', 'app_note', 'Plan reply sent', 1, ?3)",
+                    rusqlite::params![message, agent, seq],
+                )
+                .expect("the app's note");
+                let seq = crate::seq::next_millis(0);
+                mem.execute(
+                    "INSERT INTO events (id, at, kind, summary, payload, seq) \
+                     VALUES (?1, 1, ?2, 'note', json_object('message', ?3), ?1)",
+                    rusqlite::params![seq, crate::events::PLAN_REPLY_NOTE, message],
+                )
+                .expect("its mark");
+            }
+            mirror.flush(&mem).expect("a flush");
+            assert_eq!(one_line(&mem), [1, 2]);
+        }
+        let (mem, _mirror) = Mirror::open(&scratch.state()).expect("a restart");
+        assert_eq!(
+            one_line(&mem),
+            [1],
+            "the kept note is still drawn on one line; the Claude agent's goes with its chat"
+        );
+    }
 }
