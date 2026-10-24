@@ -209,6 +209,11 @@ impl Settings {
             Command::DisconnectAccount { account } => {
                 self.accounts.retain(|a| a.id != *account || a.follows_cli);
             }
+            Command::SetReserveMark { account, percent } => {
+                if let Some(a) = self.account_mut(*account) {
+                    a.reserve_at = *percent;
+                }
+            }
             Command::SetPreferredAccount { account } => {
                 for a in &mut self.accounts {
                     a.preferred = *account == Some(a.id);

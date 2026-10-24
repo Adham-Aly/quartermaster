@@ -20,7 +20,7 @@ folder is edited in place, with no git unless you ask.
 
 ## A task's life
 
-[Model routing](docs/routing.md): task kinds, model levels, effort and your choices.
+[Model routing](docs/routing.md): task kinds, model levels, effort, quota and your choices.
 
 ![A task's life](assets/lifecycle.svg)
 

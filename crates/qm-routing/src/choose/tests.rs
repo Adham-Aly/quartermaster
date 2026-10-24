@@ -31,6 +31,7 @@ fn pool(tiers: &[Tier]) -> Vec<Candidate> {
             image_input: true,
             context_window: None,
             usage: Usage::Unknown,
+            reserve_at: None,
             cut_off: false,
         })
         .collect()

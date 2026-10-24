@@ -7,7 +7,7 @@
 //! the last few turns. Secondmates follow the same setting."
 
 use crate::effort::{cap_to_supported, tier_default};
-use crate::rank::{Candidate, Needs, placement_skip_reason, rank, skip_reason};
+use crate::rank::{Candidate, Needs, placement_skip_reason, rank_steady, skip_reason};
 use qm_types::config::{QuartermasterModel, TierEfforts};
 use qm_types::domain::{AccountKind, Effort, EngineKind, Tier};
 use qm_types::ids::{AccountId, ModelId};
@@ -71,7 +71,7 @@ pub fn choose(
                     }
                 })
                 .collect();
-            rank(&mut ok, preferred);
+            rank_steady(&mut ok, preferred);
             ok.first().map(|c| to_choice(c, Some(tier)))
         }),
         QuartermasterModel::Model(model) => {
@@ -80,7 +80,7 @@ pub fn choose(
                 .filter(|c| &c.model == model)
                 .filter(usable)
                 .collect();
-            rank(&mut ok, preferred);
+            rank_steady(&mut ok, preferred);
             ok.first().map(|c| to_choice(c, Some(c.tier)))
         }
     }

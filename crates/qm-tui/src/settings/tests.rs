@@ -429,6 +429,7 @@ fn back_and_escape_dismiss_fields_pickers_and_connect_without_saving() {
         assert!(!app.view.settings.connecting);
         for purpose in [
             FieldFor::Label(0),
+            FieldFor::ReserveMark(0),
             FieldFor::ApiKey("OpenAI"),
             FieldFor::BaseUrl,
             FieldFor::ReconnectKey(2),
@@ -474,5 +475,81 @@ fn device_code_copy_stays_visible_on_both_sides_of_the_connection_layout_break()
             app.term.drawn.hits.at(copy.x + 1, copy.y),
             Some(Hit::Settings(SettingsHit::CopyCode))
         );
+    }
+}
+
+#[test]
+fn the_reserve_mark_field_sets_clears_and_refuses_what_is_not_a_percent_used() {
+    for (width, height) in SIZES {
+        let mut app = app(Tab::Accounts);
+        app.view.settings.model.login = None;
+        assert_eq!(app.take_commands(), [Command::RefreshQuotas]);
+        let claude = app.view.settings.model.accounts[0].id;
+        draw(&mut app, width, height);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Char('m'));
+        let screen = draw(&mut app, width, height).join("\n");
+        assert!(screen.contains("Reserve mark for Claude Max"), "{screen}");
+        assert!(screen.contains("› 80▏% used"), "{screen}");
+        assert!(screen.contains("Percent USED, 1 to 99."), "{screen}");
+
+        // A new mark; a trailing % is fine.
+        app.on_key(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            Instant::now(),
+        );
+        app.settings_paste("55%");
+        click(&mut app, SettingsHit::FieldSave);
+        let set = Command::SetReserveMark {
+            account: claude,
+            percent: Some(55),
+        };
+        assert_eq!(app.take_commands(), [set]);
+        assert_eq!(app.view.settings.model.accounts[0].reserve_at, Some(55));
+        assert!(app.view.settings.field.is_none());
+
+        // Out of range or not a number: the field stays open and says why.
+        for bad in ["0", "100", "abc", "55.5"] {
+            key(&mut app, KeyCode::Char('m'));
+            app.on_key(
+                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                Instant::now(),
+            );
+            app.settings_paste(bad);
+            key(&mut app, KeyCode::Enter);
+            assert!(app.view.settings.field.is_some(), "{bad}");
+            let flash = app.term.flash.as_ref().map(|f| f.text.as_str());
+            assert!(flash.is_some_and(|f| f.contains("1 to 99")), "{bad}");
+            assert_eq!(app.take_commands(), [] as [Command; 0]);
+            key(&mut app, KeyCode::Esc);
+        }
+
+        // Empty clears it.
+        key(&mut app, KeyCode::Char('m'));
+        app.on_key(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            Instant::now(),
+        );
+        key(&mut app, KeyCode::Enter);
+        let clear = Command::SetReserveMark {
+            account: claude,
+            percent: None,
+        };
+        assert_eq!(app.take_commands(), [clear]);
+        assert_eq!(app.view.settings.model.accounts[0].reserve_at, None);
+    }
+}
+
+#[test]
+fn every_account_menu_offers_the_reserve_mark() {
+    for (paused, follows_cli) in [(false, true), (true, false)] {
+        let items = menu_items(crate::view::MenuTarget::Account(AccountTarget {
+            index: 0,
+            paused,
+            preferred: false,
+            follows_cli,
+            login: AccountLogin::Working,
+        }));
+        assert_eq!(items[1], "Reserve mark…", "{items:?}");
     }
 }

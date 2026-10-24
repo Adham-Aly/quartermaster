@@ -34,6 +34,7 @@ fn cand(model: &str, account: i64, tier: Tier) -> Candidate {
         image_input: true,
         context_window: None,
         usage: Usage::Unknown,
+        reserve_at: None,
         cut_off: false,
     }
 }

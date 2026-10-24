@@ -2,6 +2,10 @@
 //! work. A Claude account follows your `claude` login, so it is paused here, never disconnected. An
 //! account whose login stopped working shows why, with a Reconnect button that replaces its
 //! credential in place.
+//!
+//! Each account also shows what routing reads for it: its largest quota pool's percent used and
+//! its reserve mark (`m`, or "Reserve mark…" on its menu), the percent used past which routing
+//! serves its tier from your other accounts first. A note under the list says how that works.
 
 use super::model::{Account, AccountStatus};
 use super::paint::Painter;
@@ -18,8 +22,15 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     // The second line's room: from four cells in (past the dot and name's indent) to one cell
     // inside the right border.
     let line_room = usize::from(area.width.saturating_sub(8)).max(1);
+    let note_room = usize::from(area.width.saturating_sub(3)).max(1);
+    let note = wrap(RESERVE_NOTE, note_room);
     let rows: u16 = accounts.iter().map(|a| rows_of(a, line_room)).sum::<u16>()
-        + if accounts.is_empty() { 3 } else { 1 };
+        + if accounts.is_empty() { 3 } else { 1 }
+        + if accounts.is_empty() {
+            0
+        } else {
+            cells(note.len()) + 1
+        };
     let inner = section(area, rows);
     let x = inner.x + 1;
     let right = inner.right().saturating_sub(1);
@@ -83,7 +94,18 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     if connect_row {
         p.text(end + 1, y, "◂", theme::accent());
     }
+    if !accounts.is_empty() {
+        for (row, line) in (y + 2..).zip(&note) {
+            p.text(x, row, line, theme::dim());
+        }
+    }
 }
+
+/// How quota and reserve marks steer routing, under the account list.
+const RESERVE_NOTE: &str = "When a tier has several accounts and you name no model, the one with the most \
+    quota left serves. A reserve mark (m) is a percent USED: past it, the account is held in \
+    reserve and the others serve first; if all are past theirs, the one least far past serves. \
+    An account with no quota left is never used.";
 
 /// The same wrapped lines drive drawing and geometry, including stale data during refresh/errors.
 fn detail_lines(account: &Account, room: usize) -> Vec<(String, Style)> {
@@ -102,6 +124,14 @@ fn detail_lines(account: &Account, room: usize) -> Vec<(String, Style)> {
             ),
             theme::dim(),
         );
+    }
+    if let Some(routing) = &account.routing {
+        let style = if routing.contains("held in reserve") || routing.contains("at its limit") {
+            theme::warn()
+        } else {
+            theme::text()
+        };
+        add(format!("Routing: {routing}"), style);
     }
     for line in &account.quota_lines {
         add(format!("Provider quota: {line}"), theme::text());
@@ -211,6 +241,8 @@ mod tests {
                 account.quota_problem = Some("provider temporarily unavailable".into());
                 account.quota_refreshing = true;
                 account.quota_checked_at = Some("today 12:04".into());
+                account.routing =
+                    Some("7-day window 60% used · reserve at 55% used · held in reserve".into());
                 let mut view = qm_types::api::SettingsView::default();
                 view.accounts.push(account);
                 app.view.settings.model = super::super::model::Settings::from_view(&view);
@@ -219,6 +251,23 @@ mod tests {
                     ..Default::default()
                 });
                 let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                // The note under the list is the tab's last row; scroll it into view.
+                app.view.settings.scroll = app.term.drawn.scroll_max_of(crate::hit::Pane::Settings);
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let top = (0..h)
+                    .map(|y| {
+                        (0..w)
+                            .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(
+                    top.contains("never used."),
+                    "the note is cut off at {w}x{h}:\n{top}"
+                );
+                app.view.settings.scroll = 0;
                 terminal.draw(|frame| app.draw(frame)).unwrap();
                 let buffer = terminal.backend().buffer();
                 let text = (0..h)
@@ -232,7 +281,9 @@ mod tests {
                     "refreshing",
                     "Quota check problem:",
                     "today 12:04",
+                    "Routing: 7-day window 60% used",
                     "+ Connect an account",
+                    "When a tier has several accounts",
                 ] {
                     assert!(
                         text.contains(expected),
@@ -257,5 +308,38 @@ mod tests {
         assert!(lines.len() > 3);
         assert!(lines.iter().all(|(line, _)| width(line) <= 20));
         assert_eq!(usize::from(rows_of(&account, 20)), lines.len() + 2);
+    }
+
+    #[test]
+    fn the_routing_line_warns_when_held_back_and_wraps() {
+        let mut account = Account::new(AccountId::new(1), "Work");
+        account.routing = Some("7-day window 30% used · reserve at 80% used".into());
+        let routing = |a: &Account, room| {
+            detail_lines(a, room)
+                .into_iter()
+                .filter(|(line, _)| {
+                    !line.starts_with("Session usage") && !line.starts_with("Provider quota")
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            routing(&account, 100),
+            [(
+                "Routing: 7-day window 30% used · reserve at 80% used".to_owned(),
+                theme::text()
+            )]
+        );
+        for state in ["held in reserve", "at its limit: skipped until it resets"] {
+            account.routing = Some(format!(
+                "7-day window 90% used · reserve at 80% used · {state}"
+            ));
+            let lines = routing(&account, 30);
+            assert!(lines.len() > 1);
+            assert!(
+                lines
+                    .iter()
+                    .all(|(line, style)| width(line) <= 30 && *style == theme::warn())
+            );
+        }
     }
 }
