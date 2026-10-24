@@ -1,6 +1,6 @@
 //! Overrides require a user turn, or verified user-message provenance for model choices.
 //!
-//! Every tool checks its overrides before acting. Model, effort and premium can cite an earlier
+//! Every tool checks its overrides before acting. Model, tier, effort and premium can cite an earlier
 //! actual user message, verified by the host against app-recorded provenance; the prompt still
 //! decides what those words ask for. Other overrides retain their current-user-turn rule.
 //! Autonomy is stricter still: no agent can change it at all.
@@ -29,6 +29,8 @@ impl From<StartedBy> for Authority {
 pub enum OverrideKind {
     /// A named model (`start_crewmate`, `route_to_secondmate`).
     NamedModel,
+    /// A user-ranked model level for one task.
+    Tier,
     /// Premium for one task.
     Premium,
     /// An effort level.
@@ -57,6 +59,7 @@ pub enum OverrideKind {
 impl OverrideKind {
     pub const ALL: &'static [Self] = &[
         Self::NamedModel,
+        Self::Tier,
         Self::Premium,
         Self::Effort,
         Self::LaterSteps,
@@ -74,6 +77,7 @@ impl OverrideKind {
     pub const fn describe(self) -> &'static str {
         match self {
             Self::NamedModel => "a named model",
+            Self::Tier => "a model tier",
             Self::Premium => "premium",
             Self::Effort => "an effort level",
             Self::LaterSteps => "models or effort for later steps",
@@ -89,7 +93,7 @@ impl OverrideKind {
     }
 }
 
-/// Model, effort and premium may cite an earlier user message. The host MUST verify that the
+/// Model, tier, effort and premium may cite an earlier user message. The host MUST verify that the
 /// source is a real user-authored message belonging to the caller (or a checked routed request),
 /// not an agent's assertion. A citation does not authorize unrelated overrides.
 pub fn check_choice_override(
@@ -99,7 +103,10 @@ pub fn check_choice_override(
 ) -> Result<(), Refusal> {
     if matches!(
         kind,
-        OverrideKind::NamedModel | OverrideKind::Effort | OverrideKind::Premium
+        OverrideKind::NamedModel
+            | OverrideKind::Tier
+            | OverrideKind::Effort
+            | OverrideKind::Premium
     ) && source.is_some()
     {
         return Ok(());
@@ -124,13 +131,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_earlier_user_message_only_authorizes_model_effort_and_premium() {
+    fn an_earlier_user_message_only_authorizes_model_tier_effort_and_premium() {
         let app = Authority::Turn(StartedBy::AppEvent);
         let source = Some(MessageId::new(7));
         for &kind in OverrideKind::ALL {
             let choice = matches!(
                 kind,
-                OverrideKind::NamedModel | OverrideKind::Effort | OverrideKind::Premium
+                OverrideKind::NamedModel
+                    | OverrideKind::Tier
+                    | OverrideKind::Effort
+                    | OverrideKind::Premium
             );
             assert_eq!(
                 check_choice_override(app, source, kind).is_ok(),

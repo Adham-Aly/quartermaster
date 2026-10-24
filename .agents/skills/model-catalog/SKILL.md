@@ -76,6 +76,25 @@ capabilities remain unresolved for a later pass; models without effort controls 
 send no effort. Do not reintroduce tier-default choices into the model+effort catalogue. See
 `docs/routing.md` for the full precedence and fallback rules.
 
+## Within-tier decisions
+
+After kind classification, the Quartermaster chooses the smartest model meeting **all** user
+constraints among actual routed tier entries, not arbitrary catalogue models.
+`start_crewmate.preference` is `{selection: ModelId, provider?: Provider, model?: ModelId,
+effort?: Effort}`: selection is required; optional fields are conjunctive user constraints.
+The app revalidates the chosen provider/model/effort combination and task eligibility within the
+tier. No eligible match means ordinary routing with a note, never a preference-driven tier escape.
+Preferences are allowed on later/app-event turns but do not replace authoritative user-turn-only
+`model`, `tier` or `effort` overrides. “Medium-tier” means the user's manually ranked Medium level;
+“medium-effort” means a model's medium effort, independent of its tier (likewise High/Low).
+`start_crewmate.tier` selects the requested level and skips the pin; effort alone never changes
+that level. No external decision model is configured; a future one can return the same typed answer.
+
+Context entries flow through `qm_store::context::tier_models`, `qm_core::context_block` and
+`qm_prompts::context_block`. Keep provider model IDs and each placement's effort visible; do not
+collapse combinations to canonical IDs or expand them into unsupported effort combinations.
+`default/none` marks no explicit placement effort. Routing still checks live availability.
+
 ## Verify
 
 `cargo xtask check` and `cargo build` (the routing tests cover the defaults), then open Settings ▸

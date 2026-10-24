@@ -132,6 +132,7 @@ fn check_overrides(
 ) -> Result<(), qm_types::error::Refusal> {
     for (present, kind) in [
         (request.model.is_some(), OverrideKind::NamedModel),
+        (request.tier.is_some(), OverrideKind::Tier),
         (request.effort.is_some(), OverrideKind::Effort),
         (request.premium, OverrideKind::Premium),
         (!request.later_steps.is_empty(), OverrideKind::LaterSteps),
@@ -178,7 +179,7 @@ impl TaskService {
         let at = self.clock().now();
         self.write(move |tx, _| {
             let user_message = caller.turn.and_then(|t| match t.started_by { StartedBy::User { message } => Some(message), StartedBy::AppEvent => None });
-            if request.model.is_some() || request.effort.is_some() || request.premium {
+            if request.model.is_some() || request.tier.is_some() || request.effort.is_some() || request.premium || request.preference.is_some() {
                 request.choice_message = request.choice_message.or(user_message);
                 if let Some(message) = request.choice_message
                     && let Err(r) = qm_store::user_message_sources::verify(tx, caller.agent, message)? { return Ok(Err(r.into())); }
@@ -357,11 +358,18 @@ pub(crate) fn check_record(
             return Ok(Err(r));
         }
     }
-    if let Err(r) = check_overrides(
-        saved.typed_request.as_ref().unwrap_or(&saved.request),
-        saved.authority(),
-        saved.role,
-    ) {
+    let typed = saved.typed_request.as_ref().unwrap_or(&saved.request);
+    if let Some(message) = typed.choice_message
+        && (typed.model.is_some()
+            || typed.tier.is_some()
+            || typed.effort.is_some()
+            || typed.premium
+            || typed.preference.is_some())
+        && let Err(r) = qm_store::user_message_sources::verify(conn, row.owner, message)?
+    {
+        return Ok(Err(r));
+    }
+    if let Err(r) = check_overrides(typed, saved.authority(), saved.role) {
         return Ok(Err(r));
     }
     let trigger: StartTrigger = decode("deferred_starts.trigger_json", &row.trigger)?;
@@ -423,8 +431,9 @@ pub(crate) fn frozen_request(
     }))
 }
 
-/// A saved delegation authorizes only the exact model fields frozen for this child. The
-/// original source and its owning agent identity must still exist, even after chat retention.
+/// A saved delegation authorizes only the exact authority-bearing fields frozen for this child.
+/// Preference is independent guidance; `frozen_request` still checks the entire replayed request.
+/// The original source and its owning agent identity must still exist, even after chat retention.
 pub(crate) fn verifies_delegated_choice(
     conn: &Connection,
     facts: &crate::routing::CrewmateFacts,
@@ -447,6 +456,7 @@ pub(crate) fn verifies_delegated_choice(
         if source.message != message
             || saved.request.choice_message != Some(message)
             || saved.request.model != facts.named_model
+            || saved.request.tier != facts.named_tier
             || saved.request.effort != facts.named_effort
             || saved.request.premium != facts.premium
         {

@@ -30,6 +30,7 @@ pub mod env;
 pub mod error;
 pub mod fsio;
 pub mod ids;
+pub mod model_preference;
 pub mod rules;
 pub mod wire;
 

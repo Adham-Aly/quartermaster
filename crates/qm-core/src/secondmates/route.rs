@@ -28,6 +28,9 @@ pub const BRANCH_CHECK_TIMEOUT: Duration = Duration::from_mins(3);
 /// How much of the request the event's summary shows.
 const SUMMARY_CHARS: usize = 80;
 
+#[cfg(test)]
+mod tests;
+
 /// The routed wake's text; lines are left out when empty. Free text is neutralised when the wake is
 /// rendered.
 pub fn wake_text(
@@ -85,10 +88,13 @@ impl SecondmateService {
             StartedBy::AppEvent => None,
         };
         let choice_message = req.choice_message.or(message);
-        if req.model.is_some() || req.effort.is_some() || req.premium {
+        let explicit_choice =
+            req.model.is_some() || req.tier.is_some() || req.effort.is_some() || req.premium;
+        // Guidance needs no authority, but any attached citation must be genuine.
+        if explicit_choice || (req.preference.is_some() && choice_message.is_some()) {
             let Some(source) = choice_message else {
                 return Err(refuse(
-                    "model, effort and premium choices need the user's message; cite it with choice_message",
+                    "model, tier, effort and premium choices need the user's message; cite it with choice_message",
                 ));
             };
             let agent = caller.agent;
@@ -128,6 +134,8 @@ impl SecondmateService {
         }
 
         let overrides = RequestOverrides {
+            tier: req.tier,
+            preference: req.preference.clone(),
             model: req.model.clone(),
             effort: req.effort,
             premium: req.premium,

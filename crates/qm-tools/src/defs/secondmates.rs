@@ -54,6 +54,10 @@ pub struct RouteToSecondmateArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preference: Option<qm_types::model_preference::ModelPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<qm_types::domain::Tier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub premium: bool,

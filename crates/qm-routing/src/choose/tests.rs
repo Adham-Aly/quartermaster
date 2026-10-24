@@ -19,6 +19,7 @@ fn pool(tiers: &[Tier]) -> Vec<Candidate> {
         .iter()
         .zip(1..)
         .map(|(&tier, n)| Candidate {
+            provider: qm_types::domain::Provider::Anthropic,
             model: model(tier),
             family: format!("family-{tier}"),
             generation: 1,
@@ -55,6 +56,7 @@ fn request(kind: TaskKind, fact: BuildsOnFact, tiers: &TierEfforts) -> RouteRequ
         needs: Needs::default(),
         quick_verification: false,
         user: UserChoices::default(),
+        preference: None,
         stronger_retry_target: None,
         later_step: None,
         always_use: None,

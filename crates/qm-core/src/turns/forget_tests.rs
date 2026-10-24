@@ -214,6 +214,8 @@ impl Fixture {
             instructions: vec![],
             later_steps: vec![],
             model: None,
+            preference: None,
+            tier: None,
             effort: None,
             premium: false,
             choice_message: None,

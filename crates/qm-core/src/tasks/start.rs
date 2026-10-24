@@ -121,6 +121,10 @@ pub(crate) struct StartAs {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RouteInputs {
     pub named_model: Option<ModelId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preference: Option<qm_types::model_preference::ModelPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub named_tier: Option<Tier>,
     pub named_effort: Option<Effort>,
     pub premium: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -397,7 +401,8 @@ fn validate(
             message: *message,
         })
         .collect();
-    let named_now = req.model.is_some() || req.effort.is_some() || req.premium;
+    let named_now =
+        req.model.is_some() || req.tier.is_some() || req.effort.is_some() || req.premium;
     let later_step = applicable(req.kind, retry.is_some(), named_now, &links);
     let builder_provider = match &review_of {
         Some(row) => provider_of(conn, row.id)?,
@@ -823,7 +828,8 @@ pub(crate) async fn start_when_ready(
             {
                 return Ok(Ok((req, base.base)));
             }
-            if req.model.is_some() || req.effort.is_some() || req.premium {
+            let explicit_choice = req.model.is_some() || req.tier.is_some() || req.effort.is_some() || req.premium;
+            if explicit_choice || req.preference.is_some() {
                 req.choice_message = req.choice_message.or(match how.authority {
                     Authority::Turn(StartedBy::User { message }) => Some(message),
                     _ => None,
@@ -832,8 +838,8 @@ pub(crate) async fn start_when_ready(
                     if let Err(r) = qm_store::user_message_sources::verify(conn, caller_copy.agent, message)? {
                         return Ok(Err(r.into()));
                     }
-                } else if how.authority != Authority::CardChoice {
-                    return Ok(Err(refuse("model, effort and premium choices need the user's message; cite it with choice_message")));
+                } else if explicit_choice && how.authority != Authority::CardChoice {
+                    return Ok(Err(refuse("model, tier, effort and premium choices need the user's message; cite it with choice_message")));
                 }
             }
             let authority =
@@ -946,6 +952,8 @@ pub(crate) async fn start_when_ready(
         let (words, message) = authority_words(authority);
         RouteInputs {
             named_model: req.model.clone(),
+            preference: req.preference.clone(),
+            named_tier: req.tier,
             named_effort: req.effort,
             premium: req.premium,
             choice_message: req.choice_message,
@@ -1215,6 +1223,8 @@ fn facts_for(
         needs: Needs::default(),
         quick_verification: quick,
         named_model: inputs.named_model.clone(),
+        preference: inputs.preference.clone(),
+        named_tier: inputs.named_tier,
         named_effort: inputs.named_effort,
         premium: inputs.premium,
         choice_message: inputs.choice_message,
@@ -1914,6 +1924,8 @@ pub(crate) async fn start_retry(
         instructions: serde_json::from_value(row.instructions.clone()).unwrap_or_default(),
         later_steps: Vec::new(),
         model: None,
+        preference: None,
+        tier: None,
         effort: None,
         premium: false,
         choice_message: None,
@@ -1973,4 +1985,105 @@ async fn plan_folder(
     .await
     .map_err(|e| PrepareError::Failed(e.to_string()))?
     .map_err(|e| PrepareError::Failed(format!("{task}'s plan folder couldn't be made: {e}")))
+}
+
+#[cfg(test)]
+mod tier_tests {
+    use super::*;
+
+    fn route_store() -> (Connection, TaskId) {
+        let mut conn = qm_store::connection::open_memory().unwrap();
+        qm_store::schema::migrate(&mut conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO agents (id, role, home, status, created_at, seq)
+               VALUES (1, 'quartermaster', '/unused', 'idle', 0, 1);
+             INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode,
+                 merge_method, created_at, seq)
+               VALUES (1, 'p', '/unused', 'linked', 'main', 'direct_pr', 'merge', 0, 2);
+             INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal,
+                 delivery_mode, branch, status, created_at, seq)
+               VALUES (1, 1, 1, 'lookup', 't', 'g', 'direct_pr', 'qm/task-1', 'queued', 0, 3);",
+        )
+        .unwrap();
+        (conn, TaskId::new(1).unwrap())
+    }
+
+    #[test]
+    fn started_event_persists_tier_for_reroute_and_reads_legacy_without_tier() {
+        let (conn, task) = route_store();
+        let inputs = RouteInputs {
+            named_tier: Some(Tier::Medium),
+            preference: Some(qm_types::model_preference::ModelPreference {
+                selection: ModelId::new("preferred").unwrap(),
+                provider: None,
+                model: None,
+                effort: Some(Effort::High),
+            }),
+            named_effort: Some(Effort::High),
+            authority: "user".into(),
+            message: Some(MessageId::new(1)),
+            ..RouteInputs::default()
+        };
+        let at = "2026-10-23T00:00:00Z".parse().unwrap();
+        for legacy in [false, true] {
+            let mut route = serde_json::to_value(&inputs).unwrap();
+            if legacy {
+                route.as_object_mut().unwrap().remove("named_tier");
+            }
+            task_store::event(
+                &conn,
+                STARTED_EVENT,
+                task,
+                None,
+                "task started",
+                serde_json::json!({ "route": route }),
+                at,
+            )
+            .unwrap();
+            let restored = route_inputs(&conn, task).unwrap();
+            let expected = RouteInputs {
+                named_tier: if legacy { None } else { Some(Tier::Medium) },
+                ..inputs.clone()
+            };
+            assert_eq!(restored, expected);
+            let facts = facts_for(task, None, TaskKind::Lookup, &restored, false);
+            assert_eq!(facts.named_tier, expected.named_tier);
+            assert_eq!(facts.preference, expected.preference);
+            assert_eq!(facts.named_effort, Some(Effort::High));
+            assert_eq!(facts.authority, inputs.authority());
+        }
+    }
+
+    #[test]
+    fn persisted_tier_round_trips_into_reroute_facts_and_old_inputs_default_to_none() {
+        let inputs = RouteInputs {
+            named_tier: Some(Tier::Medium),
+            authority: "user".into(),
+            message: Some(MessageId::new(1)),
+            ..RouteInputs::default()
+        };
+        let value = serde_json::to_value(&inputs).unwrap();
+        assert_eq!(value["named_tier"], "medium");
+        let restored: RouteInputs = serde_json::from_value(value).unwrap();
+        let facts = facts_for(
+            TaskId::new(1).unwrap(),
+            None,
+            TaskKind::Lookup,
+            &restored,
+            false,
+        );
+        assert_eq!(facts.named_tier, Some(Tier::Medium));
+        assert_eq!(facts.named_effort, None);
+
+        let mut legacy = serde_json::to_value(&inputs).unwrap();
+        legacy.as_object_mut().unwrap().remove("named_tier");
+        let restored: RouteInputs = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.named_tier, None);
+        assert!(
+            serde_json::to_value(restored)
+                .unwrap()
+                .get("named_tier")
+                .is_none()
+        );
+    }
 }

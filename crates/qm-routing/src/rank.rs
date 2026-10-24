@@ -25,6 +25,7 @@ use std::time::Duration;
 /// account.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Candidate {
+    pub provider: qm_types::domain::Provider,
     pub model: ModelId,
     /// The model's family (`claude-opus`, `gpt-6`), for "newest in the same family".
     pub family: String,

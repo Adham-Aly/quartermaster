@@ -22,6 +22,7 @@ const EFFORTS: [Effort; 5] = [
 
 fn candidate(tier: Tier, effort: Option<Effort>) -> Candidate {
     Candidate {
+        provider: qm_types::domain::Provider::Anthropic,
         model: ModelId::new("same-model").unwrap(),
         family: "same-family".to_owned(),
         generation: 1,
@@ -55,6 +56,7 @@ fn request(tiers: &TierEfforts, landed: Tier) -> RouteRequest<'_> {
             premium: landed == Tier::Premium,
             ..UserChoices::default()
         },
+        preference: None,
         stronger_retry_target: None,
         later_step: None,
         always_use: None,

@@ -17,10 +17,12 @@ use qm_store::events;
 use qm_store::secondmates;
 use qm_types::BoxFuture;
 use qm_types::clock::Clock;
+use qm_types::config::Config;
 use qm_types::ids::{AgentId, SecondmateId, TaskId, TurnId};
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
+use tokio::sync::watch;
 
 /// How much of a request each line shows.
 const REQUEST_LINE_CHARS: usize = 80;
@@ -62,6 +64,13 @@ impl SecondmateContext {
             builder,
             tz: TimeZone::system(),
         }
+    }
+
+    /// Share the same live Task kinds settings as the Quartermaster.
+    #[must_use]
+    pub fn with_config(mut self, config: watch::Receiver<Config>) -> Self {
+        self.builder = self.builder.with_config(config);
+        self
     }
 
     async fn slice(&self, agent: AgentId, turn: TurnId) -> Result<Slice, SeatError> {

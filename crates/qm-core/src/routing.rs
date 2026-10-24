@@ -375,6 +375,7 @@ fn candidate(row: &PoolRow, now: Timestamp) -> Candidate {
     let (usage, cut_off) = usage_of(row.usage.as_deref(), now);
     Candidate {
         model: row.facts.canonical.clone(),
+        provider: row.provider,
         family: row.facts.family.clone(),
         generation: row.facts.generation,
         account: row.account,
@@ -517,6 +518,9 @@ pub struct CrewmateFacts {
     pub quick_verification: bool,
     /// A model you named for this task.
     pub named_model: Option<ModelId>,
+    pub preference: Option<qm_types::model_preference::ModelPreference>,
+    /// A model level you named for this task, separate from reasoning effort.
+    pub named_tier: Option<Tier>,
     /// An effort level you named for this task.
     pub named_effort: Option<qm_types::domain::Effort>,
     /// You asked for premium.
@@ -563,6 +567,7 @@ pub enum RouteOutcome {
 fn check_overrides(facts: &CrewmateFacts) -> Result<(), Refusal> {
     let present = [
         (facts.named_model.is_some(), OverrideKind::NamedModel),
+        (facts.named_tier.is_some(), OverrideKind::Tier),
         (facts.premium, OverrideKind::Premium),
         (facts.named_effort.is_some(), OverrideKind::Effort),
         (
@@ -572,6 +577,42 @@ fn check_overrides(facts: &CrewmateFacts) -> Result<(), Refusal> {
     ];
     for (_, kind) in present.iter().filter(|(on, _)| *on) {
         check_choice_override(facts.authority, facts.choice_message, *kind)?;
+    }
+    if facts.premium && facts.named_tier.is_some_and(|tier| tier != Tier::Premium) {
+        return Err(Refusal::new(
+            "premium conflicts with the named model level; choose tier premium or leave premium off",
+        ));
+    }
+    if let (Some(named), Some(target)) = (facts.named_tier, facts.stronger_retry)
+        && named != target
+    {
+        return Err(Refusal::new(format!(
+            "model level {named} conflicts with the stronger-model retry target {target}; choose tier {target} or leave tier out"
+        )));
+    }
+    Ok(())
+}
+
+/// Check placement membership only; the pure router checks whether a placement can serve.
+fn check_named_placements(
+    placements: &[models::PlacementRow],
+    model: Option<&ModelId>,
+    tier: Option<Tier>,
+    later_model: Option<&ModelId>,
+) -> Result<(), Refusal> {
+    for model in model.into_iter().chain(later_model) {
+        if !placements.iter().any(|p| &p.canonical == model) {
+            return Err(not_in_any_tier(model));
+        }
+    }
+    if let (Some(model), Some(tier)) = (model, tier)
+        && !placements
+            .iter()
+            .any(|p| &p.canonical == model && p.tier == tier)
+    {
+        return Err(Refusal::new(format!(
+            "{model} isn't in model level {tier}; place it there in Settings ▸ Model levels, name another model, or leave tier out"
+        )));
     }
     Ok(())
 }
@@ -612,6 +653,8 @@ fn verify_choice_source(
                 .named_model
                 .as_ref()
                 .is_none_or(|m| asked.model.as_ref() == Some(m))
+            && facts.named_tier.is_none_or(|tier| asked.tier == Some(tier))
+            // Preference is authority-free guidance, including when supplied by the child.
             && facts.named_effort.is_none_or(|e| asked.effort == Some(e))
             && (!facts.premium || asked.premium)
         {
@@ -625,7 +668,12 @@ fn check_choice_sources(
     conn: &Connection,
     facts: &CrewmateFacts,
 ) -> Result<Result<(), Refusal>, StoreError> {
-    if facts.named_model.is_none() && facts.named_effort.is_none() && !facts.premium {
+    let explicit_choice = facts.named_model.is_some()
+        || facts.named_tier.is_some()
+        || facts.named_effort.is_some()
+        || facts.premium;
+    // Guidance needs no override authority, but an attached citation must be genuine.
+    if !explicit_choice && (facts.preference.is_none() || facts.choice_message.is_none()) {
         return Ok(Ok(()));
     }
     let source = facts.choice_message.or(match facts.authority {
@@ -639,7 +687,7 @@ fn check_choice_sources(
         Ok(())
     } else {
         Err(Refusal::new(
-            "model, effort and premium choices need an actual user message; cite it with choice_message",
+            "model, tier, effort and premium choices need an actual user message; cite it with choice_message",
         ))
     })
 }
@@ -672,16 +720,37 @@ fn route_preferring(
         placed: &pool.placed,
         pinned: &pool.pinned,
     };
+    if avoid.is_none()
+        || request.user.model.is_some()
+        || request
+            .later_step
+            .as_ref()
+            .is_some_and(|l| l.model.is_some())
+    {
+        return route(table, request, full);
+    }
+    if request.preference.is_some() {
+        let record = route(table, request, full);
+        if record.facts.preference_applied {
+            return record;
+        }
+        let mut ordinary = request.clone();
+        ordinary.preference = None;
+        let mut reviewed = route_preferring(table, &ordinary, pool, avoid);
+        reviewed.facts.preference = record.facts.preference;
+        reviewed
+            .why
+            .push_str(". The preference did not select an entry; normal review routing was used");
+        return reviewed;
+    }
     let Some(avoid) = avoid else {
         return route(table, request, full);
     };
-    // `placed[i]` was built from `rows[i]`, so the rows say each candidate's provider.
     let others: Vec<Candidate> = pool
         .placed
         .iter()
-        .zip(&pool.rows)
-        .filter(|(_, row)| row.provider != avoid)
-        .map(|(c, _)| c.clone())
+        .filter(|c| c.provider != avoid)
+        .cloned()
         .collect();
     let preferred = route(
         table,
@@ -703,6 +772,24 @@ fn route_preferring(
     }
 }
 
+fn canonical_preference(
+    conn: &Connection,
+    preference: Option<&qm_types::model_preference::ModelPreference>,
+) -> Result<Option<qm_types::model_preference::ModelPreference>, StoreError> {
+    preference
+        .cloned()
+        .map(|mut preference| {
+            preference.model = preference
+                .model
+                .as_ref()
+                .map(|model| canonical(conn, model))
+                .transpose()?;
+            preference.selection = canonical(conn, &preference.selection)?;
+            Ok(preference)
+        })
+        .transpose()
+}
+
 /// Routes one crewmate and records the decision (see the module docs). Call inside the transaction
 /// that starts the crewmate. Accounts whose login `health` marks unusable are left out of the pool
 /// and listed in the record's `skipped`.
@@ -722,6 +809,7 @@ pub fn route_crewmate(
         .as_ref()
         .map(|m| canonical(conn, m))
         .transpose()?;
+    let preference = canonical_preference(conn, facts.preference.as_ref())?;
     let later_step = facts
         .later_step
         .clone()
@@ -732,13 +820,13 @@ pub fn route_crewmate(
         .transpose()?;
     // A model you name is one placed in some tier; routing never quietly picks another.
     let placements = models::list_placements(conn)?;
-    for model in named_model
-        .iter()
-        .chain(later_step.as_ref().and_then(|l| l.model.as_ref()))
-    {
-        if !placements.iter().any(|p| &p.canonical == model) {
-            return Ok(RouteOutcome::Refused(not_in_any_tier(model)));
-        }
+    if let Err(refusal) = check_named_placements(
+        &placements,
+        named_model.as_ref(),
+        facts.named_tier,
+        later_step.as_ref().and_then(|l| l.model.as_ref()),
+    ) {
+        return Ok(RouteOutcome::Refused(refusal));
     }
     let premium_models: Vec<ModelId> = placements
         .into_iter()
@@ -747,7 +835,6 @@ pub fn route_crewmate(
         .collect();
     let pin = canonical_pin(conn, config.routing.always_use.as_ref())?;
     let pool = load_pool(conn, pin.as_ref(), &[], health, at)?;
-    let preferred = accounts::preferred_account(conn)?;
 
     let request = RouteRequest {
         kind: facts.kind.clone(),
@@ -757,14 +844,16 @@ pub fn route_crewmate(
         quick_verification: facts.quick_verification,
         user: UserChoices {
             model: named_model,
+            tier: facts.named_tier,
             effort: facts.named_effort,
             premium: facts.premium,
             stronger_retry: facts.stronger_retry.is_some(),
         },
+        preference,
         stronger_retry_target: facts.stronger_retry,
         later_step,
         always_use: pin.as_ref(),
-        preferred_account: preferred,
+        preferred_account: accounts::preferred_account(conn)?,
         tiers: &config.tiers,
         premium_models: &premium_models,
     };
@@ -1065,6 +1154,8 @@ mod tests {
                     needs: Needs::default(),
                     quick_verification: false,
                     named_model: None,
+                    preference: None,
+                    named_tier: None,
                     named_effort: None,
                     premium: false,
                     choice_message: None,
@@ -1144,6 +1235,8 @@ mod tests {
                 needs: Needs::default(),
                 quick_verification: true,
                 named_model: None,
+                preference: None,
+                named_tier: None,
                 named_effort: None,
                 premium: false,
                 choice_message: None,
