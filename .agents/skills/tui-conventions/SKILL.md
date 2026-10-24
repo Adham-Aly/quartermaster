@@ -79,7 +79,9 @@ Map core `Tone`s with `theme::tone`.
   heading the core keeps its crewmates together for; headings have no status, no hit, and the
   keys pass over them. Statuses align per supervisor and depth. Projects lists each project's
   open tasks beneath it (`ProjectRow::tasks`, `├ T-0042 title`); a task line's hit
-  (`Hit::ProjectTask`) acts for its project. Guides (`│`, `├`, `└`) are dim.
+  (`Hit::ProjectTask`) acts for its project. Guides (`│`, `├`, `└`) are dim. Heights come
+  from `widgets/sidebar.rs` `heights`: Projects takes up to a quarter, then any rows Actions
+  doesn't need; a narrow project row drops its autonomy, then its mode, before cutting the name.
 - Settings' nested pickers, text fields and Connect view have a visible `← Back`, equivalent
   to `Esc`: dismiss the picker/field without saving, or return from Connect to Accounts (not cancel
   a running login). The Back row stays visible while content scrolls. Settings uses 48% of the

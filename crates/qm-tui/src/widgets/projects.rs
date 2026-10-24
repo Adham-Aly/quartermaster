@@ -1,5 +1,6 @@
 //! The projects pane: `●` accent when active, `○` dim otherwise, the name, then the delivery mode
-//! and autonomy dim, aligned on the longest name. Beneath each project, a tree of its open tasks:
+//! and autonomy dim, aligned on the longest name (in a narrow pane the autonomy goes first, then
+//! the mode, so the name stays readable). Beneath each project, a tree of its open tasks:
 //! `├ T-0042 fix(auth): token refresh race`, the title dim. Right-click (or `Space`) a project for
 //! its menu, which sets its autonomy (normal or auto); a task's line acts for its project.
 
@@ -88,8 +89,12 @@ fn task_line(task: &ProjectTask, last: bool, inner_width: u16) -> Line<'static> 
     Line::from(spans)
 }
 
+/// The fewest cells a project's name keeps before its row drops status words to make room.
+const NAME_MIN: usize = 8;
+
 /// One project: `● api-server  PR · normal` (or `branch · auto`, `in place · normal`).
-/// The name is cut with `…` when the row is narrower than `inner_width`, so the status fits.
+/// When the row is too narrow, the name keeps at least [`NAME_MIN`] cells (or all of it, when
+/// shorter): the autonomy goes first, then the mode, and only then is the name cut with `…`.
 fn line(project: &ProjectRow, name_width: usize, inner_width: u16, hovered: bool) -> Line<'static> {
     let (dot, dot_style) = if project.active {
         ("●", theme::accent())
@@ -102,9 +107,17 @@ fn line(project: &ProjectRow, name_width: usize, inner_width: u16, hovered: bool
         DeliveryMode::BuildInPlace => "in place",
         DeliveryMode::Folder => "folder",
     };
-    let delivery = format!("{mode} · {}", project.autonomy);
+    let inner = usize::from(inner_width);
+    let keep = width(&project.name).min(NAME_MIN);
     // The dot and its space, then two cells before the status.
-    let room = usize::from(inner_width).saturating_sub(width(&delivery) + 4);
+    let (status, room) = [format!("{mode} · {}", project.autonomy), mode.to_owned()]
+        .into_iter()
+        .map(|status| {
+            let room = inner.saturating_sub(width(&status) + 4);
+            (status, room)
+        })
+        .find(|&(_, room)| room >= keep)
+        .unwrap_or_else(|| (String::new(), inner.saturating_sub(2)));
     let name = truncate(&project.name, room.max(1));
     let pad = name_width.min(room).saturating_sub(width(&name)) + 2;
     let name_style = if hovered {
@@ -112,13 +125,16 @@ fn line(project: &ProjectRow, name_width: usize, inner_width: u16, hovered: bool
     } else {
         theme::text()
     };
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(dot, dot_style),
         Span::raw(" "),
         Span::styled(name, name_style),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(delivery, theme::dim()),
-    ])
+    ];
+    if !status.is_empty() {
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(status, theme::dim()));
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -191,9 +207,28 @@ mod tests {
                 "○ personal  branch · normal",
             ]
         );
-        // The box is a quarter of the column: the rest scrolls into view.
-        let shown = projects_box(&mut app, 150, 45);
-        assert_eq!(shown[..], rows[..shown.len()]);
+        // The box grows into the rows Actions doesn't need, so the whole tree shows.
+        assert_eq!(projects_box(&mut app, 150, 45), rows);
+    }
+
+    #[test]
+    fn a_narrow_row_drops_its_status_words_before_it_cuts_the_name() {
+        use qm_types::domain::{Autonomy, DeliveryMode};
+        let project =
+            qm_types::api::ProjectRow::new("api-server", DeliveryMode::Folder, Autonomy::Normal);
+        let at = |inner: u16| -> String {
+            let line = super::line(&project, 10, inner, false);
+            assert!(line.width() <= usize::from(inner), "{inner}: {line}");
+            line.spans.iter().map(|s| s.content.as_ref()).collect()
+        };
+        assert_eq!(at(29), "○ api-server  folder · normal");
+        // The name keeps eight cells before the autonomy goes...
+        assert_eq!(at(27), "○ api-ser…  folder · normal");
+        assert_eq!(at(26), "○ api-server  folder");
+        // ...then the mode, and only then is the name cut.
+        assert_eq!(at(18), "○ api-ser…  folder");
+        assert_eq!(at(17), "○ api-server");
+        assert_eq!(at(9), "○ api-se…");
     }
 
     #[test]
