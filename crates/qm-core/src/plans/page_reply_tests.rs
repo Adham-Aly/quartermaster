@@ -13,25 +13,17 @@ use qm_types::ids::{AgentId, MessageId, TaskId, TurnId};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-const PLAN_MD: &str = "# Cache plan
-
-## Data flow
-
-The cache sits in front of the queue.
-
-```question
-id = \"store\"
-ask = \"Which store?\"
+const PLAN_MD: &str =
+    "# Technical cache plan\n\n## Implementation\n\nUse the existing queue adapter.\n";
+const PLAN_HTML: &str = r#"<article><h1>Cache plan</h1>
+<h2 id="data-flow">Data flow</h2><p>The cache sits in front of the queue.</p>
+<pre data-question="">id = "store"
+ask = "Which store?"
 choices = [
- { id = \"sqlite\", label = \"SQLite\", recommended = true },
- { id = \"sled\", label = \"sled\" },
-]
-```
-
-## Assumptions
-
-- None yet.
-";
+ { id = "sqlite", label = "SQLite", recommended = true },
+ { id = "sled", label = "sled" },
+]</pre>
+<h2 id="assumptions">Assumptions</h2><p>None yet.</p></article>"#;
 
 /// A plan task (T-0003) waiting on the user's reply to round 1, with its page rendered to send to
 /// `port`, beside the fixture's Quartermaster (agent 1) and the planner (agent 3).
@@ -69,6 +61,7 @@ impl Page {
         fs::create_dir_all(dir.parent().unwrap()).unwrap();
         create(&dir).unwrap();
         fs::write(dir.join(PLAN_FILE), PLAN_MD).unwrap();
+        fs::write(dir.join(PAGE_FILE), PLAN_HTML).unwrap();
         update(&dir, |s| {
             s.stage = Stage::WithUser;
             s.round = 1;

@@ -20,6 +20,10 @@ make, such as a step that would lose data, spend money or break a stated constra
 
 ## Format
 
+- `plan.md` is a technical handoff to the implementing agent, not a user-facing presentation.
+  Include code findings and file paths, architecture, implementation steps, constraints, tests
+  and acceptance criteria. Keep it precise enough for another agent to execute independently.
+  Do not create `plan.html` in this mode.
 - One `# Title`, then `##` sections and `###` subsections.
 - A `## Decisions made without the user` section is required: each open point you decided, the
   choice, and the reason in a line. Write "None" if there were none.

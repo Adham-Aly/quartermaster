@@ -30,6 +30,10 @@ use qm_types::ids::{CommitSha, PortBlock, SecondmateId, TaskId};
 
 use crate::index;
 
+#[cfg(test)]
+#[path = "brief_tests.rs"]
+mod tests;
+
 /// Where free text (the user's words, a builds-on summary) wraps, in characters per line,
 /// counting the `> "` quote prefix.
 pub const WRAP: usize = 88;
@@ -422,9 +426,19 @@ fn section_planning(out: &mut String, f: &BriefFacts) {
     }
     out.push_str(
         "\n## Planning\n\
-         Write the plan in $QM_PLAN_DIR/plan.md, with any images in $QM_PLAN_DIR/assets/. Your\n\
-         system prompt and the quartermaster-plan skill say how. Check it with plan_check before\n\
-         you report. The plan lives only in that folder: never paste it in a report or a message.\n",
+         Write $QM_PLAN_DIR/plan.md as a highly detailed, comprehensive technical implementation\n\
+         handoff another agent can execute independently, with findings, paths, architecture, steps,\n\
+         constraints, edge cases, tests and acceptance criteria. Put images in $QM_PLAN_DIR/assets/.\n\
+         Read the supplied quartermaster-plan skill before authoring. Under normal autonomy, also\n\
+         author plan.html from template.html as an XML-well-formed HTML article fragment: a simple,\n\
+         clear human-facing explanation with relevant technical depth and helpful visuals, never\n\
+         sacrificing detail. Keep both documents current every round. The app wraps your authored\n\
+         HTML with trusted interactive runtime, not prose generated from Markdown. plan_check\n\
+         composes plan.html in place and retains your source internally; for revisions replace the\n\
+         whole authored fragment, never edit generated runtime. Under auto autonomy there is no\n\
+         HTML template or review page; write only plan.md. Your system prompt and skill give the\n\
+         full planning loop. Call plan_check and fix all problems before every report. The plan\n\
+         lives only in that folder: never paste it in a report or a message.\n",
     );
 }
 
@@ -614,7 +628,10 @@ fn section_reporting(out: &mut String, f: &BriefFacts) {
              reproduced: no, and set reproduced to match.\n",
         ),
         TaskKind::Plan => out.push_str(
-            "Call report with a short summary of the plan in answer; the plan is plan.md.\n",
+            "Call report with a short summary of the round in answer, never the documents. The\n\
+             implementation handoff is plan.md; under normal autonomy the user reviews your authored\n\
+             plan.html. Check before reporting, wait for replies, and update both documents each\n\
+             round. Under auto autonomy, report the completed plan.md for the build.\n",
         ),
         kind if kind.usually_answers() => {
             out.push_str("Call report with your whole answer in answer.");

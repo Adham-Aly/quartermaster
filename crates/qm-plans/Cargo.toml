@@ -1,6 +1,6 @@
 [package]
 name = "qm-plans"
-description = "Plan pages: plan.md checked and rendered into a standalone plan.html, the question blocks, the reply grammar, the plan skills."
+description = "Planner-authored HTML review documents, technical Markdown plans, trusted review controls, validation, replies, and authoring skills."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
