@@ -16,7 +16,8 @@ Pushing a tag is a GitHub write: do it only when the user asks for this release.
 
 1. Bump `version` under `[workspace.package]` in the root `Cargo.toml`. Every crate inherits it.
    Update `.github/release-notes.md` with changes since the last tag, keeping the install command
-   and asset warning first. This is the release history; never hand-edit a `CHANGELOG.md`.
+   first and no warning about the assets. This is the release history; never hand-edit a
+   `CHANGELOG.md`.
 2. `cargo build` (not `--locked`) to refresh `Cargo.lock`; its diff should contain only version lines.
 3. `cargo xtask ci`.
 4. Commit `chore(release): vX.Y.Z` (no co-author trailer), open the release PR through `pr_open`,
@@ -32,8 +33,8 @@ Pushing a tag is a GitHub write: do it only when the user asks for this release.
    and the runs as metadata; the checks below still need doing.)
 8. `gh release view vX.Y.Z` must list, for each target, `quartermaster-<triple>.tar.xz` and its
    `.sha256`, plus `sha256.sum`, `source.tar.gz` and `quartermaster-installer.sh`. The release
-   body must be `.github/release-notes.md` (install command first, a warning not to click the
-   assets, no download table): the `custom-release-notes` job swaps it in after dist's `announce`.
+   body must be `.github/release-notes.md` (install command first, no warning about the assets,
+   no download table): the `custom-release-notes` job swaps it in after dist's `announce`.
    Never write or hand-edit a `CHANGELOG.md`.
 9. Check a binary by hand:
 
