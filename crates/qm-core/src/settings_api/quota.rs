@@ -1,6 +1,7 @@
 //! Provider quotas: the lines Settings ▸ Accounts shows live only in memory; each successful
 //! check's numbers and reset times are also stored on the account (`accounts.quota`, through
-//! `crate::quota_pools`) for quota-aware routing.
+//! `crate::quota_pools`) for quota-aware routing. The new pools are worked out on the database
+//! thread from the reading stored there, so a balance keeps its last top-up between checks.
 use super::{Inner, accounts};
 use qm_auth::{CredentialRef, quota::Quotas};
 use std::{
@@ -88,7 +89,12 @@ async fn refresh_with(inner: &Arc<Inner>, opened: bool, quotas: Option<Arc<Quota
     if requests.is_empty() {
         return;
     }
-    let quotas = quotas.unwrap_or_else(|| Arc::new(Quotas::new(Arc::clone(&inner.tokens))));
+    let quotas = quotas.unwrap_or_else(|| {
+        Arc::new(Quotas::with_endpoints(
+            Arc::clone(&inner.tokens),
+            inner.quota_endpoints.clone(),
+        ))
+    });
     for (account, generation) in requests {
         let inner = Arc::clone(inner);
         let quotas = Arc::clone(&quotas);
@@ -98,7 +104,11 @@ async fn refresh_with(inner: &Arc<Inner>, opened: bool, quotas: Option<Arc<Quota
                 .as_deref()
                 .and_then(|key| CredentialRef::new(key).ok())
             {
-                Some(key) => quotas.fetch(account.provider, &key).await,
+                Some(key) => {
+                    quotas
+                        .fetch(account.provider, &key, account.base_url.as_deref())
+                        .await
+                }
                 None => Err(qm_auth::quota::QuotaError::Unsupported),
             };
             let mut pools = None;
@@ -111,23 +121,28 @@ async fn refresh_with(inner: &Arc<Inner>, opened: bool, quotas: Option<Arc<Quota
                     cached.refreshing = false;
                     match result {
                         Ok(summary) => {
-                            pools =
-                                serde_json::to_string(&crate::quota_pools::from_summary(&summary))
-                                    .ok();
                             cached.lines =
                                 summary.buckets.iter().map(ToString::to_string).collect();
                             cached.problem = None;
                             cached.checked_at = Some(inner.clock.now().to_string());
+                            pools = Some(summary);
                         }
                         Err(error) => cached.problem = Some(error.to_string()),
                     }
                 }
             }
-            if let Some(json) = pools {
+            if let Some(summary) = pools {
                 let (id, at) = (account.id, inner.clock.now());
                 if let Err(e) = inner
                     .db
-                    .call(move |conn| accounts::record_quota(conn, id, &json, at))
+                    .call(move |conn| {
+                        let before = accounts::load_account(conn, id)?.and_then(|a| a.quota);
+                        let stored = crate::quota_pools::from_summary(&summary, before.as_deref());
+                        match serde_json::to_string(&stored) {
+                            Ok(json) => accounts::record_quota(conn, id, &json, at),
+                            Err(_) => Ok(()),
+                        }
+                    })
                     .await
                 {
                     tracing::warn!(error = %e, "couldn't store the account's quota reading");
@@ -307,6 +322,11 @@ mod tests {
 
     impl Fixture {
         async fn new() -> Self {
+            Self::with(Provider::OpenRouter, None).await
+        }
+
+        async fn with(provider: Provider, base_url: Option<&str>) -> Self {
+            let base_url = base_url.map(str::to_owned);
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}/quota", listener.local_addr().unwrap());
             let (tx, requests) = mpsc::unbounded_channel::<Reply>();
@@ -326,11 +346,11 @@ mod tests {
                     accounts::insert_account(
                         conn,
                         &accounts::NewAccount {
-                            provider: Provider::OpenRouter,
+                            provider,
                             label: "Quota fixture".into(),
                             kind: AccountKind::ApiKey,
                             credential_ref: Some("test:quota".into()),
-                            base_url: None,
+                            base_url,
                             at,
                         },
                     )
@@ -348,11 +368,7 @@ mod tests {
             // Every supported endpoint stays on loopback even if the fixture provider changes.
             let quotas = Arc::new(Quotas::with_endpoints(
                 Arc::clone(&tokens),
-                QuotaEndpoints {
-                    chatgpt: url.clone(),
-                    copilot: url.clone(),
-                    openrouter: url,
-                },
+                QuotaEndpoints::local(&url).unwrap(),
             ));
             let conversation = Arc::new(Conversation::new(
                 db.clone(),
@@ -371,6 +387,7 @@ mod tests {
                         catalog: Arc::new(EmptyCatalog),
                         conversation,
                         endpoints: LoginEndpoints::default(),
+                        quota_endpoints: QuotaEndpoints::default(),
                     })
                 })
                 .await;
@@ -430,6 +447,11 @@ mod tests {
                     .all(|cached| !cached.refreshing)
             })
             .await;
+        }
+
+        async fn reply(&mut self, body: &'static str) {
+            self.request().await.send((200, body)).unwrap();
+            self.settled().await;
         }
 
         async fn success(&mut self) {
@@ -503,6 +525,86 @@ mod tests {
         })
         .await;
         assert_eq!(f.fill().await.accounts[0].reserve_at, None);
+    }
+
+    #[tokio::test]
+    async fn a_deepseek_balance_is_measured_against_its_last_top_up() {
+        let mut f = Fixture::with(Provider::Custom, Some("https://api.deepseek.com")).await;
+        let routing = |view: &SettingsView| view.accounts[0].routing.clone().unwrap();
+        f.fill().await;
+        f.reply(
+            r#"{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"10.00"}]}"#,
+        )
+        .await;
+        let view = f.fill().await;
+        assert_eq!(view.accounts[0].quota_lines, ["Balance: $10.00"]);
+        assert_eq!(
+            routing(&view),
+            "balance 0% used since the last top-up · no reserve mark"
+        );
+        f.command(Command::SetReserveMark {
+            account: f.account,
+            percent: Some(25),
+        })
+        .await;
+        // $3 spent of the $10 it had: 30% used, past the mark.
+        f.clock.advance(OPEN_COOLDOWN);
+        f.command(Command::RefreshQuotas).await;
+        f.reply(
+            r#"{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"7.00"}]}"#,
+        )
+        .await;
+        assert_eq!(
+            routing(&f.fill().await),
+            "balance 30% used since the last top-up · reserve at 25% used · held in reserve"
+        );
+        // A top-up to $8 is a new reference, though it is less than the first.
+        f.clock.advance(OPEN_COOLDOWN);
+        f.command(Command::RefreshQuotas).await;
+        f.reply(
+            r#"{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"8.00"}]}"#,
+        )
+        .await;
+        assert_eq!(
+            routing(&f.fill().await),
+            "balance 0% used since the last top-up · reserve at 25% used"
+        );
+        f.clock.advance(OPEN_COOLDOWN);
+        f.command(Command::RefreshQuotas).await;
+        f.reply(
+            r#"{"is_available":false,"balance_infos":[{"currency":"USD","total_balance":"0.00"}]}"#,
+        )
+        .await;
+        assert_eq!(
+            routing(&f.fill().await),
+            "balance 100% used since the last top-up · reserve at 25% used · at its limit: \
+             skipped until a check finds money left"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_moonshot_balance_follows_the_same_top_up_rule() {
+        let mut f = Fixture::with(Provider::Custom, Some("https://api.moonshot.cn/v1")).await;
+        let routing = |view: &SettingsView| view.accounts[0].routing.clone().unwrap();
+        f.fill().await;
+        f.reply(
+            r#"{"code":0,"data":{"available_balance":20.0,"cash_balance":20.0},"status":true}"#,
+        )
+        .await;
+        let view = f.fill().await;
+        assert_eq!(view.accounts[0].quota_lines, ["Balance: CN¥20.00"]);
+        assert_eq!(
+            routing(&view),
+            "balance 0% used since the last top-up · no reserve mark"
+        );
+        f.clock.advance(OPEN_COOLDOWN);
+        f.command(Command::RefreshQuotas).await;
+        f.reply(r#"{"code":0,"data":{"available_balance":5.0,"cash_balance":5.0},"status":true}"#)
+            .await;
+        assert_eq!(
+            routing(&f.fill().await),
+            "balance 75% used since the last top-up · no reserve mark"
+        );
     }
 
     #[tokio::test]

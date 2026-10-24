@@ -109,11 +109,7 @@ async fn gated_server(
 }
 
 fn endpoints(url: &str) -> QuotaEndpoints {
-    QuotaEndpoints {
-        chatgpt: url.into(),
-        copilot: url.into(),
-        openrouter: url.into(),
-    }
+    QuotaEndpoints::local(url).unwrap()
 }
 
 const CHATGPT: &str = r#"{"rate_limit":{"primary_window":{"used_percent":25,"reset_at":2000000000,"limit_window_seconds":18000},"secondary_window":{"used_percent":100}},"email":"must-not-escape","plan_type":"\u001b[31muntrusted"}"#;
@@ -207,7 +203,12 @@ async fn openrouter_uses_api_key_without_editor_or_account_headers() {
         LoginEndpoints::default(),
     );
     let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
-    assert!(quotas.fetch(Provider::OpenRouter, &key()).await.is_ok());
+    assert!(
+        quotas
+            .fetch(Provider::OpenRouter, &key(), None)
+            .await
+            .is_ok()
+    );
     let requests = task.await.unwrap();
     assert!(requests[0].contains("authorization: bearer test-key"));
     assert!(!requests[0].contains("copilot-integration-id"));
@@ -248,11 +249,224 @@ async fn unsupported_including_claude_never_reads_credentials() {
         Provider::Scripted,
     ] {
         assert_eq!(
-            quotas.fetch(provider, &key()).await,
+            quotas.fetch(provider, &key(), None).await,
+            Err(QuotaError::Unsupported)
+        );
+    }
+    // A custom endpoint anywhere but a balance source's API host has no quota source either.
+    for base in [
+        None,
+        Some("https://api.example.com/v1"),
+        Some("http://api.deepseek.com"),
+        Some("https://api.deepseek.com.example.com"),
+        Some("https://api.deepseek.com:8443"),
+        Some("not a url"),
+    ] {
+        assert_eq!(
+            quotas.fetch(Provider::Custom, &key(), base).await,
             Err(QuotaError::Unsupported)
         );
     }
     assert_eq!(store.reads.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn balances_are_found_by_the_custom_endpoints_api_host_only() {
+    let custom = |url| BalanceSource::of(Provider::Custom, Some(url));
+    assert_eq!(
+        custom("https://api.deepseek.com"),
+        Some(BalanceSource::DeepSeek)
+    );
+    assert_eq!(
+        custom("https://api.deepseek.com/v1"),
+        Some(BalanceSource::DeepSeek)
+    );
+    assert_eq!(
+        custom("https://API.DeepSeek.com/"),
+        Some(BalanceSource::DeepSeek)
+    );
+    assert_eq!(
+        custom("https://api.moonshot.ai/v1"),
+        Some(BalanceSource::Moonshot)
+    );
+    assert_eq!(
+        custom("https://api.moonshot.cn/v1"),
+        Some(BalanceSource::MoonshotChina)
+    );
+    for url in [
+        "https://deepseek.com",
+        "https://user:pw@api.deepseek.com",
+        "http://api.moonshot.ai/v1",
+        "https://api.moonshot.ai:444/v1",
+        "https://api.kimi.com/coding/v1",
+    ] {
+        assert_eq!(custom(url), None, "{url}");
+    }
+    assert_eq!(BalanceSource::of(Provider::Custom, None), None);
+    // Every other provider: no balance an inference key can read, whatever the URL.
+    for provider in [
+        Provider::Anthropic,
+        Provider::OpenAi,
+        Provider::Gemini,
+        Provider::Xai,
+        Provider::OpenRouter,
+        Provider::Kimi,
+    ] {
+        assert_eq!(
+            BalanceSource::of(provider, Some("https://api.deepseek.com")),
+            None
+        );
+    }
+}
+
+#[test]
+fn moonshot_balance_reads_the_available_balance_in_its_platforms_currency() {
+    let value = json!({"code": 0, "data": {"available_balance": 49.58894,
+        "voucher_balance": 46.58893, "cash_balance": 3.00001}, "scode": "0x0", "status": true});
+    let usd = BalanceSource::Moonshot.parse(&value).unwrap();
+    assert_eq!(usd.buckets[0].to_string(), "Balance: $49.59");
+    let cny = BalanceSource::MoonshotChina.parse(&value).unwrap();
+    assert_eq!(cny.buckets[0].to_string(), "Balance: CN¥49.59");
+    // Owing money (a negative cash balance and no vouchers) is no balance left.
+    let owing = parse_moonshot(
+        &json!({"code": 0, "data": {"available_balance": -1.5}}),
+        Currency::Usd,
+    )
+    .unwrap();
+    assert_eq!(owing.buckets[0].balance.map(|m| m.amount), Some(0.0));
+    for value in [
+        json!({}),
+        json!({"code": 0, "data": {}}),
+        json!({"code": 0, "data": {"available_balance": "lots"}}),
+        json!({"code": 1, "data": {"available_balance": 5.0}}),
+    ] {
+        assert_eq!(
+            parse_moonshot(&value, Currency::Usd),
+            Err(QuotaError::InvalidResponse)
+        );
+    }
+}
+
+#[test]
+fn deepseek_balance_reads_allow_listed_currencies_only() {
+    let summary = parse_deepseek(&json!({
+        "is_available": true,
+        "balance_infos": [
+            {"currency": "CNY", "total_balance": "110.00", "granted_balance": "10.00",
+             "topped_up_balance": "100.00"},
+            {"currency": "\u{1b}[31mEUR", "total_balance": "5.00"},
+            {"currency": "USD", "total_balance": 2.5},
+        ]
+    }))
+    .unwrap();
+    let lines: Vec<String> = summary.buckets.iter().map(ToString::to_string).collect();
+    assert_eq!(lines, ["Balance: CN¥110.00", "Balance: $2.50"]);
+    assert!(
+        summary
+            .buckets
+            .iter()
+            .all(|b| b.remaining_percent.is_none())
+    );
+    // Owing money is no balance left.
+    let owing = parse_deepseek(&json!({"balance_infos": [
+        {"currency": "USD", "total_balance": "-0.40"}
+    ]}))
+    .unwrap();
+    assert_eq!(owing.buckets[0].balance.map(|m| m.amount), Some(0.0));
+    for value in [
+        json!({}),
+        json!({"balance_infos": []}),
+        json!({"balance_infos": [{"currency": "EUR", "total_balance": "1.00"}]}),
+        json!({"balance_infos": [{"currency": "USD", "total_balance": "lots"}]}),
+        json!({"balance_infos": [{"currency": "USD"}]}),
+        json!({"balance_infos": [
+            {"currency": "USD", "total_balance": "1.00"},
+            {"currency": "USD", "total_balance": "2.00"}
+        ]}),
+    ] {
+        assert_eq!(parse_deepseek(&value), Err(QuotaError::InvalidResponse));
+    }
+}
+
+#[tokio::test]
+async fn deepseek_reads_the_balance_with_its_api_key() {
+    let (url, task) = server(vec![(
+        200,
+        json!({"is_available": true, "balance_infos": [
+            {"currency": "USD", "total_balance": "7.25"}
+        ]})
+        .to_string(),
+    )])
+    .await;
+    let (_, keeper) = setup(
+        Some(Credential::ApiKey {
+            key: Secret::new("test-key"),
+        }),
+        LoginEndpoints::default(),
+    );
+    let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
+    let summary = quotas
+        .fetch(
+            Provider::Custom,
+            &key(),
+            Some("https://api.deepseek.com/v1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(summary.buckets[0].to_string(), "Balance: $7.25");
+    let requests = task.await.unwrap();
+    assert!(requests[0].contains("authorization: bearer test-key"));
+    assert!(!requests[0].contains("chatgpt-account-id"));
+}
+
+#[tokio::test]
+async fn each_balance_source_asks_its_own_fixed_url() {
+    let moonshot = json!({"code": 0, "data": {"available_balance": 3.0}}).to_string();
+    let deepseek =
+        json!({"balance_infos": [{"currency": "CNY", "total_balance": "4.00"}]}).to_string();
+    let (url, task) = server(vec![
+        (200, deepseek),
+        (200, moonshot.clone()),
+        (200, moonshot),
+    ])
+    .await;
+    let (_, keeper) = setup(
+        Some(Credential::ApiKey {
+            key: Secret::new("test-key"),
+        }),
+        LoginEndpoints::default(),
+    );
+    let mut endpoints = endpoints(&url);
+    endpoints.deepseek = format!("{url}/deepseek");
+    endpoints.moonshot = format!("{url}/moonshot-ai");
+    endpoints.moonshot_cn = format!("{url}/moonshot-cn");
+    let quotas = Quotas::with_endpoints(keeper, endpoints);
+    let mut lines = Vec::new();
+    for base in [
+        "https://api.deepseek.com",
+        "https://api.moonshot.ai/v1",
+        "https://api.moonshot.cn/v1",
+    ] {
+        let summary = quotas
+            .fetch(Provider::Custom, &key(), Some(base))
+            .await
+            .unwrap();
+        lines.push(summary.buckets[0].to_string());
+    }
+    assert_eq!(
+        lines,
+        ["Balance: CN¥4.00", "Balance: $3.00", "Balance: CN¥3.00"]
+    );
+    let requests = task.await.unwrap();
+    for (request, path) in requests
+        .iter()
+        .zip(["deepseek", "moonshot-ai", "moonshot-cn"])
+    {
+        assert!(
+            request.starts_with(&format!("get /quota/{path} ")),
+            "{path}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -266,7 +480,7 @@ async fn uses_correct_tokens_and_headers() {
         let (url, task) = server(vec![(200, body.into())]).await;
         let (_, keeper) = setup(Some(oauth()), LoginEndpoints::default());
         let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
-        assert!(quotas.fetch(provider, &key()).await.is_ok());
+        assert!(quotas.fetch(provider, &key(), None).await.is_ok());
         let requests = task.await.unwrap();
         let request = &requests[0];
         assert!(request.starts_with("get /quota "));
@@ -298,7 +512,10 @@ async fn errors_are_fixed_and_do_not_echo_bodies_or_poison_login_health() {
         .await;
         let (_, keeper) = setup(Some(oauth()), LoginEndpoints::default());
         let quotas = Quotas::with_endpoints(keeper.clone(), endpoints(&url));
-        let error = quotas.fetch(Provider::Copilot, &key()).await.unwrap_err();
+        let error = quotas
+            .fetch(Provider::Copilot, &key(), None)
+            .await
+            .unwrap_err();
         assert_eq!(error, expected);
         let shown = format!("{error} {error:?}");
         assert!(!shown.contains("test-access"));
@@ -345,7 +562,7 @@ async fn refreshes_before_expiry_or_after_401_persisting_and_retrying_only_once(
         }
         let (store, keeper) = setup(Some(credential), login);
         let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
-        let result = quotas.fetch(Provider::ChatGpt, &key()).await;
+        let result = quotas.fetch(Provider::ChatGpt, &key(), None).await;
         if final_status == 200 {
             assert!(result.is_ok());
         } else {
@@ -381,7 +598,9 @@ async fn missing_and_api_key_credentials_are_sanitized() {
     ] {
         let (_, keeper) = setup(credential, LoginEndpoints::default());
         assert_eq!(
-            Quotas::new(keeper).fetch(Provider::ChatGpt, &key()).await,
+            Quotas::new(keeper)
+                .fetch(Provider::ChatGpt, &key(), None)
+                .await,
             Err(expected)
         );
     }
@@ -401,6 +620,21 @@ fn endpoints_require_https_or_loopback() {
     assert!(validate_endpoint("http://127.0.0.1:123/quota").is_ok());
 }
 
+#[test]
+fn local_endpoints_stay_on_this_machine() {
+    let local = QuotaEndpoints::local("http://127.0.0.1:41010/quota").unwrap();
+    assert_eq!(local.deepseek, "http://127.0.0.1:41010/quota");
+    assert!(QuotaEndpoints::local("http://localhost:1/q").is_some());
+    for url in [
+        "https://api.deepseek.com/user/balance",
+        "http://127.0.0.1.example.com/q",
+        "file:///q",
+        "not a url",
+    ] {
+        assert!(QuotaEndpoints::local(url).is_none(), "{url}");
+    }
+}
+
 #[tokio::test]
 async fn network_failure_is_fixed_and_oversized_body_is_rejected() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -409,13 +643,13 @@ async fn network_failure_is_fixed_and_oversized_body_is_rejected() {
     let (_, keeper) = setup(Some(oauth()), LoginEndpoints::default());
     let quotas = Quotas::with_endpoints(keeper.clone(), endpoints(&url));
     assert_eq!(
-        quotas.fetch(Provider::Copilot, &key()).await,
+        quotas.fetch(Provider::Copilot, &key(), None).await,
         Err(QuotaError::Unavailable)
     );
     let (url, task) = server(vec![(200, " ".repeat(1024 * 1024 + 1))]).await;
     let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
     assert_eq!(
-        quotas.fetch(Provider::Copilot, &key()).await,
+        quotas.fetch(Provider::Copilot, &key(), None).await,
         Err(QuotaError::InvalidResponse)
     );
     task.await.unwrap();
@@ -448,7 +682,7 @@ async fn refuses_redirects_even_to_same_origin() {
     let (_, keeper) = setup(Some(oauth()), LoginEndpoints::default());
     let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
     assert_eq!(
-        quotas.fetch(Provider::Copilot, &key()).await,
+        quotas.fetch(Provider::Copilot, &key(), None).await,
         Err(QuotaError::Unavailable)
     );
     task.await.unwrap();
@@ -490,7 +724,7 @@ async fn copilot_quota_succeeds_even_when_expired_inference_exchange_fails() {
     assert!(keeper.fresh(Provider::Copilot, &key(), None).await.is_err());
     exchange_task.await.unwrap();
     let quotas = Quotas::with_endpoints(keeper.clone(), endpoints(&quota_url));
-    assert!(quotas.fetch(Provider::Copilot, &key()).await.is_ok());
+    assert!(quotas.fetch(Provider::Copilot, &key(), None).await.is_ok());
     let requests = quota_task.await.unwrap();
     assert!(requests[0].contains("authorization: bearer test-github-or-refresh"));
     assert_eq!(store.writes.load(Ordering::SeqCst), 0);
@@ -531,7 +765,7 @@ async fn disconnect_waits_for_quota_refresh_and_queued_refresh_cannot_restore_se
     }
     let (store, keeper) = setup(Some(credential), login);
     let quotas = Quotas::with_endpoints(keeper.clone(), endpoints(&quota_url));
-    let fetch = tokio::spawn(async move { quotas.fetch(Provider::ChatGpt, &key()).await });
+    let fetch = tokio::spawn(async move { quotas.fetch(Provider::ChatGpt, &key(), None).await });
     started_rx.await.unwrap();
     let key = key();
     let forget = keeper.forget(&key);

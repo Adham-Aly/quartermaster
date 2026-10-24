@@ -53,6 +53,7 @@ use jiff::Timestamp;
 use qm_auth::api_key::{self, CustomEndpoint};
 use qm_auth::cancel::Cancel;
 use qm_auth::login::{self, LoginEndpoints, LoginPrompt, Logins, SUBSCRIPTION_LOGINS};
+use qm_auth::quota::QuotaEndpoints;
 use qm_auth::{AuthError, Credential, CredentialRef, TokenKeeper, identity};
 use qm_engine::{Engine, UsageReading};
 use qm_store::StoreError;
@@ -93,6 +94,8 @@ pub struct SettingsDeps {
     pub conversation: Arc<Conversation>,
     /// Every login's endpoints; `LoginEndpoints::default()` is the real providers'.
     pub endpoints: LoginEndpoints,
+    /// Every quota check's endpoints; `QuotaEndpoints::default()` is the real providers'.
+    pub quota_endpoints: QuotaEndpoints,
 }
 
 impl fmt::Debug for SettingsDeps {
@@ -116,6 +119,7 @@ struct Inner {
     catalog: Arc<dyn ModelCatalog>,
     conversation: Arc<Conversation>,
     endpoints: LoginEndpoints,
+    quota_endpoints: QuotaEndpoints,
     state: Mutex<State>,
 }
 
@@ -154,6 +158,7 @@ impl SettingsPart {
                 catalog: deps.catalog,
                 conversation: deps.conversation,
                 endpoints: deps.endpoints,
+                quota_endpoints: deps.quota_endpoints,
                 state: Mutex::new(State::default()),
             }),
         };
@@ -1260,29 +1265,24 @@ fn account_view(a: &AccountRow, now: Timestamp) -> SettingsAccount {
 fn routing_line(a: &AccountRow, now: Timestamp) -> String {
     use qm_routing::rank::{Standing, Usage};
     let (usage, quota) = (a.usage.as_deref(), a.quota.as_deref());
-    let (reading, cut_off) = crate::quota_pools::read(usage, quota, now);
+    let (reading, _) = crate::quota_pools::read(usage, quota, now);
     let mark = a.reserve_at.map_or_else(
         || "no reserve mark".to_owned(),
         |m| format!("reserve at {m}% used"),
     );
     let held = Standing::of(reading, a.kind, a.reserve_at).in_reserve();
     let quota = match reading {
-        Usage::Known { used_percent } => {
-            let pool = crate::quota_pools::largest_name(usage, quota, now)
-                .unwrap_or_else(|| "quota".to_owned());
-            format!("{pool} {used_percent:.0}% used")
-        }
+        Usage::Known { used_percent } => crate::quota_pools::largest_line(usage, quota, now)
+            .unwrap_or_else(|| format!("quota {used_percent:.0}% used")),
         Usage::Unknown if a.kind == AccountKind::ApiKey => {
             "quota unknown (pay-per-token keys serve last)".to_owned()
         }
         Usage::Unknown => "quota unknown".to_owned(),
     };
-    let state = if cut_off {
-        " · at its limit: skipped until it resets"
-    } else if held {
-        " · held in reserve"
-    } else {
-        ""
+    let state = match crate::quota_pools::cut_off_until(usage, a.quota.as_deref(), now) {
+        Some(until) => format!(" · at its limit: skipped until {until}"),
+        None if held => " · held in reserve".to_owned(),
+        None => String::new(),
     };
     format!("{quota} · {mark}{state}")
 }
