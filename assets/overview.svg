@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="580" viewBox="0 0 960 580" role="img" aria-labelledby="title desc">
   <title id="title">How Quartermaster works</title>
-  <desc id="desc">You talk to the Quartermaster through the terminal UI. It routes work to secondmates and starts crewmates; each crewmate works in its own git worktree and branch and delivers through GitHub pull requests, merged on your approval. Every agent runs on the Claude engine or the provider engine, depending on the account behind its model.</desc>
+  <desc id="desc">You talk to the Quartermaster through the terminal UI. It routes work to secondmates and starts crewmates. In a GitHub repository a crewmate works in its own git worktree and branch and delivers through a pull request, merged on your approval; in a local repository its worktree is merged into your checkout once you approve; a plain folder is worked in place, with no git unless you ask. Every agent runs on the Claude engine or the provider engine, depending on the account behind its model.</desc>
   <style>
     .bg { fill: #ffffff; stroke: #d1d9e0; }
     .t { fill: #1f2328; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 600; }
@@ -78,21 +78,21 @@
   <text class="l" x="590" y="178">brief · report</text>
   <text class="l" x="216" y="240">brief · report</text>
 
-  <!-- crewmates in worktrees -->
+  <!-- crewmates: a worktree each in a repository, in place in a plain folder -->
   <rect class="grp" x="32" y="276" width="668" height="128" rx="10"/>
   <rect class="box green" x="56" y="296" width="140" height="56" rx="8"/>
-  <text class="t m" x="126" y="320" text-anchor="middle">T-0041</text>
-  <text class="s m" x="126" y="338" text-anchor="middle">qm/task-0041</text>
+  <text class="t m" x="126" y="320" text-anchor="middle">C-0041</text>
+  <text class="s" x="126" y="338" text-anchor="middle">in place · no git</text>
   <rect class="box green" x="216" y="296" width="140" height="56" rx="8"/>
-  <text class="t m" x="286" y="320" text-anchor="middle">T-0042</text>
-  <text class="s m" x="286" y="338" text-anchor="middle">qm/task-0042</text>
+  <text class="t m" x="286" y="320" text-anchor="middle">C-0042</text>
+  <text class="s m" x="286" y="338" text-anchor="middle">fix/login-retry</text>
   <rect class="box green" x="376" y="296" width="140" height="56" rx="8"/>
-  <text class="t m" x="446" y="320" text-anchor="middle">T-0043</text>
-  <text class="s m" x="446" y="338" text-anchor="middle">qm/task-0043</text>
+  <text class="t m" x="446" y="320" text-anchor="middle">C-0043</text>
+  <text class="s m" x="446" y="338" text-anchor="middle">feat/rate-limit</text>
   <rect class="box green" x="536" y="296" width="140" height="56" rx="8"/>
-  <text class="t m" x="606" y="320" text-anchor="middle">T-0044</text>
-  <text class="s m" x="606" y="338" text-anchor="middle">qm/task-0044</text>
-  <text class="s" x="366" y="384" text-anchor="middle">Crewmates · each in its own git worktree and branch</text>
+  <text class="t m" x="606" y="320" text-anchor="middle">C-0044</text>
+  <text class="s m" x="606" y="338" text-anchor="middle">docs/readme</text>
+  <text class="s" x="366" y="384" text-anchor="middle">Crewmates · in a repository, each in its own git worktree and branch · in a plain folder, in place</text>
 
   <!-- GitHub -->
   <rect class="box n" x="776" y="32" width="152" height="320" rx="8"/>
