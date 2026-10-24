@@ -18,8 +18,9 @@
 //! keeps its own transcripts, which the app never reads. What may be deleted, and when, is decided
 //! in one place, `qm_core::retention`.
 //!
-//! A crewmate's own folder is named after it and never moves (a Claude session resumes by its
-//! working folder's path); one started before crewmates had names keeps its `tasks/T-0042/`.
+//! A crewmate's own folder is named after it and never moves, whatever task, project or folder
+//! it moves to: its worktree is always `worktree/` in it. One started before crewmates had names
+//! keeps its `tasks/T-0042/`.
 //! Its artifacts and scratchpad sit under its task and move when its task changes.
 //!
 //! Only scratchpads live elsewhere, in the scratch root: `/tmp/quartermaster/<uid>/<hash>/`, where
@@ -319,7 +320,7 @@ impl DataDir {
     }
 
     /// A crewmate's own folder: `tasks/C-0042/`, or `tasks/T-0042/` when an older version made
-    /// it (it never moves: a Claude session resumes by its working folder's path).
+    /// it. It never moves, whatever task, project or folder the crewmate moves to.
     pub fn crewmate_root(&self, id: CrewmateId) -> PathBuf {
         let current = self.tasks_dir().join(id.to_string());
         let legacy = self.tasks_dir().join(id.legacy_name());

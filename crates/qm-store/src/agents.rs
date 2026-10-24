@@ -194,6 +194,16 @@ pub fn set_session(
     Ok(())
 }
 
+/// Moves a crewmate's home: the folder it works in after its supervisor moved it
+/// (`set_task_project`).
+pub fn set_home(conn: &Connection, agent: AgentId, home: &Path) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE agents SET home = ?2 WHERE id = ?1 AND role = 'crewmate'",
+        params![agent, home.to_string_lossy()],
+    )?;
+    Ok(())
+}
+
 /// Records a sign of life.
 pub fn touch(conn: &Connection, agent: AgentId, at: Timestamp) -> Result<(), StoreError> {
     conn.execute(

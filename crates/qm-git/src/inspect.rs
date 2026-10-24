@@ -59,6 +59,41 @@ impl Repo {
         }
     }
 
+    /// Whether the worktree at `worktree` is clean: no staged, unstaged or untracked changes
+    /// (ignored files don't count). A crewmate leaves a worktree only once it is, so moving it
+    /// never throws work away.
+    ///
+    /// Fails with [`GitError::NotAWorktree`] unless git, run in that folder, sees exactly that
+    /// worktree.
+    pub fn worktree_is_clean(&self, worktree: &Path) -> Result<bool, GitError> {
+        let worktree = normalize_path(worktree);
+        if !worktree.is_dir() {
+            return Err(GitError::NotAWorktree { path: worktree });
+        }
+        let top = self
+            .git()
+            .invoke(&worktree, ["rev-parse", "--show-toplevel"])
+            .output()?;
+        if !top.success() || normalize_path(Path::new(top.stdout.trim())) != worktree {
+            return Err(GitError::NotAWorktree { path: worktree });
+        }
+        let out = self
+            .git()
+            .invoke(
+                &worktree,
+                ["status", "--porcelain=v1", "-z", "--untracked-files=normal"],
+            )
+            .output()?;
+        if !out.success() {
+            return Err(GitError::Failed {
+                command: "status --porcelain".to_owned(),
+                code: out.code,
+                stderr: out.stderr,
+            });
+        }
+        Ok(out.stdout.is_empty())
+    }
+
     /// The task's own commits up to `head`, the ones the commit-name check reads:
     /// `git log --no-merges <merge-base>..head`, oldest first, each with its full message (subject
     /// and body, trailers included, trailing whitespace trimmed).

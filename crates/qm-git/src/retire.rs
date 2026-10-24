@@ -116,6 +116,24 @@ impl Repo {
         Ok(Retirement { worktree, branch })
     }
 
+    /// Deletes the local `branch` only while it still points at `tip` and no worktree has it
+    /// checked out: a moved crewmate's old branch that never got a commit of its own. Returns
+    /// whether it was deleted; a branch with other commits, or already gone, is left alone.
+    pub fn delete_branch_if_at(&self, branch: &str, tip: &CommitSha) -> Result<bool, GitError> {
+        let _guard = self.write_lock();
+        if branch.is_empty() {
+            return Ok(false);
+        }
+        let current = self.resolve_commit(&format!("refs/heads/{branch}"))?;
+        if current.as_ref() != Some(tip) {
+            return Ok(false);
+        }
+        Ok(matches!(
+            self.delete_task_branch(branch, current)?,
+            BranchRemoval::Deleted { .. }
+        ))
+    }
+
     /// Removes the task's worktree (and any empty leftover folder at its path).
     fn remove_task_worktree(
         &self,
