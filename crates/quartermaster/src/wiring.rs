@@ -887,7 +887,7 @@ pub(crate) fn dev_seat_script(dir: &DataDir) -> Result<Option<Script>, String> {
 }
 
 /// The app's own update check, started at once in the background (it checks at launch and then
-/// every few hours), and the install it runs when you press Update.
+/// every hour), and the install it runs when you press Update.
 fn updates_part(
     dir: &DataDir,
     clock: &Arc<dyn Clock>,
