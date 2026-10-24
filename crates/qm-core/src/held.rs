@@ -1060,12 +1060,30 @@ mod restart_tests {
             .await
             .expect("the held action")
         };
-        // The next run: the same database, a fresh service and Actions list, no task service.
+        // The next run: the same database, a fresh service and Actions list.
         let db = Db::open(&path).expect("database again");
         let clock: Arc<dyn Clock> = Arc::new(qm_types::clock::SystemClock);
         let service = HeldService::new(db.clone(), Arc::clone(&clock), Arc::new(NoSignal));
         let data = qm_types::data_dir::DataDir::new("/nonexistent/qm-held-test");
-        let actions = ActionsPart::new(service, (db.clone(), clock, data), seat, None);
+        let (scheduler, scheduler_job) = crate::scheduler::Scheduler::spawn(Arc::clone(&clock));
+        let tasks = crate::tasks::TaskService::wire(crate::tasks::TaskWiring {
+            db: db.clone(),
+            clock: Arc::clone(&clock),
+            data_dir: data.clone(),
+            home: std::env::temp_dir(),
+            engines: std::collections::BTreeMap::new(),
+            supervisor: Arc::new(qm_engine::supervisor::OsSupervisor::new(None)),
+            inbox: crate::inbox::Inbox::new(),
+            scheduler,
+            config: tokio::sync::watch::channel(qm_types::config::Config::default()).1,
+            health: Arc::new(qm_auth::LoginHealth::new()),
+            chat: Arc::new(Conversation::new(db.clone(), Arc::clone(&clock), seat)),
+            seat_agent: seat,
+            setup: tokio::sync::watch::channel(crate::setup_check::SetupFacts::default()).1,
+            probe: None,
+            monitor: crate::context_monitor::ContextMonitor::new(Arc::clone(&clock)),
+        });
+        let actions = ActionsPart::new(service, (db.clone(), clock, data), seat, tasks);
         let mut snapshot = Snapshot::default();
         actions.fill(&mut snapshot).await;
         assert_eq!(snapshot.actions.len(), 1);
@@ -1080,6 +1098,7 @@ mod restart_tests {
             .expect("count");
         assert_eq!(messages, 0, "no chat line carries the card");
         drop(actions);
+        scheduler_job.abort();
         drop(db);
         std::fs::remove_file(path).expect("remove test database");
     }
