@@ -145,7 +145,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
 
 /// Who the speakers are in a conversation: the agent it belongs to and the one above it.
 pub(crate) struct Voices<'a> {
-    /// The header of the agent's own messages: `quartermaster`, or a secondmate's `SM-02`.
+    /// The header of the agent's own messages: `quartermaster`, or a secondmate's `S-02`.
     pub(crate) agent: &'a str,
     /// The header of marked messages from the agent's supervisor.
     pub(crate) supervisor: &'a str,

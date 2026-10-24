@@ -66,7 +66,7 @@ pub(crate) fn draw(
     input(frame, input_area, app, agent, view, map);
 }
 
-/// How the agent is named: `T-0042`, `SM-02`.
+/// How the agent is named: `T-0042`, `S-02`.
 pub(crate) fn agent_label(agent: AgentRef) -> String {
     match agent {
         AgentRef::Crewmate { task } => task.to_string(),
@@ -671,7 +671,7 @@ mod tests {
         sample::install_secondmate(&mut app);
         let chats = app.session_view().unwrap().conversation.clone();
         let voices = conversation::Voices {
-            agent: "SM-02",
+            agent: "S-02",
             supervisor: "supervisor",
         };
         let rows = conversation::rows(&chats, &[], 100, &voices);

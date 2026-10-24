@@ -135,7 +135,7 @@ pub enum WorkerFact {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CrewmateFact {
     pub task: TaskId,
-    /// The secondmate it works under: shown indented, as "crew of SM-02".
+    /// The secondmate it works under: shown indented, as "crew of S-02".
     pub under: Option<SecondmateId>,
     pub project: String,
     pub kind: TaskKind,
@@ -149,7 +149,7 @@ pub struct CrewmateFact {
     pub note: Option<String>,
 }
 
-/// A secondmate: `SM-02  secondmate  scope="web-app frontend"  idle  base=release/2.4`.
+/// A secondmate: `S-02  secondmate  scope="web-app frontend"  idle  base=release/2.4`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SecondmateFact {
     pub id: SecondmateId,
@@ -486,7 +486,7 @@ fn worker_role(w: &WorkerFact) -> &'static str {
     }
 }
 
-/// A crewmate's aligned columns: for a secondmate's crew, ID, "crew of SM-02", project, kind,
+/// A crewmate's aligned columns: for a secondmate's crew, ID, "crew of S-02", project, kind,
 /// status, time; for the Quartermaster's own, the same with the role in place of "crew of …"
 /// (the ID and role columns are then aligned with the other top-level rows instead).
 fn crew_cells(c: &CrewmateFact) -> Vec<Cell> {

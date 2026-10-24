@@ -77,7 +77,7 @@ pub fn build(
     view
 }
 
-/// "api-server · sonnet-5-5 · supervisor: Quartermaster" (`SM-02` for a secondmate's crewmate).
+/// "api-server · sonnet-5-5 · supervisor: Quartermaster" (`S-02` for a secondmate's crewmate).
 fn note(header: &SessionHeader) -> String {
     let supervisor = match header.supervisor {
         (Role::Secondmate, Some(id)) => id.to_string(),
@@ -132,7 +132,7 @@ fn line(row: &SessionLineRow) -> SessionLine {
     line
 }
 
-/// A secondmate's session: its conversation as the Bridge draws the Quartermaster's, under "SM-02 ·
+/// A secondmate's session: its conversation as the Bridge draws the Quartermaster's, under "S-02 ·
 /// secondmate · {scope} · {status}" and its charter's first line. `None` when there's no such
 /// secondmate.
 pub async fn load_secondmate(

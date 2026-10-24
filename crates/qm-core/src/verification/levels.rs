@@ -41,7 +41,7 @@ pub fn effective_of(row: &TaskRow) -> Option<VerificationLevel> {
         .map(|(level, _)| effective(level, row.delivery))
 }
 
-/// The supervisor's name in a direct-report refusal: "the Quartermaster" or "SM-02".
+/// The supervisor's name in a direct-report refusal: "the Quartermaster" or "S-02".
 pub(crate) fn owner_label(
     conn: &Connection,
     supervisor: qm_types::ids::AgentId,

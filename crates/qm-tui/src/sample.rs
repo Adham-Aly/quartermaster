@@ -150,7 +150,7 @@ pub fn session_view() -> SessionView {
     view
 }
 
-/// The value of [`ENV`] that shows SM-02's session.
+/// The value of [`ENV`] that shows S-02's session.
 pub const SECONDMATE: &str = "secondmate";
 
 /// Shows the sample in `app` if [`ENV`] asks for it; returns whether it did.
@@ -190,7 +190,7 @@ fn secondmate_ref() -> AgentRef {
     }
 }
 
-/// Puts SM-02's session into `app`, in the Bridge sample's middle panel, the input focused and
+/// Puts S-02's session into `app`, in the Bridge sample's middle panel, the input focused and
 /// empty.
 pub(crate) fn install_secondmate(app: &mut App) {
     install(app);
@@ -199,7 +199,7 @@ pub(crate) fn install_secondmate(app: &mut App) {
     app.enter_session(secondmate_ref());
 }
 
-/// SM-02's session as the core builds it (`qm_core::sessions::view::load_secondmate`): its
+/// S-02's session as the core builds it (`qm_core::sessions::view::load_secondmate`): its
 /// conversation with the Quartermaster's routed request and your direct message, no cards.
 #[doc(hidden)]
 pub fn secondmate_view() -> SessionView {
@@ -211,7 +211,7 @@ pub fn secondmate_view() -> SessionView {
         "Add rate limiting to web-app's API client: back off on 429 and honour Retry-After. \
          Base it on web-app's standing branch.",
     );
-    routed.context = Some(String::from("C-0193"));
+    routed.context = Some(String::from("R-0193"));
     let mut started = ChatLine::new(
         MessageId::new(12),
         MessageSource::Agent,
@@ -242,7 +242,7 @@ pub fn secondmate_view() -> SessionView {
     view.status = String::from("idle");
     view.subtitle = String::from("Charter · web-app: the frontend, its API client and its build");
     view.open = true;
-    view.placeholder = String::from("message SM-02 directly…");
+    view.placeholder = String::from("message S-02 directly…");
     view.conversation = vec![routed, started, asked, reply];
     view
 }
@@ -378,7 +378,7 @@ fn crew() -> Vec<CrewRow> {
         CrewRow::new(task(46), 1, "T-0046 review", "2m"),
         approve,
         decide,
-        CrewRow::new(secondmate, 1, "SM-02 web-app", "idle"),
+        CrewRow::new(secondmate, 1, "S-02 web-app", "idle"),
         busy(CrewRow::new(task(45), 2, "T-0045 build", "3m")),
     ]
 }
@@ -1469,7 +1469,7 @@ fn occupancy(tokens: u64, point: u64, seconds: i64) -> ContextOccupancy {
 }
 
 /// The sample's context readings: the Quartermaster after a finished turn and an automatic
-/// compaction, T-0042 high and mid-turn, SM-02 not read yet.
+/// compaction, T-0042 high and mid-turn, S-02 not read yet.
 fn context() -> Vec<AgentContextView> {
     let qm_turn = TurnTokens::new(false, 1_240, 880, 3)
         .with_categories(Some(312), Some(94_000), Some(2_100))

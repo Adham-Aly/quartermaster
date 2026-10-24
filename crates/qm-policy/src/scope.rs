@@ -3,7 +3,7 @@
 //! A secondmate's scope is words that guide its judgment; they refuse nothing.
 //!
 //! "Every tool that acts on a task checks that the caller started it, so the Quartermaster can see
-//! T-0045 under SM-02 but can only talk to SM-02. Chain of command is a code rule."
+//! T-0045 under S-02 but can only talk to S-02. Chain of command is a code rule."
 //!
 //! `message_task`, `stop_task` and `close_task` act on a "direct report only";
 //! `route_to_secondmate`'s "target is its own secondmate".

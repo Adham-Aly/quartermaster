@@ -1,10 +1,10 @@
 //! The Quartermaster's wake for each parent-channel row. Pure.
 //!
-//! - fact row: `SM-02 · C-0193: T-0045 (build) PR #231 is ready at 9c0d2e4.`, short
-//!   `SM-02 · T-0045 pr_ready`;
-//! - judgment row: `SM-02 on C-0193 (add a dark mode toggle to settings): <summary>. Recommends:
+//! - fact row: `S-02 · R-0193: T-0045 (build) PR #231 is ready at 9c0d2e4.`, short
+//!   `S-02 · T-0045 pr_ready`;
+//! - judgment row: `S-02 on R-0193 (add a dark mode toggle to settings): <summary>. Recommends:
 //!   <…>. Needs the user: <…>. Tasks: T-0045 build ci_passed PR #231.`, short
-//!   `SM-02 reported C-0193`.
+//!   `S-02 reported R-0193`.
 //!
 //! Every payload is `{"text", "short", "correlation"}`; text is cut at [`WAKE_TEXT_CHARS`].
 

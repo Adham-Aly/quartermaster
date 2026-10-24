@@ -773,7 +773,7 @@ pub struct CrewRow {
     pub agent: AgentRef,
     /// Indent: 0 for the Quartermaster, 1 for its reports, 2 for a secondmate's crewmates.
     pub depth: u8,
-    /// e.g. "T-0042 fix", "SM-02 web-app".
+    /// e.g. "T-0042 fix", "S-02 web-app".
     pub label: String,
     /// e.g. "12m", "idle", "approve", "decide".
     pub status: String,

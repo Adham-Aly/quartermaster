@@ -29,7 +29,7 @@ report. Reproduce the bug end to end before fixing it.
 
 Open it read-only, even while the app runs (WAL): `sqlite3 -readonly <data dir>/state.db`.
 Times are milliseconds since the epoch, UTC: `datetime(at/1000, 'unixepoch', 'localtime')`.
-Display IDs are the row IDs: `T-0042` is `tasks.id = 42`, `SM-02` is `secondmates.id = 2`.
+Display IDs are the row IDs: `T-0042` is `tasks.id = 42`, `S-02` is `secondmates.id = 2`.
 
 | Table | Answers |
 |---|---|
@@ -61,7 +61,7 @@ SELECT id, target_agent_id, kind, dedupe_key, delivered_turn_id, consumed_at FRO
   (`qm-core` `retention.rs`, at start, at close and hourly); `attachments/` is swept at each start.
   For done lookup, research, reproduce and teach tasks, `report/` (`QM_REPORT_DIR`) holds the
   app-seeded `SKILL.md` and `template.html`, the agent-authored `report.html`, and local `assets/`.
-- `seat/` and `secondmates/SM-n/`: `home/`; `session/` is removed at each start.
+- `seat/` and `secondmates/S-n/`: `home/`; `session/` is removed at each start.
 - A provider-engine agent's session is `<owner>/transcript/<session>.jsonl` (header line, then one
   line per message; replaced whole on compaction, removed on `/clear` or retire), so a restart resumes it. Claude's transcript is Claude's own, under `~/.claude/projects/`; the app keeps no copy.
 - `state.db` holds the kept rows only (tasks, reports, events, wakes). Turns, messages and session

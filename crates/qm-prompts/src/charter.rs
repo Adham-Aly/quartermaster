@@ -51,7 +51,7 @@ pub struct CharterFacts<'a> {
 /// The charter as the secondmate reads it: a `# Your charter` section, for example
 ///
 /// ```text
-/// # Your charter · SM-02 · web-app
+/// # Your charter · S-02 · web-app
 ///
 /// - Scope: web-app frontend
 /// - Projects: web-app, design-system, where your crewmates work now. They may work in any folder.

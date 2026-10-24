@@ -7,7 +7,7 @@
 //! ```text
 //! config.toml   state.db   auth.json   run.lock   server.sock   logs/   workspace/
 //! seat/{home,session,transcript}/           the Quartermaster
-//! secondmates/SM-02/{home,session,transcript}/
+//! secondmates/S-02/{home,session,transcript}/
 //! tasks/T-0042/{worktree/,brief.md,skills/,session/,transcript/,jobs/}
 //! artifacts/T-0042/{plan,evidence}/         a task's plan and evidence, kept while anyone uses them
 //! attachments/message-<id>/                 images pasted into a chat

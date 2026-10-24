@@ -4,7 +4,7 @@
 //! ID is the correlation, never supplied by a model. The row carries your words (copied from your
 //! message on a turn you started; empty on an app-event turn), the Quartermaster's one-time
 //! instructions, and a base branch only from your turn. Model choices may instead cite an earlier
-//! actual user message. One `routed` wake (`routed:C-0193`) wakes the secondmate once.
+//! actual user message. One `routed` wake (`routed:R-0193`) wakes the secondmate once.
 
 use super::{SecondmateService, event_kind, failed, refuse};
 use crate::inbox::{Inbox, Notify};

@@ -32,7 +32,7 @@ pub struct FooArgs {
 - `class`: `Speak` (reply-like; the only class allowed in the action rule's retry), `Act`
   (counts as an effective action), `Read` (never counts).
 - `deny_unknown_fields` is required: a field the model may not set comes back as a refusal naming
-  it. Use IDs from `qm_types::ids` (they serialise as `T-0042`, `SM-02`).
+  it. Use IDs from `qm_types::ids` (they serialise as `T-0042`, `S-02`).
 - A second variant of a name for another role (like `start_crewmate.secondmate`) implements
   `Tool` by hand with its own `KEY` (see `defs/crew.rs`).
 - Provider-engine-only tools (files, shell, `agent`) use `EngineScope::ProviderOnly`

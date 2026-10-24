@@ -1,11 +1,12 @@
 //! IDs.
 //!
-//! **Display IDs** are what agents and you see and type: `T-0042` (task), `SM-02` (secondmate),
-//! `C-0193` (correlation ID of a request routed to a secondmate), `J3` (background job), `SI-5`
+//! **Display IDs** are what agents and you see and type: `T-0042` (task), `S-02` (secondmate),
+//! `R-0193` (correlation ID of a request routed to a secondmate), `J3` (background job), `SI-5`
 //! (standing instruction) and `SC-7` (schedule). Each wraps the positive integer that is its
 //! database key; it serialises as its display string (so tool arguments, tool results and events
 //! read naturally) and is stored as an `INTEGER`. Parsing is strict about the prefix and lenient
-//! about zero padding: `T-42` parses and displays as `T-0042`.
+//! about zero padding: `T-42` parses and displays as `T-0042`. An ID whose prefix changed still
+//! parses in its older form (`SM-02`, `C-0193`), so old history and habits keep working.
 //!
 //! A task's worktree folder derives from its ID (`T-0042`); its branch is named after its work
 //! and recorded with the task (`fix/upload-retry-on-slow-tmp`).
@@ -42,6 +43,9 @@ fn parse_number(kind: &'static str, input: &str, digits: &str) -> Result<NonZero
 
 macro_rules! display_id {
     ($(#[$meta:meta])* $name:ident, $kind:literal, $prefix:literal, $width:literal, $pattern:literal) => {
+        display_id!($(#[$meta])* $name, $kind, $prefix, $width, $pattern, legacy []);
+    };
+    ($(#[$meta:meta])* $name:ident, $kind:literal, $prefix:literal, $width:literal, $pattern:literal, legacy [$($legacy:literal),*]) => {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(NonZeroU32);
@@ -49,6 +53,9 @@ macro_rules! display_id {
         impl $name {
             /// The fixed prefix of the display form.
             pub const PREFIX: &'static str = $prefix;
+
+            /// Older prefixes still accepted when parsing; the display form never uses them.
+            pub const LEGACY_PREFIXES: &'static [&'static str] = &[$($legacy),*];
 
             /// The ID with this number; `None` for 0, since IDs start at 1.
             pub const fn new(n: u32) -> Option<Self> {
@@ -74,8 +81,9 @@ macro_rules! display_id {
             type Err = IdError;
 
             fn from_str(s: &str) -> Result<Self, IdError> {
-                let digits = s
-                    .strip_prefix(Self::PREFIX)
+                let digits = std::iter::once(Self::PREFIX)
+                    .chain(Self::LEGACY_PREFIXES.iter().copied())
+                    .find_map(|prefix| s.strip_prefix(prefix))
                     .ok_or_else(|| IdError::new($kind, s, concat!("it must start with ", $prefix)))?;
                 parse_number($kind, s, digits).map(Self)
             }
@@ -133,13 +141,13 @@ display_id!(
     TaskId, "task ID", "T-", 4, "^T-[0-9]+$"
 );
 display_id!(
-    /// A secondmate, shown as `SM-02`.
-    SecondmateId, "secondmate ID", "SM-", 2, "^SM-[0-9]+$"
+    /// A secondmate, shown as `S-02`: its fixed name. `SM-02`, the older form, still parses.
+    SecondmateId, "secondmate ID", "S-", 2, "^SM?-[0-9]+$", legacy ["SM-"]
 );
 display_id!(
-    /// A request routed to a secondmate, shown as `C-0193`; its answer on the parent channel
-    /// carries the same ID.
-    CorrelationId, "correlation ID", "C-", 4, "^C-[0-9]+$"
+    /// A request routed to a secondmate, shown as `R-0193`; its answer on the parent channel
+    /// carries the same ID. `C-0193`, the older form, still parses.
+    CorrelationId, "correlation ID", "R-", 4, "^[RC]-[0-9]+$", legacy ["C-"]
 );
 display_id!(
     /// A crewmate's background shell job, shown as `J3`.
@@ -506,9 +514,9 @@ pub mod space {
 
     /// Tasks: `T-` 1–9999.
     pub const TASK: RangeInclusive<u32> = 1..=9_999;
-    /// Secondmates: `SM-` 1–99.
+    /// Secondmates: `S-` 1–99.
     pub const SECONDMATE: RangeInclusive<u32> = 1..=99;
-    /// Requests routed to a secondmate: `C-` 1–9999.
+    /// Requests routed to a secondmate: `R-` 1–9999.
     pub const CORRELATION: RangeInclusive<u32> = 1..=9_999;
     /// Background jobs: `J` 1–999.
     pub const JOB: RangeInclusive<u32> = 1..=999;
@@ -577,3 +585,7 @@ pub fn free_number(
     free.get(usize::try_from(source.number(0, last)).ok()?)
         .copied()
 }
+
+#[cfg(test)]
+#[path = "ids_tests.rs"]
+mod tests;

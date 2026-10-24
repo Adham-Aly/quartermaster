@@ -49,7 +49,7 @@ pub const BUILDS_ON_ANSWER_CHARS: usize = 16_000;
 pub enum BriefSupervisor {
     /// `from="quartermaster"`.
     Quartermaster,
-    /// `from="SM-02"`.
+    /// `from="S-02"`.
     Secondmate(SecondmateId),
 }
 

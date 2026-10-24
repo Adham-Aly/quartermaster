@@ -526,7 +526,7 @@ impl TaskService {
         }
     }
 
-    /// The supervisor's name as markers carry it: `quartermaster` or `SM-02`.
+    /// The supervisor's name as markers carry it: `quartermaster` or `S-02`.
     pub(crate) async fn supervisor_label(&self, supervisor: AgentId) -> String {
         let role = self
             .db()

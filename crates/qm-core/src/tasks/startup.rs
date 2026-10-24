@@ -104,7 +104,18 @@ fn sweep_leftovers(data: &DataDir, open: &[TaskId], live: &[SecondmateId]) {
     remove(&data.seat().session);
     for (name, path) in subfolders(&data.secondmates_dir()) {
         match name.parse::<SecondmateId>() {
-            Ok(id) if live.contains(&id) => remove(&data.secondmate(id).session),
+            Ok(id) if live.contains(&id) => {
+                let current = data.secondmate(id);
+                // A folder under the older name (`SM-02`) moves to the current one (`S-02`).
+                if path != current.root {
+                    if current.root.exists() {
+                        remove(&path);
+                    } else if let Err(e) = std::fs::rename(&path, &current.root) {
+                        tracing::warn!(path = %path.display(), error = %e, "couldn't rename a secondmate's folder");
+                    }
+                }
+                remove(&current.session);
+            }
             Ok(_) => remove(&path),
             Err(_) => {}
         }
@@ -754,8 +765,9 @@ mod leftover_tests {
         let _ = fs::remove_dir_all(&base);
         let data = DataDir::with_scratch(base.join("home"), base.join("scratch"));
         let task = |n: u32| TaskId::new(n).expect("a task number");
-        let live: SecondmateId = "SM-1".parse().expect("a secondmate");
-        let retired: SecondmateId = "SM-2".parse().expect("a secondmate");
+        let live: SecondmateId = "S-1".parse().expect("a secondmate");
+        let retired: SecondmateId = "S-2".parse().expect("a secondmate");
+        let renamed: SecondmateId = "S-3".parse().expect("a secondmate");
         let folder = |path: PathBuf| {
             fs::create_dir_all(&path).expect("a folder");
             path
@@ -771,6 +783,10 @@ mod leftover_tests {
         let live_session = folder(data.secondmate(live).session);
         let plugin = folder(data.secondmate(live).root.join("plugin"));
         let retired_root = folder(data.secondmates_dir().join(retired.to_string()));
+        // A live secondmate whose folder has the older name (`SM-03`) keeps its transcript there.
+        let old_name = data.secondmates_dir().join("SM-03");
+        file(old_name.join("transcript/s.jsonl"));
+        let retired_old_name = folder(data.secondmates_dir().join("SM-04"));
         // An open task keeps its folder and worktree, but loses its session and answer file.
         let open = data.task(task(1));
         folder(open.worktree.clone());
@@ -789,7 +805,7 @@ mod leftover_tests {
         let unrelated = folder(data.tasks_dir().join("notes"));
 
         fs::set_permissions(data.root(), fs::Permissions::from_mode(0o700)).unwrap();
-        sweep_leftovers(&data, &[task(1)], &[live]);
+        sweep_leftovers(&data, &[task(1)], &[live, renamed]);
 
         assert!(!seat_session.exists(), "the Quartermaster's session folder");
         assert!(!live_session.exists(), "a live secondmate's session folder");
@@ -798,6 +814,15 @@ mod leftover_tests {
             "the secondmate's plugin folder is regenerated, not removed"
         );
         assert!(!retired_root.exists(), "a retired secondmate's folders");
+        assert!(
+            !retired_old_name.exists(),
+            "a retired secondmate's folders, older name"
+        );
+        assert!(!old_name.exists(), "the older name is gone");
+        assert!(
+            data.secondmate(renamed).transcript.join("s.jsonl").exists(),
+            "a live secondmate's folder moves to its current name"
+        );
         assert!(
             open.root.exists() && open.worktree.exists(),
             "an open task keeps its worktree"
