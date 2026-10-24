@@ -142,6 +142,8 @@ pub(crate) struct View {
     pub(crate) badges: Vec<crate::popups::MenuEntry>,
     /// How far Help is scrolled down from its top.
     pub(crate) help_scroll: usize,
+    /// How far the task-kind explanations are scrolled down from their top.
+    pub(crate) kind_help_scroll: usize,
     /// The slash-command menu above the Quartermaster's input box.
     pub(crate) slash: crate::input::slash::SlashUi,
 }

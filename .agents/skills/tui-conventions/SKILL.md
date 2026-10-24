@@ -81,7 +81,9 @@ Map core `Tone`s with `theme::tone`.
   `↑ more` / `↓ more` on their borders. Routing's Task kinds use two aligned grid columns when
   whole entries fit, one otherwise, ordered down each column to match ↑/↓. Conditional build/fix
   labels are written in full. Default notes stay hidden; changed/empty notes sit beside the tier
-  when they fit, otherwise wrap within the cell.
+  when they fit, otherwise wrap within the cell. Its `?` button (or `?` on Routing) opens
+  task-kind explanations over Settings; wheel/arrows/page keys scroll, `Esc`, `✕` or an outside
+  click closes just that help window, keeping Routing's selection and scroll position.
 - Settings ▸ Model levels shows placed **model + effort** labels, not an effort toggle.
   **Add model…** (`a` or `/`) opens a fixed searchable catalogue of all models × their
   supported efforts (one `(no effort)` entry with `None` when support is empty). Search

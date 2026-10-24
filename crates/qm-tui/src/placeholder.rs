@@ -206,6 +206,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ),
             ("− +", "routing: autocompact window, for every agent"),
             (
+                "?",
+                "routing: explain task kinds (Esc or ✕ closes the popup)",
+            ),
+            (
                 "a · space",
                 "projects: flip the selected project between normal and auto",
             ),

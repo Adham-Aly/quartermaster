@@ -127,6 +127,8 @@ pub(crate) enum Popup {
     Settings,
     /// Keys and mouse help.
     Help,
+    /// Plain-language descriptions of Settings' task-kind routing rows.
+    TaskKinds,
     /// The app's own update: where it stands, and the button that starts it (`update`).
     Update,
     /// How to add a project: opened from the Projects pane; `Esc` or any click closes it.
@@ -141,6 +143,7 @@ impl Popup {
         match self {
             Self::Settings => "Settings",
             Self::Help => "Help",
+            Self::TaskKinds => "Task kinds",
             Self::Update => "Update",
             Self::ProjectsHint => "Projects",
             Self::Action => "Action",
@@ -153,7 +156,7 @@ impl Popup {
             Self::Settings => Some(MenuEntry::Settings),
             Self::Help => Some(MenuEntry::Help),
             Self::Update => Some(MenuEntry::Update),
-            Self::ProjectsHint | Self::Action => None,
+            Self::ProjectsHint | Self::Action | Self::TaskKinds => None,
         }
     }
 }
@@ -211,6 +214,11 @@ fn size(popup: Popup, body: Rect, app: &App) -> (u16, u16) {
             let lines = crate::placeholder::lines(usize::from(width.saturating_sub(4))).len();
             (HELP_WIDTH, u16::try_from(lines + 2).unwrap_or(u16::MAX))
         }
+        Popup::TaskKinds => {
+            let width = window::centered(body, 72, body.height).width;
+            let lines = crate::settings::kind_help::lines(usize::from(width.saturating_sub(5)));
+            (72, cells(lines.len()) + 3)
+        }
         Popup::Update => {
             // As tall as its lines at the width it gets (border and padding included).
             let width = window::centered(body, crate::update::WIDTH, body.height).width;
@@ -262,6 +270,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
         match popup {
             Popup::Settings => crate::settings::draw(frame, content, app, map),
             Popup::Help => crate::placeholder::draw_help(frame, content, app, map),
+            Popup::TaskKinds => crate::settings::kind_help::draw(frame, content, app, map),
             Popup::Update => crate::update::draw(frame, content, app, map),
             Popup::ProjectsHint => {
                 let lines: Vec<Line<'_>> = wrap(PROJECTS_HINT, usize::from(content.width))
@@ -314,6 +323,9 @@ impl App {
         }
         if popup == Popup::Settings && !was_open {
             self.command(qm_types::api::Command::RefreshQuotas);
+        }
+        if popup == Popup::TaskKinds && !was_open {
+            self.view.kind_help_scroll = 0;
         }
         if popup != Popup::Settings {
             self.close_settings_overlays();
@@ -402,10 +414,12 @@ impl App {
         }
         match key.code {
             KeyCode::Esc => self.escape(),
-            KeyCode::Char('?') if popup == Popup::Help => self.close_popup(),
+            KeyCode::Char('?') if matches!(popup, Popup::Help | Popup::TaskKinds) => {
+                self.close_popup();
+            }
             KeyCode::Char('?') => self.choose_entry(MenuEntry::Help),
             KeyCode::Char(',') => self.choose_entry(MenuEntry::Settings),
-            code if popup == Popup::Help => self.on_help_key(code),
+            code if matches!(popup, Popup::Help | Popup::TaskKinds) => self.on_help_key(code),
             _ => {}
         }
     }

@@ -250,6 +250,130 @@ fn routing_explanations_wrap_without_cutting_off_in_the_popup() {
 }
 
 #[test]
+fn task_kind_help_opens_scrolls_and_returns_to_routing_without_changes() {
+    for (width, height) in SIZES {
+        let mut app = app(Tab::Routing);
+        draw(&mut app, width, height);
+        key(&mut app, KeyCode::End);
+        draw(&mut app, width, height);
+        let routing_row = app.view.settings.routing_row;
+        let routing_scroll = app.view.settings.scroll;
+        key(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.popup(), Some(Popup::TaskKinds));
+        let top = draw(&mut app, width, height).join("\n");
+        assert!(top.contains("Lookup — Find and cite facts"), "{top}");
+        assert!(top.contains("Esc close"));
+        let area = app
+            .term
+            .drawn
+            .scroll_areas
+            .iter()
+            .find(|(_, pane)| *pane == Pane::TaskKinds)
+            .unwrap()
+            .0;
+        let max = app.term.drawn.scroll_max_of(Pane::TaskKinds);
+        let mut seen = String::new();
+        for scroll in 0..=max {
+            app.view.kind_help_scroll = scroll;
+            let screen = draw(&mut app, width, height);
+            for y in area.y..area.bottom() {
+                seen.push_str(
+                    &screen[usize::from(y)]
+                        .chars()
+                        .skip(usize::from(area.x))
+                        .take(usize::from(area.width))
+                        .collect::<String>(),
+                );
+                seen.push(' ');
+            }
+        }
+        for &row in KindRow::ALL {
+            assert!(
+                seen.contains(routing::kind_name(row)),
+                "{width}×{height}: {row:?}"
+            );
+        }
+        key(&mut app, KeyCode::Home);
+        draw(&mut app, width, height);
+        app.on_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: area.x,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            Instant::now(),
+        );
+        assert_eq!(app.view.kind_help_scroll, 3.min(max));
+        key(&mut app, KeyCode::End);
+        let bottom = draw(&mut app, width, height).join("\n");
+        assert!(bottom.contains("extra task kinds."), "{bottom}");
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.popup(), Some(Popup::Settings));
+        assert_eq!(app.view.settings.tab, Tab::Routing);
+        assert_eq!(app.view.settings.routing_row, routing_row);
+        assert_eq!(app.view.settings.scroll, routing_scroll);
+        assert_eq!(app.take_commands(), [] as [Command; 0]);
+    }
+}
+
+#[test]
+fn task_kind_help_button_and_mouse_dismissal_work_at_every_size() {
+    for (width, height) in SIZES {
+        let mut app = app(Tab::Routing);
+        draw(&mut app, width, height);
+        // Reveal the heading through Settings' actual clipped viewport, then click its '?'.
+        let max = app.term.drawn.scroll_max_of(Pane::Settings);
+        for scroll in 0..=max {
+            app.view.settings.scroll = scroll;
+            draw(&mut app, width, height);
+            if app
+                .term
+                .drawn
+                .hits
+                .rect_of(Hit::Settings(SettingsHit::KindHelp))
+                .is_some()
+            {
+                break;
+            }
+        }
+        click(&mut app, SettingsHit::KindHelp);
+        assert_eq!(app.popup(), Some(Popup::TaskKinds));
+        assert_eq!(app.view.kind_help_scroll, 0);
+        draw(&mut app, width, height);
+        let close = app
+            .term
+            .drawn
+            .hits
+            .rect_of(Hit::Popup(PopupHit::Close))
+            .unwrap();
+        app.on_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: close.x,
+                row: close.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            Instant::now(),
+        );
+        assert_eq!(app.popup(), Some(Popup::Settings));
+        key(&mut app, KeyCode::Char('?'));
+        draw(&mut app, width, height);
+        app.on_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            },
+            Instant::now(),
+        );
+        assert_eq!(app.popup(), Some(Popup::Settings));
+        assert_eq!(app.take_commands(), [] as [Command; 0]);
+    }
+}
+
+#[test]
 fn catalogue_indicators_and_clickable_back_survive_empty_results_and_resize() {
     let mut app = app(Tab::ModelLevels);
     for (width, height) in SIZES {
