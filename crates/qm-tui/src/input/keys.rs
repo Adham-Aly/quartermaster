@@ -227,32 +227,45 @@ impl App {
         }
         if let Some(at) = list_move(code, self.view.selected_project, rows) {
             self.change(|app| &mut app.view.selected_project, Some(at));
-            self.keep_row_visible(Pane::Projects, at);
+            // Its line in the pane, below the tasks of the projects above it.
+            let line = at
+                + self.snapshot.projects[..at]
+                    .iter()
+                    .map(|p| p.tasks.len())
+                    .sum::<usize>();
+            self.keep_row_visible(Pane::Projects, line);
         }
     }
 
     fn on_crew_key(&mut self, code: KeyCode, now: Instant) {
         self.show_selection();
-        let rows: Vec<_> = self.snapshot.crew.iter().map(|row| row.agent).collect();
+        // The agents, each with its line in the tree; a task's heading is passed over.
+        let rows = crate::widgets::crew::agent_lines(&self.snapshot.crew);
         let current = self
             .view
             .selected_crew
-            .and_then(|agent| rows.iter().position(|&a| a == agent));
+            .and_then(|agent| rows.iter().position(|&(_, a)| a == agent));
         match code {
             KeyCode::Enter | KeyCode::Char('o') => {
                 if let Some(at) = current {
-                    self.open_crew(rows[at], true, now);
+                    self.open_crew(rows[at].1, true, now);
                 }
             }
             KeyCode::Char(' ') => {
                 if let Some(at) = current {
-                    self.open_menu_for_row(MenuTarget::Crew(rows[at]));
+                    self.open_menu_for_row(MenuTarget::Crew(rows[at].1));
                 }
             }
             _ => {
                 if let Some(at) = list_move(code, current, rows.len()) {
-                    self.select_crew(rows[at]);
-                    self.keep_row_visible(Pane::Crew, at);
+                    let (line, agent) = rows[at];
+                    self.select_crew(agent);
+                    // A task's first crewmate brings the heading above it into view too.
+                    let previous = at.checked_sub(1).map_or(0, |p| rows[p].0 + 1);
+                    if line > previous {
+                        self.keep_row_visible(Pane::Crew, line - 1);
+                    }
+                    self.keep_row_visible(Pane::Crew, line);
                 }
             }
         }

@@ -496,8 +496,9 @@ pub struct PendingHold {
     pub task: Option<TaskId>,
 }
 
-/// The statuses of tasks being retired or already closed: never shown.
-const HIDDEN: &str = "('closed', 'failed', 'stopped', 'discarded')";
+/// The statuses of tasks being retired or already closed: never shown, in the crew tree or under a
+/// project.
+pub(crate) const HIDDEN: &str = "('closed', 'failed', 'stopped', 'discarded')";
 
 /// Reads the crew tree's data.
 pub fn crew_data(conn: &Connection) -> Result<CrewData, StoreError> {

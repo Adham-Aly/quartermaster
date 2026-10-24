@@ -81,6 +81,9 @@ pub(crate) enum Hit {
     Dialog,
     /// A project row, by index into `Snapshot::projects`.
     Project(usize),
+    /// A task's line beneath project `index`: a click or right-click acts on the project; the line
+    /// itself doesn't light up on hover.
+    ProjectTask(usize),
     /// A crew row.
     Crew(AgentRef),
     /// Row `index` of the Actions inbox, by index into `Snapshot::actions`.

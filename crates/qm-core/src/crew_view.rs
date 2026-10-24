@@ -1,9 +1,13 @@
 //! The crew tree and the task pane, display-ready.
 //!
 //! [`load`] reads `qm_store::crew_view::crew_data` and builds the rows under the Quartermaster's
-//! root row (which `api.rs` writes): its open tasks at depth 1, then its secondmates at depth 1,
-//! each followed by its own open tasks at depth 2, tasks oldest first. Each task gets a
-//! [`TaskDetail`] for the task pane, with token use summed over its crewmate's turns.
+//! root row (which `api.rs` writes): its open crewmates at depth 1, then its secondmates at depth
+//! 1, each followed by its own open crewmates at depth 2. Under each supervisor the crewmates are
+//! kept together by task (`T-`), tasks in the order their oldest crewmate there was made and
+//! crewmates oldest first, and each row carries its task's heading ([`CrewTask`]), which the tree
+//! draws above them: supervisor → task → crewmates. A task with no open crewmate has no rows, so
+//! it drops out. Each crewmate gets a [`TaskDetail`] for the task pane, with token use summed over
+//! its turns.
 //!
 //! [`CrewPart`] puts both into every snapshot, as an [`ApiPart`] registered in the binary's
 //! wiring.
@@ -15,11 +19,12 @@ use qm_store::crew_view::{self, CrewData, OpenTask, TokenUse};
 use qm_store::db::Db;
 use qm_types::BoxFuture;
 use qm_types::api::{
-    AgentRef, Attention, Command, CrewRow, Snapshot, Styled, TaskDetail, TaskRow, Tone, Waiting,
+    AgentRef, Attention, Command, CrewRow, CrewTask, Snapshot, Styled, TaskDetail, TaskRow, Tone,
+    Waiting,
 };
 use qm_types::clock::Clock;
 use qm_types::domain::{HeldKind, TaskStatus, VerificationLevel};
-use qm_types::ids::{AgentId, TaskId};
+use qm_types::ids::{AgentId, TaskId, TaskLabelId};
 use std::fmt;
 use std::sync::Arc;
 
@@ -53,11 +58,14 @@ pub fn build(data: &CrewData, now: Timestamp, started: Option<Timestamp>) -> Cre
     let secondmate_agents: Vec<AgentId> = data.secondmates.iter().filter_map(|s| s.agent).collect();
     let mut view = CrewView::default();
     // The Quartermaster's own tasks, and any whose supervisor isn't shown (so no work is hidden).
-    for task in data.tasks.iter().filter(|t| {
-        Some(t.supervisor) == data.quartermaster || !secondmate_agents.contains(&t.supervisor)
-    }) {
-        push_task(&mut view, data, task, 1, now, started);
-    }
+    let own: Vec<&OpenTask> = data
+        .tasks
+        .iter()
+        .filter(|t| {
+            Some(t.supervisor) == data.quartermaster || !secondmate_agents.contains(&t.supervisor)
+        })
+        .collect();
+    push_group(&mut view, data, &own, 1, now, started);
     for secondmate in &data.secondmates {
         let status = if secondmate.working {
             SECONDMATE_WORKING
@@ -75,9 +83,12 @@ pub fn build(data: &CrewData, now: Timestamp, started: Option<Timestamp>) -> Cre
         let Some(agent) = secondmate.agent else {
             continue;
         };
-        for task in data.tasks.iter().filter(|t| t.supervisor == agent) {
-            push_task(&mut view, data, task, 2, now, started);
-        }
+        let theirs: Vec<&OpenTask> = data
+            .tasks
+            .iter()
+            .filter(|t| t.supervisor == agent)
+            .collect();
+        push_group(&mut view, data, &theirs, 2, now, started);
     }
     view.attention = attention(data, &view.crew);
     view
@@ -121,10 +132,55 @@ fn attention(data: &CrewData, crew: &[CrewRow]) -> Attention {
     out
 }
 
+/// One supervisor's crewmates (`tasks`, oldest first) at `depth`, kept together by task: tasks in
+/// the order their first crewmate comes, crewmates in their own order within each.
+fn push_group(
+    view: &mut CrewView,
+    data: &CrewData,
+    tasks: &[&OpenTask],
+    depth: u8,
+    now: Timestamp,
+    started: Option<Timestamp>,
+) {
+    let mut labels: Vec<TaskLabelId> = Vec::new();
+    for task in tasks {
+        if !labels.contains(&task.label) {
+            labels.push(task.label);
+        }
+    }
+    for label in labels {
+        let members: Vec<&OpenTask> = tasks.iter().copied().filter(|t| t.label == label).collect();
+        let heading = heading(label, &members);
+        for task in members {
+            push_task(view, data, task, heading.clone(), depth, now, started);
+        }
+    }
+}
+
+/// A task's heading over `members`, its crewmates under one supervisor: `T-0042 api-server`, with
+/// `+1` for each further project they work in (`T-0042 api-server +1`).
+fn heading(label: TaskLabelId, members: &[&OpenTask]) -> CrewTask {
+    let mut projects: Vec<&str> = Vec::new();
+    for task in members {
+        if !projects.contains(&task.project.as_str()) {
+            projects.push(&task.project);
+        }
+    }
+    let mut words = label.to_string();
+    if let Some(first) = projects.first() {
+        words = format!("{words} {first}");
+    }
+    if projects.len() > 1 {
+        words = format!("{words} +{}", projects.len() - 1);
+    }
+    CrewTask::new(label, words)
+}
+
 fn push_task(
     view: &mut CrewView,
     data: &CrewData,
     task: &OpenTask,
+    heading: CrewTask,
     depth: u8,
     now: Timestamp,
     started: Option<Timestamp>,
@@ -136,6 +192,7 @@ fn push_task(
         format!("{} {}", task.task, task.kind),
         status.clone(),
     );
+    row.task = Some(heading);
     row.waiting = waiting;
     row.needs_you = waiting.is_some();
     row.busy = task.in_turn;
@@ -201,7 +258,7 @@ fn detail(
     let mut d = TaskDetail::new(task.task, task.title.clone());
     d.rows
         .push(TaskRow::new(Some("project"), text(task.project.clone())));
-    // The task this crewmate works towards, and who else is in it: project → task → crewmate.
+    // The task this crewmate works towards (its heading in the crew tree), and who else is in it.
     let mut in_task = task.label.to_string();
     if !with.is_empty() {
         let names: Vec<String> = with.iter().map(ToString::to_string).collect();
@@ -431,5 +488,80 @@ mod tests {
             .find(|r| r.label.as_deref() == Some("branch"))
             .expect("git branch row");
         assert_eq!(branch.value[0].text, "qm/task-0002 ← main");
+    }
+
+    /// A fixture with two projects, a secondmate, and crewmates in tasks across them, oldest first:
+    /// C-1 (T-1, app), C-2 (T-2, app), C-3 (T-1, app), C-4 (secondmate, T-4, web),
+    /// C-5 (secondmate, T-5, app), C-6 (secondmate, T-4, app), C-7 (T-7, closed).
+    fn grouped_fixture() -> Connection {
+        let mut conn = Connection::open_in_memory().expect("open fixture");
+        qm_store::schema::migrate(&mut conn).expect("migrate");
+        conn.execute_batch(
+            "INSERT INTO agents (id, role, home, status, created_at, seq)
+             VALUES (1, 'quartermaster', '/fixture/seat', 'idle', 0, 1);
+             INSERT INTO secondmates (id, name, scope, created_at, seq)
+             VALUES (2, 'web', 'the web app', 0, 1);
+             INSERT INTO agents (id, role, supervisor_id, secondmate_id, home, status, created_at, seq)
+             VALUES (9, 'secondmate', 1, 2, '/fixture/sm', 'idle', 0, 2);
+             INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode,
+                                   merge_method, created_at, seq)
+             VALUES (1, 'app', '/fixture/app', 'linked', '', 'folder', 'squash', 0, 1),
+                    (2, 'web', '/fixture/web', 'linked', '', 'folder', 'squash', 0, 2);
+             INSERT INTO task_labels (id, created_at, seq)
+             VALUES (1, 0, 1), (2, 0, 2), (4, 0, 4), (5, 0, 5), (7, 0, 7);
+             INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, delivery_mode,
+                                status, created_at, seq, label_id, folder_label_id,
+                                outcome, closed_at)
+             VALUES (1, 1, 1, 'fix', 'fix(a): one', 'g', 'folder', 'held', 1, 1, 1, 1, NULL, NULL),
+                    (2, 1, 1, 'build', 'feat(a): two', 'g', 'folder', 'held', 2, 2, 2, 2, NULL, NULL),
+                    (3, 1, 1, 'review', 'review(a): one', 'g', 'folder', 'reported', 3, 3, 1, 1,
+                     NULL, NULL),
+                    (4, 2, 9, 'build', 'feat(w): four', 'g', 'folder', 'held', 4, 4, 4, 4, NULL, NULL),
+                    (5, 1, 9, 'fix', 'fix(a): five', 'g', 'folder', 'held', 5, 5, 5, 5, NULL, NULL),
+                    (6, 1, 9, 'review', 'review(w): four', 'g', 'folder', 'held', 6, 6, 4, 4,
+                     NULL, NULL),
+                    (7, 1, 1, 'fix', 'fix(a): seven', 'g', 'folder', 'closed', 7, 7, 7, 7,
+                     'answered', 7);",
+        )
+        .expect("seed tasks");
+        conn
+    }
+
+    #[test]
+    fn crewmates_come_together_under_their_task_beneath_each_supervisor() {
+        let conn = grouped_fixture();
+        let data = crew_view::crew_data(&conn).expect("load crew");
+        let view = build(&data, Timestamp::UNIX_EPOCH, None);
+        let rows: Vec<(u8, String, Option<String>)> = view
+            .crew
+            .iter()
+            .map(|r| {
+                (
+                    r.depth,
+                    r.label.clone(),
+                    r.task.as_ref().map(|t| t.label.clone()),
+                )
+            })
+            .collect();
+        let task = |s: &str| Some(s.to_owned());
+        assert_eq!(
+            rows,
+            [
+                // The Quartermaster's: T-1's two crewmates together, then T-2; closed C-7's task
+                // has no rows, so it drops out.
+                (1, "C-0001 fix".to_owned(), task("T-0001 app")),
+                (1, "C-0003 review".to_owned(), task("T-0001 app")),
+                (1, "C-0002 build".to_owned(), task("T-0002 app")),
+                (1, "S-02 web".to_owned(), None),
+                // The secondmate's tasks across projects: T-4 (web, then app) before T-5.
+                (2, "C-0004 build".to_owned(), task("T-0004 web +1")),
+                (2, "C-0006 review".to_owned(), task("T-0004 web +1")),
+                (2, "C-0005 fix".to_owned(), task("T-0005 app")),
+            ]
+        );
+        // Every crewmate shown still has its task pane.
+        assert_eq!(view.tasks.len(), 6);
+        // The same data builds the same tree.
+        assert_eq!(build(&data, Timestamp::UNIX_EPOCH, None), view);
     }
 }
