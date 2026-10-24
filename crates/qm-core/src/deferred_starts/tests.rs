@@ -2,6 +2,8 @@ use super::*;
 use crate::turns::forget_tests::Fixture;
 use qm_types::{domain::TaskKind, ids::AgentId};
 
+mod pruned_words;
+
 fn caller() -> Caller {
     Caller {
         agent: AgentId::new(1),
