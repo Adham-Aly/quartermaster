@@ -23,6 +23,7 @@
 
 use crate::catalog::Catalog;
 use qm_auth::login::LoginEndpoints;
+use qm_auth::quota::QuotaEndpoints;
 use qm_auth::{AuthError, CredentialStore, FileCredentialStore, LoginHealth, TokenKeeper};
 use qm_core::api::{self, ApiDeps, ApiPart, Conversation};
 use qm_core::attachments::Attachments;
@@ -108,6 +109,10 @@ pub(crate) const DEV_SEAT_SCRIPT: &str = "QM_DEV_SEAT_SCRIPT";
 /// Behind the developer gate: the version this copy says it is, for the update check ("0.0.1"
 /// makes the newest release look newer, so the update notice and the install can be tried).
 pub(crate) const DEV_RUNNING_VERSION: &str = "QM_DEV_RUNNING_VERSION";
+
+/// A loopback URL every quota check goes to instead of the provider's, behind the developer gate
+/// in debug builds ([`dev_quota_endpoints`]).
+pub(crate) const DEV_QUOTA_URL: &str = "QM_DEV_QUOTA_URL";
 
 /// The scripted account the developer seat runs on.
 const DEV_ACCOUNT_LABEL: &str = "Scripted (developer seat)";
@@ -569,6 +574,7 @@ fn settings_parts(
             catalog,
             conversation: Arc::clone(conversation),
             endpoints: LoginEndpoints::default(),
+            quota_endpoints: dev_quota_endpoints(dir),
         })));
     } else {
         let problem = base.settings_problem.unwrap_or_else(|| {
@@ -884,6 +890,26 @@ pub(crate) fn dev_seat_script(dir: &DataDir) -> Result<Option<Script>, String> {
     Script::load(&path)
         .map(Some)
         .map_err(|e| format!("can't load the seat script {}: {e}", path.display()))
+}
+
+/// Every quota check's endpoints: the real providers', or, in a debug build with the developer
+/// gate open, the loopback URL [`DEV_QUOTA_URL`] names (a local stand-in service: these URLs
+/// receive the accounts' credentials, so nothing else is accepted).
+fn dev_quota_endpoints(dir: &DataDir) -> QuotaEndpoints {
+    let Some(url) = std::env::var(DEV_QUOTA_URL).ok().filter(|u| !u.is_empty()) else {
+        return QuotaEndpoints::default();
+    };
+    let local =
+        QuotaEndpoints::local(&url).filter(|_| cfg!(debug_assertions) && dev_gate_open(dir.root()));
+    if local.is_some() {
+        tracing::info!("quota checks go to a local stand-in service (developer gate)");
+    } else {
+        tracing::warn!(
+            "{DEV_QUOTA_URL} is set but needs a debug build, the developer gate open (QM_DEV=1 \
+             and a throwaway QUARTERMASTER_HOME) and a loopback URL; it is ignored"
+        );
+    }
+    local.unwrap_or_default()
 }
 
 /// The app's own update check, started at once in the background (it checks at launch and then

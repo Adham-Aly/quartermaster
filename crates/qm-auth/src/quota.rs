@@ -2,6 +2,15 @@
 //!
 //! ChatGPT's wham and Copilot's internal-user endpoints are private provider APIs and may
 //! change. OpenRouter exposes a public key-budget API (not the whole account's balance).
+//!
+//! **Prepaid balances** ([`BalanceSource`]) are read for the API keys whose provider lets that
+//! same key read the account's top-up balance: DeepSeek and Moonshot (Kimi's platform), both
+//! connected as custom endpoints and recognised by the endpoint's host, the host that key already
+//! goes to. The request goes to the source's fixed URL, never one built from the endpoint. Every
+//! other API-key provider the app supports has no such API for an inference key: Anthropic,
+//! OpenAI and Gemini have none, and OpenRouter's account credits and xAI's prepaid balance need a
+//! separate management key, so OpenRouter reports only the key's own budget.
+//!
 //! No Claude credential is ever accessed. Other providers explicitly return
 //! [`QuotaError::Unsupported`]; inference rate-limit headers are not account quota APIs.
 //! Only allow-listed numeric fields and parsed timestamps escape this module, never provider
@@ -20,6 +29,29 @@ pub struct QuotaEndpoints {
     pub chatgpt: String,
     pub copilot: String,
     pub openrouter: String,
+    /// [`BalanceSource::DeepSeek`]'s balance endpoint.
+    pub deepseek: String,
+    /// [`BalanceSource::Moonshot`]'s balance endpoint.
+    pub moonshot: String,
+    /// [`BalanceSource::MoonshotChina`]'s balance endpoint.
+    pub moonshot_cn: String,
+}
+
+impl QuotaEndpoints {
+    /// Every endpoint at one loopback URL, for a local stand-in service in tests and developer
+    /// runs; `None` for any URL off this machine.
+    pub fn local(url: &str) -> Option<Self> {
+        let parsed = url::Url::parse(url).ok()?;
+        let loopback = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+        (loopback && matches!(parsed.scheme(), "http" | "https")).then(|| Self {
+            chatgpt: url.into(),
+            copilot: url.into(),
+            openrouter: url.into(),
+            deepseek: url.into(),
+            moonshot: url.into(),
+            moonshot_cn: url.into(),
+        })
+    }
 }
 
 impl Default for QuotaEndpoints {
@@ -28,6 +60,9 @@ impl Default for QuotaEndpoints {
             chatgpt: "https://chatgpt.com/backend-api/wham/usage".into(),
             copilot: "https://api.github.com/copilot_internal/user".into(),
             openrouter: "https://openrouter.ai/api/v1/key".into(),
+            deepseek: "https://api.deepseek.com/user/balance".into(),
+            moonshot: "https://api.moonshot.ai/v1/users/me/balance".into(),
+            moonshot_cn: "https://api.moonshot.cn/v1/users/me/balance".into(),
         }
     }
 }
@@ -62,6 +97,42 @@ pub enum QuotaKind {
     PremiumRequests,
     /// OpenRouter's per-key budget; not a claim about the account wallet.
     KeyBudget,
+    /// A prepaid account balance ([`BalanceSource`]), in [`QuotaBucket::balance`].
+    Balance,
+}
+
+/// An allow-listed currency for a balance; any other currency is left out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Currency {
+    Usd,
+    Cny,
+}
+
+impl Currency {
+    /// The app's own name for it, for storing: `usd`, `cny`.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Usd => "usd",
+            Self::Cny => "cny",
+        }
+    }
+}
+
+/// An amount of money left, never negative.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Money {
+    pub amount: f64,
+    pub currency: Currency,
+}
+
+impl fmt::Display for Money {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.currency {
+            Currency::Usd => write!(f, "${:.2}", self.amount),
+            Currency::Cny => write!(f, "CN¥{:.2}", self.amount),
+        }
+    }
 }
 
 impl fmt::Display for QuotaKind {
@@ -74,6 +145,7 @@ impl fmt::Display for QuotaKind {
             Self::Completions => "Completions",
             Self::PremiumRequests => "Premium requests",
             Self::KeyBudget => "Key budget",
+            Self::Balance => "Balance",
         })
     }
 }
@@ -88,6 +160,8 @@ pub struct QuotaBucket {
     pub entitlement: Option<u64>,
     /// OpenRouter's remaining key budget in USD, not an account-wide credit balance.
     pub remaining_usd: Option<f64>,
+    /// A prepaid balance left (for `Balance`); it has no entitlement, so no percent either.
+    pub balance: Option<Money>,
     /// Unlimited applies only to this bucket (for `KeyBudget`, only the key's spending cap).
     pub unlimited: bool,
     pub resets_at: Option<Timestamp>,
@@ -105,6 +179,7 @@ impl QuotaBucket {
             remaining: None,
             entitlement: None,
             remaining_usd: None,
+            balance: None,
             unlimited: false,
             resets_at: None,
             resets_on: None,
@@ -133,6 +208,8 @@ impl fmt::Display for QuotaBucket {
         }
         if self.unlimited {
             f.write_str("unlimited")?;
+        } else if let Some(money) = self.balance {
+            write!(f, "{money}")?;
         } else if let Some(usd) = self.remaining_usd {
             write!(f, "${usd:.2} remaining")?;
         } else if let Some(percent) = self.remaining_percent {
@@ -197,7 +274,9 @@ impl Quotas {
         }
     }
 
-    /// Unsupported providers (especially Claude) return before even reading the store.
+    /// Unsupported providers (especially Claude) return before even reading the store. An
+    /// API key's prepaid balance is read where [`BalanceSource::of`] finds one for its
+    /// `base_url`.
     /// A ChatGPT 401 retries once via `TokenKeeper::fresh`; Copilot uses the stored GitHub
     /// refresh token, not its inference token, so re-exchanging the latter cannot fix a 401.
     /// Quota-only failures do not mark inference credentials unhealthy.
@@ -205,11 +284,14 @@ impl Quotas {
         &self,
         provider: Provider,
         key: &CredentialRef,
+        base_url: Option<&str>,
     ) -> Result<QuotaSummary, QuotaError> {
-        let endpoint = match provider {
-            Provider::ChatGpt => &self.endpoints.chatgpt,
-            Provider::Copilot => &self.endpoints.copilot,
-            Provider::OpenRouter => &self.endpoints.openrouter,
+        let balance = BalanceSource::of(provider, base_url);
+        let endpoint = match (provider, balance) {
+            (_, Some(source)) => source.endpoint(&self.endpoints),
+            (Provider::ChatGpt, _) => &self.endpoints.chatgpt,
+            (Provider::Copilot, _) => &self.endpoints.copilot,
+            (Provider::OpenRouter, _) => &self.endpoints.openrouter,
             _ => return Err(QuotaError::Unsupported),
         };
         validate_endpoint(endpoint)?;
@@ -228,6 +310,7 @@ impl Quotas {
         };
         for attempt in 0..2 {
             let (token, account_id) = match (&credential, provider) {
+                (Credential::ApiKey { key }, _) if balance.is_some() => (key, None),
                 (Credential::ApiKey { key }, Provider::OpenRouter) => (key, None),
                 (
                     Credential::OAuth {
@@ -261,10 +344,11 @@ impl Quotas {
                 _ => return Err(QuotaError::Unavailable),
             }
             let value = read_json(response).await?;
-            return match provider {
-                Provider::ChatGpt => parse_chatgpt(&value),
-                Provider::Copilot => parse_copilot(&value),
-                Provider::OpenRouter => parse_openrouter(&value),
+            return match (provider, balance) {
+                (_, Some(source)) => source.parse(&value),
+                (Provider::ChatGpt, _) => parse_chatgpt(&value),
+                (Provider::Copilot, _) => parse_copilot(&value),
+                (Provider::OpenRouter, _) => parse_openrouter(&value),
                 _ => Err(QuotaError::Unsupported),
             };
         }
@@ -293,6 +377,61 @@ impl Quotas {
             }
         }
         request.send().await.map_err(|_| QuotaError::Unavailable)
+    }
+}
+
+/// Where an API key can read its account's prepaid (top-up) balance with the key itself. Each
+/// is a custom endpoint at the provider's own API host; see the module docs for the providers
+/// that have no such API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BalanceSource {
+    /// `https://api.deepseek.com`: `GET /user/balance`, in US dollars or yuan.
+    DeepSeek,
+    /// `https://api.moonshot.ai` (Kimi's global platform): `GET /v1/users/me/balance`, in US
+    /// dollars.
+    Moonshot,
+    /// `https://api.moonshot.cn` (Kimi's platform in China): the same, in yuan.
+    MoonshotChina,
+}
+
+impl BalanceSource {
+    /// The balance an account can read: only a custom endpoint at one of these hosts, over HTTPS
+    /// on the default port with no credentials in the URL (any path).
+    pub fn of(provider: Provider, base_url: Option<&str>) -> Option<Self> {
+        if provider != Provider::Custom {
+            return None;
+        }
+        let url = url::Url::parse(base_url?).ok()?;
+        if url.scheme() != "https"
+            || url.port().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return None;
+        }
+        match url.host_str()? {
+            "api.deepseek.com" => Some(Self::DeepSeek),
+            "api.moonshot.ai" => Some(Self::Moonshot),
+            "api.moonshot.cn" => Some(Self::MoonshotChina),
+            _ => None,
+        }
+    }
+
+    fn endpoint(self, endpoints: &QuotaEndpoints) -> &str {
+        match self {
+            Self::DeepSeek => &endpoints.deepseek,
+            Self::Moonshot => &endpoints.moonshot,
+            Self::MoonshotChina => &endpoints.moonshot_cn,
+        }
+    }
+
+    fn parse(self, value: &Value) -> Result<QuotaSummary, QuotaError> {
+        match self {
+            Self::DeepSeek => parse_deepseek(value),
+            Self::Moonshot => parse_moonshot(value, Currency::Usd),
+            Self::MoonshotChina => parse_moonshot(value, Currency::Cny),
+        }
     }
 }
 
@@ -420,6 +559,63 @@ fn parse_openrouter(value: &Value) -> Result<QuotaSummary, QuotaError> {
             b.remaining_percent = Some((remaining / limit * 100.0).clamp(0.0, 100.0));
         }
     }
+    summary(vec![b])
+}
+
+/// DeepSeek's balance: one bucket per allow-listed currency. Amounts come as decimal strings
+/// (numbers are accepted too); a negative balance counts as none left.
+fn parse_deepseek(value: &Value) -> Result<QuotaSummary, QuotaError> {
+    let infos = value["balance_infos"]
+        .as_array()
+        .ok_or(QuotaError::InvalidResponse)?;
+    let mut buckets = Vec::new();
+    for info in infos {
+        let currency = match info["currency"].as_str() {
+            Some("USD") => Currency::Usd,
+            Some("CNY") => Currency::Cny,
+            _ => continue,
+        };
+        let total = &info["total_balance"];
+        let amount = total
+            .as_str()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .or_else(|| total.as_f64())
+            .filter(|n| n.is_finite())
+            .ok_or(QuotaError::InvalidResponse)?;
+        if buckets
+            .iter()
+            .any(|b: &QuotaBucket| b.balance.is_some_and(|m| m.currency == currency))
+        {
+            return Err(QuotaError::InvalidResponse);
+        }
+        let mut b = bucket(QuotaKind::Balance);
+        b.balance = Some(Money {
+            amount: amount.max(0.0),
+            currency,
+        });
+        buckets.push(b);
+    }
+    summary(buckets)
+}
+
+/// Moonshot's balance: `available_balance` (cash and vouchers), in the platform's currency.
+/// A negative or zero balance can't run requests, so it counts as none left.
+fn parse_moonshot(value: &Value, currency: Currency) -> Result<QuotaSummary, QuotaError> {
+    if value
+        .get("code")
+        .is_some_and(|code| code.as_i64() != Some(0))
+    {
+        return Err(QuotaError::InvalidResponse);
+    }
+    let amount = value["data"]["available_balance"]
+        .as_f64()
+        .filter(|n| n.is_finite())
+        .ok_or(QuotaError::InvalidResponse)?;
+    let mut b = bucket(QuotaKind::Balance);
+    b.balance = Some(Money {
+        amount: amount.max(0.0),
+        currency,
+    });
     summary(vec![b])
 }
 

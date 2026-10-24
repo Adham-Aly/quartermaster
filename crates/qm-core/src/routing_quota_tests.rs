@@ -194,3 +194,47 @@ fn a_reserve_mark_outside_one_to_ninety_nine_is_refused() {
         .unwrap();
     assert_eq!(row.reserve_at, None);
 }
+
+/// A DeepSeek balance check, stored the way Settings stores it: measured against the reading
+/// already on the row.
+fn balance_check(conn: &Connection, account: i64, usd: f64) {
+    use qm_auth::quota::{Currency, Money, QuotaBucket, QuotaKind, QuotaSummary};
+    let mut bucket = QuotaBucket::new(QuotaKind::Balance);
+    bucket.balance = Some(Money {
+        amount: usd,
+        currency: Currency::Usd,
+    });
+    let id = AccountId::new(account);
+    let before = accounts::load_account(conn, id).unwrap().unwrap().quota;
+    let stored =
+        crate::quota_pools::from_summary(&QuotaSummary::new(vec![bucket]), before.as_deref());
+    let json = serde_json::to_string(&stored).unwrap();
+    accounts::record_quota(conn, id, &json, now()).unwrap();
+}
+
+#[test]
+fn a_deepseek_balance_competes_on_quota_and_its_reserve_mark() {
+    let (conn, task) = fixture();
+    engine(&conn, CLAUDE, 5.0, 60.0);
+    engine(&conn, CHATGPT, 10.0, 40.0);
+    // $10 at the first check: the reference, 0% used, so it serves first.
+    balance_check(&conn, DEEPSEEK, 10.0);
+    assert_eq!(account(&route(&conn, &facts(task))), DEEPSEEK);
+    // $5 left of $10: 50% used, more than ChatGPT's 40%.
+    balance_check(&conn, DEEPSEEK, 5.0);
+    let record = route(&conn, &facts(task));
+    assert_eq!(account(&record), CHATGPT, "{}", record.why);
+    // A top-up to $6 resets the reference: 0% used again.
+    balance_check(&conn, DEEPSEEK, 6.0);
+    assert_eq!(account(&route(&conn, &facts(task))), DEEPSEEK);
+    // $4.50 of $6 is 25% used: past a 20% mark, it is held in reserve.
+    balance_check(&conn, DEEPSEEK, 4.5);
+    mark(&conn, DEEPSEEK, Some(20));
+    mark(&conn, CHATGPT, Some(50));
+    let record = route(&conn, &facts(task));
+    assert_eq!(account(&record), CHATGPT, "{}", record.why);
+    // Empty, it is cut off and skipped.
+    balance_check(&conn, DEEPSEEK, 0.0);
+    let record = route(&conn, &facts(task));
+    assert!(record.skipped.iter().any(|s| s.account.get() == DEEPSEEK));
+}

@@ -80,6 +80,9 @@ QM_DEV=1 quartermaster dev probe claude      # detect claude and run its zero-to
 QM_DEV=1 quartermaster dev leftovers         # the startup report of leftover process groups
 QM_DEV=1 quartermaster dev login chatgpt --ref chatgpt:dev
 QM_DEV=1 QM_DEV_SEAT_SCRIPT=seat.toml quartermaster   # the Quartermaster on the scripted engine
+QM_DEV=1 QM_DEV_QUOTA_URL=http://127.0.0.1:<port>/q quartermaster  # debug builds: every
+    # quota check (Settings ▸ Accounts) goes to your local stand-in instead of the provider;
+    # only a loopback URL is accepted, since it receives the accounts' keys
 QM_DEV=1 QM_DEV_RUNNING_VERSION=0.0.1 quartermaster  # look older, so the newest release shows
     # as an update (notice, Menu ▸ Update). Pressing Update really installs it over the running
     # binary's folder: run a copy from a throwaway <dir>/bin, with XDG_CONFIG_HOME=<throwaway>

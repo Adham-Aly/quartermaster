@@ -74,17 +74,37 @@ flight are not duplicated. A failed refresh shows a plain error and keeps the pr
 reading and its check time, so an old reading is not mistaken for a fresh one.
 
 Supported sources are ChatGPT's usage windows, GitHub Copilot's chat/completions/premium
-request quotas, and OpenRouter's **per-key spending budget** (not wallet credit).
+request quotas, OpenRouter's **per-key spending budget** (not wallet credit), and the
+**prepaid balance** of every API key whose provider lets that same key read it.
 ChatGPT and Copilot use private provider endpoints and may refuse access or change their
-response formats. Other providers and credential types explicitly show that quota lookup
-is unsupported. In particular, the app never reads Claude's subscription credentials.
-An unlimited OpenRouter key budget does not mean unlimited account credit.
+response formats. Other providers, other custom endpoints and other credential types
+explicitly show that quota lookup is unsupported. In particular, the app never reads
+Claude's subscription credentials. An unlimited OpenRouter key budget does not mean
+unlimited account credit.
+
+Prepaid (top-up) balances, by API-key provider:
+
+| API key | Balance read | Shows |
+|---|---|---|
+| Custom endpoint at `https://api.deepseek.com` (DeepSeek) | `GET /user/balance` | the balance in US dollars or yuan, each its own pool |
+| Custom endpoint at `https://api.moonshot.ai` (Kimi's global platform) | `GET /v1/users/me/balance` | the available balance (cash and vouchers), in US dollars |
+| Custom endpoint at `https://api.moonshot.cn` (Kimi's platform in China) | the same | the available balance, in yuan |
+| OpenRouter | no: account credits need a separate management key | the key's own budget if it has a limit, else *quota unknown* |
+| xAI | no: the prepaid balance needs a separate management key | *quota unknown* |
+| Anthropic, OpenAI, Gemini | no: there is no balance API | *quota unknown* |
+| Any other custom endpoint | no | *quota unknown* |
+
+A custom endpoint is recognised by its base URL's host (HTTPS, default port, any path),
+and the key goes only to that provider's own fixed balance URL, the host it already
+serves, never to a URL built from the endpoint. Subscriptions (Kimi's included) have no
+top-up balance; their quota comes from their windows or, for Claude, its engine.
 
 Lookups use the connected account's stored token and the existing refresh mechanism;
 provider response bodies and credentials never appear in quota errors. The display
 readings live only in memory and are forgotten on disconnect. Each successful check
-also stores, on the account, just the percent used of each pool and when it resets,
-which routing reads (next section). A quota check never pauses an account.
+also stores, on the account, just the percent used of each pool and when it resets (for
+a balance, also the amount left and the balance at the last top-up), which routing reads
+(next section). A quota check never pauses an account.
 
 ## Quota-aware routing within a tier
 
@@ -101,12 +121,20 @@ of two pools the same length the more used one. Readings come from two places:
 - the engine's own usage reports, read once a minute: Claude's latest rate-limit windows
   (5-hour and 7-day) after its first turn, and the provider engine's usage headers;
 - the provider quota checks above (ChatGPT windows, Copilot chat and premium requests,
-  OpenRouter key budget).
+  OpenRouter key budget, prepaid balances).
+
+**A balance**, from any source in the table above, has no limit of its own, so it is
+measured against the **balance at the last top-up**. The first check is the reference
+(0% used); each later check counts what has been spent since. Whenever a check finds the balance higher than the check before, a
+top-up happened and the reference starts again at the new balance, even if it is lower
+than the old reference. With $10 at the first check and $7 now, the *Routing* line reads
+"balance 30% used since the last top-up"; topping up to $8 brings it back to 0%. A balance
+of nothing is used up. Each currency is its own pool.
 
 A window past its reset time counts as unused. An account with **no quota left** under
-any limit (a window at 100% that hasn't reset, or a spent budget) is never used until it
-resets; Copilot's monthly premium requests rank but never cut an account off, since
-Copilot keeps serving included models.
+any limit (a window at 100% that hasn't reset, or a spent budget or balance) is never used
+until it resets or a check finds money again; Copilot's monthly premium requests rank but
+never cut an account off, since Copilot keeps serving included models.
 
 **Reserve marks.** In **Settings ▸ Accounts**, select an account and press `m` (or
 right-click ▸ *Reserve mark…*) to set its reserve mark: a **percent used**, 1 to 99.
@@ -133,9 +161,10 @@ used, past its 75% reserve mark)").
 
 **Unknown quota** is never read as all left, nor as used up. Claude reports usage only
 through its engine, so a Claude account shows *quota unknown* until its first turn;
-API keys from Anthropic, OpenAI, Gemini and custom endpoints have no quota source and
-serve after every subscription (a key with a known budget, such as OpenRouter's,
-competes on quota like any other account).
+API keys with no quota source (Anthropic, OpenAI, Gemini, xAI, an OpenRouter key with no
+limit, and custom endpoints without a balance API) serve after every subscription; a key
+with a known budget or balance (an OpenRouter key's limit, DeepSeek, Moonshot) competes on
+quota and its reserve mark like any other account.
 
 ## Effort belongs to the entry
 
