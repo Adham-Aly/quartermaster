@@ -174,6 +174,13 @@ pub enum Command {
     DisconnectAccount {
         account: AccountId,
     },
+    /// An account's reserve mark: the percent of its largest quota pool USED (1 to 99) at which
+    /// routing holds it back in favour of accounts under theirs; `None` clears it.
+    SetReserveMark {
+        account: AccountId,
+        #[serde(default)]
+        percent: Option<u8>,
+    },
     /// Mark one account preferred for crew work, or none.
     SetPreferredAccount {
         #[serde(default)]
@@ -1348,6 +1355,13 @@ pub struct SettingsAccount {
     /// routing skips it until you reconnect it. `None` is working.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+    /// Your reserve mark, in percent USED of its largest quota pool (1 to 99); `None`: no mark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserve_at: Option<u8>,
+    /// What routing reads for it ("7-day window 60% used · reserve at 55% used · held in
+    /// reserve"); `None` before the core has filled it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<String>,
 }
 
 impl SettingsAccount {
@@ -1368,6 +1382,8 @@ impl SettingsAccount {
             provider: None,
             api_key: false,
             problem: None,
+            reserve_at: None,
+            routing: None,
         }
     }
 }

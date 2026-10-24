@@ -101,13 +101,13 @@
 
 use jiff::Timestamp;
 use qm_auth::{CredentialRef, LoginHealth};
-use qm_engine::{AccountRef, DetectedModel, Engine, UsageReading};
+use qm_engine::{AccountRef, DetectedModel, Engine};
 use qm_policy::overrides::{Authority, OverrideKind, check_choice_override};
 use qm_routing::choose::{Pool, RouteRequest, route};
 use qm_routing::decider::{Decided, DecidedBy};
 use qm_routing::later_steps::{AppliedLaterStep, not_in_any_tier};
 use qm_routing::quartermaster_model::{self, SeatChoice};
-use qm_routing::rank::{Candidate, Needs, Usage};
+use qm_routing::rank::{Candidate, Needs};
 use qm_routing::record::{BuildsOn, RoutingRecord, SkippedModel, UserChoices};
 use qm_routing::rules::RuleTable;
 use qm_store::StoreError;
@@ -322,37 +322,6 @@ pub fn seed_starter_tiers(
 // The pool
 // ---------------------------------------------------------------------------------------------
 
-/// A used percentage at or above this means the account is at its limit (cut off until reset).
-const CUT_OFF_PERCENT: f64 = 100.0;
-
-/// The tightest window of a stored usage reading; unreadable means unknown, never "all left".
-/// Returns the usage and whether the account is cut off.
-fn usage_of(json: Option<&str>, now: Timestamp) -> (Usage, bool) {
-    let Some(reading) = json.and_then(|j| serde_json::from_str::<UsageReading>(j).ok()) else {
-        return (Usage::Unknown, false);
-    };
-    let tightest = reading
-        .windows
-        .iter()
-        .filter(|w| w.used_percent.is_finite())
-        .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent));
-    let Some(w) = tightest else {
-        return (Usage::Unknown, false);
-    };
-    let resets_in = w
-        .resets_at
-        .and_then(|r| Duration::try_from(r.duration_since(now)).ok())
-        .unwrap_or(Duration::ZERO);
-    let cut_off = w.used_percent >= CUT_OFF_PERCENT && !resets_in.is_zero();
-    (
-        Usage::Known {
-            used: (w.used_percent / 100.0).clamp(0.0, 1.0),
-            resets_in,
-        },
-        cut_off,
-    )
-}
-
 /// The pool as `qm-routing` sees it, plus what the core needs to start the session.
 struct LoadedPool {
     placed: Vec<Candidate>,
@@ -372,7 +341,8 @@ impl LoadedPool {
 }
 
 fn candidate(row: &PoolRow, now: Timestamp) -> Candidate {
-    let (usage, cut_off) = usage_of(row.usage.as_deref(), now);
+    let (usage, cut_off) =
+        crate::quota_pools::read(row.usage.as_deref(), row.quota.as_deref(), now);
     Candidate {
         model: row.facts.canonical.clone(),
         provider: row.provider,
@@ -387,6 +357,7 @@ fn candidate(row: &PoolRow, now: Timestamp) -> Candidate {
         image_input: row.facts.image_input,
         context_window: Some(row.facts.context_window),
         usage,
+        reserve_at: row.reserve_at,
         cut_off,
     }
 }
@@ -1403,3 +1374,7 @@ mod tests {
 #[cfg(test)]
 #[path = "routing_premium_tests.rs"]
 mod premium_tests;
+
+#[cfg(test)]
+#[path = "routing_quota_tests.rs"]
+mod quota_tests;

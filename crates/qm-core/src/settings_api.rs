@@ -43,6 +43,7 @@
 //! error message, log line, event or snapshot ever carries one.
 
 mod quota;
+mod usage_feed;
 
 use crate::api::{ApiPart, Conversation, Handled};
 use crate::config_file;
@@ -157,6 +158,7 @@ impl SettingsPart {
             }),
         };
         quota::start(&part.inner);
+        usage_feed::start(&part.inner);
         part
     }
 }
@@ -183,6 +185,10 @@ fn store_change(command: &Command) -> Option<(&'static str, StoreChange)> {
         &Command::ResumeAccount { account } => (
             "resume the account",
             Box::new(move |c, _| accounts::set_paused(c, account, false)),
+        ),
+        &Command::SetReserveMark { account, percent } => (
+            "change the reserve mark",
+            Box::new(move |c, _| accounts::set_reserve_at(c, account, percent)),
         ),
         &Command::SetPreferredAccount { account } => (
             "change the preferred account",
@@ -1008,11 +1014,11 @@ impl Inner {
         let state = self.lock();
 
         let mut view = SettingsView::default();
-        let health = self.tokens.health();
+        let (health, now) = (self.tokens.health(), self.clock.now());
         view.accounts = accounts
             .iter()
             .map(|a| {
-                let mut v = account_view(a);
+                let mut v = account_view(a, now);
                 if let Some(quota) = state.quotas.get(&a.id) {
                     quota.fill(&mut v);
                 }
@@ -1217,7 +1223,7 @@ pub async fn follow_claude_login(
     .await
 }
 
-fn account_view(a: &AccountRow) -> SettingsAccount {
+fn account_view(a: &AccountRow, now: Timestamp) -> SettingsAccount {
     let mut v = SettingsAccount::new(a.id, a.label.clone());
     let how = match (a.provider, a.kind) {
         (Provider::Claude, _) => "your claude login".to_owned(),
@@ -1244,7 +1250,41 @@ fn account_view(a: &AccountRow) -> SettingsAccount {
     v.follows_cli = a.provider == Provider::Claude;
     v.provider = Some(a.provider);
     v.api_key = a.kind == AccountKind::ApiKey;
+    v.reserve_at = a.reserve_at;
+    v.routing = Some(routing_line(a, now));
     v
+}
+
+/// What quota-aware routing reads for the account: its largest pool, its reserve mark, and
+/// whether that holds it back. Percentages are always used, never left.
+fn routing_line(a: &AccountRow, now: Timestamp) -> String {
+    use qm_routing::rank::{Standing, Usage};
+    let (usage, quota) = (a.usage.as_deref(), a.quota.as_deref());
+    let (reading, cut_off) = crate::quota_pools::read(usage, quota, now);
+    let mark = a.reserve_at.map_or_else(
+        || "no reserve mark".to_owned(),
+        |m| format!("reserve at {m}% used"),
+    );
+    let held = Standing::of(reading, a.kind, a.reserve_at).in_reserve();
+    let quota = match reading {
+        Usage::Known { used_percent } => {
+            let pool = crate::quota_pools::largest_name(usage, quota, now)
+                .unwrap_or_else(|| "quota".to_owned());
+            format!("{pool} {used_percent:.0}% used")
+        }
+        Usage::Unknown if a.kind == AccountKind::ApiKey => {
+            "quota unknown (pay-per-token keys serve last)".to_owned()
+        }
+        Usage::Unknown => "quota unknown".to_owned(),
+    };
+    let state = if cut_off {
+        " · at its limit: skipped until it resets"
+    } else if held {
+        " · held in reserve"
+    } else {
+        ""
+    };
+    format!("{quota} · {mark}{state}")
 }
 
 /// "5-hour window 41% · 7-day 35%"; `None` when unknown (never shown as zero).

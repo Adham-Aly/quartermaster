@@ -1,4 +1,6 @@
-//! Ephemeral provider quotas: never persisted and never used for routing.
+//! Provider quotas: the lines Settings ▸ Accounts shows live only in memory; each successful
+//! check's numbers and reset times are also stored on the account (`accounts.quota`, through
+//! `crate::quota_pools`) for quota-aware routing.
 use super::{Inner, accounts};
 use qm_auth::{CredentialRef, quota::Quotas};
 use std::{
@@ -99,6 +101,7 @@ async fn refresh_with(inner: &Arc<Inner>, opened: bool, quotas: Option<Arc<Quota
                 Some(key) => quotas.fetch(account.provider, &key).await,
                 None => Err(qm_auth::quota::QuotaError::Unsupported),
             };
+            let mut pools = None;
             {
                 let mut state = inner.lock();
                 // A disconnected account's in-flight request must not recreate its cache.
@@ -108,6 +111,9 @@ async fn refresh_with(inner: &Arc<Inner>, opened: bool, quotas: Option<Arc<Quota
                     cached.refreshing = false;
                     match result {
                         Ok(summary) => {
+                            pools =
+                                serde_json::to_string(&crate::quota_pools::from_summary(&summary))
+                                    .ok();
                             cached.lines =
                                 summary.buckets.iter().map(ToString::to_string).collect();
                             cached.problem = None;
@@ -115,6 +121,16 @@ async fn refresh_with(inner: &Arc<Inner>, opened: bool, quotas: Option<Arc<Quota
                         }
                         Err(error) => cached.problem = Some(error.to_string()),
                     }
+                }
+            }
+            if let Some(json) = pools {
+                let (id, at) = (account.id, inner.clock.now());
+                if let Err(e) = inner
+                    .db
+                    .call(move |conn| accounts::record_quota(conn, id, &json, at))
+                    .await
+                {
+                    tracing::warn!(error = %e, "couldn't store the account's quota reading");
                 }
             }
             inner.changed();
@@ -358,7 +374,8 @@ mod tests {
                     })
                 })
                 .await;
-            eventually(|| clock.sleeps.load(Ordering::SeqCst) == 1).await;
+            // Both background workers park on the clock: the quota checks and the usage feed.
+            eventually(|| clock.sleeps.load(Ordering::SeqCst) == 2).await;
             Self {
                 part,
                 clock,
@@ -452,6 +469,40 @@ mod tests {
         assert!(!account.quota_refreshing);
         assert!(account.quota_problem.is_none());
         assert_eq!(f.count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_quota_check_feeds_routing_and_the_reserve_mark_holds_the_account_back() {
+        let mut f = Fixture::new().await;
+        let view = f.fill().await;
+        assert_eq!(
+            view.accounts[0].routing.as_deref(),
+            Some("quota unknown (pay-per-token keys serve last) · no reserve mark")
+        );
+        // $3 of a $10 budget spent: routing reads 30% used.
+        f.success().await;
+        let view = f.fill().await;
+        assert_eq!(
+            view.accounts[0].routing.as_deref(),
+            Some("prepaid budget 30% used · no reserve mark")
+        );
+        f.command(Command::SetReserveMark {
+            account: f.account,
+            percent: Some(25),
+        })
+        .await;
+        let view = f.fill().await;
+        assert_eq!(view.accounts[0].reserve_at, Some(25));
+        assert_eq!(
+            view.accounts[0].routing.as_deref(),
+            Some("prepaid budget 30% used · reserve at 25% used · held in reserve")
+        );
+        f.command(Command::SetReserveMark {
+            account: f.account,
+            percent: None,
+        })
+        .await;
+        assert_eq!(f.fill().await.accounts[0].reserve_at, None);
     }
 
     #[tokio::test]

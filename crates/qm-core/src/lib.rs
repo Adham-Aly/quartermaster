@@ -32,6 +32,7 @@ pub mod places;
 pub mod plans;
 pub mod processes;
 pub mod projects;
+pub mod quota_pools;
 pub mod reconcile;
 pub mod reports;
 pub mod retention;
