@@ -324,6 +324,7 @@ impl App {
         match code {
             KeyCode::Enter => self.open_session(now),
             KeyCode::Char('s') => self.stop_selected(),
+            KeyCode::Char('r') => self.open_selected_report(),
             _ => {}
         }
     }

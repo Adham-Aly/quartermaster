@@ -74,7 +74,11 @@ pub(crate) fn crewmate_spec(
         EngineKind::Provider | EngineKind::Scripted => Builtins::ProviderFileTools {
             write_roots: {
                 // Folders inside the app's own that stay writable.
-                let mut roots = vec![place.dir.clone(), paths.evidence.clone()];
+                let mut roots = vec![
+                    place.dir.clone(),
+                    paths.evidence.clone(),
+                    paths.artifacts.join("report"),
+                ];
                 // A planner writes its plan; a build reads its copy of the plan it builds on.
                 if plan.is_some() {
                     roots.push(paths.plan.clone());
@@ -89,4 +93,68 @@ pub(crate) fn crewmate_spec(
     spec.idle_shutdown = Some(CREW_IDLE_SHUTDOWN);
     spec.limits = None;
     spec
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qm_types::data_dir::DataDir;
+    use qm_types::domain::Provider;
+    use qm_types::env::QM_REPORT_DIR;
+    use qm_types::ids::{AccountId, TaskId};
+
+    #[test]
+    fn report_access_and_environment_are_available_on_every_engine() {
+        let paths = DataDir::new(PathBuf::from("/nonexistent/qm-session-test"))
+            .task(TaskId::new(42).unwrap());
+        let place = Workplace {
+            dir: paths.worktree.clone(),
+        };
+        let gathered = Gathered::default();
+        for engine in [
+            EngineKind::Claude,
+            EngineKind::Provider,
+            EngineKind::Scripted,
+        ] {
+            let routed = RoutedSession {
+                engine,
+                account: AccountRef {
+                    id: AccountId::new(1),
+                    provider: Provider::Scripted,
+                    credential: None,
+                    base_url: None,
+                },
+                model: ModelId::new("test-model").unwrap(),
+                effort: Effort::Medium,
+            };
+            for plan in [None, Some(PlanMode::Internal), Some(PlanMode::Interactive)] {
+                let spec = crewmate_spec(
+                    AgentId::new(1),
+                    &routed,
+                    &paths,
+                    &place,
+                    PortBlock { base: 41_000 },
+                    Told {
+                        gathered: &gathered,
+                        plan,
+                    },
+                    None,
+                );
+                assert_eq!(
+                    spec.env.get(QM_REPORT_DIR).unwrap(),
+                    &paths.artifacts.join("report").to_string_lossy(),
+                );
+                match spec.builtins {
+                    Builtins::ClaudeCode => assert_eq!(engine, EngineKind::Claude),
+                    Builtins::ProviderFileTools { write_roots, .. } => {
+                        assert!(write_roots.contains(&paths.artifacts.join("report")));
+                        assert!(write_roots.contains(&paths.evidence));
+                        assert!(!write_roots.contains(&paths.artifacts));
+                        assert_eq!(write_roots.contains(&paths.plan), plan.is_some());
+                    }
+                    Builtins::None => panic!("a crewmate needs builtins"),
+                }
+            }
+        }
+    }
 }

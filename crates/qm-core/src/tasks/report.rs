@@ -419,6 +419,13 @@ pub(crate) async fn record(
         delivered,
         &args,
     )?;
+    if args.outcome == ReportOutcome::Done && crate::reports::required(row.kind) {
+        crate::reports::check(&svc.deps().data_dir.task(task)).map_err(|e| {
+            refuse(format!(
+                "Write $QM_REPORT_DIR/report.html using template.html and SKILL.md before reporting done: {e}"
+            ))
+        })?;
+    }
     if args.outcome == ReportOutcome::Done {
         svc.deps()
             .gate

@@ -18,6 +18,7 @@ to do when it's refused.
 | Provider engine's stand-in for Claude Code's preset | `prompts/crewmate-provider.md` | embedded |
 | Secondmate prompt | `prompts/secondmate.md` | embedded; its charter follows |
 | Crewmate brief (first message, saved as `tasks/T-n/brief.md`) | `crates/qm-prompts/src/brief.rs` | `BriefFacts` |
+| App-authored static report skill | `crates/qm-core/src/reports/SKILL.md` | seeded into `$QM_REPORT_DIR/SKILL.md` |
 | Secondmate charter | `crates/qm-prompts/src/charter.rs` | |
 | Context block at the head of every orchestrator turn | `crates/qm-prompts/src/context_block.rs` | `ContextFacts` |
 | Summary when a session is replaced | `crates/qm-prompts/src/session_summary.rs` | |

@@ -69,6 +69,7 @@ fn a_plan_stays_until_its_build_has_its_copy_and_evidence_until_no_one_reads_it(
     // T-1 is a closed plan a build (T-5) hasn't copied yet; T-2 a closed plan T-6 has copied;
     // T-3 a closed task T-7 retries; T-4 closed and read by no one.
     let facts = Facts {
+        retained_tasks: (1..=7).map(id).collect(),
         open: vec![
             open(5, TaskKind::Build, Some(1), None),
             open(6, TaskKind::Build, Some(2), None),
@@ -116,6 +117,7 @@ fn transcripts_keep_the_named_session_and_unnamed_ones_wait_an_hour_unless_at_st
     }
     touch(&seat.join("notes.txt"));
     let facts = Facts {
+        retained_tasks: vec![id(8)],
         open: vec![open(8, TaskKind::Build, None, None)],
         sessions: vec![
             session(Owner::Seat, "current"),
@@ -191,6 +193,7 @@ fn an_older_layouts_scratch_plans_and_evidence_move_in_or_go() {
     touch(&data.scratch().join("scratchpad/T-0012/notes"));
     touch(&data.scratch().join("scratchpad/T-0011/notes"));
     let facts = Facts {
+        retained_tasks: vec![id(11)],
         open: vec![open(11, TaskKind::Plan, None, None)],
         sessions: vec![],
     };
@@ -234,6 +237,7 @@ fn plan_staging_and_temporaries_go_after_an_hour() {
     touch(&paths.plan.join(".plan.md.tmp-1-0"));
     touch(&paths.plan.join("plan.md"));
     let facts = Facts {
+        retained_tasks: vec![id(13)],
         open: vec![open(13, TaskKind::Plan, None, None)],
         sessions: vec![],
     };
@@ -244,4 +248,33 @@ fn plan_staging_and_temporaries_go_after_an_hour() {
     assert!(!paths.artifacts.join(format!("{PLAN_STAGING}1-0")).exists());
     assert!(!paths.plan.join(".plan.md.tmp-1-0").exists());
     assert!(paths.plan.join("plan.md").is_file());
+}
+
+#[test]
+fn a_report_survives_a_closed_retained_task_but_goes_when_forgotten() {
+    let home = Home::new("reports");
+    let data = &home.data;
+    let paths = data.task(id(14));
+    let report = paths.artifacts.join("report");
+    touch(&report.join("report.html"));
+    touch(&report.join("assets/chart.svg"));
+    touch(&paths.plan.join("plan.md"));
+    touch(&paths.evidence.join("run.log"));
+    // The task is closed (not in `open`), but its row is still retained.
+    let facts = Facts {
+        retained_tasks: vec![id(14)],
+        ..Facts::default()
+    };
+    for when in [When::Running, When::Startup] {
+        apply(data, &facts, SystemTime::now(), when);
+        assert!(report.join("report.html").is_file());
+        assert!(report.join("assets/chart.svg").is_file());
+        assert!(!paths.plan.exists());
+        assert!(!paths.evidence.exists());
+    }
+
+    // Forgetting removes the row: no old report may remain for a reused task ID.
+    apply(data, &Facts::default(), SystemTime::now(), When::Running);
+    assert!(!report.exists());
+    assert!(!paths.artifacts.exists());
 }

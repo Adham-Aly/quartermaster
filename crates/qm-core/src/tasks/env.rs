@@ -3,6 +3,7 @@
 //! Added to what each engine builds from scratch:
 //!
 //! - `QM_EVIDENCE_DIR`: the task's evidence folder, outside the worktree.
+//! - `QM_REPORT_DIR`: the task's static report folder, outside the worktree.
 //! - `QM_PORT_BASE`: the first of the task's ports.
 //! - `QM_PLAN_DIR`: the task's plan folder in the scratch root, when it has one: the plan a
 //!   planner writes, or the copy of the plan a build builds on.
@@ -15,7 +16,9 @@
 //! records what's done outside it (`delivery::outside`).
 
 use qm_types::data_dir::TaskPaths;
-use qm_types::env::{NEVER_PASSED_TO_AGENTS, QM_EVIDENCE_DIR, QM_PLAN_DIR, QM_PORT_BASE};
+use qm_types::env::{
+    NEVER_PASSED_TO_AGENTS, QM_EVIDENCE_DIR, QM_PLAN_DIR, QM_PORT_BASE, QM_REPORT_DIR,
+};
 use qm_types::ids::PortBlock;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -34,6 +37,12 @@ pub fn crewmate_env(paths: &TaskPaths, ports: PortBlock) -> BTreeMap<String, Str
     env.insert(
         QM_EVIDENCE_DIR.to_owned(),
         absolute(&paths.evidence).to_string_lossy().into_owned(),
+    );
+    env.insert(
+        QM_REPORT_DIR.to_owned(),
+        absolute(&paths.artifacts.join("report"))
+            .to_string_lossy()
+            .into_owned(),
     );
     env.insert(QM_PORT_BASE.to_owned(), ports.base.to_string());
     if paths.plan.is_dir() {
@@ -87,6 +96,20 @@ mod tests {
     use super::*;
     use qm_types::data_dir::DataDir;
     use qm_types::ids::TaskId;
+
+    #[test]
+    fn report_folder_is_absolute_and_reaches_setup_too() {
+        // Injection must not depend on the report directory already existing.
+        let paths = DataDir::new("relative-report-env-test").task(TaskId::new(42).unwrap());
+        let ports = PortBlock { base: 41_000 };
+        let env = crewmate_env(&paths, ports);
+        let report = Path::new(env.get(QM_REPORT_DIR).unwrap());
+        assert!(report.is_absolute());
+        assert_eq!(report, absolute(&paths.artifacts.join("report")));
+        assert_ne!(report, absolute(&paths.evidence));
+        let setup = setup_env(&paths, ports, &BTreeMap::new());
+        assert_eq!(setup.get(QM_REPORT_DIR), env.get(QM_REPORT_DIR));
+    }
 
     #[test]
     fn a_crewmate_gets_the_users_github_login_and_no_token() {

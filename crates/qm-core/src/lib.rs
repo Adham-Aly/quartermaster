@@ -32,6 +32,7 @@ pub mod plans;
 pub mod processes;
 pub mod projects;
 pub mod reconcile;
+pub mod reports;
 pub mod retention;
 pub mod routing;
 pub mod scheduler;

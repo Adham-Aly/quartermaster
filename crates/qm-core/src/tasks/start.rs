@@ -1396,6 +1396,9 @@ pub(crate) async fn prepare(
     .map_err(|e| PrepareError::Failed(e.to_string()))?
     .map_err(|e| PrepareError::Failed(format!("The task's folders couldn't be made: {e}")))?;
     plan_folder(svc, task, &row, &paths).await?;
+    crate::reports::prepare(&paths, row.kind).map_err(|e| {
+        PrepareError::Failed(format!("The report folder couldn't be prepared: {e}"))
+    })?;
     svc.tell_outside(task, false);
 
     // 2. The project, then the workplace: a folder task works in its folder, which must still be

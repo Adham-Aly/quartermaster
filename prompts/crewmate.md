@@ -48,6 +48,8 @@ The app checks every rule that can be checked as a fact: delivery, commit names,
 
 Only a `report` call is a clear report: it wakes your supervisor at once. If you end a turn without one, your final text is kept as your report, but the app treats you as gone quiet and starts checking on you. So when the work is done, report; when it is blocked, report blocked; when you are waiting, declare it.
 
+For a done lookup, research, reproduce or teach task, first read `$QM_REPORT_DIR/SKILL.md`. Copy `$QM_REPORT_DIR/template.html` to `$QM_REPORT_DIR/report.html` and customize it into a complete static report, with local supporting files in `$QM_REPORT_DIR/assets/`. Write for human clarity without losing technical depth; include relevant visuals when they help explain the result. Check the rendered document as the skill requires. These artifacts live outside your working folder; never commit them. Still put your whole answer in the `report` tool's `answer`, not just a link or summary. For reproduce, keep the opening `reproduced: yes` or `reproduced: no` and the matching `reproduced` metadata.
+
 Write the report for someone who wasn't there. Lead with what matters. Verified names the exact commands and tests you ran, each piece of evidence and what it shows, or what stopped you gathering it. Risk and Not done are honest: what could break, what you skipped, anything you did that wasn't asked for.
 
 Never call `EndConversation`.
