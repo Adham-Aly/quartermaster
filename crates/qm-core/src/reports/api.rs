@@ -1,10 +1,17 @@
-//! Completed static reports belong in task details, not the Actions approval inbox.
+//! Completed static reports belong in task details, not the Actions approval inbox. A review's
+//! report under normal autonomy also has a card in the Actions panel while it waits on your
+//! go-ahead ([`review_card`]; [`crate::tasks::review`]): Open, and Go ahead.
 
 use crate::api::{ApiPart, Handled};
 use crate::tasks::TaskService;
+use crate::tasks::review::{GoAhead, awaits_go_ahead, go_ahead};
+use qm_store::reports::ReportRow;
 use qm_store::tasks;
 use qm_types::BoxFuture;
-use qm_types::api::{AgentRef, Command, CrewRow, Snapshot, TaskDetail};
+use qm_types::api::{
+    AgentRef, Card, CardAction, CardButton, CardKind, CardLine, Command, CrewRow, Snapshot, Styled,
+    TaskDetail, Tone,
+};
 use qm_types::data_dir::TaskPaths;
 use qm_types::ids::TaskId;
 use std::path::PathBuf;
@@ -25,7 +32,7 @@ impl ReportPart {
             .svc
             .deps()
             .db
-            .call(move |conn| Ok(tasks::load(conn, task)?.filter(|row| row.reported_at.is_some())))
+            .call(move |conn| Ok(tasks::load(conn, task)?.filter(has_report)))
             .await
             .map_err(|_| "The report's task couldn't be read.".to_owned())?;
         let Some(reported) = reported else {
@@ -54,11 +61,92 @@ impl ReportPart {
             }
             Err(problem) => problem,
         };
+        self.note(&problem).await;
+    }
+
+    /// The Go ahead on a review's card.
+    async fn go_ahead(&self, task: TaskId) {
+        if let Err(e) = go_ahead(&self.svc, GoAhead::Card, task).await {
+            self.note(&format!(
+                "{task}'s go-ahead wasn't recorded: {}",
+                e.render()
+            ))
+            .await;
+        }
+    }
+
+    async fn note(&self, text: &str) {
         let deps = self.svc.deps();
-        if let Err(e) = deps.chat.app_note(deps.seat_agent, None, &problem).await {
+        if let Err(e) = deps.chat.app_note(deps.seat_agent, None, text).await {
             tracing::error!(error = %e, "couldn't post a report note");
         }
     }
+}
+
+/// A finished report the user may open: reported, or a review waiting on the user's go-ahead.
+fn has_report(row: &tasks::TaskRow) -> bool {
+    row.reported_at.is_some() || awaits_go_ahead(row)
+}
+
+/// The card's heading for a review waiting on your go-ahead.
+pub const REVIEW_HEADING: &str = "Review ready";
+
+/// The card for a review waiting on your go-ahead: what it found, and its two buttons. `who` is
+/// its supervisor as you know it: "the Quartermaster" or "S-02".
+pub(crate) fn review_card(
+    task: TaskId,
+    title: &str,
+    project: &str,
+    report: Option<&ReportRow>,
+    who: &str,
+) -> Card {
+    let mut card = Card::new(CardKind::Review, REVIEW_HEADING);
+    card.title = Some(format!("{task} {title}"));
+    card.note = Some(format!("· {project}"));
+    let mut lines = Vec::new();
+    if let Some(report) = report {
+        let found = crate::verification::review::findings(report);
+        let mut parts = Vec::new();
+        if let Some(verdict) = report.review_verdict {
+            parts.push(format!("Verdict {verdict}"));
+        }
+        if let Some(risk) = report.review_risk {
+            parts.push(format!("risk {risk}"));
+        }
+        parts.push(if found.is_empty() {
+            "no findings".to_owned()
+        } else {
+            crate::verification::review::count_words(&found).replacen(
+                if found.len() == 1 { "thing" } else { "things" },
+                if found.len() == 1 {
+                    "finding"
+                } else {
+                    "findings"
+                },
+                1,
+            )
+        });
+        lines.push(CardLine::new(
+            2,
+            vec![Styled::new(parts.join(" · "), Tone::Text)],
+        ));
+    }
+    lines.push(CardLine::new(
+        2,
+        vec![Styled::new(
+            format!(
+                "Open the report. Go ahead lets {who} do with the findings what you asked for, or \
+                 nothing if you didn't say; or tell {who} what to do."
+            ),
+            Tone::Dim,
+        )],
+    ));
+    card.lines = lines;
+    card.buttons = vec![
+        CardButton::new("Open", 'o', CardAction::OpenReport { task }),
+        CardButton::new("Go ahead", 'g', CardAction::ApproveReview { task }),
+    ];
+    card
 }
 
 /// No caller-supplied path, and no symlink in the entry point or any parent, including the
@@ -89,6 +177,10 @@ impl ApiPart for ReportPart {
                 self.open(*task).await;
                 Handled::Changed
             })),
+            Command::ApproveReview { task } => Some(Box::pin(async move {
+                self.go_ahead(*task).await;
+                Handled::Changed
+            })),
             _ => None,
         }
     }
@@ -105,7 +197,7 @@ impl ApiPart for ReportPart {
                     .db
                     .call(move |conn| tasks::load(conn, task))
                     .await
-                    && row.reported_at.is_some()
+                    && has_report(&row)
                     && report_page(&self.svc.paths_of(&row)).is_ok()
                 {
                     reports.push(row);

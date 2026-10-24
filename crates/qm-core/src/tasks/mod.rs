@@ -30,6 +30,7 @@ pub mod relabel;
 #[cfg(test)]
 mod relabel_tests;
 pub mod report;
+pub mod review;
 pub mod runner;
 pub mod session;
 pub mod setup;

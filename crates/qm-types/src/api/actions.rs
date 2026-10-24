@@ -88,6 +88,8 @@ pub enum ActionKey {
     Held { id: HeldActionId },
     /// A plan task waiting on your reply or your approval.
     Plan { task: TaskId },
+    /// A review task's report waiting on your go-ahead.
+    Review { task: TaskId },
     /// An agent's question, by its message.
     Question { message: MessageId },
     /// A no-action notice, by its message.
@@ -111,6 +113,7 @@ pub enum ActionKind {
     Plan,
     Notice,
     Setup,
+    Review,
 }
 
 /// Where an item's "Go to" takes you.

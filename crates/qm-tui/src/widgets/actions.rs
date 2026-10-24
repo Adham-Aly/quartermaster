@@ -79,6 +79,7 @@ pub(crate) fn glyph(item: &ActionItem) -> (&'static str, Style) {
             ("☰", theme::accent())
         }
         ActionKind::Plan => ("☰", theme::warn()),
+        ActionKind::Review => ("✎", theme::accent()),
         ActionKind::Question => ("?", theme::warn()),
         ActionKind::Notice => ("!", theme::warn()),
         _ => match item.card.kind {

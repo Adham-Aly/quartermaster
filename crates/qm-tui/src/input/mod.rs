@@ -85,6 +85,8 @@ impl App {
             CardAction::OpenPlan { task } => self.command(Command::OpenPlan { task }),
             CardAction::CopyPlanPath { path } => self.copy(&path, now),
             CardAction::ApprovePlan { task } => self.command(Command::ApprovePlan { task }),
+            CardAction::OpenReport { task } => self.command(Command::OpenReport { task }),
+            CardAction::ApproveReview { task } => self.command(Command::ApproveReview { task }),
             CardAction::OpenSettings => {
                 self.close_action();
                 self.choose_entry(crate::popups::MenuEntry::Settings);

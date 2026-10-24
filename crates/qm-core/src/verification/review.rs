@@ -75,7 +75,7 @@ fn awaits_review(conn: &Connection, row: &TaskRow) -> Result<bool, StoreError> {
 }
 
 /// A report's findings.
-fn findings(report: &ReportRow) -> Vec<Finding> {
+pub(crate) fn findings(report: &ReportRow) -> Vec<Finding> {
     serde_json::from_value(report.review_findings.clone()).unwrap_or_default()
 }
 
@@ -102,7 +102,7 @@ pub fn settled_findings(conn: &Connection, builder: TaskId) -> Result<Vec<String
 }
 
 /// "3 things: 1 error, 2 warnings".
-fn count_words(findings: &[Finding]) -> String {
+pub(crate) fn count_words(findings: &[Finding]) -> String {
     let n = findings.len();
     let by = |s: Severity| findings.iter().filter(|f| f.severity == s).count();
     let mut parts = Vec::new();

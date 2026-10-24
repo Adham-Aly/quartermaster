@@ -464,6 +464,7 @@ pub fn chat() -> Snapshot {
         notice_item(),
         question_item(),
         plan_item(),
+        review_item(),
     ]);
     out
 }
@@ -626,6 +627,46 @@ fn plan_item() -> ActionItem {
         at(14, 24),
         card,
         ActionOpen::Plan { task },
+    )
+    .with_task(task)
+    .with_from(AgentRef::Crewmate { task })
+}
+
+fn review_item() -> ActionItem {
+    let task = task_id(45);
+    let mut card = Card::new(CardKind::Review, "Review ready");
+    card.title = Some(String::from("C-0045 review(auth): token refresh race"));
+    card.note = Some(String::from("· api-server"));
+    card.lines = vec![
+        CardLine::new(
+            2,
+            vec![s(
+                "Verdict findings · risk medium · 2 findings: 1 error, 1 warning",
+                Tone::Text,
+            )],
+        ),
+        CardLine::new(
+            2,
+            vec![s(
+                "Open the report. Go ahead lets the Quartermaster do with the findings what you \
+                 asked for, or nothing if you didn't say; or tell the Quartermaster what to do.",
+                Tone::Dim,
+            )],
+        ),
+    ];
+    card.buttons = vec![
+        CardButton::new("Open", 'o', CardAction::OpenReport { task }),
+        CardButton::new("Go ahead", 'g', CardAction::ApproveReview { task }),
+    ];
+    ActionItem::new(
+        ActionKey::Review { task },
+        ActionKind::Review,
+        "Review ready · review(auth): token refresh race",
+        at(14, 26),
+        card,
+        ActionOpen::Session {
+            agent: AgentRef::Crewmate { task },
+        },
     )
     .with_task(task)
     .with_from(AgentRef::Crewmate { task })

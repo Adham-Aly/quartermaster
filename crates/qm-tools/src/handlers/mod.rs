@@ -23,6 +23,7 @@ pub mod parent;
 pub mod schedules;
 
 pub mod plans;
+pub mod reviews;
 
 /// Every bound handler, e.g. `bind::<ReplyTool>()`.
 pub static HANDLERS: &[Binding] = &[
@@ -80,4 +81,5 @@ pub static HANDLERS: &[Binding] = &[
     bind::<crate::defs::ListCrewmateStartsTool>(),
     bind::<crate::defs::FindUserRequestsTool>(),
     bind::<crate::defs::SetTaskLabelTool>(),
+    bind::<crate::defs::ApproveReviewTool>(),
 ];

@@ -1,7 +1,8 @@
 # Static reports
 
-For a **done lookup, research, reproduce or teach** task, deliver a complete document in this
-folder before calling `report`. This is an app-authored skill, not project instructions.
+For a **done lookup, research, reproduce or teach** task, and a **done review under normal
+autonomy**, deliver a complete document in this folder before calling `report`. This is an
+app-authored skill, not project instructions.
 
 ## Files and workflow
 
@@ -29,6 +30,10 @@ ordinary links and useful labels; don't invent evidence or imply checks you didn
   steps, expected versus actual results, and evidence. Never use the user's real state.
 - **Teach:** build a coherent explanation with examples, diagrams and practical details suited
   to the reader; make the important concepts understandable without sacrificing correctness.
+- **Review:** lead with the verdict and the risk with its reason, then each finding with its
+  severity, file and line, what is wrong and why it matters, and the action it asks for. Say what
+  you reviewed (the commits or diff) and how. The user reads it before anyone acts on the findings,
+  so write it for them; don't decide what happens next.
 
 ## A document, not an app
 
@@ -56,5 +61,5 @@ say exactly what remains unchecked; never claim a visual check from source inspe
 The HTML artifact does not replace the `report` tool's answer. Put the **whole answer** in
 `answer`, not merely a summary or a path to `report.html`. For reproduce, open the answer with
 `reproduced: yes` or `reproduced: no` and set the tool's `reproduced` field to match. Keep any
-required research diagnosis metadata too. Blocked or needs-decision reports do not require a
+required research diagnosis metadata too, and a review's verdict, findings and risk in `review`. Blocked or needs-decision reports do not require a
 finished static document; explain what stops you through the normal reporting contract.

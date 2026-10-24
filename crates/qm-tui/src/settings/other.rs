@@ -61,7 +61,7 @@ pub(super) fn draw_projects(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
         x,
         y,
         &truncate(
-            "Projects appear when work starts in a folder. Ask the Quartermaster to change how one delivers. Only you set autonomy: normal asks you to approve plans and merges; auto doesn't.",
+            "Projects appear when work starts in a folder. Ask the Quartermaster to change how one delivers. Only you set autonomy: normal asks you to approve plans, review findings and merges; auto doesn't.",
             room,
         ),
         theme::dim(),
