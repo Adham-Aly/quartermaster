@@ -184,6 +184,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("↑ ↓ · home end", "move the selection"),
             ("pgup pgdn", "scroll a tab taller than the screen"),
             (
+                "esc · ← Back",
+                "dismiss a picker or field, or return from Connect; otherwise close Settings",
+            ),
+            (
                 "⏎ · space",
                 "the selected row's menu, or what its control does",
             ),

@@ -73,6 +73,13 @@ Map core `Tone`s with `theme::tone`.
   projects hint under its title; `Esc` or any click closes it. A new popup or menu entry: see
   the notes at the top of `popups.rs`. A badge: make `App::entry_badge` true for the entry; the
   menu button follows (Update's comes from the core, `UpdateView::badge`).
+- Settings' nested pickers, text fields and Connect view have a visible `← Back`, equivalent
+  to `Esc`: dismiss the picker/field without saving, or return from Connect to Accounts (not cancel
+  a running login). The Back row stays visible while content scrolls. Settings uses 48% of the
+  body's width and height (minimum 72×19, maximum width 149, clamped to the terminal). Overflow
+  shows a scrollbar with directional arrows; each arrow disappears at its end. Pickers show
+  `↑ more` / `↓ more` on their borders. Routing's Task kinds use two aligned grid columns when
+  whole entries fit, one otherwise; conditional build/fix labels are always written in full.
 - Settings ▸ Model levels shows placed **model + effort** labels, not an effort toggle.
   **Add model…** (`a` or `/`) opens a fixed searchable catalogue of all models × their
   supported efforts (one `(no effort)` entry with `None` when support is empty). Search
@@ -92,7 +99,7 @@ Map core `Tone`s with `theme::tone`.
   works. Globals: `Ctrl`+`C` twice quits (in a prompt field holding text it clears it first),
   `Ctrl`+`Z` suspends, `Ctrl`+`O` the menu (even while typing), `?` Help, `,` Settings,
   `Tab`/`⇧Tab` move focus. An open popup takes every other key. `Esc` does the first that
-  applies: close the menu (or the slash-command menu), the popup, the overlay, the selection,
+  applies: close the menu (or the slash-command menu), Settings' nested view, the popup, the overlay, the selection,
   guidance mode, interrupt a running Quartermaster turn, then back to the Bridge. Letters are
   commands in list panes; they don't jump to the input.
 - Slash commands: `/` at the start of your message to the Quartermaster (Bridge only) opens the

@@ -133,8 +133,8 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     }
 
     // Autocompact, then Task kinds, then Decisions below them.
-    autocompact(p, inner, col, inner.y + 10, settings, view.routing_row == 2);
-    let end = task_kinds(p, inner, col, inner.y + 15, settings, view.routing_row);
+    let end = autocompact(p, inner, col, inner.y + 10, settings, view.routing_row == 2);
+    let end = task_kinds(p, inner, end + 1, settings, view.routing_row);
 
     // Decisions, not in this version.
     let y = end + 1;
@@ -149,29 +149,28 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     draw_notice(p, area, y + 2, settings);
 }
 
-/// How the Task kinds rows name themselves; the two that build on finished thinking sit under
-/// their kind.
+/// Full, independent labels: the conditional build and fix rows are not continuations.
 const fn kind_name(row: KindRow) -> &'static str {
     match row {
-        KindRow::Lookup => "lookup",
-        KindRow::Build => "build",
-        KindRow::BuildOnFinishedPlan => " on a plan",
-        KindRow::Fix => "fix",
-        KindRow::FixOnConfirmedDiagnosis => " on a diag.",
-        KindRow::Plan => "plan",
-        KindRow::Research => "research",
-        KindRow::Teach => "teach",
-        KindRow::Review => "review",
-        KindRow::Reproduce => "reproduce",
-        KindRow::Unclear => "unclear",
+        KindRow::Lookup => "Lookup",
+        KindRow::Build => "Build",
+        KindRow::BuildOnFinishedPlan => "Build on a plan",
+        KindRow::Fix => "Fix",
+        KindRow::FixOnConfirmedDiagnosis => "Fix on a diagnosis",
+        KindRow::Plan => "Plan",
+        KindRow::Research => "Research",
+        KindRow::Teach => "Teach",
+        KindRow::Review => "Review",
+        KindRow::Reproduce => "Reproduce",
+        KindRow::Unclear => "Unclear",
     }
 }
 
-/// Where a Task kinds row's level button starts, in cells after `COLUMN`: past the longest name.
-const KIND_VALUE: u16 = 11;
-
-/// Where its note ("default", "changed") starts: past the widest level button (" Premium ▾ ").
-const KIND_NOTE: u16 = KIND_VALUE + 12;
+/// Past the longest name ("Fix on a diagnosis") and a gap. Each grid cell shares this column.
+const KIND_VALUE: u16 = 19;
+/// A name, the widest tier button, and a cell for the selection marker.
+const KIND_CELL_MIN: u16 = 31;
+const KIND_GAP: u16 = 2;
 
 /// Under the Task kinds rows: when a change applies and what still comes first.
 pub(super) const KINDS_COPY: &str =
@@ -191,13 +190,11 @@ fn kind_note(row: &KindTierRow) -> String {
     }
 }
 
-/// The Task kinds block at `y`: one row per kind, "Reset all to defaults" while a row differs
-/// from its default, then what a change applies to. Returns the row after it. The rows are dim
-/// while a pin is on (it skips tiers).
+/// Task kinds in a row-major grid, folding to one column only when two whole entries won't fit.
+/// Notes wrap within their own cell; the next band starts below its tallest cell.
 fn task_kinds(
     p: &mut Painter<'_, '_>,
     inner: Rect,
-    col: u16,
     y: u16,
     settings: &Settings,
     selected: usize,
@@ -209,33 +206,44 @@ fn task_kinds(
         (theme::strong(), theme::text())
     };
     p.text(inner.x + 1, y, "Task kinds", label);
-    let right = inner.right().saturating_sub(1);
-    let mut y = y;
-    for (i, row) in settings.kind_tiers.iter().enumerate() {
-        p.text(col, y, kind_name(row.row), name_style);
-        let value = format!("{} ▾", tier_label(row.tier));
-        p.button(col + KIND_VALUE, y, &value, SettingsHit::KindTier(row.row));
-        let room = usize::from(right.saturating_sub(col + KIND_NOTE));
-        p.text(
-            col + KIND_NOTE,
-            y,
-            &truncate(&kind_note(row), room),
-            theme::dim(),
-        );
-        if selected == KIND_ROWS_FROM + i {
-            p.select_row(inner, y);
+    let width = inner.width.saturating_sub(2);
+    let columns = if width >= KIND_CELL_MIN * 2 + KIND_GAP {
+        2
+    } else {
+        1
+    };
+    let cell_width = (width.saturating_sub((columns - 1) * KIND_GAP)) / columns;
+    let mut y = y + 1;
+    for (band, rows) in settings.kind_tiers.chunks(usize::from(columns)).enumerate() {
+        let mut height = 1;
+        for (column, row) in rows.iter().enumerate() {
+            let x = inner.x + 1 + crate::text::cells(column) * (cell_width + KIND_GAP);
+            let cell = Rect::new(x, y, cell_width, 1);
+            p.text(x + 1, y, kind_name(row.row), name_style);
+            let value = format!("{} ▾", tier_label(row.tier));
+            p.button(
+                x + 1 + KIND_VALUE,
+                y,
+                &value,
+                SettingsHit::KindTier(row.row),
+            );
+            let note = if row.tier == Tier::Premium {
+                format!("{} · {PREMIUM_FALLS_BACK}", kind_note(row))
+            } else {
+                kind_note(row)
+            };
+            let note_area = Rect::new(x + 1, y + 1, cell_width.saturating_sub(1), u16::MAX / 4);
+            let used = paragraph(p, note_area, &[(note, theme::dim())]);
+            height = height.max(1 + used);
+            if selected == KIND_ROWS_FROM + band * usize::from(columns) + column {
+                p.select_row(cell, y);
+            }
         }
-        y += 1;
-        if row.tier == Tier::Premium {
-            let room = usize::from(right.saturating_sub(col + KIND_VALUE + 1));
-            let text = truncate(PREMIUM_FALLS_BACK, room);
-            p.text(col + KIND_VALUE + 1, y, &text, theme::dim());
-            y += 1;
-        }
+        y += height;
     }
     if settings.kind_tiers.iter().any(KindTierRow::changed) {
         p.button(
-            col.saturating_sub(1),
+            inner.x + 1,
             y,
             "Reset all to defaults",
             SettingsHit::ResetKinds,
@@ -247,8 +255,7 @@ fn task_kinds(
     } else {
         KINDS_COPY
     };
-    let width = right.saturating_sub(col).max(1);
-    let area = Rect::new(col, y, width, u16::MAX / 4);
+    let area = Rect::new(inner.x + 1, y, width.max(1), u16::MAX / 4);
     y + paragraph(p, area, &[(copy.to_owned(), theme::dim())])
 }
 
@@ -268,16 +275,23 @@ fn autocompact(
     y: u16,
     settings: &Settings,
     selected: bool,
-) {
+) -> u16 {
     p.text(inner.x + 1, y, "Autocompact", theme::strong());
     autocompact_arrows(p, col, y, settings.autocompact_window);
-    for (i, line) in AUTOCOMPACT_COPY.iter().enumerate() {
-        let row = y + 1 + u16::try_from(i).unwrap_or(0);
-        p.text(col, row, line, theme::dim());
+    let mut bottom = y + 1;
+    for line in AUTOCOMPACT_COPY {
+        let area = Rect::new(
+            col,
+            bottom,
+            inner.right().saturating_sub(col + 1).max(1),
+            u16::MAX / 4,
+        );
+        bottom += paragraph(p, area, &[(line.to_owned(), theme::dim())]);
     }
     if selected {
         p.select_row(inner, y);
     }
+    bottom
 }
 
 /// `◂  200k  ▸` at `col` on row `y`. An arrow at the end of the range is dim and not a target.
@@ -595,8 +609,8 @@ mod tests {
 
     #[test]
     fn every_kind_row_draws_whole_at_the_smallest_width() {
-        // 58 cells: the popup's inside at 60 columns; tall, as the page scrolls.
-        for width in [58, 98] {
+        // Page widths, not terminal widths: one column below 66, two at and above it.
+        for width in [55, 65, 66, 67, 98, 144] {
             let (buffer, hits) = render(&app_with_review(Tier::Premium), width, 60, false);
             let screen = rows(&buffer).join("\n");
             for &row in KindRow::ALL {
@@ -604,8 +618,41 @@ mod tests {
                 assert!(screen.contains(name), "{name} at {width}:\n{screen}");
                 assert!(target(&hits, SettingsHit::KindTier(row)).is_some(), "{row}");
             }
-            assert!(screen.contains("Premium ▾  changed"), "{screen}");
-            assert!(screen.contains(PREMIUM_FALLS_BACK), "{screen}");
+            let review = target(&hits, SettingsHit::KindTier(KindRow::Review)).unwrap();
+            let screen_rows = rows(&buffer);
+            assert!(screen_rows[usize::from(review.y)].contains("Premium ▾"));
+            assert!(screen_rows[usize::from(review.y + 1)].contains("changed"));
+            // Notes stay inside their own grid cell and preserve the full fallback explanation.
+            let note_x = review.x - KIND_VALUE;
+            let note_width = if width >= 66 {
+                (width - 4) / 2 - 1
+            } else {
+                width - 3
+            };
+            let note: String = (review.y + 1..review.y + 3)
+                .map(|y| {
+                    (note_x..note_x + note_width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let words = note.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(words.contains(PREMIUM_FALLS_BACK), "{width}: {words}");
+            let lookup = target(&hits, SettingsHit::KindTier(KindRow::Lookup)).unwrap();
+            let build = target(&hits, SettingsHit::KindTier(KindRow::Build)).unwrap();
+            let planned =
+                target(&hits, SettingsHit::KindTier(KindRow::BuildOnFinishedPlan)).unwrap();
+            assert_eq!(lookup.x, planned.x);
+            if width >= 66 {
+                assert_eq!(lookup.y, build.y);
+                assert!(build.x > lookup.x);
+                let fix = target(&hits, SettingsHit::KindTier(KindRow::Fix)).unwrap();
+                assert_eq!(build.x, fix.x);
+            } else {
+                assert_eq!(lookup.x, build.x);
+                assert!(build.y > lookup.y);
+            }
             assert!(screen.contains("Task kinds"), "{screen}");
             assert!(screen.contains("Reset all to defaults"), "{screen}");
             assert!(screen.contains("Decisions"), "{screen}");
@@ -632,12 +679,11 @@ mod tests {
             .unwrap();
         review.empty = true;
         review.runs_on = Some(Tier::Medium);
-        let (buffer, _) = render(&app, 98, 60, false);
-        assert!(
-            rows(&buffer)
-                .join("\n")
-                .contains("Low ▾      (empty, runs on medium)")
-        );
+        let (buffer, hits) = render(&app, 98, 60, false);
+        let target = target(&hits, SettingsHit::KindTier(KindRow::Review)).unwrap();
+        let screen = rows(&buffer);
+        assert!(screen[usize::from(target.y)].contains("Low ▾"));
+        assert!(screen[usize::from(target.y + 1)].contains("(empty, runs on medium)"));
     }
 
     #[test]
@@ -646,11 +692,8 @@ mod tests {
         app.view.settings.model.pin.on = true;
         let (buffer, _) = render(&app, 98, 60, false);
         let screen = rows(&buffer);
-        let y = screen
-            .iter()
-            .position(|r| r.contains("Task kinds"))
-            .unwrap();
-        let x = screen[y].find("lookup").unwrap();
+        let y = screen.iter().position(|r| r.contains("Lookup")).unwrap();
+        let x = screen[y].find("Lookup").unwrap();
         let x = u16::try_from(screen[y][..x].chars().count()).unwrap();
         let y = u16::try_from(y).unwrap();
         assert_eq!(buffer[(x, y)].fg, theme::dim().fg.unwrap());
