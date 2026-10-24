@@ -1,8 +1,8 @@
 //! A public repository's newest release, read without a login.
 //!
 //! The app's own update check uses this: it must work on a Mac where `gh` is missing or logged
-//! out, so it asks GitHub's API anonymously (60 calls an hour per address, far more than a check
-//! every few hours needs) and never touches the token source.
+//! out, so it asks GitHub's API anonymously (60 calls an hour per address, far more than an hourly
+//! check needs) and never touches the token source.
 
 use crate::client::CALL_TIMEOUT;
 use crate::error::GithubError;
