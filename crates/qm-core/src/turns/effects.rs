@@ -21,7 +21,7 @@ use qm_types::ids::TaskId;
 /// | `message_task` | `Steered(args.task)` |
 /// | `stop_task`, `close_task` | `Stopped(args.task)` |
 /// | `settle_task` (merged, delivered, landed, closed) | `Settled(args.task)` |
-/// | `set_verification` / `link_tasks` | `TaskChanged(args.task)` / `TaskChanged(args.blocked)` |
+/// | `set_verification` / `link_tasks`, `unlink_tasks` | `TaskChanged(args.task)` / `TaskChanged(args.blocked)` |
 /// | `schedule` / `cancel_schedule` | `ScheduleAdded` / `ScheduleCancelled` |
 /// | anything else that counts, including tools added later | `SettingChanged` |
 pub fn effect_of(tool: &str, args: &serde_json::Value, result: &ToolResult) -> Option<Effect> {
@@ -59,7 +59,9 @@ pub fn effect_of(tool: &str, args: &serde_json::Value, result: &ToolResult) -> O
             }
         }
         t if t == defs::SetVerificationTool::NAME => task_at(args, "task").map(Effect::TaskChanged),
-        t if t == defs::LinkTasksTool::NAME => task_at(args, "blocked").map(Effect::TaskChanged),
+        t if t == defs::LinkTasksTool::NAME || t == defs::UnlinkTasksTool::NAME => {
+            task_at(args, "blocked").map(Effect::TaskChanged)
+        }
         t if t == defs::ScheduleTool::NAME => Some(Effect::ScheduleAdded),
         t if t == defs::CancelScheduleTool::NAME => Some(Effect::ScheduleCancelled),
         _ => None,
@@ -81,4 +83,22 @@ pub fn effect_line(effect: &Effect) -> Option<String> {
 fn task_at(v: &serde_json::Value, key: &str) -> Option<TaskId> {
     v.get(key)
         .and_then(|t| serde_json::from_value::<TaskId>(t.clone()).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unlink_acknowledges_the_blocked_task_only_on_success() {
+        let args = serde_json::json!({"blocker": "T-0042", "blocked": "T-0043"});
+        assert_eq!(
+            effect_of("unlink_tasks", &args, &ToolResult::ok("{}")),
+            Some(Effect::TaskChanged(TaskId::new(43).unwrap()))
+        );
+        assert_eq!(
+            effect_of("unlink_tasks", &args, &ToolResult::error("refused")),
+            None
+        );
+    }
 }

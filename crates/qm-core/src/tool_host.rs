@@ -30,7 +30,7 @@ use qm_tools::defs::{
 };
 use qm_tools::defs::{
     DeliveryCheck, FileFollowupArgs, FindTasksArgs, FoundTasks, Linked, ReportArgs, TaskDetail,
-    TaskStarted, TaskUpdated,
+    TaskStarted, TaskUpdated, Unlinked,
 };
 use qm_tools::handler::ParentJudgment;
 use qm_tools::handler::{Caller, NewMessage, ToolFailure, ToolHost};
@@ -499,6 +499,20 @@ impl ToolHost for CoreToolHost {
         Box::pin(async move {
             self.tasks("link_tasks")?
                 .link_tasks(caller, blocker, blocked)
+                .await
+        })
+    }
+
+    fn unlink_tasks<'a>(
+        &'a self,
+        caller: &'a Caller,
+        blocker: TaskId,
+        blocked: TaskId,
+    ) -> BoxFuture<'a, Result<Unlinked, ToolFailure>> {
+        Box::pin(async move {
+            offered_to(caller, "unlink_tasks")?;
+            self.tasks("unlink_tasks")?
+                .unlink_tasks(caller, blocker, blocked)
                 .await
         })
     }

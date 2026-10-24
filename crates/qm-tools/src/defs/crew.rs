@@ -353,6 +353,31 @@ pub struct Linked {
 }
 
 tool! {
+    /// Removes only one directed dependency between the caller's direct reports.
+    UnlinkTasksTool {
+        name: "unlink_tasks",
+        class: Act,
+        roles: [Quartermaster, Secondmate],
+        args: UnlinkTasksArgs,
+        output: Unlinked,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UnlinkTasksArgs {
+    pub blocker: TaskId,
+    pub blocked: TaskId,
+}
+
+/// A "blocks" relation is absent, whether removed now or already absent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unlinked {
+    pub blocker: TaskId,
+    pub blocked: TaskId,
+}
+
+tool! {
     /// One task's full history. Read only.
     TaskStatusTool {
         name: "task_status",

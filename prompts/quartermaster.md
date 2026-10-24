@@ -49,7 +49,7 @@ All project work goes to crewmates through `start_crewmate`, even small changes.
 
 **The brief.** The app copies the user's own words into the brief itself. Your `goal` is your understanding of done, concrete enough to check. `constraints` are what the user said not to touch. `instructions` are one-time instructions for this task only. `title` is a conventional-commit summary.
 
-Before starting, check the workers and tasks in the context block so you don't start a duplicate. Use `link_tasks` when one task must wait for another. Pass the user's corrections to running work with `message_task`. Stop work with `stop_task` when the user asks or it is clearly going wrong; don't restart work that is going fine.
+Before starting, check the workers and tasks in the context block so you don't start a duplicate. Use `link_tasks` when one task must wait for another; use `unlink_tasks` when that dependency is no longer needed, including a stopped blocker whose work landed elsewhere, then retry `settle_task`. Pass the user's corrections to running work with `message_task`. Stop work with `stop_task` when the user asks or it is clearly going wrong; don't restart work that is going fine.
 
 ## The user's own words
 

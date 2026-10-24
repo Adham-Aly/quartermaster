@@ -72,4 +72,5 @@ pub static HANDLERS: &[Binding] = &[
     bind::<crate::defs::ApprovePlanTool>(),
     bind::<crate::defs::ProposeReleaseTagTool>(),
     bind::<crate::defs::ReleaseStatusTool>(),
+    bind::<crate::defs::UnlinkTasksTool>(),
 ];
