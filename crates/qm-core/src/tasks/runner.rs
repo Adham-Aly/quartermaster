@@ -425,6 +425,7 @@ impl CrewRunner {
         while self.ending.is_none() {
             if let Some(next) = self.next_turn().await {
                 self.turn(next).await;
+                self.move_workplace().await;
                 continue;
             }
             self.idle().await;
@@ -802,6 +803,26 @@ impl CrewRunner {
         }
     }
 
+    /// Between turns: a move of the crewmate's workplace its supervisor asked for
+    /// (`moving::set_task_project`) is made now, unless a background job is running in the old
+    /// folder. The session closes first and reopens in the new folder, resuming the conversation;
+    /// its skills and instructions are gathered again for the new project.
+    async fn move_workplace(&mut self) {
+        if self.ending.is_some() || self.state.jobs_running.load(Ordering::Relaxed) > 0 {
+            return;
+        }
+        if !super::moving::is_waiting(&self.svc, self.task).await {
+            return;
+        }
+        self.end_session_with(SessionHandle::close).await;
+        let applied =
+            super::moving::apply(&self.svc, self.task, Some(self.state.cancelled())).await;
+        if applied == super::moving::Applied::Moved {
+            self.gathered = None;
+            self.brief = None;
+        }
+    }
+
     /// Opens the session if none is open: resuming the stored one unless a new one is needed.
     async fn ensure_session(&mut self) -> Result<(), String> {
         if self.session.is_some() {
@@ -946,6 +967,7 @@ impl CrewRunner {
     async fn turn(&mut self, next: NextTurn) {
         self.check_plan_mode().await;
         self.follow_task().await;
+        self.move_workplace().await;
         if let Err(reason) = self.ensure_session().await {
             self.ending = Some(Ending::Failed(format!(
                 "the crewmate's session couldn't be opened: {reason}"
@@ -2148,6 +2170,9 @@ mod forgetting_tests {
 
 #[cfg(test)]
 mod live_wake_tests;
+
+#[cfg(test)]
+mod move_tests;
 
 #[cfg(test)]
 mod job_wake_tests {

@@ -729,6 +729,9 @@ string_enum! {
         /// The crewmate's supervisor moved it to another task (`set_task_label`); its folders
         /// moved with it.
         TaskChanged = "task_changed",
+        /// The crewmate's supervisor moved its workplace (`set_task_project`): to another
+        /// project, folder or worktree, or a move that waits or failed.
+        WorkplaceChanged = "workplace_changed",
     }
 }
 

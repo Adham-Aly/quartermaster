@@ -182,7 +182,7 @@ fn authority_words(authority: Authority) -> (&'static str, Option<MessageId>) {
 }
 
 /// Who started the caller's turn; a caller without a turn is treated as an app-event turn.
-fn caller_authority(caller: &Caller) -> Authority {
+pub(crate) fn caller_authority(caller: &Caller) -> Authority {
     Authority::Turn(caller.turn.map_or(StartedBy::AppEvent, |t| t.started_by))
 }
 
@@ -573,7 +573,7 @@ fn request_words(conn: &Connection, request: i64) -> Result<Option<String>, Stor
         .filter(|w| !w.trim().is_empty()))
 }
 
-fn standing_branch(
+pub(crate) fn standing_branch(
     conn: &Connection,
     secondmate: SecondmateId,
 ) -> Result<Option<String>, StoreError> {
@@ -619,7 +619,7 @@ pub(crate) async fn settle(
 /// then `-2` up to `-99`, less those a local or `origin/` branch already has. The store drops the
 /// ones other tasks recorded. `None` for a folder task, which has no branch. If the checkout can't
 /// be read, every candidate stays: preparing checks again before it makes the branch.
-async fn free_branch_names(
+pub(crate) async fn free_branch_names(
     svc: &TaskService,
     project: &ProjectRow,
     title: &str,
@@ -652,7 +652,7 @@ async fn free_branch_names(
 }
 
 /// Every name from the title's branch to its `-99` is in use.
-fn no_free_branch(title: &str) -> Refusal {
+pub(crate) fn no_free_branch(title: &str) -> Refusal {
     let first = qm_policy::names::branch_for_title(title);
     Refusal::new(format!(
         "Every branch name from {first} to {first}-99 is taken; give the task a different title."
@@ -1758,26 +1758,13 @@ async fn make_worktree(
     row: &TaskRow,
     paths: &TaskPaths,
 ) -> Result<(), PrepareError> {
-    let (Some(base_ref), Some(base_commit)) = (row.base_ref.clone(), row.base_commit.clone())
-    else {
+    let Some(settled) = recorded_base(
+        project,
+        row.base_branch.as_deref(),
+        row.base_ref.as_deref(),
+        row.base_commit.as_ref(),
+    ) else {
         return Err(PrepareError::Failed(format!("{task} has no base recorded")));
-    };
-    let settled = SettledBase {
-        source: if row.base_branch.is_some() {
-            BaseSource::Typed
-        } else {
-            BaseSource::RemoteDefault
-        },
-        branch: row
-            .base_branch
-            .clone()
-            .unwrap_or_else(|| project.default_branch.clone()),
-        remote: project
-            .github_remote
-            .as_ref()
-            .map(|_| qm_git::ORIGIN.to_owned()),
-        base_ref,
-        commit: base_commit,
     };
     let branch = settle_branch_name(svc, task, project, row, paths, &settled.commit).await?;
     let git = svc.deps().git.clone();
@@ -1821,6 +1808,33 @@ async fn make_worktree(
     Ok(())
 }
 
+/// The base a task recorded, settled again from its parts: the typed branch (or the project's
+/// default), the ref and the commit. `None` when no ref or commit was recorded.
+pub(crate) fn recorded_base(
+    project: &ProjectRow,
+    base_branch: Option<&str>,
+    base_ref: Option<&str>,
+    base_commit: Option<&CommitSha>,
+) -> Option<SettledBase> {
+    let (Some(base_ref), Some(commit)) = (base_ref, base_commit) else {
+        return None;
+    };
+    Some(SettledBase {
+        source: if base_branch.is_some() {
+            BaseSource::Typed
+        } else {
+            BaseSource::RemoteDefault
+        },
+        branch: base_branch.map_or_else(|| project.default_branch.clone(), str::to_owned),
+        remote: project
+            .github_remote
+            .as_ref()
+            .map(|_| qm_git::ORIGIN.to_owned()),
+        base_ref: base_ref.to_owned(),
+        commit: commit.clone(),
+    })
+}
+
 /// Whether a new task of `kind` may start working in place in `folder` now, given every task open
 /// in place. The outer `Result` is the store's; the inner one is the refusal.
 pub(crate) fn check_writer_slot(
@@ -1836,6 +1850,23 @@ pub(crate) fn check_writer_slot(
     let open: Vec<(TaskId, &Path, TaskKind)> =
         open.iter().map(|(t, f, k)| (*t, f.as_path(), *k)).collect();
     Ok(check_folder_writer(in_place, folder, kind, &open))
+}
+
+/// [`check_writer_slot`] for `task` moving to work in place in `folder`: every other task open in
+/// place counts, but not `task` itself.
+pub(crate) fn check_writer_slot_excluding(
+    conn: &Connection,
+    task: TaskId,
+    folder: &Path,
+    kind: TaskKind,
+) -> Result<Result<(), Refusal>, StoreError> {
+    let open = task_store::open_in_place(conn)?;
+    let open: Vec<(TaskId, &Path, TaskKind)> = open
+        .iter()
+        .filter(|(t, _, _)| *t != task)
+        .map(|(t, f, k)| (*t, f.as_path(), *k))
+        .collect();
+    Ok(check_folder_writer(true, folder, kind, &open))
 }
 
 /// A folder task's folder must still be there. Nothing is created or changed in it: it's yours.
@@ -1927,7 +1958,7 @@ async fn settle_branch_name(
     )))
 }
 
-fn worktree_failure(task: TaskId, e: &GitError) -> String {
+pub(crate) fn worktree_failure(task: TaskId, e: &GitError) -> String {
     match e {
         GitError::BranchExists { branch, .. } => {
             format!("the branch {branch} already has commits of its own; nothing was touched")

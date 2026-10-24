@@ -510,13 +510,11 @@ impl ToolHost for CoreToolHost {
     fn set_task_project<'a>(
         &'a self,
         caller: &'a Caller,
-        task: TaskId,
-        project: Option<String>,
-        folder: Option<String>,
-    ) -> BoxFuture<'a, Result<TaskUpdated, ToolFailure>> {
+        args: qm_tools::defs::SetTaskProjectArgs,
+    ) -> BoxFuture<'a, Result<qm_tools::defs::CrewmateMoved, ToolFailure>> {
         Box::pin(async move {
             self.tasks("set_task_project")?
-                .set_task_project(caller, task, project, folder)
+                .set_task_project(caller, args)
                 .await
         })
     }
