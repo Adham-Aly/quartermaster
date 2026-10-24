@@ -164,7 +164,8 @@ const fn answers(action: &CardAction) -> bool {
         | CardAction::AskAgain
         | CardAction::LeaveIt
         | CardAction::Reply { .. }
-        | CardAction::ApprovePlan { .. } => true,
+        | CardAction::ApprovePlan { .. }
+        | CardAction::ApproveReview { .. } => true,
         _ => false,
     }
 }
@@ -1184,6 +1185,24 @@ mod popup_tests {
         screen(&mut app, 150, 45);
         key(&mut app, KeyCode::Char('p'));
         assert_eq!(app.take_commands(), [Command::ApprovePlan { task }]);
+    }
+
+    #[test]
+    fn a_review_opens_its_report_and_goes_ahead() {
+        let mut app = chat();
+        let i = open(&mut app, |item| item.kind == ActionKind::Review);
+        let ActionKey::Review { task } = app.snapshot.actions[i].key else {
+            panic!("a review");
+        };
+        let shown = labels(&mut app);
+        assert!(shown.contains(&"Open".to_owned()), "{shown:?}");
+        assert!(shown.contains(&"Go ahead".to_owned()), "{shown:?}");
+        key(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.take_commands(), [Command::OpenReport { task }]);
+        let mut app = chat();
+        open(&mut app, |item| item.kind == ActionKind::Review);
+        key(&mut app, KeyCode::Char('g'));
+        assert_eq!(app.take_commands(), [Command::ApproveReview { task }]);
     }
 
     #[test]

@@ -338,3 +338,6 @@ async fn unfinished_outcomes_and_other_kinds_do_not_require_html() {
     assert!(!result.is_error, "{result:?}");
     assert!(!delivery.page().exists());
 }
+
+#[path = "review_delivery_tests.rs"]
+mod review_delivery;

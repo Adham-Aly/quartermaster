@@ -360,8 +360,9 @@ string_enum! {
 
 string_enum! {
     /// A project's autonomy, `normal` by default; only you change it. Normal: you approve plans
-    /// in their page, and pull requests, pushes and merges on cards. Auto: the crew decides and
-    /// goes ahead, and asks you only when it can't go on.
+    /// in their page, a review's findings after reading its report, and pull requests, pushes and
+    /// merges on cards. Auto: the crew decides and goes ahead, and asks you only when it can't go
+    /// on.
     pub enum Autonomy ("autonomy") {
         Normal = "normal",
         Auto = "auto",

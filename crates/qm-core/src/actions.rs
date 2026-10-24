@@ -19,7 +19,7 @@ use qm_types::api::{
 };
 use qm_types::clock::Clock;
 use qm_types::data_dir::DataDir;
-use qm_types::domain::{PlanMode, Role, TaskKind};
+use qm_types::domain::{PlanMode, Role, TaskKind, TaskStatus};
 use qm_types::ids::{AgentId, TaskId};
 use rusqlite::Connection;
 use std::sync::Arc;
@@ -103,6 +103,7 @@ impl ActionsPart {
         }
 
         items.extend(self.plans().await);
+        items.extend(self.reviews().await);
         items.extend(self.questions_and_notices().await);
 
         order(config, items)
@@ -158,6 +159,65 @@ impl ActionsPart {
             .with_task(task)
             .with_from(AgentRef::Crewmate { task });
             out.push(item);
+        }
+        out
+    }
+
+    /// Reviews whose report waits on your go-ahead (normal autonomy).
+    async fn reviews(&self) -> Vec<ActionItem> {
+        let read = self
+            .db
+            .call(|conn| {
+                let mut out = Vec::new();
+                for row in task_store::with_status(conn, TaskStatus::Waiting)? {
+                    if !crate::tasks::review::awaits_go_ahead(&row) {
+                        continue;
+                    }
+                    let project = crate::tasks::load_project(conn, row.project)?
+                        .map(|p| p.name)
+                        .unwrap_or_default();
+                    let report = qm_store::reports::latest_clear(conn, row.id)?;
+                    out.push((row, project, report));
+                }
+                Ok(out)
+            })
+            .await;
+        let rows = match read {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!(error = %e, "couldn't read the reviews waiting on you");
+                return Vec::new();
+            }
+        };
+        let mut out = Vec::new();
+        for (row, project, report) in rows {
+            let task = row.id;
+            let who = match self.tasks.supervisor_label(row.supervisor).await.as_str() {
+                "quartermaster" => "the Quartermaster".to_owned(),
+                other => other.to_owned(),
+            };
+            let card =
+                crate::reports::api::review_card(task, &row.title, &project, report.as_ref(), &who);
+            let title = format!("{} · {}", card.heading, row.title);
+            let at = report
+                .as_ref()
+                .map(|r| r.at)
+                .or(row.started_at)
+                .unwrap_or(row.created_at);
+            out.push(
+                ActionItem::new(
+                    ActionKey::Review { task },
+                    ActionKind::Review,
+                    title,
+                    at,
+                    card,
+                    ActionOpen::Session {
+                        agent: AgentRef::Crewmate { task },
+                    },
+                )
+                .with_task(task)
+                .with_from(AgentRef::Crewmate { task }),
+            );
         }
         out
     }

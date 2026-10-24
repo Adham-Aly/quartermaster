@@ -88,6 +88,8 @@ pub static TOOLS: &[ToolDef] = &[
     ToolDef::of::<defs::FindUserRequestsTool>(),
     // Supervisors: moving a crewmate to another task.
     ToolDef::of::<defs::SetTaskLabelTool>(),
+    // Supervisors: the user's go-ahead on a review's findings (normal autonomy).
+    ToolDef::of::<defs::ApproveReviewTool>(),
 ];
 
 /// The tools one role is offered on one engine, in registry order. `plan` is the plan mode a plan

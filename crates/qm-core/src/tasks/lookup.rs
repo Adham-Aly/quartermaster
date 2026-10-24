@@ -32,6 +32,12 @@ pub fn state_line(row: &TaskRow) -> String {
                     .and_then(|t| t.as_str())
                     .unwrap_or("something outside")
             ),
+            Some(w) if super::review::is_review_wait(w) => {
+                "waiting for the user's go-ahead on its review report".to_owned()
+            }
+            Some(w) if w.get("plan").is_some() => {
+                "waiting on the user's reply to its plan".to_owned()
+            }
             _ => "waiting for its supervisor's decision".to_owned(),
         },
         TaskStatus::Closed => match row.outcome {

@@ -6,7 +6,8 @@
 //! level and delivery (pure); then the [`ReportGate`] (checks green in direct-PR mode, the review's
 //! state, the repair limit). Then one transaction: the `reports` row, the status (`reported`, or
 //! `waiting` for a decision), and the supervisor's wake. An answer is kept in its report row,
-//! nowhere else.
+//! nowhere else. Under normal autonomy a plan's round and a review's done report wait on the user
+//! instead of waking the supervisor ([`super::plan`], [`super::review`]).
 
 use super::lifecycle::{TaskEvent, next_for};
 use super::{TaskService, cut_chars, failed, new_wake, own_commits_failure, refuse};
@@ -23,7 +24,8 @@ use qm_tools::defs::{Ack, ReportArgs};
 use qm_tools::handler::{Caller, ToolFailure};
 use qm_types::BoxFuture;
 use qm_types::domain::{
-    DeliveryMode, ReportOutcome, ReportSource, TaskKind, TaskStatus, VerificationLevel, WakeKind,
+    Autonomy, DeliveryMode, ReportOutcome, ReportSource, TaskKind, TaskStatus, VerificationLevel,
+    WakeKind,
 };
 use qm_types::error::Refusal;
 use qm_types::ids::{CommitSha, ModelId, ReportId, TaskId};
@@ -331,8 +333,16 @@ pub(crate) async fn record(
     let to_user = plan
         .as_ref()
         .is_some_and(|p| p.to_user && p.state.stage != crate::plans::Stage::Approved);
+    // A review's done report under normal autonomy goes to the user first, with its static
+    // report; its supervisor hears once the user gives the go-ahead (`super::review`).
+    let autonomy = if row.kind == TaskKind::Review && args.outcome == ReportOutcome::Done {
+        Some(svc.live_autonomy(&row).await?)
+    } else {
+        None
+    };
+    let review_to_user = autonomy == Some(Autonomy::Normal);
     let event = match args.outcome {
-        _ if to_user => TaskEvent::NeedsDecision,
+        _ if to_user || review_to_user => TaskEvent::NeedsDecision,
         ReportOutcome::Done | ReportOutcome::Blocked => TaskEvent::Reported,
         ReportOutcome::NeedsDecision => TaskEvent::NeedsDecision,
     };
@@ -419,7 +429,9 @@ pub(crate) async fn record(
         delivered,
         &args,
     )?;
-    if args.outcome == ReportOutcome::Done && crate::reports::required(row.kind) {
+    if args.outcome == ReportOutcome::Done
+        && crate::reports::required(row.kind, autonomy.unwrap_or(Autonomy::Normal))
+    {
         crate::reports::check(&svc.paths_of(&row)).map_err(|e| {
             refuse(format!(
                 "Write $QM_REPORT_DIR/report.html using template.html and SKILL.md before reporting done: {e}"
@@ -467,6 +479,9 @@ pub(crate) async fn record(
     let outcome = args.outcome;
     let ack = if to_user {
         "Reported. The user has your plan's page; end your turn and wait for their reply."
+    } else if review_to_user {
+        "Reported. The user has your review's report; end your turn. Your supervisor acts on the \
+         findings only after the user's go-ahead."
     } else if outcome == ReportOutcome::NeedsDecision {
         "Reported. Your supervisor has it; wait for its decision."
     } else {
@@ -539,7 +554,7 @@ pub(crate) async fn record(
                 serde_json::json!({ "report": report, "round": round }),
                 at,
             )?;
-        } else if to == TaskStatus::Waiting {
+        } else if to == TaskStatus::Waiting && !review_to_user {
             task_store::set_waiting_on(
                 tx,
                 task,
@@ -565,6 +580,30 @@ pub(crate) async fn record(
         if to_user {
             // The round is the user's: the app posts its card, and the supervisor isn't woken.
             return Ok(());
+        }
+        if review_to_user {
+            // The findings are the user's first: the Actions panel lists the review's card, and
+            // the supervisor gets this wake's text only on the go-ahead.
+            task_store::set_waiting_on(tx, task, Some(&super::review::waiting_on(report, &text)))?;
+            task_store::event(
+                tx,
+                super::review::TO_USER_EVENT,
+                task,
+                Some(agent),
+                &format!("{task}'s review report went to the user"),
+                serde_json::json!({ "report": report }),
+                at,
+            )?;
+            return Ok(());
+        }
+        if autonomy == Some(Autonomy::Auto) {
+            // Under auto the findings don't wait for the user; the supervisor still acts only as
+            // the user asked.
+            text.push(' ');
+            text.push_str(&super::review::follow_up(
+                task,
+                super::review::GoAhead::Auto,
+            ));
         }
         let (kind, key, short) = if outcome == ReportOutcome::NeedsDecision {
             (
