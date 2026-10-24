@@ -28,19 +28,25 @@ fn scrolled(current: usize, delta: isize, max: usize) -> usize {
 }
 
 impl App {
-    /// Help's keys: scrolling.
+    /// The help popups' keys: scrolling their independent viewports.
     pub(crate) fn on_help_key(&mut self, code: KeyCode) {
-        let max = self.term.drawn.scroll_max_of(Pane::Help);
+        let kinds = self.popup() == Some(crate::popups::Popup::TaskKinds);
+        let pane = if kinds { Pane::TaskKinds } else { Pane::Help };
+        let max = self.term.drawn.scroll_max_of(pane);
         let page = self
             .term
             .drawn
             .scroll_areas
             .iter()
-            .find(|(_, p)| *p == Pane::Help)
+            .find(|(_, p)| *p == pane)
             .map_or(1, |(area, _)| {
                 usize::from(area.height.saturating_sub(3)).max(1)
             });
-        let current = self.view.help_scroll;
+        let current = if kinds {
+            self.view.kind_help_scroll
+        } else {
+            self.view.help_scroll
+        };
         let to = match code {
             KeyCode::Up | KeyCode::Char('k') => current.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => (current + 1).min(max),
@@ -50,7 +56,11 @@ impl App {
             KeyCode::End | KeyCode::Char('G') => max,
             _ => return,
         };
-        self.change(|app| &mut app.view.help_scroll, to);
+        if kinds {
+            self.change(|app| &mut app.view.kind_help_scroll, to);
+        } else {
+            self.change(|app| &mut app.view.help_scroll, to);
+        }
     }
 
     /// Applies a key press.
@@ -162,7 +172,7 @@ impl App {
                 }
             }
             // Popups' panes: their keys are theirs.
-            Pane::Settings | Pane::Help | Pane::ActionOverlay | Pane::Input => {}
+            Pane::Settings | Pane::Help | Pane::TaskKinds | Pane::ActionOverlay | Pane::Input => {}
         }
     }
 

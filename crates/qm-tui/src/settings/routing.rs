@@ -160,7 +160,7 @@ fn pin(p: &mut Painter<'_, '_>, inner: Rect, settings: &Settings, selected: bool
 }
 
 /// Full, independent labels: the conditional build and fix rows are not continuations.
-const fn kind_name(row: KindRow) -> &'static str {
+pub(super) const fn kind_name(row: KindRow) -> &'static str {
     match row {
         KindRow::Lookup => "Lookup",
         KindRow::Build => "Build",
@@ -225,6 +225,7 @@ fn task_kinds(
         (theme::strong(), theme::text())
     };
     p.text(inner.x + 1, y, "Task kinds", label);
+    p.button(inner.x + 12, y, "?", SettingsHit::KindHelp);
     let width = inner.width.saturating_sub(2);
     let columns = if width >= KIND_CELL_MIN * 2 + KIND_GAP {
         2

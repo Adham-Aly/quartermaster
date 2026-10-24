@@ -16,6 +16,7 @@
 mod accounts;
 mod connect;
 mod input;
+pub(crate) mod kind_help;
 mod levels;
 pub(crate) mod model;
 mod other;
@@ -148,6 +149,8 @@ pub(crate) enum SettingsHit {
     AutocompactUp,
     /// A Task kinds row's level, and "Reset all to defaults".
     KindTier(KindRow),
+    /// Explains the task kinds and the two conditional routing rows.
+    KindHelp,
     ResetKinds,
     /// Projects: one of a project's two autonomy buttons (normal, auto).
     ProjectAutonomy(usize, qm_types::domain::Autonomy),
@@ -533,7 +536,7 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
             "a add · / search · m move · x remove",
         ),
         Tab::Routing => (
-            "click to change",
+            "? task kinds",
             "space pin · c model · f fallback · q quartermaster · e effort · −/+ window · esc",
         ),
         Tab::System => ("click to open", "s setup check · esc close"),

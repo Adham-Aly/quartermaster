@@ -25,6 +25,8 @@ pub(crate) enum Pane {
     Settings,
     /// The Help popup: it scrolls.
     Help,
+    /// The task-kind explanations popup: it scrolls independently of Help.
+    TaskKinds,
     /// The Actions inbox, below the crew.
     Actions,
     /// The Actions overlay's body: it scrolls.

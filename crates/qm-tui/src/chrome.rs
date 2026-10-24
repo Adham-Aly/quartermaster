@@ -186,7 +186,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits
     // The popup's or the screen's keys on the right: one bottom row, never a second hint row.
     let hints: String = match (app.popup(), app.screen) {
         (Some(Popup::Settings), _) => crate::settings::status_hints(app).1.to_owned(),
-        (Some(Popup::Help), _) => HELP_HINTS.to_owned(),
+        (Some(Popup::Help | Popup::TaskKinds), _) => HELP_HINTS.to_owned(),
         (Some(Popup::Update), _) => crate::update::hints(app),
         (Some(Popup::ProjectsHint), _) => PROJECTS_HINT_HINTS.to_owned(),
         (Some(Popup::Action), _) => ACTION_HINTS.to_owned(),
