@@ -1,5 +1,5 @@
 //! The task tools: `start_crewmate`, `message_task`, `stop_task`, `close_task`, `link_tasks`,
-//! `task_status` and `find_tasks`.
+//! `unlink_tasks`, `task_status` and `find_tasks`.
 //!
 //! Each handler checks the shape of its arguments and every override it carries, then calls one
 //! host method; the host (`qm_core::tasks::TaskService`) checks the facts: the project, direct
@@ -10,7 +10,8 @@ use crate::defs::{
     CloseTaskArgs, CloseTaskTool, FindTasksArgs, FindTasksTool, FoundTasks, LinkTasksArgs,
     LinkTasksTool, Linked, MessageTaskArgs, MessageTaskTool, SetTaskProjectArgs,
     SetTaskProjectTool, StartCrewmateArgs, StartCrewmateTool, StopTaskArgs, StopTaskTool,
-    TaskDetail, TaskStarted, TaskStatusArgs, TaskStatusTool, TaskUpdated,
+    TaskDetail, TaskStarted, TaskStatusArgs, TaskStatusTool, TaskUpdated, UnlinkTasksArgs,
+    UnlinkTasksTool, Unlinked,
 };
 use crate::handler::{Handle, StartRequest, ToolCx, ToolFailure};
 use qm_policy::names::check_task_title;
@@ -232,6 +233,25 @@ impl Handle for LinkTasksTool {
             }
             cx.host
                 .link_tasks(cx.caller, args.blocker, args.blocked)
+                .await
+        })
+    }
+}
+
+impl Handle for UnlinkTasksTool {
+    fn handle<'a>(
+        cx: &'a ToolCx<'a>,
+        args: UnlinkTasksArgs,
+    ) -> BoxFuture<'a, Result<Unlinked, ToolFailure>> {
+        Box::pin(async move {
+            if args.blocker == args.blocked {
+                return Err(Refusal::new(
+                    "unlink_tasks needs two different tasks; name the blocker and the task it blocks",
+                )
+                .into());
+            }
+            cx.host
+                .unlink_tasks(cx.caller, args.blocker, args.blocked)
                 .await
         })
     }

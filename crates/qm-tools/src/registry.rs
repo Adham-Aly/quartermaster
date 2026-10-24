@@ -79,6 +79,8 @@ pub static TOOLS: &[ToolDef] = &[
     ToolDef::of::<defs::ProposeReleaseTagTool>(),
     // Supervisors: what GitHub shows after a release tag is published.
     ToolDef::of::<defs::ReleaseStatusTool>(),
+    // Supervisors: removing obsolete task dependencies.
+    ToolDef::of::<defs::UnlinkTasksTool>(),
 ];
 
 /// The tools one role is offered on one engine, in registry order. `plan` is the plan mode a plan

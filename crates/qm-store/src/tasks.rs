@@ -773,6 +773,18 @@ pub fn insert_link(
     )? == 1)
 }
 
+/// Removes only `blocker` → `blocked`; `false` if that link was already absent.
+pub fn remove_link(
+    conn: &Connection,
+    blocker: TaskId,
+    blocked: TaskId,
+) -> Result<bool, StoreError> {
+    Ok(conn.execute(
+        "DELETE FROM task_links WHERE blocker = ?1 AND blocked = ?2",
+        params![blocker, blocked],
+    )? == 1)
+}
+
 /// The task's own events (`task.*`), oldest first: its history.
 pub fn history(conn: &Connection, task: TaskId) -> Result<Vec<EventRow>, StoreError> {
     let mut stmt = conn.prepare(

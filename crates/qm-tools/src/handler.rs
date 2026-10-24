@@ -152,6 +152,17 @@ pub trait ToolHost: Send + Sync {
         Box::pin(async { Err(ToolFailure::not_available("link_tasks")) })
     }
 
+    /// Removes only the directed `blocker` -> `blocked` dependency between direct reports.
+    fn unlink_tasks<'a>(
+        &'a self,
+        caller: &'a Caller,
+        blocker: TaskId,
+        blocked: TaskId,
+    ) -> BoxFuture<'a, Result<crate::defs::Unlinked, ToolFailure>> {
+        let _ = (caller, blocker, blocked);
+        Box::pin(async { Err(ToolFailure::not_available("unlink_tasks")) })
+    }
+
     /// One task's full history (`task_status`).
     fn task_detail<'a>(
         &'a self,

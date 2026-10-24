@@ -1,4 +1,4 @@
-//! Waiting, steering and linking.
+//! Waiting, steering and dependency links.
 //!
 //! - `ask_decision` and `declare_wait` put the caller's task in a declared wait (a sign of life
 //!   that pauses both watchdogs).
@@ -7,6 +7,8 @@
 //! - `link_tasks` records "blocks"; a running blocked task is told, and every waiter is woken when
 //!   the task it waits on finishes (`release_waiters`, in the same transaction as that status
 //!   change).
+//! - `unlink_tasks` removes one dependency, ends only its matching declared wait and tells the
+//!   blocked crewmate; other dependencies and task/decision waits remain intact.
 //! - `file_followup` proposes a task to the supervisor; nothing starts.
 //! - `delivery_check` answers from the same probe the start gate uses.
 
@@ -23,7 +25,7 @@ use qm_store::StoreError;
 use qm_store::agents;
 use qm_store::messages::{self, NewMessage};
 use qm_store::tasks::{self as task_store, TaskRow};
-use qm_tools::defs::{Ack, DeliveryCheck, FileFollowupArgs, Linked, TaskUpdated};
+use qm_tools::defs::{Ack, DeliveryCheck, FileFollowupArgs, Linked, TaskUpdated, Unlinked};
 use qm_tools::handler::{Caller, DeclaredWait, ToolFailure};
 use qm_types::domain::{DeliveryMode, MessageKind, MessageSource, TaskStatus, WakeKind};
 use qm_types::ids::{AgentId, MessageId, TaskId};
@@ -38,6 +40,8 @@ pub const WAITING_EVENT: &str = "task.waiting";
 pub const STEERED_EVENT: &str = "task.steered";
 /// `events.kind` of a link.
 pub const LINKED_EVENT: &str = "task.linked";
+/// `events.kind` of a link removal.
+pub const UNLINKED_EVENT: &str = "task.unlinked";
 /// `events.kind` of a follow-up proposal.
 pub const FOLLOWUP_EVENT: &str = "task.followup_filed";
 /// `events.kind` of a delivery check.
@@ -542,7 +546,7 @@ pub(crate) async fn link_tasks(
             if !task_store::insert_link(tx, blocker, blocked, at)? {
                 return Ok(Ok(()));
             }
-            task_store::event(
+            let event = task_store::event(
                 tx,
                 LINKED_EVENT,
                 blocked,
@@ -574,7 +578,7 @@ pub(crate) async fn link_tasks(
                     crewmate.id,
                     WakeKind::BlockedBy,
                     blocked,
-                    format!("blocked_by:{blocked}:{blocker}"),
+                    format!("blocked_by:{blocked}:{blocker}:{event}"),
                     &text,
                     &format!("{blocked} waits on {blocker}"),
                     serde_json::json!({ "other": blocker.to_string() }),
@@ -589,4 +593,73 @@ pub(crate) async fn link_tasks(
     outcome.map_err(refuse)?;
     svc.supervisor_acted(blocked);
     Ok(Linked { blocker, blocked })
+}
+
+/// Removes a dependency without treating the blocker as delivered or releasing its other waiters.
+pub(crate) async fn unlink_tasks(
+    svc: &TaskService,
+    caller: &Caller,
+    blocker: TaskId,
+    blocked: TaskId,
+) -> Result<Unlinked, ToolFailure> {
+    if blocker == blocked {
+        return Err(refuse(format!("{blocker} can't block itself")));
+    }
+    // Unlike linking, removal must work even after either endpoint has been closed.
+    let blocker_row = load_task(svc, blocker).await?;
+    let blocked_row = load_task(svc, blocked).await?;
+    check_direct(svc, caller, &blocker_row).await?;
+    check_direct(svc, caller, &blocked_row).await?;
+    let at = svc.clock().now();
+    let agent = caller.agent;
+    svc.write(move |tx, notify| {
+        if !task_store::remove_link(tx, blocker, blocked)? {
+            return Ok(());
+        }
+        let event = task_store::event(
+            tx,
+            UNLINKED_EVENT,
+            blocked,
+            Some(agent),
+            &format!("{blocked} no longer depends on {blocker}"),
+            serde_json::json!({ "blocker": blocker, "blocked": blocked }),
+            at,
+        )?;
+        if let Some(row) = task_store::load(tx, blocked)? {
+            if row.status == TaskStatus::Waiting
+                && row.waiting_on.as_ref().and_then(|w| w.get("task"))
+                    == Some(&serde_json::json!(blocker))
+            {
+                task_store::set_status(tx, blocked, TaskStatus::Waiting, TaskStatus::Running, at)?;
+            }
+            if is_open(row.status)
+                && !is_exiting(row.status)
+                && !matches!(
+                    row.status,
+                    TaskStatus::Queued | TaskStatus::Landed | TaskStatus::Settling
+                )
+                && let Some(crewmate) = agents::crewmate_of(tx, blocked)?
+            {
+                let text = format!(
+                    "Your supervisor removed the dependency on {blocker}. It no longer blocks your task; other dependencies and task/decision waits still apply. An external wait ends on your next turn as usual. This does not mean {blocker} delivered."
+                );
+                let wake = new_wake(
+                    crewmate.id,
+                    WakeKind::WaitOver,
+                    blocked,
+                    format!("unlinked:{blocked}:{blocker}:{event}"),
+                    &text,
+                    &format!("{blocked} no longer depends on {blocker}"),
+                    serde_json::json!({ "other": blocker.to_string() }),
+                    at,
+                );
+                Inbox::post(tx, &wake, notify)?;
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| failed(&e))?;
+    svc.supervisor_acted(blocked);
+    Ok(Unlinked { blocker, blocked })
 }

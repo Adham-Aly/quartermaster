@@ -674,7 +674,7 @@ string_enum! {
         DecisionAsked = "decision_asked",
         /// A crewmate filed a follow-up proposal (`file_followup`).
         FollowupFiled = "followup_filed",
-        /// A task this agent waits on finished (`declare_wait`).
+        /// A task this agent waits on finished, or its dependency was removed (`unlink_tasks`).
         WaitOver = "wait_over",
         /// Check results on a crewmate's head commit.
         Checks = "checks",

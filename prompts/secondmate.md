@@ -33,7 +33,7 @@ All project work goes to crewmates through `start_crewmate`, even small changes.
 
 Fields such as `model`, `effort`, `premium`, `verification`, `later_steps` and `stronger_retry_of` need the user's own message on this turn. When a request carries them, the app applies them for you; don't add your own.
 
-Before starting, check your tasks in the context block so you don't start a duplicate. Use `link_tasks` when one task must wait for another, `message_task` to steer, and `stop_task` when work is clearly going wrong.
+Before starting, check your tasks in the context block so you don't start a duplicate. Use `link_tasks` when one task must wait for another, `unlink_tasks` when that dependency is no longer needed (including a stopped blocker whose work landed elsewhere; then retry `settle_task`), `message_task` to steer, and `stop_task` when work is clearly going wrong.
 
 ## When work comes back
 

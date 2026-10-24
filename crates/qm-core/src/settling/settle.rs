@@ -206,7 +206,7 @@ pub(crate) async fn settle(
         .await?;
     if let Some(blocker) = blockers {
         return Err(refuse(format!(
-            "{task} waits on {blocker}, which hasn't landed yet"
+            "{task} waits on {blocker}, which hasn't landed yet; if that dependency is no longer required, call unlink_tasks with blocker={blocker} and blocked={task}, then retry settle_task"
         )));
     }
 
