@@ -1,13 +1,13 @@
 //! The session against a fake `claude` (`fake_claude.py`), which plays the message orders seen
 //! from the real one (claude 2.1.309) and records what the engine writes to it.
 
-use super::Session;
+use super::{Session, Wake};
 use crate::detect::{ClaudeInstall, LoginState};
 use crate::{ClaudeConfig, ClaudeEngine};
 use qm_engine::supervisor::OsSupervisor;
 use qm_engine::{
-    AccountRef, Builtins, Engine, EngineEvent, SessionHandle, SessionSpec, SystemPrompt, TurnInput,
-    session_channel,
+    AccountRef, Builtins, Engine, EngineEvent, SessionCommand, SessionHandle, SessionSpec,
+    SystemPrompt, ToolDescriptor, ToolResult, TurnInput, TurnOutcome, session_channel,
 };
 use qm_types::clock::SystemClock;
 use qm_types::config::Config;
@@ -119,12 +119,38 @@ impl Fake {
         self.engine.open(self.spec()).unwrap()
     }
 
-    /// The control requests the engine sent, by subtype.
-    fn requests(&self) -> Vec<String> {
+    /// Everything the engine wrote to stdin, in wire order.
+    fn messages(&self) -> Vec<Value> {
         std::fs::read_to_string(self.dir.join("record.jsonl"))
             .unwrap_or_default()
             .lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    /// Waits for delivery while the test is still withholding a tool's result.
+    async fn wait_for_users(&self, count: usize) -> Vec<Value> {
+        tokio::time::timeout(PATIENCE, async {
+            loop {
+                let users: Vec<_> = self
+                    .messages()
+                    .into_iter()
+                    .filter(|m| m["type"] == "user")
+                    .collect();
+                if users.len() >= count {
+                    return users;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("messages were not delivered: {:?}", self.messages()))
+    }
+
+    /// The control requests the engine sent, by subtype.
+    fn requests(&self) -> Vec<String> {
+        self.messages()
+            .iter()
             .filter_map(|m| {
                 m.pointer("/request/subtype")
                     .and_then(Value::as_str)
@@ -156,6 +182,10 @@ fn init() -> Value {
 
 fn running() -> Value {
     line(&json!({"type": "system", "subtype": "session_state_changed", "state": "running"}))
+}
+
+fn lifecycle(state: &str) -> Value {
+    json!({ "lifecycle": state })
 }
 
 fn text(text: &str) -> Vec<Value> {
@@ -211,6 +241,7 @@ fn kept(event: &EngineEvent) -> bool {
     matches!(
         event,
         EngineEvent::TurnStarted
+            | EngineEvent::ToolCall { .. }
             | EngineEvent::TextLine { .. }
             | EngineEvent::TurnEnded { .. }
             | EngineEvent::JobStarted { .. }
@@ -301,7 +332,248 @@ async fn launched(handle: &mut SessionHandle) {
     assert!(events.contains(&text_line("launched.")), "{events:?}");
 }
 
+async fn close(handle: &mut SessionHandle) {
+    handle.close().unwrap();
+    let events = until(handle, |e| matches!(e, EngineEvent::SessionClosed { .. })).await;
+    assert_eq!(
+        events.len(),
+        1,
+        "unexpected events while closing: {events:?}"
+    );
+}
+
+fn user_uuid(message: &Value, text: &str) -> uuid::Uuid {
+    assert_eq!(message["type"], "user");
+    assert_eq!(message["session_id"], "");
+    assert_eq!(message["parent_tool_use_id"], Value::Null);
+    assert_eq!(
+        message["message"],
+        json!({"role": "user", "content": [{"type": "text", "text": text}]})
+    );
+    let uuid = uuid::Uuid::parse_str(
+        message["uuid"]
+            .as_str()
+            .expect("a user message needs a uuid"),
+    )
+    .expect("a user message needs a valid uuid");
+    assert_eq!(uuid.get_version_num(), 4);
+    uuid
+}
+
 // ---- Tests ----
+
+/// Steering is delivered while an MCP call is pending, before its result, without interrupting.
+#[tokio::test]
+async fn inject_during_a_pending_mcp_call_precedes_the_tool_result() {
+    let mut tool_init = init();
+    tool_init["line"]["tools"] = json!(["mcp__quartermaster__steering_gate"]);
+    let call = line(&json!({
+        "type": "control_request", "request_id": "tool-request",
+        "request": {"subtype": "mcp_message", "server_name": "quartermaster",
+            "message": {"jsonrpc": "2.0", "id": 42, "method": "tools/call",
+                "params": {"name": "steering_gate", "arguments": {"gate": "pending"},
+                    "_meta": {"claudecode/toolUseId": "tool-use"}}}}
+    }));
+    let initial = vec![tool_init, lifecycle("started"), call];
+    let mut injected = vec![
+        lifecycle("queued"),
+        json!({"wait_for_response": "tool-request"}),
+        lifecycle("started"),
+    ];
+    injected.extend(text("Used the steering after the tool."));
+    injected.extend([lifecycle("completed"), result()]);
+    let fake = Fake::new(&json!({"turns": [initial, injected]}));
+    let mut spec = fake.spec();
+    spec.tools.push(ToolDescriptor {
+        name: "steering_gate".into(),
+        description: "Wait for a test result".into(),
+        input_schema: json!({"type": "object"}),
+    });
+    let mut handle = fake.engine.open(spec).unwrap();
+    ready(&mut handle).await;
+    handle
+        .start_turn(TurnInput::text("Start tool work."))
+        .unwrap();
+    let events = until(&mut handle, |e| matches!(e, EngineEvent::ToolCall { .. })).await;
+    assert_eq!(events[0], EngineEvent::TurnStarted);
+    assert_eq!(events.len(), 2, "{events:?}");
+    let EngineEvent::ToolCall { call, name, args } = &events[1] else {
+        panic!("expected the pending MCP call: {events:?}");
+    };
+    assert_eq!(call.as_str(), "tool-use");
+    assert_eq!(name, "steering_gate");
+    assert_eq!(*args, json!({"gate": "pending"}));
+
+    handle
+        .inject(TurnInput::text("Use this steering."))
+        .unwrap();
+    // Do not release the tool until the fake has actually received the injected user message.
+    let users = fake.wait_for_users(2).await;
+    assert_ne!(
+        user_uuid(&users[0], "Start tool work."),
+        user_uuid(&users[1], "Use this steering.")
+    );
+    assert_eq!(quiet(&mut handle).await, Vec::<EngineEvent>::new());
+    handle
+        .tool_result(call.clone(), ToolResult::ok("tool finished"))
+        .unwrap();
+    let events = until(&mut handle, ended).await;
+    assert_eq!(events[0], text_line("Used the steering after the tool."));
+    assert!(
+        matches!(&events[1], EngineEvent::TurnEnded {
+        outcome: TurnOutcome::Completed, final_text, ..
+    } if final_text == "Used the steering after the tool."),
+        "{events:?}"
+    );
+    assert_eq!(events.len(), 2, "{events:?}");
+    close(&mut handle).await;
+
+    let messages = fake.messages();
+    let delivered: Vec<_> = messages
+        .iter()
+        .filter(|m| m["type"] == "user" || m["type"] == "control_response")
+        .collect();
+    assert_eq!(delivered.len(), 3, "{messages:?}");
+    assert_eq!(delivered[0], &users[0]);
+    assert_eq!(delivered[1], &users[1]);
+    assert_eq!(
+        *delivered[2],
+        json!({
+            "type": "control_response",
+            "response": {"subtype": "success", "request_id": "tool-request",
+                "response": {"mcp_response": {"jsonrpc": "2.0", "id": 42,
+                    "result": {"content": [{"type": "text", "text": "tool finished"}]}}}}
+        })
+    );
+    assert!(!fake.requests().iter().any(|r| r == "interrupt"));
+}
+
+/// A queued inject's second query belongs to the original turn, not a self-started turn.
+#[tokio::test]
+async fn a_queued_mid_turn_inject_keeps_the_turn_open_until_its_later_query() {
+    let mut initial = vec![init(), lifecycle("started")];
+    initial.extend(text("Original answer."));
+    // Receiving the inject drives the rest of the original query, then the queued query.
+    let mut injected = vec![
+        lifecycle("queued"),
+        result(),
+        running(),
+        init(),
+        lifecycle("started"),
+    ];
+    injected.extend(text("Steered answer."));
+    // Starting is enough to release the turn at its result; completion can arrive afterwards.
+    injected.extend([result(), lifecycle("completed")]);
+    let fake = Fake::new(&json!({"turns": [initial, injected]}));
+    let mut handle = fake.open();
+    ready(&mut handle).await;
+    handle
+        .start_turn(TurnInput::text("Start writing."))
+        .unwrap();
+    let mut events = until(&mut handle, |e| *e == text_line("Original answer.")).await;
+    handle.inject(TurnInput::text("Change direction.")).unwrap();
+    events.extend(until(&mut handle, ended).await);
+    assert_eq!(events[0], EngineEvent::TurnStarted);
+    assert_eq!(events[1], text_line("Original answer."));
+    assert_eq!(events[2], text_line("Steered answer."));
+    assert!(
+        matches!(&events[3], EngineEvent::TurnEnded {
+        outcome: TurnOutcome::Completed, final_text, ..
+    } if final_text == "Steered answer."),
+        "{events:?}"
+    );
+    assert_eq!(events.len(), 4, "{events:?}");
+    close(&mut handle).await;
+
+    let users = fake.wait_for_users(2).await;
+    assert_eq!(users.len(), 2);
+    assert_ne!(
+        user_uuid(&users[0], "Start writing."),
+        user_uuid(&users[1], "Change direction.")
+    );
+    assert!(!fake.requests().iter().any(|r| r == "interrupt"));
+}
+
+/// Preserve the fallback for a process that never reports command lifecycle messages.
+#[tokio::test]
+async fn an_inject_without_lifecycle_reports_still_ends_at_the_first_result() {
+    let mut initial = vec![init()];
+    initial.extend(text("Original answer."));
+    let fake = Fake::new(&json!({"turns": [initial, [result()]]}));
+    let mut handle = fake.open();
+    ready(&mut handle).await;
+    handle
+        .start_turn(TurnInput::text("Start writing."))
+        .unwrap();
+    let events = until(&mut handle, |e| *e == text_line("Original answer.")).await;
+    assert_eq!(
+        events,
+        vec![EngineEvent::TurnStarted, text_line("Original answer.")]
+    );
+    handle.inject(TurnInput::text("Change direction.")).unwrap();
+    let events = until(&mut handle, ended).await;
+    assert!(
+        matches!(
+            &events[0],
+            EngineEvent::TurnEnded {
+                outcome: TurnOutcome::Completed,
+                ..
+            }
+        ),
+        "{events:?}"
+    );
+    assert_eq!(events.len(), 1, "{events:?}");
+    close(&mut handle).await;
+    assert!(!fake.requests().iter().any(|r| r == "interrupt"));
+}
+
+/// Both queues are made ready before waiting, so OS scheduling cannot hide stdout starvation.
+#[tokio::test]
+async fn a_ready_inject_precedes_buffered_stdout_and_its_result() {
+    let fake = Fake::new(&json!({"turns": []}));
+    let (mut handle, side) = session_channel();
+    let mut session = Session::new(Arc::clone(&fake.engine.shared), fake.spec(), side);
+    session.start(false).await.unwrap();
+    session.begin_turn(TurnInput::text("Start writing.")).await;
+    session.lifecycle_seen = true;
+
+    let (lines, buffered) = tokio::sync::mpsc::unbounded_channel();
+    session.proc.as_mut().unwrap().lines = buffered;
+    for _ in 0..8 {
+        lines
+            .send(serde_json::to_vec(&json!({"type": "tool_progress"})).unwrap())
+            .unwrap();
+    }
+    lines
+        .send(serde_json::to_vec(&result()["line"]).unwrap())
+        .unwrap();
+    handle.inject(TurnInput::text("Change direction.")).unwrap();
+
+    let wake = session.wait().await;
+    let command_first = matches!(&wake, Wake::Command(Some(SessionCommand::Inject { .. })));
+    session.on_wake(wake).await;
+    // Process all nine stdout lines and the inject: the result must not end the turn first.
+    for _ in 0..9 {
+        let wake = session.wait().await;
+        session.on_wake(wake).await;
+    }
+    let pending_injects = session.turn.as_ref().map(|turn| turn.injects.len());
+    session.stop_process().await;
+    drop(session);
+    let mut events = Vec::new();
+    while let Some(event) = handle.next_event().await {
+        if kept(&event) {
+            events.push(event);
+        }
+    }
+    assert!(
+        command_first,
+        "buffered stdout took priority over a ready Inject"
+    );
+    assert_eq!(pending_injects, Some(1));
+    assert_eq!(events, vec![EngineEvent::TurnStarted]);
+    assert!(!fake.requests().iter().any(|r| r == "interrupt"));
+}
 
 /// A helper ends while the crewmate is idle and another still runs: `claude` starts a turn by
 /// itself, which is adopted, never interrupted, so the other helper goes on running.

@@ -92,11 +92,15 @@ undocumented: after a `claude` update, check no socket opens.
   runs, every crewmate tool that isn't `Read` class is refused in-band (skill `add-tool`).
 - A command `claude` moves to the background becomes a job with `JobStarted { ran_for_ms }`, how
   long it had already run, so its duration counts from when the command started.
-- **Mid-turn messages.** Every user message carries a `uuid`, and `claude` reports each in a
+- **Mid-turn messages.** The core injects supervisor `steer` wakes into accepted crewmate turns and
+  `routed` requests into accepted secondmate turns, before releasing an app tool's result. Other
+  wakes keep their next-turn batching. Queued session commands take priority over buffered stdout,
+  so a ready injection cannot be overtaken by the turn's final `result`. No steering interrupts
+  in-flight work. Every user message carries a `uuid`, and `claude` reports each in a
   `command_lifecycle` message (`queued`, `started`, `completed`). A message sent during tool work is
   taken at the next tool result; one sent during the last text-only call stays queued and is
-  answered in a second query after the first `result`. So a turn ends only when every injected
-  message has started.
+  answered in a second query after the first `result`. With lifecycle reports, a turn ends only
+  when every injected message has started; older processes without them end at the first result.
 - **Self-started turns.** A `system/init` (or `session_state_changed: running`) with no turn
   running is a turn `claude` started by itself, to show the model a finished background task: it
   is adopted as a turn (`TurnStarted` with no `StartTurn`), never interrupted, because a `claude`

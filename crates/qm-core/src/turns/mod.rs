@@ -4,7 +4,8 @@
 //! its events. It runs one turn at a time:
 //!
 //! 1. **Something arrives** ([`queue`]): your message (one turn each, queued while a turn runs), or
-//!    wakes, batched within about two seconds. `Esc` interrupts the running turn.
+//!    wakes, batched within about two seconds. Routed supervisor requests join an active secondmate
+//!    turn promptly, without interrupting its work (`routed`). `Esc` interrupts the running turn.
 //! 2. **The input** ([`input`]): the turn is recorded and stamped started by you or by an app
 //!    event, its wakes are claimed, and the context block, the wakes and your message are
 //!    assembled.
@@ -28,6 +29,9 @@ mod engine_turn;
 #[cfg(test)]
 pub(crate) mod forget_tests;
 mod recover;
+mod routed;
+#[cfg(test)]
+mod routed_tests;
 mod slash;
 
 pub mod deadline;

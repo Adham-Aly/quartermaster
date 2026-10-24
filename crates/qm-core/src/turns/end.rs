@@ -14,6 +14,7 @@ use qm_store::turns::{
     FinishedTurn, LimitRecord, REASON_APP_QUIT, RecordedAction, SeatEvent, TurnTotals,
 };
 use qm_types::domain::TurnStatus;
+use qm_types::ids::WakeId;
 use qm_types::rules::TurnCounters;
 
 /// The tick beside your message after a turn you interrupted that showed nothing and did nothing.
@@ -79,6 +80,7 @@ struct Totals {
     usage: TurnTotals,
     close_outs: Vec<String>,
     delivered: bool,
+    undelivered_wakes: Vec<WakeId>,
     end_conversation: bool,
     account_limited: bool,
     account_resets_at: Option<jiff::Timestamp>,
@@ -103,6 +105,8 @@ impl Totals {
             self.close_outs.push(end.final_text.clone());
         }
         self.delivered |= end.delivered;
+        self.undelivered_wakes
+            .extend_from_slice(&end.undelivered_wakes);
         self.end_conversation |= end.end_conversation;
         self.account_limited |= end.account_limited;
         if end.account_resets_at.is_some() {
@@ -344,9 +348,13 @@ impl TurnLoop {
             release_wakes: decision.release_wakes,
             at: self.deps.clock.now(),
         };
+        let undelivered_wakes = totals.undelivered_wakes;
         self.deps
             .db
-            .call(move |conn| qm_store::turns::finish_turn(conn, &finished))
+            .call(move |conn| {
+                super::routed::release_undelivered(conn, finished.turn, &undelivered_wakes)?;
+                qm_store::turns::finish_turn(conn, &finished)
+            })
             .await?;
         self.turn_running = false;
         self.running_message = None;
