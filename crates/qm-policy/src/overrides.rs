@@ -29,6 +29,8 @@ impl From<StartedBy> for Authority {
 pub enum OverrideKind {
     /// A named model (`start_crewmate`, `route_to_secondmate`).
     NamedModel,
+    /// A user-ranked model level for one task.
+    Tier,
     /// Premium for one task.
     Premium,
     /// An effort level.
@@ -57,6 +59,7 @@ pub enum OverrideKind {
 impl OverrideKind {
     pub const ALL: &'static [Self] = &[
         Self::NamedModel,
+        Self::Tier,
         Self::Premium,
         Self::Effort,
         Self::LaterSteps,
@@ -74,6 +77,7 @@ impl OverrideKind {
     pub const fn describe(self) -> &'static str {
         match self {
             Self::NamedModel => "a named model",
+            Self::Tier => "a model tier",
             Self::Premium => "premium",
             Self::Effort => "an effort level",
             Self::LaterSteps => "models or effort for later steps",

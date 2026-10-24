@@ -519,6 +519,8 @@ pub struct CrewmateFacts {
     /// A model you named for this task.
     pub named_model: Option<ModelId>,
     pub preference: Option<qm_types::model_preference::ModelPreference>,
+    /// A model level you named for this task, separate from reasoning effort.
+    pub named_tier: Option<Tier>,
     /// An effort level you named for this task.
     pub named_effort: Option<qm_types::domain::Effort>,
     /// You asked for premium.
@@ -565,6 +567,7 @@ pub enum RouteOutcome {
 fn check_overrides(facts: &CrewmateFacts) -> Result<(), Refusal> {
     let present = [
         (facts.named_model.is_some(), OverrideKind::NamedModel),
+        (facts.named_tier.is_some(), OverrideKind::Tier),
         (facts.premium, OverrideKind::Premium),
         (facts.named_effort.is_some(), OverrideKind::Effort),
         (
@@ -574,6 +577,42 @@ fn check_overrides(facts: &CrewmateFacts) -> Result<(), Refusal> {
     ];
     for (_, kind) in present.iter().filter(|(on, _)| *on) {
         check_choice_override(facts.authority, facts.choice_message, *kind)?;
+    }
+    if facts.premium && facts.named_tier.is_some_and(|tier| tier != Tier::Premium) {
+        return Err(Refusal::new(
+            "premium conflicts with the named model level; choose tier premium or leave premium off",
+        ));
+    }
+    if let (Some(named), Some(target)) = (facts.named_tier, facts.stronger_retry)
+        && named != target
+    {
+        return Err(Refusal::new(format!(
+            "model level {named} conflicts with the stronger-model retry target {target}; choose tier {target} or leave tier out"
+        )));
+    }
+    Ok(())
+}
+
+/// Check placement membership only; the pure router checks whether a placement can serve.
+fn check_named_placements(
+    placements: &[models::PlacementRow],
+    model: Option<&ModelId>,
+    tier: Option<Tier>,
+    later_model: Option<&ModelId>,
+) -> Result<(), Refusal> {
+    for model in model.into_iter().chain(later_model) {
+        if !placements.iter().any(|p| &p.canonical == model) {
+            return Err(not_in_any_tier(model));
+        }
+    }
+    if let (Some(model), Some(tier)) = (model, tier)
+        && !placements
+            .iter()
+            .any(|p| &p.canonical == model && p.tier == tier)
+    {
+        return Err(Refusal::new(format!(
+            "{model} isn't in model level {tier}; place it there in Settings ▸ Model levels, name another model, or leave tier out"
+        )));
     }
     Ok(())
 }
@@ -774,13 +813,13 @@ pub fn route_crewmate(
         .transpose()?;
     // A model you name is one placed in some tier; routing never quietly picks another.
     let placements = models::list_placements(conn)?;
-    for model in named_model
-        .iter()
-        .chain(later_step.as_ref().and_then(|l| l.model.as_ref()))
-    {
-        if !placements.iter().any(|p| &p.canonical == model) {
-            return Ok(RouteOutcome::Refused(not_in_any_tier(model)));
-        }
+    if let Err(refusal) = check_named_placements(
+        &placements,
+        named_model.as_ref(),
+        facts.named_tier,
+        later_step.as_ref().and_then(|l| l.model.as_ref()),
+    ) {
+        return Ok(RouteOutcome::Refused(refusal));
     }
     let premium_models: Vec<ModelId> = placements
         .into_iter()
@@ -789,7 +828,6 @@ pub fn route_crewmate(
         .collect();
     let pin = canonical_pin(conn, config.routing.always_use.as_ref())?;
     let pool = load_pool(conn, pin.as_ref(), &[], health, at)?;
-    let preferred = accounts::preferred_account(conn)?;
 
     let request = RouteRequest {
         kind: facts.kind.clone(),
@@ -799,6 +837,7 @@ pub fn route_crewmate(
         quick_verification: facts.quick_verification,
         user: UserChoices {
             model: named_model,
+            tier: facts.named_tier,
             effort: facts.named_effort,
             premium: facts.premium,
             stronger_retry: facts.stronger_retry.is_some(),
@@ -807,7 +846,7 @@ pub fn route_crewmate(
         stronger_retry_target: facts.stronger_retry,
         later_step,
         always_use: pin.as_ref(),
-        preferred_account: preferred,
+        preferred_account: accounts::preferred_account(conn)?,
         tiers: &config.tiers,
         premium_models: &premium_models,
     };
@@ -1109,6 +1148,7 @@ mod tests {
                     quick_verification: false,
                     named_model: None,
                     preference: None,
+                    named_tier: None,
                     named_effort: None,
                     premium: false,
                     choice_message: None,
@@ -1189,6 +1229,7 @@ mod tests {
                 quick_verification: true,
                 named_model: None,
                 preference: None,
+                named_tier: None,
                 named_effort: None,
                 premium: false,
                 choice_message: None,

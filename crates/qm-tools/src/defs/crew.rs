@@ -3,7 +3,7 @@
 use super::{Ack, Constraint, Held, LaterStep, RoutingSummary, TaskSummary};
 use crate::{Tool, ToolClass};
 use jiff::Timestamp;
-use qm_types::domain::{Effort, Role, TaskKind, TaskStatus, VerificationLevel};
+use qm_types::domain::{Effort, Role, TaskKind, TaskStatus, Tier, VerificationLevel};
 use qm_types::ids::{CommitSha, CorrelationId, HeldActionId, ModelId, TaskId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,8 @@ pub struct StartCrewmateArgs {
     pub model: Option<ModelId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preference: Option<qm_types::model_preference::ModelPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<Tier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -134,6 +136,8 @@ pub struct SecondmateStartCrewmateArgs {
     pub model: Option<ModelId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preference: Option<qm_types::model_preference::ModelPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<Tier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

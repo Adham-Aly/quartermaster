@@ -85,8 +85,10 @@ effort?: Effort}`: selection is required; optional fields are conjunctive user c
 The app revalidates the chosen provider/model/effort combination and task eligibility within the
 tier. No eligible match means ordinary routing with a note, never a preference-driven tier escape.
 Preferences are allowed on later/app-event turns but do not replace authoritative user-turn-only
-cross-tier `model`/`effort` overrides. No external decision model is configured; a future one can
-return the same typed answer.
+`model`, `tier` or `effort` overrides. “Medium-tier” means the user's manually ranked Medium level;
+“medium-effort” means a model's medium effort, independent of its tier (likewise High/Low).
+`start_crewmate.tier` selects the requested level and skips the pin; effort alone never changes
+that level. No external decision model is configured; a future one can return the same typed answer.
 
 Context entries flow through `qm_store::context::tier_models`, `qm_core::context_block` and
 `qm_prompts::context_block`. Keep provider model IDs and each placement's effort visible; do not

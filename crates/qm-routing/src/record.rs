@@ -61,6 +61,9 @@ pub struct DeclaredFacts {
 /// The exceptions you named: they come first, capped by what the model supports.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserChoices {
+    /// A level in the user's manually ranked model list, independent of effort.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<Tier>,
     pub model: Option<ModelId>,
     pub effort: Option<Effort>,
     /// You asked for premium.

@@ -37,6 +37,7 @@ pub(crate) fn check_overrides(cx: &ToolCx<'_>, request: &StartRequest) -> Result
     let authority = Authority::Turn(started_by(cx));
     let present = [
         (request.model.is_some(), OverrideKind::NamedModel),
+        (request.tier.is_some(), OverrideKind::Tier),
         (request.effort.is_some(), OverrideKind::Effort),
         (request.premium, OverrideKind::Premium),
         (!request.later_steps.is_empty(), OverrideKind::LaterSteps),
@@ -135,6 +136,7 @@ pub(crate) fn prepare_start(
         later_steps: args.later_steps,
         model: args.model,
         preference: args.preference,
+        tier: args.tier,
         effort: args.effort,
         premium: args.premium,
         choice_message: args.choice_message,
@@ -324,6 +326,7 @@ mod tests {
             later_steps: vec![],
             model: None,
             preference: None,
+            tier: None,
             effort: Some(qm_types::domain::Effort::High),
             premium: true,
             choice_message: None,

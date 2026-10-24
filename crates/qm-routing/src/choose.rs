@@ -5,32 +5,30 @@
 //! of precedence, highest first:
 //!
 //! 1. A model you named for this task in your own words: "If you named a model for this task in
-//!    your own words, that comes first." If the named model cannot serve, the task waits rather
-//!    than substituting another model.
-//! 2. A `later_steps` entry recorded on your turn. Your words for this task (a model, an effort or
-//!    premium) replace the entry altogether, and so does a stronger-model retry you pick.
-//! 3. A stronger-model retry or premium, which you asked for: premium sits above high and is
-//!    used only when you ask for it, choose "try again with a stronger model", or set a task kind
-//!    to it (step 6).
-//! 4. The "always use" pin: "'Always use' stays as a setting on the pool, with its fallback model
-//!    and a notice while it's on."
-//! 5. A model preference, revalidated against live entries within the landed tier, unless an
-//!    explicit task or inherited choice takes priority.
+//!    your own words, that comes first." If it cannot serve, the task waits without substitution.
+//!    With an explicit tier, only that model's matching placement is considered.
+//! 2. A `later_steps` entry recorded on your turn. Your words for this task (a model, a tier, an
+//!    effort or premium) replace the entry altogether, and so does a stronger-model retry you pick.
+//! 3. A stronger-model retry, premium, or an explicit tier you asked for. An explicit tier selects
+//!    your ranked placements independently of task kind, skips the pin and determines the landed
+//!    tier without changing effort: the selected placement's combo and explicit effort rules still
+//!    apply. Premium sits above high and is used only when requested or configured by a task row.
+//! 4. The "always use" pin, unless a tier, premium or stronger-model retry was requested:
+//!    "'Always use' stays as a setting on the pool, with its fallback model and a notice while it's on."
+//! 5. A model preference, revalidated against live entries within the landed tier (including an
+//!    explicit non-premium tier), unless a model, effort, premium, retry or inherited choice wins.
 //! 6. The tier of the task's row in the rule table (yours or the default), with fallbacks and
 //!    ranking.
 //!
 //! # Premium
 //!
-//! Premium is asked for in one of four ways: the `premium` flag, naming a model placed in premium
-//! (for this task or in its `later_steps` entry), an entry with `premium` set, or a stronger-model
-//! retry whose target is premium. An explicitly named model must serve or the task waits. Without
-//! a named model, every premium model is ranked as usual, then high → medium → low
-//! ([`fallback::order`]). The pin and the rule table never come first. When premium runs on another
-//! tier, the routing line names each premium model that couldn't serve and why, and the record
-//! has the fallback step.
+//! Premium is requested by the premium flag, an explicit premium tier, a named premium model
+//! without another explicit tier, an inherited premium choice, or a stronger retry to premium.
+//! A named model must serve or the task waits. Otherwise premium models are ranked as usual,
+//! then high → medium → low ([`fallback::order`]). The pin and rule table never come first.
 //!
-//! A `Decider` failure routes high: "if the call fails, times out or can't decide, the task routes
-//! high. It never blocks a task".
+//! A `Decider` failure uses the unclear/high rule unless an explicit choice determines the tier.
+//! It never blocks a task.
 
 use crate::decider::{Decided, DecidedBy};
 use crate::effort::{EffortInput, choose_effort, tier_default};
@@ -171,7 +169,10 @@ impl<'r, 'a> Router<'r, 'a> {
             None
         };
         // Your words for this task replace a later step's entry altogether.
-        let named_now = req.user.model.is_some() || req.user.effort.is_some() || req.user.premium;
+        let named_now = req.user.model.is_some()
+            || req.user.tier.is_some()
+            || req.user.effort.is_some()
+            || req.user.premium;
         let later_step = if retry_target.is_some() || named_now {
             None
         } else {
@@ -183,19 +184,24 @@ impl<'r, 'a> Router<'r, 'a> {
             .as_ref()
             .or_else(|| later_step.as_ref().and_then(|l| l.model.as_ref()));
         let premium_asked = req.user.premium
+            || req.user.tier == Some(Tier::Premium)
             || later_step.as_ref().is_some_and(|l| l.premium)
-            || named.is_some_and(|m| is_premium_model(req, pool, m));
+            || (req.user.tier.is_none() && named.is_some_and(|m| is_premium_model(req, pool, m)));
         let tier_landed = match retry_target {
             Some(t) => t,
             None if premium_asked => Tier::Premium,
-            None => matched.tier,
+            None => req.user.tier.unwrap_or(matched.tier),
         };
         let mut notes = Vec::new();
         if let Decided::Undecided { .. } = req.kind {
-            notes.push(format!(
-                "The kind couldn't be decided, so it routes as unclear ({})",
-                matched.tier
-            ));
+            notes.push(if req.user.tier.is_some() {
+                "The kind couldn't be decided; your explicit tier still applies".to_owned()
+            } else {
+                format!(
+                    "The kind couldn't be decided, so it routes as unclear ({})",
+                    matched.tier
+                )
+            });
         }
         Self {
             req,
@@ -211,6 +217,13 @@ impl<'r, 'a> Router<'r, 'a> {
             notes,
             preference_applied: false,
         }
+    }
+
+    fn tier_line(&self) -> String {
+        self.req.user.tier.map_or_else(
+            || rule_line(self.kind, self.req.builds_on.as_ref(), self.matched),
+            |tier| format!("You asked for the {tier} tier (your ranked model level)"),
+        )
     }
 
     fn named_effort(&self) -> Option<Effort> {
@@ -296,10 +309,13 @@ impl<'r, 'a> Router<'r, 'a> {
         };
         let premium = self.premium_asked && is_premium_model(self.req, self.pool, &model);
         let placed = self.pool.placed;
+        let requested_tier = self.req.user.tier;
         if let Some(c) = self.pick_from(
-            placed
-                .iter()
-                .filter(|c| c.model == model && (!premium || c.tier == Tier::Premium)),
+            placed.iter().filter(|c| {
+                c.model == model
+                    && (!premium || c.tier == Tier::Premium)
+                    && requested_tier.is_none_or(|tier| c.tier == tier)
+            }),
             self.placement_check(),
         ) {
             return Ok(Some((
@@ -325,7 +341,7 @@ impl<'r, 'a> Router<'r, 'a> {
 
     /// Step 4: the "always use" pin, unless you asked for premium or a stronger model.
     fn try_pin(&mut self) -> Option<(RoutedChoice, String)> {
-        if self.retry_target.is_some() || self.premium_asked {
+        if self.retry_target.is_some() || self.premium_asked || self.req.user.tier.is_some() {
             return None;
         }
         let pin = self.req.always_use?;
@@ -391,7 +407,7 @@ impl<'r, 'a> Router<'r, 'a> {
                 self.choice(c, self.tier_landed, self.tier_landed, c.effort_override),
                 format!(
                     "{}. Your model preference selected {} within {}",
-                    rule_line(self.kind, self.req.builds_on.as_ref(), self.matched),
+                    self.tier_line(),
                     c.model,
                     self.tier_landed
                 ),
@@ -432,7 +448,7 @@ impl<'r, 'a> Router<'r, 'a> {
             } else if self.premium_asked {
                 "You asked for premium".to_owned()
             } else {
-                rule_line(self.kind, self.req.builds_on.as_ref(), self.matched)
+                self.tier_line()
             };
             if landed == Tier::Premium {
                 if tier != landed {

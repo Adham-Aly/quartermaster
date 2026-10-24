@@ -225,6 +225,7 @@ pub(crate) fn prepare_secondmate_start(
         later_steps: args.later_steps,
         model: args.model,
         preference: args.preference,
+        tier: args.tier,
         effort: args.effort,
         premium: args.premium,
         choice_message: args.choice_message,

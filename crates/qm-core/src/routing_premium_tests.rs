@@ -124,6 +124,7 @@ impl Fixture {
             quick_verification: false,
             named_model: None,
             preference: None,
+            named_tier: None,
             named_effort: None,
             premium: false,
             choice_message: None,
@@ -167,6 +168,157 @@ fn routed(outcome: RouteOutcome) -> RoutingRecord {
 fn used(record: &RoutingRecord) -> (Tier, String) {
     let c = record.choice.as_ref().unwrap();
     (c.tier, c.model.to_string())
+}
+
+/// A lookup with usable low and medium placements makes tier versus effort observable.
+fn lookup_fixture(name: &str) -> (Fixture, CrewmateFacts) {
+    let f = Fixture::new(name);
+    f.conn
+        .execute_batch(
+            "UPDATE placements SET tier = 'low' WHERE canonical = 'claude-fable-5-1';
+             UPDATE placements SET tier = 'medium' WHERE canonical = 'gpt-6-pro';",
+        )
+        .unwrap();
+    let mut facts = f.facts();
+    facts.kind = Decided::Answer {
+        value: TaskKind::Lookup,
+        by: DecidedBy::Declared,
+    };
+    (f, facts)
+}
+
+#[test]
+fn explicit_medium_tier_lookup_routes_medium_and_records_tier() {
+    let (f, mut facts) = lookup_fixture("tier-medium");
+    facts.named_tier = Some(Tier::Medium);
+    let record = routed(f.route(&facts));
+    assert_eq!(used(&record), (Tier::Medium, GPT.to_owned()));
+    assert_eq!(record.facts.user.tier, Some(Tier::Medium));
+    let stored: String = f
+        .conn
+        .query_row("SELECT facts FROM routing_decisions", [], |row| row.get(0))
+        .unwrap();
+    let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(stored["user"]["tier"], "medium");
+}
+
+#[test]
+fn medium_effort_lookup_stays_low() {
+    let (f, mut facts) = lookup_fixture("effort-medium");
+    facts.named_effort = Some(Effort::Medium);
+    let record = routed(f.route(&facts));
+    assert_eq!(used(&record), (Tier::Low, FABLE.to_owned()));
+    assert_eq!(record.choice.unwrap().effort, Effort::Medium);
+}
+
+#[test]
+fn explicit_tier_on_app_event_is_refused_without_recording() {
+    let (f, mut facts) = lookup_fixture("tier-app-event");
+    facts.authority = Authority::Turn(StartedBy::AppEvent);
+    facts.named_tier = Some(Tier::Medium);
+    assert!(matches!(f.route(&facts), RouteOutcome::Refused(_)));
+    assert_eq!(f.decisions(), 0);
+}
+
+#[test]
+fn explicit_tier_matching_retry_target_is_allowed() {
+    let f = Fixture::new("tier-retry-match");
+    let mut facts = f.facts();
+    facts.named_tier = Some(Tier::High);
+    facts.stronger_retry = Some(Tier::High);
+    assert_eq!(
+        used(&routed(f.route(&facts))),
+        (Tier::High, OPUS.to_owned())
+    );
+    assert_eq!(f.decisions(), 1);
+}
+
+#[test]
+fn explicit_tier_conflicting_with_retry_target_is_refused_without_recording() {
+    for unavailable in [false, true] {
+        let f = Fixture::new("tier-retry-conflict");
+        if unavailable {
+            // Premium can serve, but that must not override the computed high retry target.
+            f.cut_off(103);
+        }
+        let mut facts = f.facts();
+        facts.named_tier = Some(Tier::Premium);
+        facts.stronger_retry = Some(Tier::High);
+        match f.route(&facts) {
+            RouteOutcome::Refused(r) => {
+                assert!(r.reason.contains("premium"));
+                assert!(r.reason.contains("high"));
+                assert!(r.reason.contains("retry"));
+            }
+            other => panic!("expected a retry tier conflict refusal, got {other:?}"),
+        }
+        assert_eq!(f.decisions(), 0);
+    }
+}
+
+#[test]
+fn matching_high_retry_waits_when_only_premium_can_serve() {
+    let f = Fixture::new("tier-retry-match-unavailable");
+    f.cut_off(103);
+    let mut facts = f.facts();
+    facts.named_tier = Some(Tier::High);
+    facts.stronger_retry = Some(Tier::High);
+    assert!(matches!(f.route(&facts), RouteOutcome::Waiting { .. }));
+    assert_eq!(f.decisions(), 1);
+}
+
+#[test]
+fn explicit_tier_bypasses_always_use_pin() {
+    let (f, mut facts) = lookup_fixture("tier-pin");
+    facts.named_tier = Some(Tier::Medium);
+    let mut config = Config::default();
+    config.routing.always_use = Some(AlwaysUse {
+        model: id(OPUS),
+        fallback: None,
+    });
+    let record =
+        routed(route_crewmate(&f.conn, &config, &facts, &LoginHealth::new(), now()).unwrap());
+    assert_eq!(used(&record), (Tier::Medium, GPT.to_owned()));
+}
+
+#[test]
+fn named_model_outside_explicit_tier_is_refused_after_canonicalization() {
+    let (f, mut facts) = lookup_fixture("tier-model");
+    f.conn
+        .execute(
+            "UPDATE models SET model = 'account-fable' WHERE canonical = ?1",
+            [FABLE],
+        )
+        .unwrap();
+    facts.named_model = Some(id("account-fable"));
+    facts.named_tier = Some(Tier::Medium);
+    match f.route(&facts) {
+        RouteOutcome::Refused(r) => {
+            assert!(r.reason.contains(FABLE));
+            assert!(r.reason.contains("medium"));
+            assert!(r.reason.contains("Settings ▸ Model levels"));
+        }
+        other => panic!("expected a tier conflict refusal, got {other:?}"),
+    }
+    assert_eq!(f.decisions(), 0);
+    // Placement membership, not availability or capability, is the core's validation boundary.
+    f.conn.execute("INSERT INTO placements (canonical, tier, created_at, seq) VALUES (?1, 'medium', 0, 60)", [FABLE]).unwrap();
+    assert_eq!(
+        used(&routed(f.route(&facts))),
+        (Tier::Medium, FABLE.to_owned())
+    );
+}
+
+#[test]
+fn premium_conflicts_with_an_explicit_nonpremium_tier() {
+    let (f, mut facts) = lookup_fixture("tier-premium-conflict");
+    facts.named_tier = Some(Tier::Medium);
+    facts.premium = true;
+    match f.route(&facts) {
+        RouteOutcome::Refused(r) => assert!(r.reason.contains("premium conflicts")),
+        other => panic!("expected a premium conflict refusal, got {other:?}"),
+    }
+    assert_eq!(f.decisions(), 0);
 }
 
 #[test]
@@ -496,6 +648,94 @@ fn the_premium_models_are_found_through_placements() {
     );
 }
 
+// Tool boundary --------------------------------------------------------------------------------
+
+mod tier_tool_tests {
+    use super::*;
+    use qm_tools::defs::{RoutingSummary, TaskStarted};
+    use qm_tools::handler::{Dispatcher, ToolCx, ToolFailure, ToolHost, TurnCx};
+    use qm_types::BoxFuture;
+    use qm_types::clock::SystemClock;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Host(Mutex<Vec<(Role, StartRequest)>>);
+
+    impl ToolHost for Host {
+        fn start_crewmate<'a>(
+            &'a self,
+            caller: &'a Caller,
+            request: StartRequest,
+        ) -> BoxFuture<'a, Result<TaskStarted, ToolFailure>> {
+            self.0.lock().unwrap().push((caller.role, request));
+            Box::pin(async {
+                Ok(TaskStarted {
+                    task: TaskId::new(1).unwrap(),
+                    branch: None,
+                    routing: RoutingSummary {
+                        tier: Tier::Medium,
+                        model: None,
+                        effort: Some(Effort::High),
+                        why: "test host".into(),
+                    },
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn both_start_tools_forward_tier_and_effort_only_on_user_turns() {
+        for role in [Role::Quartermaster, Role::Secondmate] {
+            for started_by in [
+                None,
+                Some(StartedBy::AppEvent),
+                Some(StartedBy::User {
+                    message: MessageId::new(1),
+                }),
+            ] {
+                let host = Host::default();
+                let caller = Caller {
+                    agent: AgentId::new(1),
+                    role,
+                    turn: started_by.map(|started_by| TurnCx {
+                        turn: TurnId::new(1),
+                        started_by,
+                    }),
+                    task: None,
+                    secondmate: None,
+                    plan: None,
+                };
+                let allowed = matches!(started_by, Some(StartedBy::User { .. }));
+                // On refused turns, tier is the only override: effort cannot mask a missing check.
+                let effort = allowed.then_some(Effort::High);
+                let cx = ToolCx {
+                    caller: &caller,
+                    clock: &SystemClock,
+                    host: &host,
+                };
+                let result = Dispatcher::builtin()
+                    .dispatch(
+                        &cx,
+                        "start_crewmate",
+                        serde_json::json!({
+                            "project": "p", "kind": "lookup", "title": "docs(x): look up x",
+                            "goal": "look up x", "tier": "medium", "effort": effort
+                        }),
+                    )
+                    .await;
+                assert_eq!(result.result.is_error, !allowed, "{role:?} {started_by:?}");
+                let calls = host.0.lock().unwrap();
+                assert_eq!(calls.len(), usize::from(allowed));
+                if let Some((forwarded_role, request)) = calls.first() {
+                    assert_eq!(*forwarded_role, role);
+                    assert_eq!(request.tier, Some(Tier::Medium));
+                    assert_eq!(request.effort, Some(Effort::High));
+                }
+            }
+        }
+    }
+}
+
 // Secondmates -----------------------------------------------------------------------------------
 
 /// A secondmate with one request carrying `overrides`.
@@ -564,6 +804,7 @@ fn request(f: &Fixture, overrides: &RequestOverrides) -> (Caller, StartRequest) 
         later_steps: Vec::new(),
         model: None,
         preference: None,
+        tier: None,
         effort: None,
         premium: false,
         choice_message: None,

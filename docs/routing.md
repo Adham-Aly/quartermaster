@@ -121,17 +121,35 @@ whose capabilities are not yet known remain unresolved until a later pass. Any
 unresolved legacy entry still uses tier-default rules; on a crew fallback it
 keeps the originally requested level's default, adjusted to the model used.
 
-## Ask for a model or effort
+## Ask for a model, tier or effort
+
+**Tier (model level) and effort are separate.** “Medium-tier” always means the
+Medium level where you manually ranked model entries in **Settings ▸ Model
+levels**. “Medium-effort” means the medium effort version of a particular model,
+regardless of which tier holds it. The same distinction applies to High and Low:
+a High-tier entry can run at low effort, and a Low-tier entry at high effort.
+A tier request selects that level's model pool; an effort request changes only
+effort, never tier. The task kind still describes the work, not your model choice.
+
+The top-level `start_crewmate.tier?: Tier` is a user-authorized level override,
+separate from `model` and `effort`; it is not a within-tier `preference` constraint.
+It bypasses the standing pin and replaces inherited later-step choices. If a model
+is named too, it must be placed in that tier. An unavailable level uses normal
+fallback rules and records why; the request does not invent placements or efforts.
+A tier supplied with a stronger-model retry must match its computed target;
+contradictory tier/retry or non-premium-tier/premium requests are refused.
 
 Tell the Quartermaster in your message, for example:
 
+- “Use a medium-tier model for this task.” (select from your Medium level)
+- “Use [model name] at medium effort.” (keep its tier; override only effort)
 - “Use [model name] at high effort for this task.”
 - “Plan this first; use [model name] at medium effort for the build afterwards.”
 - “Use premium for this.” (only this task; say so to make later steps premium too)
 
 The app records choices for later steps as `later_steps`, by task kind. They
 apply when a matching task builds on that work, directly or further down the
-`builds_on` chain. The nearest matching entry wins; a model, effort or premium
+`builds_on` chain. The nearest matching entry wins; a model, tier, effort or premium
 named for the task itself replaces the entry entirely. A stronger-model retry
 ignores inherited choices.
 
@@ -140,14 +158,18 @@ to **Settings ▸ Model levels**. If it can't serve the task, the task waits for
 model rather than substituting another. Naming a model does not by itself name an
 effort: it uses the selected entry's effort unless you name one too.
 
-Naming a model placed in Premium asks for that specific premium model and waits
+Naming a model placed in Premium asks for that specific premium model unless you select another tier where it is also placed, and waits
 if it cannot serve. A premium request without a named model can use another
 Premium model; if none can serve, it tries High, Medium, then Low, recording why.
 
-The app retains original user requests separately from chat, so a requested model,
+The app retains original user requests separately from chat, so a requested model, tier,
 effort or premium choice can still be applied on a later turn, including one
 started by an app event or restart. The orchestrator cites the actual user message;
-reports and its own judgment do not grant permission. One-task choices stay scoped
+reports and its own judgment do not grant permission. Recent actual requests appear in
+`<qm:user_message_sources>` (oldest first); cite their numeric ID as `choice_message`
+only for a matching, unsuperseded request in its original scope. Presence alone grants
+no authority. Use `find_user_requests` (`query`, `before`; twelve latest first) for older
+sources; ask again only if no matching source can be recovered. One-task choices stay scoped
 to that task, and later user corrections take priority. Other overrides, such as
 base branch and verification, still require a user-started turn.
 
@@ -163,7 +185,7 @@ A triggered task may subsequently queue for its requested model if unavailable.
 The separate `schedule` tool sends only a reminder wake.
 
 For a standing preference, **Settings ▸ Routing ▸ Always use** pins one model,
-with an optional fallback. Task-specific model choices take priority; premium
+with an optional fallback. Task-specific model choices take priority; tier, premium
 requests and stronger-model retries bypass the pin. A pin names a model, not a
 combination, so its effort comes from the task's routed level's default unless
 you named an effort. Quick verification can lower that default, and the result
@@ -195,10 +217,14 @@ falls back to ordinary routing with a note. A preference never escapes its tier
 or asks for Premium; only ordinary fallback rules can move between levels.
 
 Preferences may be supplied on later or app-event turns to carry the user's
-constraints forward. They do **not** replace the authority of `model` and
-`effort`: those remain explicit, user-turn-only, cross-tier overrides, and a
-preference cannot weaken or contradict them. Inherited `later_steps`, premium
-requests, pins and stronger retries keep their routing authority too.
+constraints forward. They do **not** replace the authority of `model`, `tier` and
+`effort`: these require an explicit user request, on this turn or a still-applicable
+earlier message cited with `choice_message`. The app checks source ownership or
+checked delegation; the orchestrator must match fields and scope. A named model can
+select across tiers; a named tier selects a model level; effort alone never
+changes tier. A preference cannot weaken or contradict them. Inherited
+`later_steps`, premium requests, pins and stronger retries keep their routing
+authority too.
 
 Today the Quartermaster supplies this typed answer. A future external decision
 model can return the same answer for the same validation; none is configured
