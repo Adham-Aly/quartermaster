@@ -25,7 +25,7 @@ pub const SESSION_LINES: usize = 400;
 /// crewmate yet, a secondmate that doesn't exist).
 pub async fn load(
     db: &Db,
-    recorder: Option<&Recorder>,
+    recorder: &Recorder,
     agent: AgentRef,
     clock: &dyn Clock,
 ) -> Result<Option<SessionView>, StoreError> {
@@ -44,7 +44,7 @@ pub async fn load(
     let Some((header, rows)) = loaded else {
         return Ok(None);
     };
-    let streaming = recorder.and_then(|r| r.streaming(header.agent));
+    let streaming = recorder.streaming(header.agent);
     let mut view = build(agent, task, &header, &rows, clock.now());
     if let Some(block) = streaming {
         let mut line = SessionLine::new(0, SessionLineKind::Agent, block.at, block.text);
