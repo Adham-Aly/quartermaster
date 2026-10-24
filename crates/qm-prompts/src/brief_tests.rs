@@ -51,10 +51,27 @@ fn planning_brief_describes_both_authored_documents_and_revision_contract() {
 #[test]
 fn non_plan_brief_has_no_planning_authoring_instructions() {
     let mut facts = plan_facts();
-    facts.kind = TaskKind::Research;
-    let brief = render_brief(&facts);
-    assert!(!brief.contains("## Planning"));
-    assert!(!brief.contains("template.html"));
+    for &kind in TaskKind::ALL {
+        if kind == TaskKind::Plan {
+            continue;
+        }
+        facts.kind = kind;
+        let brief = render_brief(&facts);
+        // Report templates are shared; plan authoring instructions are not.
+        for forbidden in [
+            "## Planning",
+            "quartermaster-plan",
+            "$QM_PLAN_DIR",
+            "plan.md",
+            "plan.html",
+            "plan_check",
+        ] {
+            assert!(
+                !brief.contains(forbidden),
+                "unexpected {forbidden:?} in {kind} brief"
+            );
+        }
+    }
 }
 
 #[test]
