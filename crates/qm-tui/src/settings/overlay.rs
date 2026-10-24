@@ -1,6 +1,6 @@
 //! The Settings overlays: the fixed model + effort catalogue, add/move destinations, Routing
 //! model and Quartermaster effort pickers under their controls, and one-line text fields
-//! (an account's label, an API key). Model levels has no separate placement-effort picker.
+//! (an account's label or reserve mark, an API key). Model levels has no separate placement-effort picker.
 
 use super::paint::Painter;
 use super::{Field, FieldFor, PickFor, Picker, SettingsHit, boxed};
@@ -138,6 +138,18 @@ fn draw_field(p: &mut Painter<'_, '_>, body: Rect, field: &Field, app: &App) {
                 .map_or("the account", |a| a.label.as_str());
             (format!("Label {name}"), field.text.clone(), "")
         }
+        FieldFor::ReserveMark(i) => {
+            let name = view
+                .model
+                .accounts
+                .get(i)
+                .map_or("the account", |a| a.label.as_str());
+            (
+                format!("Reserve mark for {name}"),
+                field.text.clone(),
+                "Percent USED, 1 to 99. Empty for no mark.",
+            )
+        }
         FieldFor::BaseUrl => (
             String::from("Base URL for a custom endpoint"),
             field.text.clone(),
@@ -164,8 +176,17 @@ fn draw_field(p: &mut Painter<'_, '_>, body: Rect, field: &Field, app: &App) {
     let inner = boxed(p, area, &title, 4, theme::accent(), theme::accent());
     let room = usize::from(inner.width.saturating_sub(2));
     let end = p.text(inner.x + 1, inner.y, "› ", theme::accent());
-    let line = format!("{}▏", crate::text::tail(&shown, room.saturating_sub(3)));
-    p.text(end, inner.y, &line, theme::text());
+    let unit = if matches!(field.purpose, FieldFor::ReserveMark(_)) {
+        "% used"
+    } else {
+        ""
+    };
+    let line = format!(
+        "{}▏",
+        crate::text::tail(&shown, room.saturating_sub(3 + width(unit)))
+    );
+    let end = p.text(end, inner.y, &line, theme::text());
+    p.text(end, inner.y, unit, theme::dim());
     p.text(
         inner.x + 1,
         inner.y + 1,

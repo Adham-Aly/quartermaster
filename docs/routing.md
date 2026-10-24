@@ -81,8 +81,61 @@ is unsupported. In particular, the app never reads Claude's subscription credent
 An unlimited OpenRouter key budget does not mean unlimited account credit.
 
 Lookups use the connected account's stored token and the existing refresh mechanism;
-provider response bodies and credentials never appear in quota errors. Readings live only
-in memory, are forgotten on disconnect, and do not influence routing or pause accounts.
+provider response bodies and credentials never appear in quota errors. The display
+readings live only in memory and are forgotten on disconnect. Each successful check
+also stores, on the account, just the percent used of each pool and when it resets,
+which routing reads (next section). A quota check never pauses an account.
+
+## Quota-aware routing within a tier
+
+When a tier holds several accounts and nothing explicit decides, routing serves the
+account with the **most quota left**. Explicit choices still win: a named model, a pin or
+your preferred crew account decides the account before quota does; a named tier, a named
+effort, a premium request and inherited later steps still apply, and quota only ranks
+the accounts inside the tier they select.
+
+**What counts as quota.** Each account's reading is its **largest applicable pool**: a
+prepaid credit or key budget first, then the longest window (weekly over five-hour), and
+of two pools the same length the more used one. Readings come from two places:
+
+- the engine's own usage reports, read once a minute: Claude's latest rate-limit windows
+  (5-hour and 7-day) after its first turn, and the provider engine's usage headers;
+- the provider quota checks above (ChatGPT windows, Copilot chat and premium requests,
+  OpenRouter key budget).
+
+A window past its reset time counts as unused. An account with **no quota left** under
+any limit (a window at 100% that hasn't reset, or a spent budget) is never used until it
+resets; Copilot's monthly premium requests rank but never cut an account off, since
+Copilot keeps serving included models.
+
+**Reserve marks.** In **Settings ▸ Accounts**, select an account and press `m` (or
+right-click ▸ *Reserve mark…*) to set its reserve mark: a **percent used**, 1 to 99.
+Once its largest pool reaches that mark, the account is *held in reserve*: other accounts
+in the tier serve first. Leave the field empty for no mark. Each account's *Routing* line
+shows what routing reads ("7-day window 60% used · reserve at 55% used · held in
+reserve"). Marks are per account, so two keys on the same provider can differ.
+
+**The order within a tier**, best first:
+
+1. Under its mark (and under 90% used): the least used serves.
+2. Subscriptions whose quota is unknown.
+3. Nearly used up (90% or more) but under its mark.
+4. In reserve: the one **least far past its mark**, ties going to the least used overall.
+5. Pay-per-token API keys whose quota is unknown.
+
+Then subscriptions before keys, newer models in the same family, and placement order.
+With no marks set this is a plain comparison of quota left. For example, with Claude at
+60% used (mark 55%), ChatGPT at 40% (mark 30%) and a DeepSeek key at 80% (mark 75%), all
+three are in reserve; Claude and DeepSeek are 5 points past and ChatGPT 10, and Claude
+wins the tie by being less used. The routing record says when quota made the choice
+("Quota chose its claude account (60% used, past its 55% reserve mark) over custom (80%
+used, past its 75% reserve mark)").
+
+**Unknown quota** is never read as all left, nor as used up. Claude reports usage only
+through its engine, so a Claude account shows *quota unknown* until its first turn;
+API keys from Anthropic, OpenAI, Gemini and custom endpoints have no quota source and
+serve after every subscription (a key with a known budget, such as OpenRouter's,
+competes on quota like any other account).
 
 ## Effort belongs to the entry
 
@@ -252,15 +305,20 @@ routing never changes those settings. Secondmates follow the same settings.
   rather than a crew entry's effort, adjusted to the model's supported efforts.
   An explicitly selected model may use an API key as well as a subscription.
 
-Changes apply at the next idle moment, never mid-turn.
+Changes apply at the next idle moment, never mid-turn. Quota and reserve marks do not
+move the Quartermaster's own seat between accounts, since it would switch engines at
+every idle moment; they rank crewmates only. An account with no quota left is still
+skipped.
 
 ## Availability and fallbacks
 
 Routing skips models that cannot handle the task's images or context, accounts
 at their limit, and accounts that do not support the selected combination's
 effort (unless a named effort replaces it). Within a tier, it prefers your
-preferred crew account, then subscriptions over API keys, allowance at risk of
-going unused, and newer models in the same family. Ties retain placement order.
+preferred crew account, then the account with the most quota left as described in
+[Quota-aware routing within a tier](#quota-aware-routing-within-a-tier), then
+subscriptions over API keys and newer models in the same family. Ties retain
+placement order.
 
 If no entry can serve in the chosen level, it tries **Low → Medium → High**,
 **Medium → High → Low**, or **High → Medium → Low**. Each fallback uses the

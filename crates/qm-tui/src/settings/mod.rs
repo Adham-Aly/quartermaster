@@ -263,6 +263,8 @@ impl Picker {
 pub(crate) enum FieldFor {
     /// A new label for account `usize`.
     Label(usize),
+    /// Account `usize`'s reserve mark, a percent used; empty clears it.
+    ReserveMark(usize),
     /// An API key for a provider.
     ApiKey(&'static str),
     /// A new API key for account `usize`, whose key stopped working.
@@ -285,7 +287,7 @@ impl std::fmt::Debug for Field {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let text = match self.purpose {
             FieldFor::ApiKey(_) | FieldFor::ReconnectKey(_) => "<redacted>",
-            FieldFor::Label(_) | FieldFor::BaseUrl => self.text.as_str(),
+            FieldFor::Label(_) | FieldFor::ReserveMark(_) | FieldFor::BaseUrl => self.text.as_str(),
         };
         f.debug_struct("Field")
             .field("purpose", &self.purpose)
@@ -529,7 +531,7 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
     match tab {
         Tab::Accounts => (
             "right-click an account for more",
-            "⏎ open · p pause · * preferred · esc close",
+            "⏎ open · p pause · m reserve mark · * preferred · esc close",
         ),
         Tab::ModelLevels => (
             "drag to move · right-click for options",

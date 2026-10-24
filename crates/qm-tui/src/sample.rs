@@ -902,6 +902,8 @@ pub(crate) fn settings_with(login: SampleLogin) -> Settings {
     claude.quota_problem = Some(String::from(
         "Quota lookup is not supported for this provider or credential type.",
     ));
+    claude.reserve_at = Some(80);
+    claude.routing = Some(String::from("7-day window 35% used · reserve at 80% used"));
     let mut chatgpt = sample_account(2, "ChatGPT Pro", "Sign in with ChatGPT · provider engine");
     chatgpt.usage = Some(String::from(
         "today: 9 turns · 63k input · 8k output tokens",
@@ -912,8 +914,15 @@ pub(crate) fn settings_with(login: SampleLogin) -> Settings {
     ];
     chatgpt.quota_checked_at = Some(String::from("today 12:03"));
     chatgpt.quota_refreshing = true;
+    chatgpt.reserve_at = Some(5);
+    chatgpt.routing = Some(String::from(
+        "7-day window 6% used · reserve at 5% used · held in reserve",
+    ));
     let mut key = sample_account(3, "Anthropic key", "API key · pay per token");
     key.status = AccountStatus::Paused;
+    key.routing = Some(String::from(
+        "quota unknown (pay-per-token keys serve last) · no reserve mark",
+    ));
 
     let mut claude_login = sample_provider(ProviderId::Claude, "Claude", LoginMethod::Detected);
     claude_login.connected = Some(String::from("logged in · Max"));
