@@ -95,8 +95,8 @@ pub struct BriefBuildsOn {
     pub answer_path: String,
 }
 
-/// Where a crewmate works. A branch is cut from a settled base; a folder is a plain folder whose
-/// files are the work, with no git and nothing to commit.
+/// Where a crewmate works. A branch is cut from a settled base; a folder is worked in place, its
+/// files the work, with nothing to commit: a plain folder, or a repository's own folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BriefWorkspace {
     /// The task's own branch, `branch` (`tasks.branch`: `fix/upload-retry-on-slow-tmp`).
@@ -108,8 +108,9 @@ pub enum BriefWorkspace {
         start_ref: String,
         start_commit: CommitSha,
     },
-    /// The folder the task edits directly: a plain folder, or the user's checkout in place.
-    Folder { path: String },
+    /// The folder the task edits directly: a plain folder, or, when `repository`, the user's
+    /// checkout in place.
+    Folder { path: String, repository: bool },
 }
 
 /// Everything a brief says, recorded by the core when the task started.
@@ -237,11 +238,16 @@ fn header(out: &mut String, f: &BriefFacts) {
             }
         }
     };
+    let delivery = match f.workspace {
+        BriefWorkspace::Folder {
+            repository: true, ..
+        } => "in place",
+        _ => delivery_words(f.delivery),
+    };
     let _ = writeln!(
         out,
-        "Project {} · Delivery {} · Verification {verification}",
+        "Project {} · Delivery {delivery} · Verification {verification}",
         neutralise(&f.project),
-        delivery_words(f.delivery)
     );
     let fate = if is_review(f.kind) {
         "review only: change and commit nothing".to_owned()
@@ -276,12 +282,13 @@ fn header(out: &mut String, f: &BriefFacts) {
                 "Evidence folder $QM_EVIDENCE_DIR, outside the worktree; never commit it\n",
             );
         }
-        BriefWorkspace::Folder { path } => {
-            let _ = writeln!(
-                out,
-                "Folder {} · no branch, no git · {fate}",
-                neutralise(path)
-            );
+        BriefWorkspace::Folder { path, repository } => {
+            let git = if *repository {
+                "a repository, worked in place: no branch of your own"
+            } else {
+                "no branch, no git"
+            };
+            let _ = writeln!(out, "Folder {} · {git} · {fate}", neutralise(path));
             out.push_str("Evidence folder $QM_EVIDENCE_DIR, outside the folder you work in\n");
         }
     }
@@ -595,9 +602,25 @@ fn section_delivery(out: &mut String, f: &BriefFacts) {
             "Commit your work on this branch. Settling merges it into the branch the user's checkout\n\
              has checked out; never touch the checkout yourself.\n",
         ),
+        DeliveryMode::Folder
+            if matches!(
+                f.workspace,
+                BriefWorkspace::Folder {
+                    repository: true,
+                    ..
+                }
+            ) =>
+        {
+            out.push_str(
+                "Work directly in the repository's own folder, on whatever its checkout has checked out.\n\
+                 Don't commit, branch or push unless the user asks: your edits are final, and settling\n\
+                 marks the task done; nothing is undone when the task closes.\n",
+            );
+        }
         DeliveryMode::Folder => out.push_str(
-            "Work directly in the folder. There's no git here: nothing to commit, push or open. Your\n\
-             edits are final, and settling marks the task done; nothing is undone when the task closes.\n",
+            "Work directly in the folder. There's no git here: nothing to commit, push or open, and\n\
+             don't make it a repository unless the user asks. Your edits are final, and settling marks\n\
+             the task done; nothing is undone when the task closes.\n",
         ),
     }
 }
@@ -833,6 +856,7 @@ mod report_tests {
             verification: BriefVerification::None,
             workspace: BriefWorkspace::Folder {
                 path: "/project".to_owned(),
+                repository: false,
             },
             pr_target: None,
             ports: PortBlock { base: 41_000 },

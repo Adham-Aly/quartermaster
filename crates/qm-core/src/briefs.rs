@@ -150,6 +150,7 @@ pub fn brief_facts(
     let workspace = if inputs.delivery == DeliveryMode::Folder {
         BriefWorkspace::Folder {
             path: inputs.folder.clone(),
+            repository: inputs.project_delivery != DeliveryMode::Folder,
         }
     } else {
         BriefWorkspace::Branch {

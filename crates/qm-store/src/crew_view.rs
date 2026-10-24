@@ -55,6 +55,9 @@ pub struct BriefInputs {
     /// The project has a GitHub remote (the workspace and local-only projects don't).
     pub has_remote: bool,
     pub delivery: DeliveryMode,
+    /// The project's own delivery: anything but a plain folder means its folder is a repository,
+    /// even when this task works in it in place.
+    pub project_delivery: DeliveryMode,
     /// The task's level and where it came from; `None` for tasks with no level.
     pub verification: Option<(VerificationLevel, VerificationSource)>,
     /// The base branch typed for this task, if one was.
@@ -120,7 +123,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
                     p.github_remote IS NOT NULL, t.delivery_mode, t.verification_level,
                     t.verification_source, t.base_branch, t.base_ref, t.base_commit, t.port_base,
                     t.goal, t.instructions, t.constraints, t.tests_required, t.builds_on,
-                    t.retry_of, p.path, t.branch
+                    t.retry_of, p.path, t.branch, p.delivery_mode
              FROM tasks AS t
              JOIN projects AS p ON p.id = t.project_id
              JOIN agents AS a ON a.id = t.supervisor_id
@@ -152,6 +155,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
                     retry_of: r.get(19)?,
                     path: r.get(20)?,
                     branch: r.get(21)?,
+                    project_delivery: r.get(22)?,
                 })
             },
         )
@@ -186,6 +190,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
         default_branch: raw.default_branch,
         has_remote: raw.has_remote,
         delivery: raw.delivery,
+        project_delivery: raw.project_delivery,
         verification: raw.level.zip(raw.source),
         base_branch: raw.base_branch,
         base_ref: raw.base_ref,
@@ -224,6 +229,7 @@ struct RawBrief {
     retry_of: Option<TaskId>,
     path: String,
     branch: Option<String>,
+    project_delivery: DeliveryMode,
 }
 
 /// The user's own words for `task`, copied by the app: the stored message's text when the task

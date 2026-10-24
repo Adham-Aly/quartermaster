@@ -13,6 +13,7 @@ fn plan_facts() -> BriefFacts {
         verification: BriefVerification::None,
         workspace: BriefWorkspace::Folder {
             path: "/project".into(),
+            repository: false,
         },
         pr_target: None,
         ports: PortBlock { base: 42000 },
