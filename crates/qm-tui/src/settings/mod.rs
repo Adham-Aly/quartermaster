@@ -149,8 +149,7 @@ pub(crate) enum SettingsHit {
     ResetKinds,
     /// Projects: one of a project's two autonomy buttons (normal, auto).
     ProjectAutonomy(usize, qm_types::domain::Autonomy),
-    /// System: the notifications switch and the setup check's "Open".
-    NotificationsSwitch,
+    /// System: the setup check's "Open".
     SetupCheck,
     /// Connect: a provider row and its button, "Add key", and the login's buttons.
     Provider(usize),
@@ -519,10 +518,7 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
             "click to change",
             "space pin · c model · f fallback · q quartermaster · e effort · −/+ window · esc",
         ),
-        Tab::System => (
-            "click to change",
-            "n notifications · s setup check · esc close",
-        ),
+        Tab::System => ("click to open", "s setup check · esc close"),
         Tab::Projects => ("click to change", "a normal or auto · esc close"),
     }
 }

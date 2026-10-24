@@ -3,7 +3,7 @@
 //!
 //! Each source is read directly, never scraped from `snapshot.conversation`, so a request older
 //! than the conversation's window is still listed. This is the only place cards reach the UI:
-//! the chat carries none, and desktop notifications read this list (`notifications`).
+//! the chat carries none.
 
 use crate::api::{ApiPart, Handled, MODEL_SETUP_NOTICE, notice_card, question_card};
 use crate::held::HeldService;

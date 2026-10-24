@@ -390,18 +390,11 @@ impl App {
     }
 
     fn on_system_key(&mut self, code: KeyCode) -> bool {
-        match code {
-            KeyCode::Char('n' | ' ') => self.toggle_notifications(),
-            KeyCode::Char('s') => self.show(Screen::Setup),
-            _ => return false,
+        if code != KeyCode::Char('s') {
+            return false;
         }
+        self.show(Screen::Setup);
         true
-    }
-
-    /// Switches the bell and desktop notifications.
-    fn toggle_notifications(&mut self) {
-        let enabled = !self.view.settings.model.notifications;
-        self.intend(Command::SetNotifications { enabled });
     }
 
     fn on_connect_key(&mut self, code: KeyCode, now: Instant) -> bool {
@@ -596,7 +589,6 @@ impl App {
                 self.settings_set(|s| &mut s.routing_row, 0);
                 self.toggle_pin();
             }
-            SettingsHit::NotificationsSwitch => self.toggle_notifications(),
             SettingsHit::ProjectAutonomy(i, autonomy) => {
                 self.settings_set(|s| &mut s.project_row, i);
                 if self.snapshot.projects.get(i).map(|p| p.autonomy) != Some(autonomy) {

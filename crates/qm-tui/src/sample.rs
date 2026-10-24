@@ -957,7 +957,6 @@ pub(crate) fn settings_with(login: SampleLogin) -> Settings {
         )),
         providers,
         login: Some(login),
-        notifications: true,
         unavailable: None,
         tier_efforts: qm_types::config::TierEfforts::default(),
         autocompact_window: qm_types::config::AutocompactWindow::default(),

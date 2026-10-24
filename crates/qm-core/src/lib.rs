@@ -26,7 +26,6 @@ pub mod held;
 pub mod inbox;
 pub mod jobs;
 pub mod markers;
-pub mod notifications;
 pub mod parent_channel;
 pub mod places;
 pub mod plans;
