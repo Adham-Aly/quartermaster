@@ -695,11 +695,13 @@ pub(crate) enum StartOutcome {
 }
 
 /// The place `req` names: a listed project's folder, a folder (its project found by the git-root
-/// rule), or your home folder. A repository new to the app has its legacy task numbers reserved.
+/// rule), or your home folder. With `create`, a folder that doesn't exist yet is made first, with
+/// any missing parents. A repository new to the app has its legacy task numbers reserved.
 pub(crate) async fn find_place(
     svc: &TaskService,
     project: Option<String>,
     folder: Option<String>,
+    create: bool,
 ) -> Result<Place, ToolFailure> {
     if let Some(name) = project {
         let lookup = name.clone();
@@ -743,13 +745,16 @@ pub(crate) async fn find_place(
     let git = svc.deps().git.clone();
     let env = svc.deps().inherited_env.clone();
     let place = tokio::task::spawn_blocking(move || {
-        Resolver {
+        let resolver = Resolver {
             home: &home,
             data_dir: &data,
             git: git.program(),
             env: &env,
+        };
+        if create {
+            resolver.create(&text)?;
         }
-        .resolve(&text, &plain)
+        resolver.resolve(&text, &plain)
     })
     .await
     .map_err(|e| ToolFailure::Failed(e.to_string()))?
@@ -862,7 +867,13 @@ pub(crate) async fn start_when_ready(
         .await
         .map_err(|e| failed(&e))??;
     let authority = how.authority;
-    let place = find_place(svc, req.project.clone(), req.folder.clone()).await?;
+    let place = find_place(
+        svc,
+        req.project.clone(),
+        req.folder.clone(),
+        req.create_folder,
+    )
+    .await?;
     let req_copy = req.clone();
     let home = svc.deps().home.clone();
     let now = svc.clock().now();
@@ -1940,6 +1951,7 @@ pub(crate) async fn start_retry(
         folder,
         project: by_name,
         in_place: row.in_place && project.delivery != DeliveryMode::Folder,
+        create_folder: false,
         kind: row.kind,
         title: row.title.clone(),
         goal: row.goal.clone(),

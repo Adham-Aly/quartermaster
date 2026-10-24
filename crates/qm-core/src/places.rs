@@ -86,6 +86,44 @@ impl Resolver<'_> {
         Ok(self.place_of(folder, plain))
     }
 
+    /// Makes the folder `text` names (absolute, or from `~`) with any missing parents, when the
+    /// user asked for a new one. An existing folder is left as it is. Refused inside the app's own
+    /// data folder, like any place. Blocking.
+    pub(crate) fn create(&self, text: &str) -> Result<(), String> {
+        let text = text.trim();
+        if !(text.starts_with('/') || text == "~" || text.starts_with("~/")) {
+            return Err(format!(
+                "{text} isn't an absolute path: write it from / or from ~"
+            ));
+        }
+        let path = expand(text, Some(self.home));
+        if path.is_dir() {
+            return Ok(());
+        }
+        if path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(format!(
+                "{text} has a .. in it: name the new folder by its own path"
+            ));
+        }
+        // Judge where it would land by its nearest existing folder, symlinks resolved.
+        let existing = path
+            .ancestors()
+            .find(|a| a.exists())
+            .map_or_else(|| PathBuf::from("/"), real);
+        let data = real(self.data_dir);
+        if existing.starts_with(&data) {
+            return Err(format!(
+                "{} would be inside the app's own data folder, so no task works there",
+                path.display()
+            ));
+        }
+        std::fs::create_dir_all(&path)
+            .map_err(|e| format!("{} couldn't be made: {e}", path.display()))
+    }
+
     /// The place of a listed project's own folder, its repository facts read again (they may
     /// have changed since it was registered). Blocking: it runs git.
     pub(crate) fn at_root(&self, root: PathBuf) -> Place {
@@ -568,6 +606,29 @@ mod tests {
         let plain = register(&conn, &r.at_root(kept.path.clone()), &home, at).unwrap();
         assert_eq!(plain.delivery, DeliveryMode::Folder);
         assert_eq!(plain.github_remote, None);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_new_folder_is_made_when_asked_but_never_in_the_app_folder() {
+        let base = scratch("create");
+        let home = base.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let data = base.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let env = env();
+        let r = resolver(&home, &data, &env);
+        assert!(r.resolve("~/trips/japan", &[]).is_err());
+        r.create("~/trips/japan").unwrap();
+        let place = r.resolve("~/trips/japan", &[]).unwrap();
+        assert_eq!(place.root, home.join("trips/japan"));
+        assert!(place.repo.is_none());
+        // Already there: left alone.
+        r.create("~/trips/japan").unwrap();
+        assert!(r.create(data.join("tasks/x").to_str().unwrap()).is_err());
+        assert!(!data.join("tasks").exists());
+        assert!(r.create("~/trips/../../data/x").is_err());
+        assert!(r.create("trips").is_err());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

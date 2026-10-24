@@ -35,6 +35,9 @@ pub struct StartCrewmateArgs {
     // words ask for it. A plain folder is always worked in place.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub in_place: bool,
+    // The folder doesn't exist yet and the user asked for a new one: the app makes it first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub create_folder: bool,
     pub kind: TaskKind,
     // Conventional-commit style, e.g. "fix(auth): token refresh race".
     pub title: String,
@@ -113,6 +116,9 @@ pub struct SecondmateStartCrewmateArgs {
     // Work in the folder itself rather than a worktree: only when the user's own words ask for it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub in_place: bool,
+    // The folder doesn't exist yet and the user asked for a new one: the app makes it first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub create_folder: bool,
     // The routed request this task serves, whose stored fields the app applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation: Option<CorrelationId>,

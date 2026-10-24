@@ -126,6 +126,7 @@ pub(crate) fn prepare_start(
             .map(|p| p.trim().to_owned())
             .filter(|p| !p.is_empty()),
         in_place: args.in_place,
+        create_folder: args.create_folder,
         kind: args.kind,
         title: args.title.trim().to_owned(),
         goal: args.goal,
@@ -316,6 +317,7 @@ mod tests {
             folder: None,
             project: None,
             in_place: false,
+            create_folder: false,
             kind: TaskKind::Research,
             title: "research(x): inspect".into(),
             goal: "inspect".into(),

@@ -1,5 +1,5 @@
 Start now; use schedule_crewmate to defer. App copies user words; returns task, branch, routing.
-- folder or project: absolute/~ folder or listed project; neither means home. in_place: only if user asked for checkout work.
+- folder or project: absolute/~ folder or listed project; neither means home; create_folder if user asked for a new one. in_place: only if user asked for checkout work.
 - kind: build, fix, plan, research, lookup, teach, review, reproduce, unclear. Classify work, not desired strength.
 - title: conventional-commit summary. goal: checkable done. constraints: text, optional freeze paths. tests_required: true if asked.
 - builds_on: finished plan, confirmed reproduction/diagnosis, or work to review; checked. Plan-based code needs approval or completion under auto.

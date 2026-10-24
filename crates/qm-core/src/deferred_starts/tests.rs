@@ -19,6 +19,7 @@ fn request() -> StartRequest {
         folder: None,
         project: None,
         in_place: false,
+        create_folder: false,
         kind: TaskKind::Research,
         title: "test(core): investigate follow-up".into(),
         goal: "Answer the question".into(),

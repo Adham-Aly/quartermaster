@@ -46,7 +46,7 @@ pub(crate) async fn set_task_project(
             "{task} works in a worktree of {name}; its label follows its repository"
         )));
     }
-    let place = find_place(svc, project, folder).await?;
+    let place = find_place(svc, project, folder, false).await?;
     let home = svc.deps().home.clone();
     let at = svc.clock().now();
     let status = row.status;

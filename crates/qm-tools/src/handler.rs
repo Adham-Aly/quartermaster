@@ -537,6 +537,10 @@ pub struct StartRequest {
     pub project: Option<String>,
     /// Work in the folder itself, not a worktree (a user-words field).
     pub in_place: bool,
+    /// Make `folder` first, with any missing parents: the user asked for a new folder. Deferred
+    /// starts saved before this field existed read as false.
+    #[serde(default)]
+    pub create_folder: bool,
     pub kind: TaskKind,
     pub title: String,
     pub goal: String,

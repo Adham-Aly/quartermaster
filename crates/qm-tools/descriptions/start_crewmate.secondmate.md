@@ -1,5 +1,5 @@
 Start now in scope; use schedule_crewmate to defer. App copies user words/branch.
-- folder or project: absolute/~ folder or scoped project. in_place: only if user asked for checkout work.
+- folder or project: absolute/~ folder or scoped project; create_folder if user asked for a new one. in_place: only if user asked for checkout work.
 - correlation: request ID; pass on every serving task. App applies authorized choices; don't reassert.
 - base_branch: omit; if supplied must match request, standing branch or default.
 - kind: build, fix, plan, research, lookup, teach, review, reproduce, unclear. Classify work, not strength.
