@@ -430,12 +430,14 @@ pub(crate) fn deliver_to_crewmate(
             at,
         },
     )?;
-    // A crewmate waiting on a decision, or a planner on the user's reply to its page.
+    // A crewmate waiting on a decision, a planner on the user's reply to its page, or a reviewer
+    // on the user's go-ahead (steered back to work, it reports again).
     let waiting_on_decision = row.status == TaskStatus::Waiting
-        && row
-            .waiting_on
-            .as_ref()
-            .is_some_and(|w| w.get("decision").is_some() || w.get("plan").is_some());
+        && row.waiting_on.as_ref().is_some_and(|w| {
+            w.get("decision").is_some()
+                || w.get("plan").is_some()
+                || super::review::is_review_wait(w)
+        });
     let mut status = row.status;
     if waiting_on_decision || row.status == TaskStatus::Reported {
         task_store::set_status(tx, task, row.status, TaskStatus::Running, at)?;

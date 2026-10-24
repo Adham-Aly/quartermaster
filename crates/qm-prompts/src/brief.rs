@@ -646,7 +646,11 @@ fn section_reporting(out: &mut String, f: &BriefFacts) {
         TaskKind::Review => out.push_str(
             "Call report with review: the verdict (pass, findings or blocked); each finding with its\n\
              severity, file and line, one sentence and an action (auto_fix, ask_user or no_op); and\n\
-             the risk (low, medium or high) with its reason. Put the whole review in answer.\n",
+             the risk (low, medium or high) with its reason. Put the whole review in answer.\n\
+             Under normal autonomy the user reads your review before your supervisor acts on it:\n\
+             before reporting done, read $QM_REPORT_DIR/SKILL.md, copy $QM_REPORT_DIR/template.html\n\
+             to $QM_REPORT_DIR/report.html and customize it into your complete static report of what\n\
+             you found. Never commit it. Under auto autonomy it isn't needed.\n",
         ),
         TaskKind::Reproduce => out.push_str(
             "Call report with your whole answer in answer, opening with reproduced: yes or\n\
@@ -874,6 +878,21 @@ mod report_tests {
     }
 
     #[test]
+    fn a_review_writes_its_static_report_under_normal_autonomy_only() {
+        let text = render_brief(&facts(TaskKind::Review));
+        for required in [
+            "Under normal autonomy the user reads your review before your supervisor acts on it",
+            "$QM_REPORT_DIR/SKILL.md",
+            "$QM_REPORT_DIR/template.html",
+            "$QM_REPORT_DIR/report.html",
+            "Put the whole review in answer.",
+            "Under auto autonomy it isn't needed.",
+        ] {
+            assert!(text.contains(required), "missing {required}");
+        }
+    }
+
+    #[test]
     fn exactly_four_kinds_require_static_report_artifacts() {
         for kind in [
             TaskKind::Lookup,
@@ -900,7 +919,6 @@ mod report_tests {
             TaskKind::Build,
             TaskKind::Fix,
             TaskKind::Plan,
-            TaskKind::Review,
             TaskKind::Unclear,
         ] {
             let text = render_brief(&facts(kind));
@@ -922,6 +940,7 @@ mod report_tests {
         for engine in [PromptEngine::Claude, PromptEngine::Provider] {
             let prompt = crewmate_prompt(engine, &[], &[], None);
             assert!(prompt.contains("For a done lookup, research, reproduce or teach task"));
+            assert!(prompt.contains("a done review under normal autonomy"));
             assert!(prompt.contains("$QM_REPORT_DIR/SKILL.md"));
             assert!(prompt.contains("$QM_REPORT_DIR/template.html"));
             assert!(prompt.contains("$QM_REPORT_DIR/report.html"));

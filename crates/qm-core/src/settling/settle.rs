@@ -126,6 +126,12 @@ pub(crate) async fn settle(
     // 2. An answer, whatever the kind: nothing lands; the answer is kept and the task closes. A
     // task that hasn't reported done yet goes on to the refusal below.
     let delivered = crate::tasks::delivered::of_report(&loaded.row, report.as_ref());
+    if crate::tasks::review::awaits_go_ahead(&loaded.row) {
+        return Err(refuse(format!(
+            "{task}'s review report waits for the user's go-ahead on its card; settle it after \
+             they give it (approve_review records a go-ahead they give you in chat)"
+        )));
+    }
     if done && delivered == Deliverable::Answer {
         if loaded.row.status == TaskStatus::Reported && done {
             tasks.close_task(caller, task).await?;

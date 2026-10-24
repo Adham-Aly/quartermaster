@@ -627,6 +627,18 @@ impl ToolHost for CoreToolHost {
         })
     }
 
+    fn approve_review<'a>(
+        &'a self,
+        caller: &'a Caller,
+        task: TaskId,
+    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
+        Box::pin(async move {
+            offered_to(caller, "approve_review")?;
+            let svc = self.tasks("approve_review")?;
+            crate::tasks::review::approve_review(svc, caller, task).await
+        })
+    }
+
     fn ask_decision<'a>(
         &'a self,
         caller: &'a Caller,

@@ -1,9 +1,14 @@
 //! Agent-authored static findings, independent of interactive plans.
+//!
+//! Answer tasks (lookup, research, reproduce, teach) always deliver `report.html`. A review
+//! delivers one only under normal autonomy, where the user reads it before its supervisor acts on
+//! the findings ([`crate::tasks::review`]). Under auto autonomy, as with `plan.html`, there is no
+//! document: the findings go to the supervisor at once.
 
 pub mod api;
 
 use qm_types::data_dir::{TaskPaths, private_folder};
-use qm_types::domain::TaskKind;
+use qm_types::domain::{Autonomy, TaskKind};
 use std::fs;
 use std::io::{self, Write as _};
 use std::os::unix::fs::OpenOptionsExt as _;
@@ -14,17 +19,29 @@ const TEMPLATE: &str = include_str!("template.html");
 const SKILL: &str = include_str!("SKILL.md");
 const MAX_PAGE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// These kinds deliver a human-readable document as well as their machine-readable answer.
-pub const fn required(kind: TaskKind) -> bool {
+/// The answer kinds: they deliver a human-readable document under every autonomy.
+pub const fn answers_with_report(kind: TaskKind) -> bool {
     matches!(
         kind,
         TaskKind::Lookup | TaskKind::Research | TaskKind::Reproduce | TaskKind::Teach
     )
 }
 
+/// Whether a done report of `kind`, in a project at `autonomy`, needs `report.html` as well as its
+/// machine-readable answer: every answer kind, and a review under normal autonomy.
+pub const fn required(kind: TaskKind, autonomy: Autonomy) -> bool {
+    answers_with_report(kind) || matches!((kind, autonomy), (TaskKind::Review, Autonomy::Normal))
+}
+
+/// Whether `kind` gets the template and skill when it starts. A review always does: its project's
+/// autonomy can change while it runs.
+pub const fn seeded(kind: TaskKind) -> bool {
+    answers_with_report(kind) || matches!(kind, TaskKind::Review)
+}
+
 /// Supply a separate baseline, never overwrite a crewmate's report on resume.
 pub fn prepare(paths: &TaskPaths, kind: TaskKind) -> io::Result<()> {
-    if !required(kind) {
+    if !seeded(kind) {
         return Ok(());
     }
     let dir = paths.artifacts.join("report");
@@ -142,14 +159,20 @@ mod tests {
             symlink(dir.join(PAGE), dir.join("assets/linked.html")).unwrap();
             assert!(check(&paths).is_err());
         }
-        for kind in [
-            TaskKind::Plan,
-            TaskKind::Review,
-            TaskKind::Build,
-            TaskKind::Fix,
-        ] {
-            assert!(!required(kind));
+        for kind in [TaskKind::Plan, TaskKind::Build, TaskKind::Fix] {
+            for autonomy in [Autonomy::Normal, Autonomy::Auto] {
+                assert!(!required(kind, autonomy));
+            }
+            assert!(!seeded(kind));
         }
+        // A review: seeded always, required only under normal autonomy (like plan.html).
+        assert!(seeded(TaskKind::Review));
+        assert!(required(TaskKind::Review, Autonomy::Normal));
+        assert!(!required(TaskKind::Review, Autonomy::Auto));
+        let review = data.task(TaskId::new(9).unwrap(), TaskId::new(9).unwrap().own_label());
+        prepare(&review, TaskKind::Review).unwrap();
+        assert!(review.artifacts.join("report/template.html").is_file());
+        assert!(review.artifacts.join("report/SKILL.md").is_file());
         fs::remove_dir_all(root).unwrap();
     }
 }

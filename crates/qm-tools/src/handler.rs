@@ -266,6 +266,17 @@ pub trait ToolHost: Send + Sync {
         Box::pin(async { Err(ToolFailure::not_available("approve_plan")) })
     }
 
+    /// `approve_review`: the user's go-ahead on a review's findings (the handler has checked the
+    /// turn).
+    fn approve_review<'a>(
+        &'a self,
+        caller: &'a Caller,
+        task: TaskId,
+    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
+        let _ = (caller, task);
+        Box::pin(async { Err(ToolFailure::not_available("approve_review")) })
+    }
+
     /// A crewmate asks its supervisor for a decision.
     fn ask_decision<'a>(
         &'a self,

@@ -79,6 +79,7 @@ mod github;
 mod instructions;
 mod plans;
 mod projects;
+mod reviews;
 mod secondmates;
 
 pub use common::*;
@@ -90,4 +91,5 @@ pub use github::*;
 pub use instructions::*;
 pub use plans::*;
 pub use projects::*;
+pub use reviews::*;
 pub use secondmates::*;

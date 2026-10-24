@@ -61,8 +61,9 @@ SELECT id, target_agent_id, kind, dedupe_key, delivered_turn_id, consumed_at FRO
 - `artifacts/T-n/C-n/` holds `plan/` and `evidence/`, removed once no open task reads them; a
   crewmate moved to another task (`crewmate.task_changed` event) leaves a link at its old folders
   (`qm-core` `retention.rs`, at start, at close and hourly); `attachments/` is swept at each start.
-  For done lookup, research, reproduce and teach tasks, `report/` (`QM_REPORT_DIR`) holds the
-  app-seeded `SKILL.md` and `template.html`, the agent-authored `report.html`, and local `assets/`.
+  For lookup, research, reproduce, teach and review tasks, `report/` (`QM_REPORT_DIR`) holds the
+  app-seeded `SKILL.md` and `template.html`, the agent-authored `report.html`, and local `assets/`
+  (a review needs `report.html` only under normal autonomy).
 - `seat/` and `secondmates/S-n/`: `home/`; `session/` is removed at each start.
 - A provider-engine agent's session is `<owner>/transcript/<session>.jsonl` (header line, then one
   line per message; replaced whole on compaction, removed on `/clear` or retire), so a restart resumes it. Claude's transcript is Claude's own, under `~/.claude/projects/`; the app keeps no copy.
@@ -82,6 +83,8 @@ SELECT id, target_agent_id, kind, dedupe_key, delivered_turn_id, consumed_at FRO
 - "Stuck": compare `agents.last_sign_of_life_at` with running `jobs`; the watchdogs post
   `task.quiet`, `task.watchdog` and `task.stuck` events.
 - A wake that "never arrived": check its row in `wakes` and whether a turn claimed it.
+  A done review under normal autonomy wakes nobody until the user's go-ahead: it sits `waiting`
+  with `waiting_on.review` (`task.review_to_user`, then `task.review_go_ahead` events).
 - A direct message to a worker never wakes the Quartermaster by itself: a batch of wakes made only
   of interventions starts no turn; it rides on the next one.
 - A report refused while `reported` or `settling` names the in-band path; a re-report

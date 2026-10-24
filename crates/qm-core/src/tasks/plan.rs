@@ -63,7 +63,8 @@ impl TaskService {
         Ok(Some(PlanMode::for_autonomy(project.autonomy)))
     }
 
-    /// Your autonomy change for the project named `project` reaches its open plans.
+    /// Your autonomy change for the project named `project` reaches its open plans, and under auto
+    /// its reviews waiting on your go-ahead.
     pub async fn autonomy_changed(&self, project: &str) {
         let name = project.to_owned();
         match self
@@ -71,7 +72,10 @@ impl TaskService {
             .call(move |conn| qm_store::projects::active_by_name(conn, &name))
             .await
         {
-            Ok(Some(p)) => autonomy_changed(self, p.id).await,
+            Ok(Some(p)) => {
+                autonomy_changed(self, p.id).await;
+                super::review::autonomy_changed(self, p.id).await;
+            }
             Ok(None) => {}
             Err(e) => {
                 tracing::error!(error = %e, "couldn't read the project whose autonomy changed");

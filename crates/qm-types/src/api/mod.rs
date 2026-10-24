@@ -115,6 +115,11 @@ pub enum Command {
     ApprovePlan {
         task: TaskId,
     },
+    /// Your Go ahead on a review's card (normal autonomy): its supervisor may now act on the
+    /// findings as you asked.
+    ApproveReview {
+        task: TaskId,
+    },
     /// Open the Diff screen for an approval card's held action, or close it with `None`: the core
     /// answers in the next snapshot's [`Snapshot::diff`].
     ShowDiff {
@@ -945,6 +950,8 @@ pub enum CardKind {
     Question,
     /// "☰ Plan …": a plan task's page, with its round and what it waits on.
     Plan,
+    /// "✎ Review ready": a review's static report, waiting on your go-ahead (normal autonomy).
+    Review,
 }
 
 /// What a card's button does.
@@ -971,6 +978,10 @@ pub enum CardAction {
     CopyPlanPath { path: String },
     /// A final plan card's "Approve": sends `Command::ApprovePlan`.
     ApprovePlan { task: TaskId },
+    /// A review card's "Open": sends `Command::OpenReport`.
+    OpenReport { task: TaskId },
+    /// A review card's "Go ahead": sends `Command::ApproveReview`.
+    ApproveReview { task: TaskId },
     /// A configuration item's "Open Settings".
     OpenSettings,
     /// A setup item's "Open Setup".
