@@ -416,6 +416,10 @@ pub struct StoredLaterStep {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<qm_types::domain::Tier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preference: Option<qm_types::model_preference::ModelPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
@@ -430,7 +434,9 @@ pub struct RequestOverrides {
 impl RequestOverrides {
     /// Whether the request names any override.
     pub fn is_empty(&self) -> bool {
-        self.model.is_none()
+        self.tier.is_none()
+            && self.preference.is_none()
+            && self.model.is_none()
             && self.effort.is_none()
             && !self.premium
             && self.later_steps.is_empty()
@@ -640,4 +646,44 @@ pub fn open_tasks_of(
         .query_map(params![agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+#[cfg(test)]
+mod override_tests {
+    use super::RequestOverrides;
+    use qm_types::domain::Tier;
+    use serde_json::json;
+
+    #[test]
+    fn request_overrides_keep_legacy_and_unknown_field_compatibility() {
+        for value in [json!({}), json!({"future_override": true})] {
+            let overrides: RequestOverrides = serde_json::from_value(value).unwrap();
+            assert!(overrides.is_empty());
+            assert_eq!(serde_json::to_value(overrides).unwrap(), json!({}));
+        }
+        let overrides: RequestOverrides = serde_json::from_value(json!({"premium": true})).unwrap();
+        assert!(overrides.premium);
+        assert!(overrides.tier.is_none());
+        assert!(overrides.preference.is_none());
+    }
+
+    #[test]
+    fn tier_and_preference_are_nonempty_and_roundtrip() {
+        for value in [
+            json!({"tier": "premium"}),
+            json!({"preference": {"selection": "test-model"}}),
+            json!({"tier": "high", "preference": {"selection": "test-model", "effort": "high"}}),
+        ] {
+            let overrides: RequestOverrides = serde_json::from_value(value.clone()).unwrap();
+            assert!(!overrides.is_empty());
+            assert_eq!(serde_json::to_value(overrides).unwrap(), value);
+        }
+        assert!(
+            !RequestOverrides {
+                tier: Some(Tier::High),
+                ..RequestOverrides::default()
+            }
+            .is_empty()
+        );
+    }
 }

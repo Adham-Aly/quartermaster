@@ -89,7 +89,7 @@ pub fn verify(
         Ok(())
     } else {
         Err(Refusal::new(
-            "model, effort and premium choices must cite an actual user message in this conversation; use choice_message to name it",
+            "model, tier, effort and premium choices must cite an actual user message in this conversation; use choice_message to name it",
         ))
     })
 }

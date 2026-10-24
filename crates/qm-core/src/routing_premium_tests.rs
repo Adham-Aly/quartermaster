@@ -123,6 +123,8 @@ impl Fixture {
             needs: Needs::default(),
             quick_verification: false,
             named_model: None,
+            preference: None,
+            named_tier: None,
             named_effort: None,
             premium: false,
             choice_message: None,
@@ -166,6 +168,210 @@ fn routed(outcome: RouteOutcome) -> RoutingRecord {
 fn used(record: &RoutingRecord) -> (Tier, String) {
     let c = record.choice.as_ref().unwrap();
     (c.tier, c.model.to_string())
+}
+
+/// A lookup with usable low and medium placements makes tier versus effort observable.
+fn lookup_fixture(name: &str) -> (Fixture, CrewmateFacts) {
+    let f = Fixture::new(name);
+    f.conn
+        .execute_batch(
+            "UPDATE placements SET tier = 'low' WHERE canonical = 'claude-fable-5-1';
+             UPDATE placements SET tier = 'medium' WHERE canonical = 'gpt-6-pro';",
+        )
+        .unwrap();
+    let mut facts = f.facts();
+    facts.kind = Decided::Answer {
+        value: TaskKind::Lookup,
+        by: DecidedBy::Declared,
+    };
+    (f, facts)
+}
+
+#[test]
+fn explicit_medium_tier_lookup_routes_medium_and_records_tier() {
+    let (f, mut facts) = lookup_fixture("tier-medium");
+    facts.named_tier = Some(Tier::Medium);
+    let record = routed(f.route(&facts));
+    assert_eq!(used(&record), (Tier::Medium, GPT.to_owned()));
+    assert_eq!(record.facts.user.tier, Some(Tier::Medium));
+    let stored: String = f
+        .conn
+        .query_row("SELECT facts FROM routing_decisions", [], |row| row.get(0))
+        .unwrap();
+    let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(stored["user"]["tier"], "medium");
+}
+
+#[test]
+fn medium_effort_lookup_stays_low() {
+    let (f, mut facts) = lookup_fixture("effort-medium");
+    facts.named_effort = Some(Effort::Medium);
+    let record = routed(f.route(&facts));
+    assert_eq!(used(&record), (Tier::Low, FABLE.to_owned()));
+    assert_eq!(record.choice.unwrap().effort, Effort::Medium);
+}
+
+#[test]
+fn explicit_tier_on_app_event_is_refused_without_recording() {
+    let (f, mut facts) = lookup_fixture("tier-app-event");
+    facts.authority = Authority::Turn(StartedBy::AppEvent);
+    facts.named_tier = Some(Tier::Medium);
+    assert!(matches!(f.route(&facts), RouteOutcome::Refused(_)));
+    assert_eq!(f.decisions(), 0);
+}
+
+#[test]
+fn explicit_tier_matching_retry_target_is_allowed() {
+    let f = Fixture::new("tier-retry-match");
+    let mut facts = f.facts();
+    facts.named_tier = Some(Tier::High);
+    facts.stronger_retry = Some(Tier::High);
+    assert_eq!(
+        used(&routed(f.route(&facts))),
+        (Tier::High, OPUS.to_owned())
+    );
+    assert_eq!(f.decisions(), 1);
+}
+
+#[test]
+fn explicit_tier_conflicting_with_retry_target_is_refused_without_recording() {
+    for unavailable in [false, true] {
+        let f = Fixture::new("tier-retry-conflict");
+        if unavailable {
+            // Premium can serve, but that must not override the computed high retry target.
+            f.cut_off(103);
+        }
+        let mut facts = f.facts();
+        facts.named_tier = Some(Tier::Premium);
+        facts.stronger_retry = Some(Tier::High);
+        match f.route(&facts) {
+            RouteOutcome::Refused(r) => {
+                assert!(r.reason.contains("premium"));
+                assert!(r.reason.contains("high"));
+                assert!(r.reason.contains("retry"));
+            }
+            other => panic!("expected a retry tier conflict refusal, got {other:?}"),
+        }
+        assert_eq!(f.decisions(), 0);
+    }
+}
+
+#[test]
+fn matching_high_retry_waits_when_only_premium_can_serve() {
+    let f = Fixture::new("tier-retry-match-unavailable");
+    f.cut_off(103);
+    let mut facts = f.facts();
+    facts.named_tier = Some(Tier::High);
+    facts.stronger_retry = Some(Tier::High);
+    assert!(matches!(f.route(&facts), RouteOutcome::Waiting { .. }));
+    assert_eq!(f.decisions(), 1);
+}
+
+#[test]
+fn explicit_tier_bypasses_always_use_pin() {
+    let (f, mut facts) = lookup_fixture("tier-pin");
+    facts.named_tier = Some(Tier::Medium);
+    let mut config = Config::default();
+    config.routing.always_use = Some(AlwaysUse {
+        model: id(OPUS),
+        fallback: None,
+    });
+    let record =
+        routed(route_crewmate(&f.conn, &config, &facts, &LoginHealth::new(), now()).unwrap());
+    assert_eq!(used(&record), (Tier::Medium, GPT.to_owned()));
+}
+
+#[test]
+fn named_model_outside_explicit_tier_is_refused_after_canonicalization() {
+    let (f, mut facts) = lookup_fixture("tier-model");
+    f.conn
+        .execute(
+            "UPDATE models SET model = 'account-fable' WHERE canonical = ?1",
+            [FABLE],
+        )
+        .unwrap();
+    facts.named_model = Some(id("account-fable"));
+    facts.named_tier = Some(Tier::Medium);
+    match f.route(&facts) {
+        RouteOutcome::Refused(r) => {
+            assert!(r.reason.contains(FABLE));
+            assert!(r.reason.contains("medium"));
+            assert!(r.reason.contains("Settings ▸ Model levels"));
+        }
+        other => panic!("expected a tier conflict refusal, got {other:?}"),
+    }
+    assert_eq!(f.decisions(), 0);
+    // Placement membership, not availability or capability, is the core's validation boundary.
+    f.conn.execute("INSERT INTO placements (canonical, tier, created_at, seq) VALUES (?1, 'medium', 0, 60)", [FABLE]).unwrap();
+    assert_eq!(
+        used(&routed(f.route(&facts))),
+        (Tier::Medium, FABLE.to_owned())
+    );
+}
+
+#[test]
+fn premium_conflicts_with_an_explicit_nonpremium_tier() {
+    let (f, mut facts) = lookup_fixture("tier-premium-conflict");
+    facts.named_tier = Some(Tier::Medium);
+    facts.premium = true;
+    match f.route(&facts) {
+        RouteOutcome::Refused(r) => assert!(r.reason.contains("premium conflicts")),
+        other => panic!("expected a premium conflict refusal, got {other:?}"),
+    }
+    assert_eq!(f.decisions(), 0);
+}
+
+#[test]
+fn preference_aliases_are_canonicalized_and_persisted() {
+    let f = Fixture::new("preference-alias");
+    f.conn
+        .execute(
+            "UPDATE models SET model = 'account-opus' WHERE canonical = ?1",
+            [OPUS],
+        )
+        .unwrap();
+    let mut facts = f.facts();
+    facts.preference = Some(qm_types::model_preference::ModelPreference {
+        selection: id("account-opus"),
+        provider: Some(Provider::Anthropic),
+        model: Some(id("account-opus")),
+        effort: Some(Effort::ExtraHigh),
+    });
+    let RouteOutcome::Routed(result) = f.route(&facts) else {
+        panic!("preference should route");
+    };
+    assert_eq!(used(&result.record), (Tier::High, OPUS.to_owned()));
+    assert_eq!(result.account_model, id("account-opus"));
+    let preference = result.record.facts.preference.as_ref().unwrap();
+    assert_eq!(preference.selection, id(OPUS));
+    assert_eq!(preference.model, Some(id(OPUS)));
+    assert!(result.record.why.contains("Your model preference selected"));
+    let stored: String = f
+        .conn
+        .query_row("SELECT facts FROM routing_decisions", [], |row| row.get(0))
+        .unwrap();
+    let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(stored["preference"]["selection"], OPUS);
+    assert_eq!(stored["preference"]["model"], OPUS);
+}
+
+#[test]
+fn stale_preference_is_not_refused_and_never_enables_premium() {
+    let f = Fixture::new("preference-stale");
+    for selection in ["missing-model", FABLE] {
+        let mut facts = f.facts();
+        facts.preference = Some(qm_types::model_preference::ModelPreference {
+            selection: id(selection),
+            provider: None,
+            model: None,
+            effort: None,
+        });
+        let record = routed(f.route(&facts));
+        assert_eq!(used(&record), (Tier::High, OPUS.to_owned()));
+        assert!(record.why.contains("normal routing was used"));
+        assert!(!record.facts.user.premium);
+    }
+    assert_eq!(f.decisions(), 2);
 }
 
 #[test]
@@ -296,6 +502,123 @@ fn a_named_premium_model_at_its_limit_waits_for_that_model() {
 }
 
 #[test]
+fn explicit_review_models_outrank_provider_diversification() {
+    for later in [false, true] {
+        let f = Fixture::new("review-explicit-model");
+        let mut facts = f.facts();
+        facts.kind = Decided::Answer {
+            value: TaskKind::Review,
+            by: DecidedBy::Declared,
+        };
+        facts.prefer_provider_other_than = Some(Provider::Anthropic);
+        if later {
+            facts.later_step = Some(AppliedLaterStep {
+                from: TaskId::new(7).unwrap(),
+                message: None,
+                model: Some(id(FABLE)),
+                effort: None,
+                premium: false,
+            });
+        } else {
+            facts.named_model = Some(id(FABLE));
+        }
+        let record = routed(f.route(&facts));
+        assert_eq!(used(&record), (Tier::Premium, FABLE.to_owned()));
+        assert_eq!(
+            record.facts.prefer_provider_other_than,
+            Some(Provider::Anthropic)
+        );
+    }
+}
+
+/// Two high-tier providers, with the builder's Anthropic model preferred by ordinary ranking.
+fn review_fixture(name: &str) -> (Fixture, CrewmateFacts) {
+    let f = Fixture::new(name);
+    f.conn
+        .execute(
+            "UPDATE placements SET tier = 'high' WHERE canonical = ?1",
+            [GPT],
+        )
+        .unwrap();
+    let mut facts = f.facts();
+    facts.kind = Decided::Answer {
+        value: TaskKind::Review,
+        by: DecidedBy::Declared,
+    };
+    facts.preference = Some(qm_types::model_preference::ModelPreference {
+        selection: id(OPUS),
+        provider: Some(Provider::Anthropic),
+        model: Some(id(OPUS)),
+        effort: None,
+    });
+    (f, facts)
+}
+
+#[test]
+fn stale_and_unavailable_review_preferences_restore_diversification() {
+    for unavailable in [false, true] {
+        let (f, mut facts) = review_fixture("review-invalid-preference");
+        if unavailable {
+            f.conn
+                .execute(
+                    "UPDATE placements SET tier = 'high' WHERE canonical = ?1",
+                    [FABLE],
+                )
+                .unwrap();
+            f.cut_off(101);
+            let preference = facts.preference.as_mut().unwrap();
+            preference.selection = id(FABLE);
+            preference.model = Some(id(FABLE));
+        } else {
+            facts.preference.as_mut().unwrap().selection = id("missing-model");
+        }
+        facts.prefer_provider_other_than = Some(Provider::Anthropic);
+        let record = routed(f.route(&facts));
+        assert_eq!(used(&record), (Tier::High, GPT.to_owned()));
+        assert!(!record.facts.preference_applied);
+        assert_eq!(record.facts.preference, facts.preference);
+        assert!(record.why.contains("preference did not select an entry"));
+        assert!(record.why.contains("normal review routing was used"));
+    }
+}
+
+#[test]
+fn valid_review_preference_outranks_provider_diversification() {
+    let (f, mut facts) = review_fixture("review-valid-preference");
+    facts.prefer_provider_other_than = Some(Provider::Anthropic);
+    let mut ordinary = facts.clone();
+    ordinary.preference = None;
+    assert_eq!(
+        used(&routed(f.route(&ordinary))),
+        (Tier::High, GPT.to_owned())
+    );
+    let record = routed(f.route(&facts));
+    assert_eq!(used(&record), (Tier::High, OPUS.to_owned()));
+    assert!(record.facts.preference_applied);
+    assert_eq!(record.facts.preference, facts.preference);
+    assert!(!record.why.contains("normal review routing was used"));
+}
+
+#[test]
+fn inherited_effort_suppresses_preference_but_keeps_review_diversification() {
+    let (f, mut facts) = review_fixture("review-inherited-effort");
+    facts.prefer_provider_other_than = Some(Provider::Anthropic);
+    facts.later_step = Some(AppliedLaterStep {
+        from: TaskId::new(7).unwrap(),
+        message: None,
+        model: None,
+        effort: Some(Effort::Low),
+        premium: false,
+    });
+    let record = routed(f.route(&facts));
+    assert_eq!(used(&record), (Tier::High, GPT.to_owned()));
+    assert_eq!(record.choice.as_ref().unwrap().effort, Effort::Low);
+    assert!(!record.facts.preference_applied);
+    assert_eq!(record.facts.preference, facts.preference);
+    assert!(record.why.contains("normal review routing was used"));
+}
+
+#[test]
 fn premium_with_every_premium_model_cut_off_runs_on_high_and_says_why() {
     let f = Fixture::new("all-cut-off");
     f.cut_off(101);
@@ -323,6 +646,94 @@ fn the_premium_models_are_found_through_placements() {
         tiers_of(&f.conn, &id("claude-nowhere-1")).unwrap(),
         Vec::new()
     );
+}
+
+// Tool boundary --------------------------------------------------------------------------------
+
+mod tier_tool_tests {
+    use super::*;
+    use qm_tools::defs::{RoutingSummary, TaskStarted};
+    use qm_tools::handler::{Dispatcher, ToolCx, ToolFailure, ToolHost, TurnCx};
+    use qm_types::BoxFuture;
+    use qm_types::clock::SystemClock;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Host(Mutex<Vec<(Role, StartRequest)>>);
+
+    impl ToolHost for Host {
+        fn start_crewmate<'a>(
+            &'a self,
+            caller: &'a Caller,
+            request: StartRequest,
+        ) -> BoxFuture<'a, Result<TaskStarted, ToolFailure>> {
+            self.0.lock().unwrap().push((caller.role, request));
+            Box::pin(async {
+                Ok(TaskStarted {
+                    task: TaskId::new(1).unwrap(),
+                    branch: None,
+                    routing: RoutingSummary {
+                        tier: Tier::Medium,
+                        model: None,
+                        effort: Some(Effort::High),
+                        why: "test host".into(),
+                    },
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn both_start_tools_forward_tier_and_effort_only_on_user_turns() {
+        for role in [Role::Quartermaster, Role::Secondmate] {
+            for started_by in [
+                None,
+                Some(StartedBy::AppEvent),
+                Some(StartedBy::User {
+                    message: MessageId::new(1),
+                }),
+            ] {
+                let host = Host::default();
+                let caller = Caller {
+                    agent: AgentId::new(1),
+                    role,
+                    turn: started_by.map(|started_by| TurnCx {
+                        turn: TurnId::new(1),
+                        started_by,
+                    }),
+                    task: None,
+                    secondmate: None,
+                    plan: None,
+                };
+                let allowed = matches!(started_by, Some(StartedBy::User { .. }));
+                // On refused turns, tier is the only override: effort cannot mask a missing check.
+                let effort = allowed.then_some(Effort::High);
+                let cx = ToolCx {
+                    caller: &caller,
+                    clock: &SystemClock,
+                    host: &host,
+                };
+                let result = Dispatcher::builtin()
+                    .dispatch(
+                        &cx,
+                        "start_crewmate",
+                        serde_json::json!({
+                            "project": "p", "kind": "lookup", "title": "docs(x): look up x",
+                            "goal": "look up x", "tier": "medium", "effort": effort
+                        }),
+                    )
+                    .await;
+                assert_eq!(result.result.is_error, !allowed, "{role:?} {started_by:?}");
+                let calls = host.0.lock().unwrap();
+                assert_eq!(calls.len(), usize::from(allowed));
+                if let Some((forwarded_role, request)) = calls.first() {
+                    assert_eq!(*forwarded_role, role);
+                    assert_eq!(request.tier, Some(Tier::Medium));
+                    assert_eq!(request.effort, Some(Effort::High));
+                }
+            }
+        }
+    }
 }
 
 // Secondmates -----------------------------------------------------------------------------------
@@ -392,6 +803,8 @@ fn request(f: &Fixture, overrides: &RequestOverrides) -> (Caller, StartRequest) 
         instructions: Vec::new(),
         later_steps: Vec::new(),
         model: None,
+        preference: None,
+        tier: None,
         effort: None,
         premium: false,
         choice_message: None,
@@ -602,4 +1015,114 @@ fn delegated_choices_keep_their_source_and_cannot_authorize_different_fields() {
     facts.named_model = Some(id(FABLE));
     facts.premium = true;
     assert!(matches!(f.route(&facts), RouteOutcome::Refused(_)));
+}
+
+fn delegated_preference(model: &str) -> qm_types::model_preference::ModelPreference {
+    qm_types::model_preference::ModelPreference {
+        selection: id(model),
+        provider: None,
+        model: None,
+        effort: Some(Effort::High),
+    }
+}
+
+#[test]
+fn delegated_tier_and_preference_reach_every_start_after_chat_retention() {
+    let f = Fixture::new("sm-tier-preference");
+    let overrides = RequestOverrides {
+        tier: Some(Tier::Premium),
+        preference: Some(delegated_preference(FABLE)),
+        choice_message: Some(MessageId::new(1)),
+        ..RequestOverrides::default()
+    };
+    let (caller, start) = request(&f, &overrides);
+    f.conn
+        .execute(
+            "UPDATE secondmate_requests SET turn_id = NULL WHERE id = ?1",
+            [start.correlation],
+        )
+        .unwrap();
+    for kind in [TaskKind::Plan, TaskKind::Build, TaskKind::Review] {
+        let mut child = start.clone();
+        child.kind = kind;
+        assert!(
+            apply_request_overrides(&f.conn, &caller, &mut child)
+                .unwrap()
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(child.tier, overrides.tier);
+        assert_eq!(child.preference, overrides.preference);
+        assert_eq!(child.choice_message, overrides.choice_message);
+        // Reapplying cannot mutate a fully inherited start or claim more authority.
+        let inherited = child.clone();
+        assert!(
+            apply_request_overrides(&f.conn, &caller, &mut child)
+                .unwrap()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(child, inherited);
+    }
+}
+
+#[test]
+fn delegated_tier_and_preference_preserve_child_fields_and_source() {
+    let f = Fixture::new("sm-child-choices");
+    let overrides = RequestOverrides {
+        tier: Some(Tier::High),
+        preference: Some(delegated_preference(OPUS)),
+        effort: Some(Effort::Low),
+        ..RequestOverrides::default()
+    };
+    let (caller, mut start) = request(&f, &overrides);
+    start.tier = Some(Tier::Premium);
+    start.preference = Some(delegated_preference(GPT));
+    start.model = Some(id(FABLE));
+    start.effort = Some(Effort::High);
+    start.premium = true;
+    start.choice_message = Some(MessageId::new(42));
+    let typed = start.clone();
+    assert!(
+        apply_request_overrides(&f.conn, &caller, &mut start)
+            .unwrap()
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(start, typed);
+    // Inheriting just one field must not replace the child's provenance or named model.
+    start.preference = None;
+    assert!(
+        apply_request_overrides(&f.conn, &caller, &mut start)
+            .unwrap()
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(start.preference, overrides.preference);
+    assert_eq!(start.choice_message, typed.choice_message);
+    assert_eq!(start.model, typed.model);
+    assert_eq!(start.tier, typed.tier);
+    assert_eq!(start.effort, typed.effort);
+    assert!(start.premium);
+}
+
+#[test]
+fn tier_choices_require_an_actual_user_source_but_preferences_do_not() {
+    let f = Fixture::new("tier-source");
+    let mut facts = f.facts();
+    facts.authority = Authority::Turn(StartedBy::AppEvent);
+    facts.named_tier = Some(Tier::Premium);
+    assert!(matches!(f.route(&facts), RouteOutcome::Refused(_)));
+    facts.choice_message = Some(MessageId::new(-1));
+    assert!(matches!(f.route(&facts), RouteOutcome::Refused(_)));
+    assert_eq!(f.decisions(), 0);
+    facts.choice_message = Some(MessageId::new(1));
+    assert_eq!(used(&routed(f.route(&facts))).0, Tier::Premium);
+    facts.named_tier = None;
+    facts.choice_message = None;
+    facts.preference = Some(delegated_preference(OPUS));
+    assert_eq!(
+        used(&routed(f.route(&facts))),
+        (Tier::High, OPUS.to_owned())
+    );
 }

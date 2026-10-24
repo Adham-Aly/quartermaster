@@ -17,6 +17,11 @@ fn id(m: &str) -> ModelId {
 /// One placement; each model gets its own account unless `account` says otherwise.
 fn cand(model: &str, account: i64, tier: Tier) -> Candidate {
     Candidate {
+        provider: if model.starts_with("gpt-") {
+            qm_types::domain::Provider::OpenAi
+        } else {
+            qm_types::domain::Provider::Anthropic
+        },
         model: id(model),
         family: model.to_owned(),
         generation: 1,
@@ -104,6 +109,7 @@ fn run(ask: &Ask, placed: &[Candidate]) -> RoutingRecord {
         },
         quick_verification: false,
         user: ask.user.clone(),
+        preference: None,
         stronger_retry_target: ask.retry,
         later_step: ask.later_step.clone(),
         always_use: None,
@@ -525,6 +531,7 @@ fn premium_skips_the_pin() {
             needs: Needs::default(),
             quick_verification: false,
             user,
+            preference: None,
             stronger_retry_target: None,
             later_step: None,
             always_use: Some(&pin),

@@ -546,9 +546,11 @@ pub struct StartRequest {
     pub instructions: Vec<String>,
     pub later_steps: Vec<LaterStep>,
     pub model: Option<ModelId>,
+    pub preference: Option<qm_types::model_preference::ModelPreference>,
+    pub tier: Option<qm_types::domain::Tier>,
     pub effort: Option<Effort>,
     pub premium: bool,
-    /// Actual user-message provenance for model/effort/premium, checked by the host.
+    /// Actual user-message provenance for model/tier/effort/premium, checked by the host.
     pub choice_message: Option<MessageId>,
     pub base_branch: Option<String>,
     pub verification: Option<VerificationLevel>,
@@ -572,9 +574,11 @@ pub struct RouteRequest {
     pub instructions: Vec<String>,
     pub base_branch: Option<String>,
     pub model: Option<ModelId>,
+    pub preference: Option<qm_types::model_preference::ModelPreference>,
+    pub tier: Option<qm_types::domain::Tier>,
     pub effort: Option<Effort>,
     pub premium: bool,
-    /// Actual user-message provenance for model/effort/premium, checked by the host.
+    /// Actual user-message provenance for model/tier/effort/premium, checked by the host.
     pub choice_message: Option<MessageId>,
     pub later_steps: Vec<LaterStep>,
 }

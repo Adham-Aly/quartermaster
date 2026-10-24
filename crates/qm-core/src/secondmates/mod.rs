@@ -75,6 +75,8 @@ pub mod event_kind {
 pub struct SecondmateDeps {
     pub db: Db,
     pub clock: Arc<dyn Clock>,
+    /// Live settings shared with routing and both orchestrator contexts.
+    pub config: tokio::sync::watch::Receiver<qm_types::config::Config>,
     pub data_dir: DataDir,
     /// Every engine the binary injected, by kind.
     pub engines: BTreeMap<EngineKind, Arc<dyn Engine>>,
@@ -227,7 +229,10 @@ impl SecondmateService {
                 inbox: deps.inbox.clone(),
                 clock: Arc::clone(&deps.clock),
                 seat: Arc::new(SecondmateSeat::new(self.clone(), id)),
-                context: Arc::new(SecondmateContext::new(deps.db.clone(), &deps.clock, id)),
+                context: Arc::new(
+                    SecondmateContext::new(deps.db.clone(), &deps.clock, id)
+                        .with_config(deps.config.clone()),
+                ),
                 chat: conversation,
                 host,
                 dispatcher: deps.dispatcher,

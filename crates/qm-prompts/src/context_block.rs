@@ -28,7 +28,7 @@
 
 use jiff::Zoned;
 use qm_types::domain::{
-    Autonomy, DeliveryMode, Effort, TaskKind, TaskStatus, Tier, VerificationLevel,
+    Autonomy, DeliveryMode, Effort, KindRow, TaskKind, TaskStatus, Tier, VerificationLevel,
 };
 use qm_types::ids::{MessageId, SecondmateId, StandingInstructionId, TaskId, TurnId};
 use std::collections::BTreeMap;
@@ -100,8 +100,10 @@ pub struct ContextFacts {
     pub standing: Vec<(StandingInstructionId, String)>,
     /// Recent actual user requests in this conversation, oldest first, complete and neutralised.
     pub user_message_sources: Vec<UserMessageFact>,
-    /// The models in each tier, strongest first.
+    /// Tier entries: tiers strongest first, combinations in placement order.
     pub models: Vec<TierModels>,
+    /// Effective Task kinds settings, including checked prerequisite rows.
+    pub kind_tiers: Vec<(KindRow, Tier)>,
 }
 
 /// Original user words paired with an app-recorded numeric citation.
@@ -183,7 +185,7 @@ pub struct Since {
     pub more: usize,
 }
 
-/// The models in one tier: `high  opus-5-5 · gpt-6-sol`.
+/// The entries in one tier, including provider model IDs and placement efforts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TierModels {
     pub tier: Tier,
@@ -252,6 +254,11 @@ pub fn render(facts: &ContextFacts) -> String {
     standing(&mut out, &facts.standing);
     user_message_sources(&mut out, &facts.user_message_sources);
     models(&mut out, &facts.models);
+    out.push_str("<task_kind_tiers>\n");
+    for (kind, tier) in &facts.kind_tiers {
+        let _ = writeln!(out, "{kind}  {tier}");
+    }
+    out.push_str("</task_kind_tiers>\n");
     out.push_str("</qm:context>\n");
     out
 }
@@ -643,11 +650,9 @@ fn models(out: &mut String, tiers: &[TierModels]) {
             let mut cell = format!(
                 "{}{GAP}{}",
                 pad(t.tier.as_str(), tier_width[i % TIERS_PER_ROW], Align::Left),
-                t.models
-                    .iter()
-                    .map(|m| cut(m, TITLE_CHARS))
-                    .collect::<Vec<_>>()
-                    .join(" · ")
+                // These are routing identifiers and exact combinations, not display titles.
+                // Truncating them can turn a valid preference into a different model ID.
+                t.models.join(" · ")
             );
             if let Some(note) = &t.note {
                 let _ = write!(cell, " ({note})");
@@ -862,5 +867,31 @@ mod user_message_source_tests {
                 "24k source words plus framing"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_model_combinations_are_not_truncated_like_titles() {
+        let id = "model-with-a-provider-specific-identifier-that-is-longer-than-the-title-budget-1234567890";
+        let combinations: Vec<String> = ["low", "high", "default/none"]
+            .map(|effort| format!("{id} (provider=custom model={id} effort={effort})"))
+            .into();
+        let mut out = String::new();
+        models(
+            &mut out,
+            &[TierModels {
+                tier: Tier::High,
+                models: combinations.clone(),
+                note: None,
+            }],
+        );
+        assert_eq!(
+            out,
+            format!("<models>\nhigh  {}\n</models>\n", combinations.join(" · "))
+        );
     }
 }

@@ -45,6 +45,12 @@ pub struct DeclaredFacts {
     pub quick_verification: bool,
     /// What you asked for in your own words, accepted only on your turns.
     pub user: UserChoices,
+    /// The within-tier selection and the requirements it must satisfy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preference: Option<qm_types::model_preference::ModelPreference>,
+    /// Whether the selection passed validation and actually determined this route.
+    #[serde(default)]
+    pub preference_applied: bool,
     /// The task whose `later_steps` entry was applied.
     pub later_step_from: Option<TaskId>,
     /// A review prefers a model of another provider than the builder's, within the landed tier.
@@ -55,6 +61,9 @@ pub struct DeclaredFacts {
 /// The exceptions you named: they come first, capped by what the model supports.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserChoices {
+    /// A level in the user's manually ranked model list, independent of effort.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<Tier>,
     pub model: Option<ModelId>,
     pub effort: Option<Effort>,
     /// You asked for premium.

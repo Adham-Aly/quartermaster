@@ -101,9 +101,9 @@ pub fn request_for(
 }
 
 /// A routed request's overrides on a secondmate's start request, field by field: a field the
-/// secondmate typed wins, and every field it left empty (model, effort, premium, each `later_steps`
-/// kind) comes from the request, with the routing turn's authority (they were checked when the
-/// request was stored; what the secondmate typed was checked against its own turn). Returns that
+/// secondmate typed wins, and every field it left empty (model, tier, preference, effort, premium,
+/// each `later_steps` kind) comes from the request, with the routing turn's authority (checked when
+/// the request was stored; what the secondmate typed was checked against its own turn). Returns that
 /// authority when anything came from the request. A model the secondmate typed that isn't premium
 /// is refused when the request asked for premium, rather than quietly running lower. Nothing
 /// happens for other callers, a start without a correlation, or a correlation that isn't the
@@ -142,6 +142,14 @@ pub fn apply_request_overrides(
         ))));
     }
     let mut applied = false;
+    if start.tier.is_none() && asked.tier.is_some() {
+        start.tier = asked.tier;
+        applied = true;
+    }
+    if start.preference.is_none() && asked.preference.is_some() {
+        start.preference.clone_from(&asked.preference);
+        applied = true;
+    }
     if start.model.is_none() && asked.model.is_some() {
         start.model.clone_from(&asked.model);
         applied = true;

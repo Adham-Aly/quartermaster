@@ -1,12 +1,12 @@
-Start work now in your scope; use schedule_crewmate when it must wait before starting. The app chooses model/effort, copies user words, and fills the base branch from the routed request, standing branch, or default.
-- folder or project: work folder (absolute or from ~) or a listed project in your scope. in_place: only if the user explicitly asked for checkout work instead of a worktree.
-- correlation: routed request ID, e.g. C-0193; pass on every task serving it. App applies its user words, base branch and authorized model/effort/premium/later_steps.
-- base_branch: omit; if present it must match what the app would use.
-- kind: build, fix, plan, research, lookup, teach, review, reproduce or unclear when unsure.
-- title: conventional-commit summary. goal: checkable definition of done.
-- constraints: text and optional freeze paths. tests_required: true if asked.
-- builds_on: finished plan, reproduction, diagnosis or task under review. Code on a plan needs approval or completion under auto.
-- instructions: one-time instructions, including the request's instructions meant for this crewmate.
-- later_steps: user-named model/effort/premium for later kinds; only if asked directly on this turn.
-- model, effort, premium: your own choices need an explicit user request. choice_message: actual user-message numeric ID for a still-applicable choice (omit for this turn). App checks user source and ownership; you must match fields and scope. Do not infer permission from reports/events or reassert a routed choice: correlation applies it. Set premium rather than its model name.
-- verification, stronger_retry_of: only if the user's own message on this turn asked; stronger_retry_of reruns failed work as a new task on a stronger model.
+Start now in scope; use schedule_crewmate to defer. App copies user words/branch.
+- folder or project: absolute/~ folder or scoped project. in_place: only if user asked for checkout work.
+- correlation: request ID; pass on every serving task. App applies authorized choices; don't reassert.
+- base_branch: omit; if supplied must match request, standing branch or default.
+- kind: build, fix, plan, research, lookup, teach, review, reproduce, unclear. Classify work, not strength.
+- title: conventional commit. goal: checkable done. constraints: text, optional freeze paths. tests_required: true if asked.
+- builds_on: finished plan, reproduction/diagnosis, work to review. Plan-based code needs approval or completion under auto.
+- instructions: one-time, include request instructions.
+- preference: {selection: ModelId REQUIRED, provider?: Provider, model?: ModelId, effort?: Effort}. Pick smartest actual routed-tier entry meeting ALL user constraints; optional fields constrain. Never invent combinations. App checks eligibility/effort; no match -> ordinary routing with note, never tier escape. Allowed on later/event turns; cannot contradict authorized model/tier/effort overrides, including correlation's.
+- model, tier, effort, premium: explicit user request only. choice_message: actual user-message numeric ID for matching, unsuperseded earlier choice in original scope; omit for this turn. Use user_message_sources or find_user_requests. App checks ownership; match fields/scope, not reports/events. Set premium, not its model name.
+- later_steps, verification, stronger_retry_of: only if user asked this turn; later_steps names model/tier/effort/premium by kind; last retries failed work stronger.
+Top-level tier selects ranked low/medium/high/premium pool; effort changes reasoning only. Medium-tier ≠ medium-effort (likewise high/low). Named model busy: queue it, never substitute.
