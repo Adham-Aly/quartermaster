@@ -6,11 +6,11 @@
 
 use super::conversation::started_by;
 use crate::defs::{
-    CloseTaskArgs, CloseTaskTool, FindTasksArgs, FindTasksTool, FoundTasks, LinkTasksArgs,
-    LinkTasksTool, Linked, MessageTaskArgs, MessageTaskTool, SetTaskLabelArgs, SetTaskLabelTool,
-    SetTaskProjectArgs, SetTaskProjectTool, StartCrewmateArgs, StartCrewmateTool, StopTaskArgs,
-    StopTaskTool, TaskChanged, TaskDetail, TaskStarted, TaskStatusArgs, TaskStatusTool,
-    TaskUpdated, UnlinkTasksArgs, UnlinkTasksTool, Unlinked,
+    CloseTaskArgs, CloseTaskTool, CrewmateMoved, FindTasksArgs, FindTasksTool, FoundTasks,
+    LinkTasksArgs, LinkTasksTool, Linked, MessageTaskArgs, MessageTaskTool, SetTaskLabelArgs,
+    SetTaskLabelTool, SetTaskProjectArgs, SetTaskProjectTool, StartCrewmateArgs, StartCrewmateTool,
+    StopTaskArgs, StopTaskTool, TaskChanged, TaskDetail, TaskStarted, TaskStatusArgs,
+    TaskStatusTool, TaskUpdated, UnlinkTasksArgs, UnlinkTasksTool, Unlinked,
 };
 use crate::handler::{Handle, StartRequest, ToolCx, ToolFailure};
 use qm_policy::names::check_task_title;
@@ -212,16 +212,25 @@ impl Handle for SetTaskProjectTool {
     fn handle<'a>(
         cx: &'a ToolCx<'a>,
         args: SetTaskProjectArgs,
-    ) -> BoxFuture<'a, Result<TaskUpdated, ToolFailure>> {
+    ) -> BoxFuture<'a, Result<CrewmateMoved, ToolFailure>> {
         Box::pin(async move {
             let trim = |v: Option<String>| v.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
-            let (project, folder) = (trim(args.project), trim(args.folder));
-            if project.is_some() == folder.is_some() {
+            let args = SetTaskProjectArgs {
+                project: trim(args.project),
+                folder: trim(args.folder),
+                base_branch: trim(args.base_branch),
+                ..args
+            };
+            if args.project.is_some() == args.folder.is_some() {
                 return Err(Refusal::new("name a folder or a listed project: exactly one").into());
             }
-            cx.host
-                .set_task_project(cx.caller, args.task, project, folder)
-                .await
+            if args.create_folder && args.folder.is_none() {
+                return Err(Refusal::new(
+                    "create_folder makes a new folder: name it with folder, not project",
+                )
+                .into());
+            }
+            cx.host.set_task_project(cx.caller, args).await
         })
     }
 }

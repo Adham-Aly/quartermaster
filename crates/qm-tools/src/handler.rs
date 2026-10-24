@@ -150,15 +150,14 @@ pub trait ToolHost: Send + Sync {
         Box::pin(async { Err(ToolFailure::not_available("stop_task")) })
     }
 
-    /// Changes the project label of a direct report's in-place task.
+    /// Moves a direct report's workplace: another project, folder or worktree. `args` comes
+    /// trimmed, with exactly one of `project` and `folder`.
     fn set_task_project<'a>(
         &'a self,
         caller: &'a Caller,
-        task: TaskId,
-        project: Option<String>,
-        folder: Option<String>,
-    ) -> BoxFuture<'a, Result<TaskUpdated, ToolFailure>> {
-        let _ = (caller, task, project, folder);
+        args: crate::defs::SetTaskProjectArgs,
+    ) -> BoxFuture<'a, Result<crate::defs::CrewmateMoved, ToolFailure>> {
+        let _ = (caller, args);
         Box::pin(async { Err(ToolFailure::not_available("set_task_project")) })
     }
 

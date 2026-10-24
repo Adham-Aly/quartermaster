@@ -23,6 +23,8 @@ use qm_types::domain::{
 use qm_types::ids::space;
 use qm_types::ids::{AgentId, CommitSha, EventId, MessageId, ProjectId, TaskId, TaskLabelId};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// The `events.kind` of a status change.
 pub const STATUS_EVENT: &str = "task.status";
@@ -535,7 +537,10 @@ pub fn first_free_branch(
     conn: &Connection,
     candidates: &[String],
 ) -> Result<Option<String>, StoreError> {
-    let mut stmt = conn.prepare("SELECT 1 FROM tasks WHERE branch = ?1")?;
+    // A waiting move holds the branch it will make.
+    let mut stmt = conn.prepare(
+        "SELECT 1 FROM tasks WHERE branch = ?1 OR json_extract(pending_move, '$.branch') = ?1",
+    )?;
     for name in candidates {
         if !stmt.exists(params![name])? {
             return Ok(Some(name.clone()));
@@ -617,35 +622,108 @@ pub fn open_in_project(
 
 /// Every open task working in place, across all projects: its ID, its
 /// crewmate's folder and its kind, in creation order.
-pub fn open_in_place(
-    conn: &Connection,
-) -> Result<Vec<(TaskId, std::path::PathBuf, TaskKind)>, StoreError> {
+pub fn open_in_place(conn: &Connection) -> Result<Vec<(TaskId, PathBuf, TaskKind)>, StoreError> {
     let mut stmt = conn.prepare(
         "SELECT t.id, a.home, t.kind FROM tasks AS t JOIN agents AS a ON a.task_id = t.id
          WHERE t.status <> 'closed' AND t.in_place = 1 ORDER BY t.seq",
     )?;
     let rows = stmt
         .query_map([], |r| {
-            Ok((
-                r.get(0)?,
-                std::path::PathBuf::from(r.get::<_, String>(1)?),
-                r.get(2)?,
-            ))
+            Ok((r.get(0)?, PathBuf::from(r.get::<_, String>(1)?), r.get(2)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
-/// Relabels an open in-place task with another project. Returns whether a row changed.
-pub fn set_project(
+/// A crewmate's move to another workplace (`set_task_project`): asked for by its supervisor,
+/// recorded with [`set_pending_move`], and applied between its turns with [`apply_move`]. Until
+/// then the row's own columns say where it works now.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingMove {
+    pub project: ProjectId,
+    /// It works in `home` itself after the move, not in a worktree.
+    pub in_place: bool,
+    pub delivery: DeliveryMode,
+    /// Where it works after the move: the folder itself, or its worktree.
+    pub home: PathBuf,
+    /// The new worktree's branch, reserved while the move waits ([`first_free_branch`]); `None`
+    /// in place.
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub base_ref: Option<String>,
+    #[serde(default)]
+    pub base_commit: Option<CommitSha>,
+    #[serde(default)]
+    pub verification: Option<(VerificationLevel, VerificationSource)>,
+    /// When it was asked for (milliseconds since the epoch); names the move in its wakes.
+    pub asked_at: i64,
+}
+
+/// The move waiting for `task`, if one does.
+pub fn pending_move(conn: &Connection, task: TaskId) -> Result<Option<PendingMove>, StoreError> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT pending_move FROM tasks WHERE id = ?1",
+            params![task],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    text.map(|t| {
+        serde_json::from_str(&t).map_err(|source| StoreError::Json {
+            column: "tasks.pending_move",
+            source,
+        })
+    })
+    .transpose()
+}
+
+/// Records the move waiting for an open task, replacing any earlier one; `None` clears it.
+/// Returns whether a row changed.
+pub fn set_pending_move(
     conn: &Connection,
     task: TaskId,
-    project: ProjectId,
+    pending: Option<&PendingMove>,
 ) -> Result<bool, StoreError> {
+    let text = pending
+        .map(|m| {
+            serde_json::to_string(m).map_err(|source| StoreError::Json {
+                column: "tasks.pending_move",
+                source,
+            })
+        })
+        .transpose()?;
     Ok(conn.execute(
-        "UPDATE tasks SET project_id = ?2
-         WHERE id = ?1 AND in_place = 1 AND status <> 'closed' AND project_id <> ?2",
-        params![task, project],
+        "UPDATE tasks SET pending_move = ?2 WHERE id = ?1 AND status <> 'closed'",
+        params![task, text],
+    )? == 1)
+}
+
+/// Applies a move: the task now works where `to` says, its report's head is forgotten (the work
+/// moved off it) and no move waits. Returns whether a row changed. The caller moves the agent's
+/// home ([`crate::agents::set_home`]) in the same transaction.
+pub fn apply_move(conn: &Connection, task: TaskId, to: &PendingMove) -> Result<bool, StoreError> {
+    let (level, source) = to.verification.unzip();
+    Ok(conn.execute(
+        "UPDATE tasks SET project_id = ?2, in_place = ?3, delivery_mode = ?4, branch = ?5,
+             base_branch = ?6, base_ref = ?7, base_commit = ?8, verification_level = ?9,
+             verification_source = ?10, head_commit = NULL, pending_move = NULL
+         WHERE id = ?1 AND status <> 'closed'",
+        params![
+            task,
+            to.project,
+            to.in_place,
+            to.delivery,
+            to.branch,
+            to.base_branch,
+            to.base_ref,
+            to.base_commit.as_ref().map(CommitSha::as_str),
+            level,
+            source,
+        ],
     )? == 1)
 }
 
@@ -1017,6 +1095,47 @@ mod branch_tests {
         let found = with_branch(&conn, "fix/x").expect("read").expect("a task");
         assert_eq!(found.id, first);
         assert_eq!(found.branch, "fix/x");
+    }
+
+    #[test]
+    fn a_waiting_move_reserves_its_branch_and_applies_in_one_update() {
+        let (conn, project, qm) = db();
+        let mut new = new_task(project, qm, None);
+        new.delivery = DeliveryMode::Folder;
+        new.in_place = true;
+        let task = insert(&conn, &new).expect("insert");
+        assert!(pending_move(&conn, task).expect("read").is_none());
+        let to = PendingMove {
+            project,
+            in_place: false,
+            delivery: DeliveryMode::DirectPr,
+            home: PathBuf::from("/data/tasks/C-1/worktree"),
+            branch: Some("fix/x".to_owned()),
+            base_branch: None,
+            base_ref: Some("origin/main".to_owned()),
+            base_commit: Some("a".repeat(40).parse::<CommitSha>().expect("sha")),
+            verification: Some((VerificationLevel::Standard, VerificationSource::Project)),
+            asked_at: 7,
+        };
+        assert!(set_pending_move(&conn, task, Some(&to)).expect("record"));
+        assert_eq!(pending_move(&conn, task).expect("read").as_ref(), Some(&to));
+        assert_eq!(
+            first_free_branch(&conn, &names(&["fix/x", "fix/x-2"]))
+                .expect("pick")
+                .as_deref(),
+            Some("fix/x-2"),
+            "a waiting move's branch counts as taken"
+        );
+        assert!(apply_move(&conn, task, &to).expect("apply"));
+        let row = load(&conn, task).expect("read").expect("row");
+        assert!(!row.in_place);
+        assert_eq!(row.delivery, DeliveryMode::DirectPr);
+        assert_eq!(row.branch, "fix/x");
+        assert_eq!(row.base_ref.as_deref(), Some("origin/main"));
+        assert!(
+            pending_move(&conn, task).expect("read").is_none(),
+            "applied once"
+        );
     }
 
     #[test]

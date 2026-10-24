@@ -107,6 +107,11 @@ undocumented: after a `claude` update, check no socket opens.
   interrupt stops every background task still running. Only a closing session interrupts it.
   Every `JobFinished` built from `claude`'s own task notification carries `agent_told: true`, so
   the core posts no duplicate `job_exited` wake. Never adopt a queued message's second query.
+- **A moved crewmate resumes in its new folder.** When its supervisor moves it (`qm-core`
+  `tasks/moving.rs`), the session closes between turns and opens again with the new `cwd` and
+  `--resume=<id>`: `claude` finds a session by its ID whatever folder it started in (checked
+  with claude 2.1.310), and `transcript::find_transcript` looks in every project folder. Never
+  tie a session to its folder.
 - **`/compact`.** `SessionCommand::Compact` is a user message that is only `/compact`: `claude`
   runs its own compaction as a turn (`compact_boundary`, then a `result` with no text). On a
   conversation too short to compact the turn ends with no `compact_boundary`.

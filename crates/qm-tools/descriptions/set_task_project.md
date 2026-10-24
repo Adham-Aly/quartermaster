@@ -1,4 +1,1 @@
-Move one of your open in-place tasks to another project, when work started in one folder belongs to another. The label restricts nothing; it says where the work belongs, in the task list and your secondmates' projects.
-- task: the crewmate, e.g. C-0042.
-- project: a listed project's name; or folder: absolute or from ~, found as start_crewmate finds one.
-Name exactly one. A worktree task is refused: it follows its repository. A project with no open task left leaves the list.
+Move a crewmate to another project, folder or worktree while it runs; its name, task and conversation stay. task: e.g. C-0042; project or folder, in_place, create_folder, base_branch: as in start_crewmate. It moves between turns and is told; a dirty worktree it leaves is committed or discarded first; an old branch with commits stays. A new move replaces a waiting one; naming where it works calls it off. Refused while preparing, in review or settling, or once pushed.

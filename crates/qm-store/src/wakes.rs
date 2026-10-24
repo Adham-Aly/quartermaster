@@ -149,6 +149,20 @@ pub fn consume_wakes(conn: &Connection, turn: TurnId, at: Timestamp) -> Result<u
     )?)
 }
 
+/// Withdraws the target's wake with `dedupe_key` if no turn has taken it yet: news a later wake
+/// replaces. Returns whether one was.
+pub fn withdraw_pending(
+    conn: &Connection,
+    target: AgentId,
+    dedupe_key: &str,
+) -> Result<bool, StoreError> {
+    Ok(conn.execute(
+        "DELETE FROM wakes
+         WHERE target_agent_id = ?1 AND dedupe_key = ?2 AND delivered_at IS NULL",
+        params![target, dedupe_key],
+    )? > 0)
+}
+
 /// Puts the unconsumed wakes delivered to `turn` back in the inbox (the turn was interrupted).
 /// Returns how many.
 pub fn release_unconsumed(conn: &Connection, turn: TurnId) -> Result<usize, StoreError> {

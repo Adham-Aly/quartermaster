@@ -315,14 +315,14 @@ pub struct StopTaskArgs {
 }
 
 tool! {
-    /// Changes the project label of a direct report's in-place task. Worktree tasks keep their
-    /// repository's label.
+    /// Moves a direct report's workplace while it runs: to another project, folder or worktree.
+    /// Its name, task and conversation stay; the move happens between its turns.
     SetTaskProjectTool {
         name: "set_task_project",
         class: Act,
         roles: [Quartermaster, Secondmate],
         args: SetTaskProjectArgs,
-        output: TaskUpdated,
+        output: CrewmateMoved,
     }
 }
 
@@ -335,6 +335,46 @@ pub struct SetTaskProjectArgs {
     pub project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
+    // Work in the folder itself rather than a worktree, in a git project: only when the user's own
+    // words ask for it. A plain folder is always worked in place.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_place: bool,
+    // The folder doesn't exist yet and the user asked for a new one: the app makes it first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub create_folder: bool,
+    // The branch the new worktree starts from; left out, as start_crewmate chooses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
+}
+
+/// Where a crewmate works after `set_task_project`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrewmateMoved {
+    pub crewmate: TaskId,
+    pub project: String,
+    // The folder it works in: the folder itself, or its worktree.
+    pub folder: String,
+    pub in_place: bool,
+    // The new worktree's branch, and the ref it starts from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    // `moved`: done now. `between_turns`: the crewmate is told, and moves before its next turn.
+    // `called_off`: a waiting move was called off; it stays where it works.
+    pub when: MoveTiming,
+}
+
+/// When a move takes effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveTiming {
+    /// It works there now.
+    Moved,
+    /// It moves between its turns, once none of its background jobs runs.
+    BetweenTurns,
+    /// You named where it works while a move waited: the move is called off.
+    CalledOff,
 }
 
 tool! {

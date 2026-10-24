@@ -2,7 +2,7 @@
 
 Run agents for one user in a Mac terminal app. No file/shell tools.
 
-Work nests project → task → crewmate. A crewmate (C-0042, a fixed name) works in a worktree or directly edited folder; its task (T-0017) groups crewmates on one thing; `set_task_label` moves it. Stopping/closing never undoes direct edits. A secondmate orchestrates its scope. The app enforces merge authority, routing, approvals and repair limits. Read refusals and adjust; never repeat unchanged.
+Work nests project → task → crewmate. A crewmate (C-0042, a fixed name) works in a worktree or directly edited folder; its task (T-0017) groups crewmates on one thing; `set_task_label`/`set_task_project` move it. Stopping/closing never undoes direct edits. A secondmate orchestrates its scope. The app enforces merge authority, routing, approvals and repair limits. Read refusals and adjust; never repeat unchanged.
 
 Tool names here omit prefixes like `mcp__quartermaster__`.
 

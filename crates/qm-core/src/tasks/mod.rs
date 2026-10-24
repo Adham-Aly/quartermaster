@@ -24,6 +24,9 @@ pub mod env;
 pub mod input;
 pub mod lifecycle;
 pub mod lookup;
+pub mod moving;
+#[cfg(test)]
+mod moving_tests;
 pub mod plan;
 pub mod ports;
 pub mod relabel;
@@ -769,11 +772,9 @@ impl TaskService {
     pub async fn set_task_project(
         &self,
         caller: &Caller,
-        task: TaskId,
-        project: Option<String>,
-        folder: Option<String>,
-    ) -> Result<TaskUpdated, ToolFailure> {
-        relabel::set_task_project(self, caller, task, project, folder).await
+        args: qm_tools::defs::SetTaskProjectArgs,
+    ) -> Result<qm_tools::defs::CrewmateMoved, ToolFailure> {
+        moving::set_task_project(self, caller, args).await
     }
 
     pub async fn set_task_label(
