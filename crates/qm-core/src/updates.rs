@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 /// How often the app looks for a newer release.
-pub const CHECK_EVERY: Duration = Duration::from_hours(6);
+pub const CHECK_EVERY: Duration = Duration::from_hours(1);
 /// How soon it looks again after a check that got no answer.
 pub const RETRY_EVERY: Duration = Duration::from_mins(30);
 /// How often the background loop wakes to see whether a check is due.
@@ -793,5 +793,36 @@ impl ApiPart for UpdatesPart {
         Box::pin(async move {
             snapshot.update = self.updates.view();
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(minutes: i64) -> Timestamp {
+        Timestamp::from_second(1_800_000_000 + minutes * 60).unwrap()
+    }
+
+    #[test]
+    fn checks_at_launch_and_then_every_hour() {
+        let mut state = State::default();
+        assert!(state.due(at(0)), "a check is due at launch");
+        state.tried_at = Some(at(0));
+        assert!(!state.due(at(59)));
+        assert!(state.due(at(60)));
+    }
+
+    #[test]
+    fn retries_sooner_after_a_check_that_got_no_answer() {
+        let mut state = State {
+            tried_at: Some(at(0)),
+            check_error: Some("offline".to_owned()),
+            ..State::default()
+        };
+        assert!(!state.due(at(29)));
+        assert!(state.due(at(30)));
+        state.checking = true;
+        assert!(!state.due(at(90)), "never while a check runs");
     }
 }

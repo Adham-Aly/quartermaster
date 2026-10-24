@@ -57,7 +57,7 @@ installs into `$CARGO_HOME/bin` (`QUARTERMASTER_INSTALL_DIR` overrides it;
 this command as the only way to install; keep them pointing at it, never at the asset links.
 
 The app updates itself the same way (`qm-core` `updates.rs`): it reads the newest release from
-GitHub's API (`/releases/latest`, anonymously) at launch and every 6 hours, and Menu ▸ Update
+GitHub's API (`/releases/latest`, anonymously) at launch and every hour, and Menu ▸ Update
 runs that tag's `quartermaster-installer.sh` aimed at the running binary's folder. So every
 release must keep a `vX.Y.Z` tag and the `quartermaster-installer.sh` asset, and must not be a
 draft or a pre-release, or installed copies won't see it.
