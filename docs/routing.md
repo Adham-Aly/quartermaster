@@ -65,6 +65,25 @@ Add providers in **Settings ▸ Accounts**, then open **Settings ▸ Model level
   Each placement is a model + effort label, with no separate effort toggle or
   add-to-tier context submenu.
 
+## Provider quotas
+
+**Settings ▸ Accounts** shows provider-reported quotas separately from local session
+usage. Quotas are fetched in the background when an account first appears, every five
+minutes, and when Settings opens (at most once per 30 seconds). Requests already in
+flight are not duplicated. A failed refresh shows a plain error and keeps the previous
+reading and its check time, so an old reading is not mistaken for a fresh one.
+
+Supported sources are ChatGPT's usage windows, GitHub Copilot's chat/completions/premium
+request quotas, and OpenRouter's **per-key spending budget** (not wallet credit).
+ChatGPT and Copilot use private provider endpoints and may refuse access or change their
+response formats. Other providers and credential types explicitly show that quota lookup
+is unsupported. In particular, the app never reads Claude's subscription credentials.
+An unlimited OpenRouter key budget does not mean unlimited account credit.
+
+Lookups use the connected account's stored token and the existing refresh mechanism;
+provider response bodies and credentials never appear in quota errors. Readings live only
+in memory, are forgotten on disconnect, and do not influence routing or pause accounts.
+
 ## Effort belongs to the entry
 
 The effort ladder is **Low → Medium → High → Extra high → Max**. A selected

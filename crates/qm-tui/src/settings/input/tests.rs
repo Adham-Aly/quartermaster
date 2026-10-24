@@ -5,6 +5,7 @@ use ratatui::{Terminal, backend::TestBackend};
 fn board() -> App {
     let mut app = App::new();
     app.open_popup(Popup::Settings);
+    assert_eq!(app.take_commands(), [Command::RefreshQuotas]);
     app.view.settings.loaded = true;
     app.view.settings.tab = Tab::ModelLevels;
     let mut opus = Model::new(

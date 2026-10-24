@@ -130,8 +130,11 @@ impl TokenKeeper {
         self.store.get(key)
     }
 
-    /// Forgets an account's credential (Disconnect).
-    pub fn forget(&self, key: &CredentialRef) -> Result<(), AuthError> {
+    /// Forgets an account's credential (Disconnect), waiting for any refresh/save in flight.
+    /// Queued refreshes re-read the store under this same lock and fail once it is removed.
+    pub async fn forget(&self, key: &CredentialRef) -> Result<(), AuthError> {
+        let lock = self.key_lock(key);
+        let _guard = lock.lock().await;
         self.store.remove(key)?;
         self.health.clear(key);
         Ok(())

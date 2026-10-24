@@ -312,6 +312,9 @@ impl App {
         if popup == Popup::Help && !was_open {
             self.view.help_scroll = 0;
         }
+        if popup == Popup::Settings && !was_open {
+            self.command(qm_types::api::Command::RefreshQuotas);
+        }
         if popup != Popup::Settings {
             self.close_settings_overlays();
         }
@@ -429,6 +432,21 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_refreshes_quotas_only_on_open() {
+        use qm_types::api::Command;
+        let mut app = App::new();
+        app.open_popup(Popup::Settings);
+        assert_eq!(app.take_commands(), [Command::RefreshQuotas]);
+        app.open_popup(Popup::Settings);
+        app.open_popup(Popup::Help);
+        app.open_popup(Popup::Settings);
+        assert_eq!(app.take_commands(), [] as [Command; 0]);
+        app.close_popup();
+        app.open_popup(Popup::Settings);
+        assert_eq!(app.take_commands(), [Command::RefreshQuotas]);
+    }
 
     #[test]
     fn projects_hint_fits_its_text() {

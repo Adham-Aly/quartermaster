@@ -20,6 +20,8 @@
 //!   that stopped working in [`health::LoginHealth`] so routing skips only that account.
 //!   Reconnecting an account saves the new login over the old one under the same key
 //!   ([`TokenKeeper::save_in_place`]), which clears its problem.
+//! - [`quota`]: display-safe provider quota snapshots through [`quota::Quotas`], using the
+//!   same token keeper as inference; unsupported providers never access credentials.
 //! - [`identity`]: who a login signed in as, so reconnecting tells the same account from a
 //!   different one.
 //! - Per provider: [`chatgpt`] (Sign in with ChatGPT, and the Codex login as its fallback),
@@ -44,6 +46,7 @@ pub mod kimi;
 pub mod login;
 pub mod openrouter;
 pub mod pkce;
+pub mod quota;
 pub mod tokens;
 pub mod xai;
 

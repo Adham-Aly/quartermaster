@@ -10,9 +10,7 @@ use crate::app::App;
 use crate::text::{cells, truncate, width, wrap};
 use crate::theme;
 use ratatui::layout::Rect;
-
-/// Rows per account: its line, its usage line and a blank.
-const ROWS_PER_ACCOUNT: u16 = 3;
+use ratatui::style::Style;
 
 pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let view = &app.view.settings;
@@ -67,15 +65,9 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
             );
             p.text(end + 2, y, &star, theme::accent());
         }
-        // A broken login says why in place of the usage line, paused or not, wrapped so the
-        // whole reason shows.
-        if let Some(problem) = account.problem.as_deref() {
-            for (row, line) in (y + 1..).zip(wrap(problem, line_room)) {
-                p.text(x + 4, row, &line, theme::error());
-            }
-        } else if active {
-            let usage = account.usage.as_deref().unwrap_or("usage unknown");
-            p.text(x + 4, y + 1, &truncate(usage, line_room), theme::dim());
+        // Login health, local session usage and provider quotas are independent facts.
+        for (row, (line, style)) in (y + 1..).zip(detail_lines(account, line_room)) {
+            p.text(x + 4, row, &line, style);
         }
         if selected {
             p.select_row(inner, y);
@@ -93,16 +85,44 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     }
 }
 
-/// The rows an account takes at `room` cells of second line: its line, its usage line (or its
-/// problem, wrapped) and a blank; a paused, working account has no second line.
-fn rows_of(account: &Account, room: usize) -> u16 {
-    if let Some(problem) = account.problem.as_deref() {
-        ROWS_PER_ACCOUNT - 1 + cells(wrap(problem, room).len().max(1))
-    } else if account.status == AccountStatus::Active {
-        ROWS_PER_ACCOUNT
-    } else {
-        ROWS_PER_ACCOUNT - 1
+/// The same wrapped lines drive drawing and geometry, including stale data during refresh/errors.
+fn detail_lines(account: &Account, room: usize) -> Vec<(String, Style)> {
+    let mut lines = Vec::new();
+    let mut add = |text: String, style| {
+        lines.extend(wrap(&text, room).into_iter().map(|line| (line, style)));
+    };
+    if let Some(problem) = &account.problem {
+        add(format!("Login problem: {problem}"), theme::error());
     }
+    if account.status == AccountStatus::Active || account.usage.is_some() {
+        add(
+            format!(
+                "Session usage: {}",
+                account.usage.as_deref().unwrap_or("unknown")
+            ),
+            theme::dim(),
+        );
+    }
+    for line in &account.quota_lines {
+        add(format!("Provider quota: {line}"), theme::text());
+    }
+    if account.quota_refreshing {
+        add("Provider quota: refreshing…".into(), theme::accent());
+    } else if account.quota_lines.is_empty() && account.quota_problem.is_none() {
+        add("Provider quota: unknown".into(), theme::dim());
+    }
+    if let Some(problem) = &account.quota_problem {
+        add(format!("Quota check problem: {problem}"), theme::error());
+    }
+    if let Some(checked) = &account.quota_checked_at {
+        add(format!("Quota checked: {checked}"), theme::dim());
+    }
+    lines
+}
+
+/// Header, wrapped details and one blank separator.
+fn rows_of(account: &Account, room: usize) -> u16 {
+    cells(detail_lines(account, room).len()).saturating_add(2)
 }
 
 /// Draws account `i`'s buttons on row `y`, one cell apart, right to left
@@ -128,4 +148,114 @@ fn buttons(p: &mut Painter<'_, '_>, account: &Account, i: usize, right: u16, y: 
             p.button_left_of(left_edge, y, "Reconnect", SettingsHit::AccountReconnect(i)) - 1;
     }
     left_edge.saturating_sub(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qm_types::ids::AccountId;
+
+    #[test]
+    fn quota_details_preserve_login_errors_usage_and_cached_results() {
+        let mut account = Account::new(AccountId::new(1), "Work");
+        account.problem = Some("login expired; reconnect".into());
+        account.usage = Some("12 turns · 42k tokens".into());
+        account.quota_lines = vec!["5-hour window: 41% used · resets today 14:30".into()];
+        account.quota_problem = Some("provider temporarily unavailable".into());
+        account.quota_refreshing = true;
+        account.quota_checked_at = Some("today 12:04".into());
+        for room in [92, 111, 112, 142] {
+            let lines = detail_lines(&account, room);
+            let text = lines
+                .iter()
+                .map(|(line, _)| line.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            for expected in [
+                "Login problem:",
+                "12 turns",
+                "41% used",
+                "refreshing",
+                "Quota check problem:",
+                "today 12:04",
+            ] {
+                assert!(text.contains(expected), "missing {expected}: {text}");
+            }
+            assert!(lines.iter().all(|(line, _)| width(line) <= room));
+            assert_eq!(usize::from(rows_of(&account, room)), lines.len() + 2);
+        }
+        account.status = AccountStatus::Paused;
+        assert!(
+            detail_lines(&account, 92)
+                .iter()
+                .any(|(line, _)| line.contains("Session usage:"))
+        );
+    }
+
+    #[test]
+    fn accounts_render_quota_details_at_supported_sizes_in_both_palettes() {
+        use crate::popups::Popup;
+        use crate::settings::Tab;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        for (w, h) in [(150, 45), (120, 40), (119, 40), (100, 30)] {
+            for light in [false, true] {
+                let mut app = App::new();
+                app.open_popup(Popup::Settings);
+                app.view.settings.loaded = true;
+                app.view.settings.tab = Tab::Accounts;
+                let mut account = Account::new(AccountId::new(1), "Work");
+                account.problem = Some("login expired; reconnect to continue".into());
+                account.usage = Some("12 turns · 42k tokens".into());
+                account.quota_lines = vec!["5-hour window: 41% used · resets today 14:30".into()];
+                account.quota_problem = Some("provider temporarily unavailable".into());
+                account.quota_refreshing = true;
+                account.quota_checked_at = Some("today 12:04".into());
+                let mut view = qm_types::api::SettingsView::default();
+                view.accounts.push(account);
+                app.view.settings.model = super::super::model::Settings::from_view(&view);
+                app.term.palette = theme::fit_reported(&qm_types::wire::Colors {
+                    bg: Some(if light { [255; 3] } else { [0; 3] }),
+                    ..Default::default()
+                });
+                let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let text = (0..h)
+                    .map(|y| (0..w).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                for expected in [
+                    "Login problem:",
+                    "12 turns",
+                    "41% used",
+                    "refreshing",
+                    "Quota check problem:",
+                    "today 12:04",
+                    "+ Connect an account",
+                ] {
+                    assert!(
+                        text.contains(expected),
+                        "missing {expected} at {w}x{h}:\n{text}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_quota_is_not_zero_and_long_details_wrap() {
+        let mut account = Account::new(AccountId::new(1), "Work");
+        assert!(
+            detail_lines(&account, 100)
+                .iter()
+                .any(|(line, _)| line == "Provider quota: unknown")
+        );
+        account.quota_problem =
+            Some("a long provider error that should wrap without truncation".into());
+        let lines = detail_lines(&account, 20);
+        assert!(lines.len() > 3);
+        assert!(lines.iter().all(|(line, _)| width(line) <= 20));
+        assert_eq!(usize::from(rows_of(&account, 20)), lines.len() + 2);
+    }
 }

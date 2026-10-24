@@ -42,6 +42,8 @@
 //! Secrets: an API key arrives as `SecretText` and goes straight into a `qm_auth::Secret`; no
 //! error message, log line, event or snapshot ever carries one.
 
+mod quota;
+
 use crate::api::{ApiPart, Conversation, Handled};
 use crate::config_file;
 use crate::routing::{self, ModelCatalog};
@@ -120,6 +122,7 @@ struct Inner {
 #[derive(Default)]
 struct State {
     login: Option<LoginState>,
+    quotas: BTreeMap<AccountId, quota::CachedQuota>,
 }
 
 struct LoginState {
@@ -139,7 +142,7 @@ impl fmt::Debug for SettingsPart {
 
 impl SettingsPart {
     pub fn new(deps: SettingsDeps) -> Self {
-        Self {
+        let part = Self {
             inner: Arc::new(Inner {
                 db: deps.db,
                 clock: deps.clock,
@@ -152,7 +155,9 @@ impl SettingsPart {
                 endpoints: deps.endpoints,
                 state: Mutex::new(State::default()),
             }),
-        }
+        };
+        quota::start(&part.inner);
+        part
     }
 }
 
@@ -245,6 +250,10 @@ impl ApiPart for SettingsPart {
             return Some(Box::pin(async move { inner.change(what, change).await }));
         }
         Some(match command {
+            Command::RefreshQuotas => Box::pin(async move {
+                quota::refresh(inner, true).await;
+                Handled::Changed
+            }),
             Command::StartLogin { provider, account } => {
                 let (provider, account) = (*provider, *account);
                 Box::pin(async move { Arc::clone(inner).start_login(provider, account) })
@@ -312,6 +321,7 @@ impl ApiPart for SettingsPart {
 
     fn fill<'a>(&'a self, snapshot: &'a mut Snapshot) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            quota::refresh(&self.inner, false).await;
             match self.inner.view().await {
                 Ok(view) => snapshot.settings = view,
                 Err(e) => tracing::error!(error = %e, "couldn't read the settings for the UI"),
@@ -405,7 +415,7 @@ impl Inner {
         };
         match CredentialRef::new(key) {
             Ok(key) => {
-                if let Err(e) = self.tokens.forget(&key) {
+                if let Err(e) = self.tokens.forget(&key).await {
                     tracing::warn!(error = %e, "couldn't forget a disconnected account's credentials");
                 }
             }
@@ -878,11 +888,13 @@ impl Inner {
                 .map_err(|e| e.to_string())
                 .and_then(|r| r);
             if let Err(e) = pointed {
-                let _ = self.tokens.forget(&key);
+                let _ = self.tokens.forget(&key).await;
                 return Err(e);
             }
             row.credential_ref = Some(key.as_str().to_owned());
         }
+        self.lock().quotas.remove(&row.id);
+        self.changed();
         tracing::info!(account = %row.id, provider = %row.provider, "reconnected an account");
         self.detect(&row).await
     }
@@ -917,7 +929,7 @@ impl Inner {
         let row = match self.insert(new).await {
             Ok(row) => row,
             Err(e) => {
-                let _ = self.tokens.forget(&key);
+                let _ = self.tokens.forget(&key).await;
                 return Err(e.to_string());
             }
         };
@@ -1001,6 +1013,9 @@ impl Inner {
             .iter()
             .map(|a| {
                 let mut v = account_view(a);
+                if let Some(quota) = state.quotas.get(&a.id) {
+                    quota.fill(&mut v);
+                }
                 v.problem = a
                     .credential_ref
                     .as_deref()
