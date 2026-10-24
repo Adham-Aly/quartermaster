@@ -1,5 +1,4 @@
-Remove only the directed dependency edge blocker -> blocked when it is obsolete; this does not stop either task or settle/deliver work. Both tasks must exist and be your direct reports, with different IDs. The blocker may be terminal or closed. Idempotent: succeeds even if the edge is already absent.
+Remove the dependency blocker -> blocked when it is obsolete. It doesn't stop, settle or deliver either task. Both must be your direct reports, with different IDs; the blocker may be finished or closed. Succeeds if the edge is already gone.
 - blocker: the task whose blocking edge to remove.
 - blocked: the task that depended on it.
-Clears a declared task wait only when it matches the removed blocker; other blockers and task/decision waits remain. Notifies the blocked crewmate; an external wait ends on its next turn as usual. Cancelled blockers are not automatically unlinked. If an obsolete dependency prevented settlement, retry settle_task after unlinking; all other delivery and review checks still apply.
-Refused if either task doesn't exist, isn't your direct report, or the IDs are the same.
+A declared wait on that blocker clears; other blockers and waits stay. The blocked crewmate is told. Cancelled blockers aren't unlinked automatically. If the dependency held up settlement, retry settle_task; every other delivery and review check still applies.

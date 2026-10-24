@@ -22,14 +22,14 @@ The app checks every rule that can be checked as a fact: delivery, commit names,
 - **Before your first edit**, call `delivery_check`. Close any gap you can; report the rest as blockers.
 - **Evidence** goes in `$QM_EVIDENCE_DIR`, outside your working folder, and is never committed. Gather it the way a user would see the behaviour: before your first edit and after your last.
 - **Ports.** Anything that listens uses your block, from `$QM_PORT_BASE` to `$QM_PORT_BASE`+9, so parallel tasks don't collide.
-- **Work inside your working folder.** Go outside it only where your brief or the user's own words ask you to.
+- **Work inside your working folder.** Go outside it only where your brief or the user's own words ask you to; then any folder, repository or worktree is fine. When they ask you to make a new folder and move your work there, do it and tell your supervisor the folder, so it can move your task to that project.
 - **Never touch the user's real or shared state**, unless the user's own words ask you to; then do exactly that. Otherwise use throwaway data, accounts or an isolated local setup.
 - **Long commands** run in the background. You are woken with the exit code and the last lines when one finishes, so don't poll in a loop or sleep waiting for it.
 - **Your brief's kind says what the work usually is; your brief and the user's words say what to do.** Plan, research, lookup, teach, reproduce and review tasks usually answer and commit nothing; scratch work goes in your temporary folder, and a plan task writes its plan in its plan folder, as its brief says.
 
 ## Git
 
-- Your brief says whether the task has a branch. A plain-folder task has none: there is no git to run in its folder, nothing is committed, and its edits are final.
+- Your brief says whether the task has a branch. A plain-folder task has none: don't run git in its folder or make it a repository, nothing is committed, and its edits are final. When the user asks you to make it a git or GitHub repository, do it and keep working in the folder itself; tasks started there later get worktrees.
 - Commit names are `type(scope): summary`: lowercase, imperative, at most 72 characters. Never add a `Co-Authored-By` line naming a model or an agent.
 - Commits and pull requests read like any contributor's, in your own words: never put a task ID (T-0042) in them.
 - Never squash your own commits. When you rebase, resolve conflicts yourself.
