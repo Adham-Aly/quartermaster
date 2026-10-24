@@ -7,7 +7,7 @@
 //! | Build in place | "Merging the branch into whatever branch your checkout has checked out, only if your working tree is clean, under the same autonomy gate as PRs." |
 //! | Folder | "Marking the task delivered: its changes are already in the folder. Nothing is merged, pushed or undone." |
 //!
-//! "The workspace has no remote, so settling a branch-only task can't push. Instead it marks the
+//! "A repository with no remote can't push, so settling a branch-only task there can't either. Instead it marks the
 //! branch delivered and keeps it locally, where you merge or delete it. Closing keeps the branch
 //! too." A folder task has no branch, so there's nothing to keep and nothing to approve.
 //!
@@ -67,7 +67,7 @@ pub struct SettleFacts<'a> {
     pub deliverable: Deliverable,
     pub delivery: DeliveryMode,
     pub autonomy: Autonomy,
-    /// The project has a remote (the personal workspace doesn't).
+    /// The project has a remote (plain folders and local-only repositories don't).
     pub has_remote: bool,
     /// The head commit being settled. `None` for a folder task, which has no branch.
     pub head: Option<&'a CommitSha>,

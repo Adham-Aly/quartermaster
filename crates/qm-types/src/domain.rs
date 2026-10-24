@@ -347,8 +347,9 @@ string_enum! {
 }
 
 string_enum! {
-    /// How a project's finished work is delivered. `Folder` is the personal workspace's plain
-    /// folder: crewmates work in it directly, with no git, so their edits are final.
+    /// How a project's finished work is delivered, from its kind: a GitHub repository `DirectPr`,
+    /// a repository with another remote `BranchOnly`, a local one `BuildInPlace`, and a plain
+    /// folder `Folder`: crewmates work in it directly, with no git, so their edits are final.
     pub enum DeliveryMode ("delivery mode") {
         DirectPr = "direct_pr",
         BranchOnly = "branch_only",
@@ -398,7 +399,8 @@ string_enum! {
 }
 
 string_enum! {
-    /// How a project joined the list. `Workspace` is the built-in personal workspace.
+    /// How a project joined the list. `Workspace` is the old built-in personal workspace, now a
+    /// plain folder like any other.
     pub enum ProjectOrigin ("project origin") {
         Linked = "linked",
         Cloned = "cloned",

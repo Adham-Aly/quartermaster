@@ -230,9 +230,10 @@ impl SecondmateService {
         // A plain folder has no branches, so this refuses before any git runs in it; the task start
         // gives the same reason.
         if project.delivery == DeliveryMode::Folder {
-            return Err(refuse(
-                "the personal folder has no branches, so a base branch can't be named",
-            ));
+            return Err(refuse(format!(
+                "{} is a plain folder, which has no branches, so a base branch can't be named",
+                project.name
+            )));
         }
         let git = self.git().clone();
         let path = project.path.clone();

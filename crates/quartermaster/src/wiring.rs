@@ -1003,8 +1003,8 @@ fn registry(
     (setup, projects)
 }
 
-/// The registry's API parts: held actions with the add-project performer, the projects pane, and
-/// the setup check, whose checks and the personal workspace run in the background.
+/// The registry's API parts: held actions, the projects pane, and the setup check, whose checks
+/// run in the background.
 fn registry_parts(
     held: &HeldService,
     conversation: &Arc<Conversation>,

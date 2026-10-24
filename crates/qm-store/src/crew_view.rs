@@ -52,7 +52,7 @@ pub struct BriefInputs {
     pub supervisor: Supervisor,
     pub project: String,
     pub default_branch: String,
-    /// The project has a GitHub remote (the workspace and local-only projects don't).
+    /// The project has a GitHub remote (plain folders and local-only projects don't).
     pub has_remote: bool,
     pub delivery: DeliveryMode,
     /// The project's own delivery: anything but a plain folder means its folder is a repository,

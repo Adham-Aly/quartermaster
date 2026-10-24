@@ -15,7 +15,8 @@
 //!
 //! [`sweep`] applies the table. It runs at startup (before any session opens, so a transcript no
 //! one names goes at once and an older layout's scratch plans and evidence move in), after a
-//! task closes, after a secondmate retires, after `/clear`, and every [`SWEEP_EVERY`]. Away from
+//! task closes, and every [`SWEEP_EVERY`], which also takes what a retired secondmate or `/clear`
+//! left behind. Away from
 //! startup a transcript no one names is kept for [`TEMP_AFTER`], so a session that has just
 //! started but not yet been recorded is never touched. A damaged transcript that its owner names
 //! is kept. Nothing here follows a link: a link is removed itself, and a folder whose ancestors

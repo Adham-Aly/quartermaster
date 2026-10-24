@@ -113,11 +113,11 @@ pub struct UserMessageFact {
     pub text: String,
 }
 
-/// A registered project, or the built-in workspace.
+/// A listed project: a folder open work runs in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectFact {
     pub name: String,
-    /// With `~` for your home folder; `(built-in workspace)` for the workspace.
+    /// With `~` for your home folder.
     pub path: String,
     pub delivery: DeliveryMode,
     pub autonomy: Autonomy,

@@ -260,8 +260,8 @@ pub enum Command {
         project: String,
         autonomy: Autonomy,
     },
-    /// Point the personal workspace at a folder you chose (absolute, or from `~`). It's checked
-    /// first, and refused while personal tasks are open. Saved to `config.toml`; no files move.
+    /// Retired with the personal workspace: the core answers with a note that work runs in the
+    /// folder the user names.
     SetWorkspaceFolder {
         folder: String,
     },
@@ -1235,8 +1235,7 @@ pub struct SettingsView {
     /// A login in progress or just finished.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login: Option<LoginView>,
-    /// The personal workspace's folder as Settings shows it (`~` for your home folder); empty
-    /// until the core has one to show.
+    /// Retired with the personal workspace; always empty now.
     #[serde(default)]
     pub workspace_folder: String,
     /// Why the Settings screens can't show or change anything this run, in one plain sentence

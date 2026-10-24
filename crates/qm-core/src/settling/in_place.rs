@@ -1,4 +1,4 @@
-//! Build in place and the personal workspace.
+//! Build in place: a local repository's branch merged into its checkout.
 
 use super::facts::{self, Fact};
 use super::land_pr::moved;
