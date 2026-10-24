@@ -39,8 +39,21 @@ pub(crate) struct DiffUi {
     pub(crate) tree_focus: bool,
 }
 
-pub(crate) const HINTS: &str =
-    "tab files/code · [ ] file · ↑↓ scroll · ←→ pan · a/r answer · esc back";
+const HINTS: &str = "tab files/code · [ ] file · ↑↓ scroll · ←→ pan · a/r answer · esc back";
+
+/// Keep a discoverable navigation hint even when the terminal cannot fit the full key map.
+pub(crate) fn hints(room: usize) -> &'static str {
+    [
+        HINTS,
+        "tab files · [ ] file · a/r answer · esc back",
+        "tab files · ? help",
+        "? help",
+    ]
+    .into_iter()
+    .find(|hint| crate::text::width(hint) <= room)
+    .unwrap_or("")
+}
+
 const WHEEL_LINES: usize = 3;
 
 impl App {

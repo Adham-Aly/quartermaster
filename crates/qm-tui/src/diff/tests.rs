@@ -230,6 +230,14 @@ fn split_layout_and_focus_styles_survive_small_sizes_and_the_bridge_fold_boundar
             assert_eq!(tree, Rect::new(1, 4, tree_width, h - 6), "{w}×{h}");
             assert_eq!(body, Rect::new(code_x, 6, code_width, h - 8));
             assert_eq!(text(&buffer, 1, 3, 11), " Files · 6 ");
+            let status = text(&buffer, 0, h - 1, w);
+            assert!(
+                status.contains("files") || status.contains("? help"),
+                "{w}×{h}: {status}"
+            );
+            if w == 60 {
+                assert!(text(&buffer, 0, 2, w).trim_end().ends_with("D deleted"));
+            }
             assert_eq!(text(&buffer, body.x, 5, 7), " Before");
             let after = body.x + body.width / 2 + 1;
             assert_eq!(text(&buffer, after, 5, 6), " After");

@@ -47,10 +47,18 @@ pub(super) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
             ));
         }
         summary.push(Span::styled(format!(" {}", view.stat), theme::strong()));
-        summary.push(Span::styled(" · A added", theme::ok()));
-        summary.push(Span::styled(" · M modified", theme::accent()));
-        summary.push(Span::styled(" · D deleted", theme::error()));
-        summary.push(Span::styled(" · R renamed", theme::blue()));
+        let mut used = summary.iter().map(Span::width).sum::<usize>();
+        for (label, style) in [
+            (" · A added", theme::ok()),
+            (" · M modified", theme::accent()),
+            (" · D deleted", theme::error()),
+            (" · R renamed", theme::blue()),
+        ] {
+            if used + width(label) <= usize::from(body.width) {
+                summary.push(Span::styled(label, style));
+                used += width(label);
+            }
+        }
     }
     frame.render_widget(
         Line::from(summary),
