@@ -3,8 +3,8 @@
 //!
 //! ```json
 //! { "state": "working",
-//!   "tasks": [ { "id": "T-0045", "kind": "build", "state": "ci_passed", "pr": 231 } ],
-//!   "outcomes": [ { "at": "14:31", "type": "pr_ready", "task": "T-0045", "pr": 231, "sha": "9c0d2e4" } ],
+//!   "tasks": [ { "id": "C-0045", "kind": "build", "state": "ci_passed", "pr": 231 } ],
+//!   "outcomes": [ { "at": "14:31", "type": "pr_ready", "task": "C-0045", "pr": 231, "sha": "9c0d2e4" } ],
 //!   "source_event": 8812 }
 //! ```
 

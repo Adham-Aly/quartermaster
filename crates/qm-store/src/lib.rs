@@ -56,6 +56,7 @@ pub mod secondmates;
 pub mod seq;
 pub mod sessions;
 pub mod standing_instructions;
+pub mod task_labels;
 pub mod tasks;
 pub mod time;
 pub mod turns;

@@ -207,9 +207,9 @@ mod tests {
 
     #[test]
     fn retirement_notice_does_not_promise_a_permanent_archive() {
-        let id = "SM-02".parse().expect("secondmate");
+        let id = "S-02".parse().expect("secondmate");
         let note = super::retired_note(id);
-        assert!(note.contains("SM-02 is retired"));
+        assert!(note.contains("S-02 is retired"));
         assert!(note.contains("memory-only"));
         assert!(note.contains("lost after restart"));
         assert!(note.contains("numbers can then be reused"));
@@ -260,7 +260,7 @@ mod tests {
         f.open_task(agent);
         let why = refusal(f.close(f.qm, id));
         assert!(why.contains("still has open tasks"), "{why}");
-        assert!(why.contains("T-0001"), "{why}");
+        assert!(why.contains("C-0001"), "{why}");
         assert!(f.listed(id), "it stays until its tasks are closed");
     }
 
@@ -359,11 +359,11 @@ mod tests {
         let base = std::env::temp_dir().join(format!("qm-retire-folders-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let data = DataDir::new(base.join("home"));
-        let id: SecondmateId = "SM-3".parse().expect("a secondmate");
+        let id: SecondmateId = "S-3".parse().expect("a secondmate");
         let home = data.secondmate(id).home;
         std::fs::create_dir_all(&home).expect("the home");
         std::fs::write(home.join("note.txt"), "x").expect("a file");
-        let other: SecondmateId = "SM-4".parse().expect("a secondmate");
+        let other: SecondmateId = "S-4".parse().expect("a secondmate");
         std::fs::create_dir_all(data.secondmate(other).home).expect("another home");
 
         super::remove_retired_folders(&data, id).expect("removed");

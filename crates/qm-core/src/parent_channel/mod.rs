@@ -3,7 +3,7 @@
 //! Each update is one appended `parent_channel` row for one correlation: `facts`, **always written
 //! by the app** (a snapshot of the request's tasks and outcomes, [`facts::snapshot`]), and
 //! `judgment`, **only from the secondmate's `parent_report`** (`NULL` on fact rows). Every row
-//! wakes the Quartermaster once (kind `parent_report`, dedupe `parent:C-0193:<row id>`) and writes
+//! wakes the Quartermaster once (kind `parent_report`, dedupe `parent:R-0193:<row id>`) and writes
 //! a `secondmate.facts` or `secondmate.report` event whose summary its context block shows.
 //!
 //! - **Facts** come from the pump ([`pump`]), which follows the append-only `events` table and
@@ -210,7 +210,7 @@ fn channel_wake(
     }
 }
 
-/// `parent:C-0193:<row id>`: new for every row, so each row wakes once.
+/// `parent:R-0193:<row id>`: new for every row, so each row wakes once.
 pub fn dedupe_key(corr: CorrelationId, row: ParentRowId) -> String {
     format!("parent:{corr}:{row}")
 }

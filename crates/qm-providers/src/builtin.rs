@@ -37,7 +37,7 @@ pub struct BuiltinCx {
     /// The app's own folders (its data folder): nothing inside them is writable except through a
     /// write root strictly inside one.
     pub protected_roots: Vec<PathBuf>,
-    /// `tasks/T-0042/jobs`: job logs, `J<n>.log`.
+    /// `tasks/C-0042/jobs`: job logs, `J<n>.log`.
     pub jobs_dir: PathBuf,
     /// The complete environment for `bash`, built from scratch.
     pub env: BTreeMap<String, String>,

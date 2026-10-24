@@ -4,5 +4,5 @@ Read what GitHub shows for a task's release tags, after the user approved one an
 - workflows: the workflow runs the tag started and how they ended, "none set up" only when GitHub counts no workflow, all disabled, or none started yet. Runs on the same commit for a branch are counted apart.
 - watch: whether the app is still watching (for up to 3 hours after publication) and when it last read GitHub; "unavailable" means GitHub refused or didn't answer that read, never that the thing is absent.
 A reading older than a minute is read again. When the watch ends, the app wakes the launch's supervisor with the last reading, so there's no need to poll.
-- task: the task whose crewmate proposed the tag, e.g. T-0042.
+- task: the crewmate that proposed the tag, e.g. C-0042.
 - tag: only this tag's launch (optional).

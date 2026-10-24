@@ -141,6 +141,17 @@ pub const KEPT: &[Kept] = &[
         predicate: retained_task!(),
     },
     Kept {
+        // A task label lasts while a kept crewmate is filed under it, by its label or its folders.
+        table: "task_labels",
+        predicate: concat!(
+            "id IN (SELECT label_id FROM tasks WHERE ",
+            retained_task!(),
+            ") OR id IN (SELECT folder_label_id FROM tasks WHERE ",
+            retained_task!(),
+            ")"
+        ),
+    },
+    Kept {
         table: "task_links",
         predicate: "blocker IN (SELECT id FROM tasks WHERE status <> 'closed') \
                     AND blocked IN (SELECT id FROM tasks WHERE status <> 'closed')",

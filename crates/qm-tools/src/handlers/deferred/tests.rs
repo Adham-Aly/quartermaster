@@ -271,3 +271,16 @@ fn deferred_schema_reuses_start_shapes_without_nested_guidance() {
         );
     }
 }
+
+#[test]
+fn a_start_saved_before_create_folder_existed_still_reads() {
+    let saved = json!({
+        "folder": "~/work", "project": null, "in_place": false, "kind": "lookup",
+        "title": "docs(test): inspect", "goal": "g", "constraints": [], "tests_required": false,
+        "builds_on": null, "instructions": [], "later_steps": [], "model": null, "effort": null,
+        "premium": false, "choice_message": null, "base_branch": null, "verification": null,
+        "stronger_retry_of": null, "correlation": null
+    });
+    let read: StartRequest = serde_json::from_value(saved).expect("an older saved start");
+    assert!(!read.create_folder);
+}

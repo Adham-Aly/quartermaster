@@ -333,7 +333,7 @@ fn reconcile_project(
         report.missing_worktrees.push(MissingWorktree {
             project: id,
             task: *task,
-            expected_path: tasks_dir.join(task.to_string()).join("worktree"),
+            expected_path: crewmate_folder(tasks_dir, *task).join("worktree"),
             branch: branch.clone(),
             branch_exists: !branch.is_empty() && repo.local_branch_commit(branch)?.is_some(),
         });
@@ -367,7 +367,20 @@ fn reconcile_project(
     Ok(())
 }
 
-/// The task whose worktree path `path` is (`<tasks_dir>/T-0042/worktree`), if it is one.
+/// A crewmate's own folder, `<tasks_dir>/C-0042`, or `<tasks_dir>/T-0042` when an older version
+/// made it (as `DataDir::crewmate_root`).
+fn crewmate_folder(tasks_dir: &Path, task: TaskId) -> PathBuf {
+    let current = tasks_dir.join(task.to_string());
+    let legacy = tasks_dir.join(task.legacy_name());
+    if fs::symlink_metadata(&current).is_err() && fs::symlink_metadata(&legacy).is_ok() {
+        legacy
+    } else {
+        current
+    }
+}
+
+/// The crewmate whose worktree path `path` is (`<tasks_dir>/C-0042/worktree`, or `T-0042` from an
+/// older version), if it is one.
 fn task_of_path(tasks_dir: &Path, path: &Path) -> Option<TaskId> {
     let rest = path.strip_prefix(tasks_dir).ok()?;
     let mut parts = rest.components();

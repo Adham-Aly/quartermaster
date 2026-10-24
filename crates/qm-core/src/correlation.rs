@@ -1,8 +1,8 @@
 //! Correlation IDs: a routed request's identity from the routing call to its answer.
 //!
-//! A `CorrelationId` (`C-0193`) **is** the request's `secondmate_requests` row ID, allocated when
+//! A `CorrelationId` (`R-0193`) **is** the request's `secondmate_requests` row ID, allocated when
 //! the request is routed. It travels: `route_to_secondmate`'s result → the routed wake's
-//! `corr="C-0193"` → `start_crewmate.correlation` → `tasks.secondmate_request_id` → every fact row
+//! `corr="R-0193"` → `start_crewmate.correlation` → `tasks.secondmate_request_id` → every fact row
 //! on the parent channel → `parent_report.correlation` → the Quartermaster's wake and event.
 //!
 //! The request's status: `open` when routed → `answered` when a report arrives while none of its
@@ -53,8 +53,8 @@ pub fn request(conn: &Connection, corr: CorrelationId) -> Result<Option<RequestF
 }
 
 /// `parent_report`'s correlation: one of `secondmate`'s own requests, not closed (an answered one
-/// stays reportable). Refusals: "There's no request C-0190", "C-0190 isn't one of your requests",
-/// "C-0190 is closed".
+/// stays reportable). Refusals: "There's no request R-0190", "R-0190 isn't one of your requests",
+/// "R-0190 is closed".
 pub fn check_report_correlation(
     conn: &Connection,
     secondmate: SecondmateId,

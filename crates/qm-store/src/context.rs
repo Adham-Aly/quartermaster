@@ -20,7 +20,7 @@ use qm_types::domain::{
     AgentStatus, Autonomy, DeliveryMode, Effort, ProjectOrigin, Provider, TaskKind, TaskStatus,
     Tier, VerificationLevel,
 };
-use qm_types::ids::{AgentId, ModelId, SecondmateId, TaskId, TurnId};
+use qm_types::ids::{AgentId, ModelId, SecondmateId, TaskId, TaskLabelId, TurnId};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// A registered project.
@@ -177,6 +177,8 @@ pub fn workers(conn: &Connection) -> Result<Vec<WorkerRow>, StoreError> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskRow {
     pub task: TaskId,
+    /// The task (`T-`) the crewmate belongs to.
+    pub label: TaskLabelId,
     pub project: String,
     pub kind: TaskKind,
     pub title: String,
@@ -204,7 +206,8 @@ pub fn task_detail(conn: &Connection, task: TaskId) -> Result<Option<String>, St
 /// Every task not closed, newest first.
 pub fn open_tasks(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT t.id, p.name, t.kind, t.title, t.status, s.secondmate_id, t.builds_on
+        "SELECT t.id, p.name, t.kind, t.title, t.status, s.secondmate_id, t.builds_on,
+                COALESCE(t.label_id, t.id)
          FROM tasks AS t
          JOIN projects AS p ON p.id = t.project_id
          LEFT JOIN agents AS s ON s.id = t.supervisor_id AND s.role = 'secondmate'
@@ -221,6 +224,7 @@ pub fn open_tasks(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
                 status: r.get(4)?,
                 secondmate: r.get(5)?,
                 builds_on: r.get(6)?,
+                label: r.get(7)?,
                 detail: None,
             })
         })?

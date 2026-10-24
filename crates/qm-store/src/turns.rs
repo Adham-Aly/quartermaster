@@ -61,7 +61,7 @@ pub struct NewTurn {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RecordedAction {
     pub tool: String,
-    /// What it did, as the app's acknowledgement words it ("Started: T-0048"), or `None` for a
+    /// What it did, as the app's acknowledgement words it ("Started: C-0048"), or `None` for a
     /// line shown to you or a change with no words of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect: Option<String>,

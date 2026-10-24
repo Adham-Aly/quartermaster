@@ -303,7 +303,7 @@ pub fn task_line(conn: &Connection, task: TaskId) -> Result<Option<String>, Stor
             DeliveryMode::BranchOnly if d.pushed_head.is_some() => {
                 "branch pushed · delivered".to_owned()
             }
-            DeliveryMode::BranchOnly => "branch delivered · kept in the workspace".to_owned(),
+            DeliveryMode::BranchOnly => "branch delivered · kept locally".to_owned(),
             DeliveryMode::BuildInPlace => format!(
                 "landed in {}",
                 d.landed_into.as_deref().unwrap_or("your checkout")

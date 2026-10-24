@@ -57,7 +57,7 @@ impl Page {
         let (svc, scheduler) = fixture.task_service();
         fs::create_dir_all(svc.deps().data_dir.artifacts_dir()).unwrap();
         let task = TaskId::new(3).unwrap();
-        let dir = svc.plan_dir(task);
+        let dir = svc.deps().data_dir.task(task, task.own_label()).plan;
         fs::create_dir_all(dir.parent().unwrap()).unwrap();
         create(&dir).unwrap();
         fs::write(dir.join(PLAN_FILE), PLAN_MD).unwrap();
@@ -216,7 +216,7 @@ async fn a_page_reply_reaches_the_planner_once_as_a_paste_does() {
     assert_eq!(page.status().await, "running");
     assert_eq!(
         notes,
-        ["Plan reply sent from the page · T-0003 round 1 · 1 of 1 answered"]
+        ["Plan reply sent from the page · C-0003 round 1 · 1 of 1 answered"]
     );
     let state = page.state();
     assert!(state.pending_reply && state.sent_from_page());

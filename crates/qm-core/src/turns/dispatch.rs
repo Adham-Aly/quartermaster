@@ -39,7 +39,11 @@ pub(crate) async fn run_tool(
     }
     let dispatched = d.dispatch(cx, name, args.clone()).await;
     let effect = if dispatched.counted {
-        effect_of(name, &args, &dispatched.result)
+        effect_of(
+            name,
+            dispatched.resolved.as_ref().unwrap_or(&args),
+            &dispatched.result,
+        )
     } else {
         None
     };

@@ -3,4 +3,4 @@ Replace exact text in a file. Read the file first in this session; if it changed
 - old_string: the exact text to replace.
 - new_string: its replacement; it must differ from old_string.
 - replace_all: replace every occurrence (optional).
-Edits outside your worktree, the evidence folder and the system temporary folder are refused.
+Edits go anywhere the user's account reaches except the app's own state; any task's worktree stays writable.

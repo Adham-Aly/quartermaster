@@ -160,7 +160,7 @@ pub(crate) async fn job_finished(
         agent_told,
     } = end;
     let at = svc.clock().now();
-    let paths = svc.deps().data_dir.task(task);
+    let paths = svc.paths(task).await?;
     svc.write(move |tx, notify| {
         let Some(job) = job_store::finish(tx, agent, &label, exit_code, at)? else {
             return Ok(None);

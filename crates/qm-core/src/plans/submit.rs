@@ -29,6 +29,7 @@ use qm_types::domain::{MessageKind, MessageSource, PlanMode, TaskKind};
 use qm_types::ids::TaskId;
 use serde::Deserialize;
 use std::fmt::Write as _;
+use std::path::PathBuf;
 
 /// `events.kind` of a plan reply sent from the page and delivered to the planner.
 pub const PAGE_REPLY_EVENT: &str = "task.plan_page_reply";
@@ -110,6 +111,8 @@ struct Body {
 /// A submission that passed its checks.
 struct Checked {
     task: TaskId,
+    /// The plan's folder.
+    dir: PathBuf,
     body: Body,
     reply: reply::PlanReply,
     /// What the planner receives.
@@ -158,8 +161,9 @@ async fn check(svc: &TaskService, body: &[u8]) -> Result<Checked, Answer> {
         Ok(Some(PlanMode::Interactive)) => {}
         Ok(_) | Err(_) => return Err(closed()),
     }
-    let dir = svc.plan_dir(task);
-    let state = tokio::task::spawn_blocking(move || super::load(&dir))
+    let dir = svc.plan_dir(&row);
+    let read = dir.clone();
+    let state = tokio::task::spawn_blocking(move || super::load(&read))
         .await
         .ok()
         .and_then(Result::ok)
@@ -183,6 +187,7 @@ async fn check(svc: &TaskService, body: &[u8]) -> Result<Checked, Answer> {
     let text = neutralise(body.reply.trim());
     Ok(Checked {
         task,
+        dir,
         body,
         reply,
         text,
@@ -237,13 +242,13 @@ fn check_state(state: &PlanState, body: &Body) -> Result<(), Answer> {
 async fn claim_and_deliver(svc: &TaskService, checked: Checked) -> Answer {
     let Checked {
         task,
+        dir,
         body,
         reply,
         text,
     } = checked;
     let round = body.round;
     let plan = body.plan.clone();
-    let dir = svc.plan_dir(task);
     // Checked again under the lock: a paste or another request may have answered the round.
     let claimed = tokio::task::spawn_blocking(move || {
         super::try_update(&dir, |s| {
@@ -364,7 +369,10 @@ fn acknowledgement(
 
 /// Drops the claim on `round` after a delivery that didn't happen.
 async fn release(svc: &TaskService, task: TaskId, round: u32) {
-    let dir = svc.plan_dir(task);
+    let Ok(dir) = svc.paths(task).await.map(|p| p.plan) else {
+        tracing::error!(%task, round, "couldn't find a plan to release a reply's claim");
+        return;
+    };
     let released = tokio::task::spawn_blocking(move || {
         super::update(&dir, |s| {
             if s.page_claim == Some(round) {
@@ -381,7 +389,11 @@ async fn release(svc: &TaskService, task: TaskId, round: u32) {
 /// Records a delivered reply to `round` in the plan's state, as a paste does, and renders the
 /// page again as sent.
 async fn finish(svc: &TaskService, task: TaskId, round: u32, at: String) {
-    let dir = svc.plan_dir(task);
+    let Ok(dir) = svc.paths(task).await.map(|p| p.plan) else {
+        // The reply was delivered; the next startup finishes the round from its event.
+        tracing::error!(%task, round, "couldn't find the plan to record a reply sent from its page");
+        return;
+    };
     let project = svc.project_name_of(task).await;
     let port = svc.plan_port();
     let finished = tokio::task::spawn_blocking(move || {
@@ -471,16 +483,16 @@ mod acknowledgement_tests {
         let task = TaskId::new(7).expect("a task number");
         assert_eq!(
             acknowledgement(task, 1, 2, 3, 0),
-            "Plan reply sent from the page · T-0007 round 1 · 2 of 3 answered"
+            "Plan reply sent from the page · C-0007 round 1 · 2 of 3 answered"
         );
         assert_eq!(
             acknowledgement(task, 1, 1, 1, 2),
-            "Plan reply sent from the page · T-0007 round 1 · 1 of 1 answered, 2 section notes"
+            "Plan reply sent from the page · C-0007 round 1 · 1 of 1 answered, 2 section notes"
         );
         // A final round has no questions: its reply is section notes only.
         assert_eq!(
             acknowledgement(task, 2, 0, 0, 1),
-            "Plan reply sent from the page · T-0007 round 2 · 1 section note"
+            "Plan reply sent from the page · C-0007 round 2 · 1 section note"
         );
     }
 }

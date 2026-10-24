@@ -2,7 +2,10 @@
 //!
 //! A relative path resolves against the worktree. A write goes anywhere the user's account reaches,
 //! except the app's own scratch folder and data folder, which only a write root inside them reopens
-//! (the worktree, evidence, report, plan and scratchpad). Judged on real paths: the target is first
+//! (the worktree, evidence, report, plan and scratchpad). Inside the data folder, every task's
+//! worktree is open too: a crewmate works on another task's worktree when the user asks it to.
+//! What stays closed is the app's own state (its database, credentials, settings, briefs and
+//! sessions), never project work. Judged on real paths: the target is first
 //! normalised lexically (`.` and `..` removed), then its nearest existing ancestor is
 //! canonicalised (symlinks resolved) and the rest appended. The path written is that same
 //! resolved path, so neither `..` nor a symlink can lead a write outside.
@@ -88,17 +91,29 @@ impl WritePolicy {
                 .protected_grants
                 .iter()
                 .any(|root| target.starts_with(root))
+                || self.protected.iter().any(|p| in_a_worktree(p, &target))
             {
                 return Ok(target);
             }
             return Err(format!(
-                "refused: {} is inside the app's own data folder; write in the worktree, the \
-                 evidence, report or plan folder, or your scratchpad",
+                "refused: {} is the app's own state, inside its data folder; write in a \
+                 worktree, your evidence, report or plan folder, or your scratchpad",
                 path.display()
             ));
         }
         Ok(target)
     }
+}
+
+/// Whether `target` is inside some task's worktree under the data folder `root`:
+/// `<root>/tasks/<task>/worktree/…`, strictly inside it.
+fn in_a_worktree(root: &Path, target: &Path) -> bool {
+    use qm_types::data_dir::{TASKS, WORKTREE};
+    let Ok(rest) = target.strip_prefix(root) else {
+        return false;
+    };
+    let parts: Vec<&std::ffi::OsStr> = rest.components().map(Component::as_os_str).collect();
+    parts.len() > 3 && parts[0] == TASKS && parts[2] == WORKTREE
 }
 
 /// `path` made absolute against `cwd`.
@@ -244,6 +259,18 @@ mod tests {
         ] {
             let refused = policy.check(&path).expect_err("protected");
             assert!(refused.contains("data folder"), "{refused}");
+        }
+        // Another task's worktree is project work: open when the user asks for it. Its task's own
+        // folder around it is not.
+        let other = home.join("tasks/T-0043/worktree");
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(policy.check(&other.join("src/main.rs")).is_ok());
+        for path in [
+            home.join("tasks/T-0043/brief.md"),
+            home.join("tasks/T-0043/worktree"),
+            other.join("../session/x"),
+        ] {
+            assert!(policy.check(&path).is_err(), "{}", path.display());
         }
         let _ = std::fs::remove_dir_all(&home);
     }

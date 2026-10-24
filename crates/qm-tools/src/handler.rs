@@ -23,7 +23,7 @@ use qm_types::domain::{Effort, PlanMode, TaskKind, VerificationLevel};
 use qm_types::domain::{MessageKind, Role, StartedBy};
 use qm_types::error::Refusal;
 use qm_types::ids::{AgentId, MessageId, SecondmateId, StandingInstructionId, TaskId, TurnId};
-use qm_types::ids::{CorrelationId, ModelId};
+use qm_types::ids::{CorrelationId, ModelId, TaskLabelId};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -160,6 +160,30 @@ pub trait ToolHost: Send + Sync {
     ) -> BoxFuture<'a, Result<TaskUpdated, ToolFailure>> {
         let _ = (caller, task, project, folder);
         Box::pin(async { Err(ToolFailure::not_available("set_task_project")) })
+    }
+
+    /// Moves a direct report to the open task `task`, or to a new task of its own when `None`.
+    fn set_task_label<'a>(
+        &'a self,
+        caller: &'a Caller,
+        crewmate: TaskId,
+        task: Option<TaskLabelId>,
+    ) -> BoxFuture<'a, Result<crate::defs::TaskChanged, ToolFailure>> {
+        let _ = (caller, crewmate, task);
+        Box::pin(async { Err(ToolFailure::not_available("set_task_label")) })
+    }
+
+    /// The crewmate a task names, where an argument names a crewmate but was given a task
+    /// (`T-0017`): the task's one open crewmate, else its only crewmate; refused when that is
+    /// ambiguous. Without a store, the crewmate numbered like the task, as before tasks held
+    /// crewmates.
+    fn resolve_task_label<'a>(
+        &'a self,
+        caller: &'a Caller,
+        task: TaskLabelId,
+    ) -> BoxFuture<'a, Result<TaskId, ToolFailure>> {
+        let _ = caller;
+        Box::pin(async move { Ok(task.legacy_crewmate()) })
     }
 
     /// Closes a direct report's finished task and retires its worktree.
@@ -336,8 +360,8 @@ pub trait ToolHost: Send + Sync {
         Box::pin(async { Err(ToolFailure::not_available("parent_report")) })
     }
 
-    /// `find_project_folder`: folders named `name` (any case) that contain a `.git`, up to three
-    /// levels under the search roots in settings, best first.
+    /// `find_project_folder`: folders named `name` (any case), repositories or plain folders, up
+    /// to three levels under the search roots in settings, best first.
     fn find_project_folder<'a>(
         &'a self,
         caller: &'a Caller,
@@ -530,6 +554,10 @@ pub trait ToolHost: Send + Sync {
 /// Everything `start_crewmate` carries, for both the Quartermaster's and a secondmate's variant. A
 /// secondmate's variant sets `correlation`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent yes/no facts about the work, as the tool call gave them"
+)]
 pub struct StartRequest {
     /// The folder to work in, as written (absolute or from `~`).
     pub folder: Option<String>,
@@ -537,6 +565,14 @@ pub struct StartRequest {
     pub project: Option<String>,
     /// Work in the folder itself, not a worktree (a user-words field).
     pub in_place: bool,
+    /// Make `folder` first, with any missing parents: the user asked for a new folder. Deferred
+    /// starts saved before this field existed read as false.
+    #[serde(default)]
+    pub create_folder: bool,
+    /// The task the new crewmate joins; `None` makes it a task of its own. Deferred starts saved
+    /// before tasks held crewmates read as `None`.
+    #[serde(default)]
+    pub label: Option<TaskLabelId>,
     pub kind: TaskKind,
     pub title: String,
     pub goal: String,
@@ -751,6 +787,9 @@ pub struct Dispatched {
     pub result: ToolResult,
     /// A successful call of a counting tool: an effective action.
     pub counted: bool,
+    /// The arguments the handler ran with, when they differ from the call's: a task given where
+    /// a crewmate is asked for, replaced with the task's crewmate.
+    pub resolved: Option<serde_json::Value>,
 }
 
 /// Dispatches tool calls to their handlers.
@@ -802,11 +841,28 @@ impl Dispatcher {
             return Dispatched {
                 result: ToolResult::error(ToolFailure::not_available(name).render()),
                 counted: false,
+                resolved: None,
             };
         };
+        let mut args = args;
+        let resolved =
+            match crate::task_refs::resolve(cx.host, cx.caller, def.schema, &mut args).await {
+                Ok(changed) => changed.then(|| args.clone()),
+                Err(failure) => {
+                    return Dispatched {
+                        result: ToolResult::error(failure.render()),
+                        counted: false,
+                        resolved: None,
+                    };
+                }
+            };
         let result = (binding.call)(cx, args).await;
         let counted = def.class.counts() && !result.is_error;
-        Dispatched { result, counted }
+        Dispatched {
+            result,
+            counted,
+            resolved,
+        }
     }
 }
 
@@ -814,5 +870,6 @@ fn failed(message: String) -> Dispatched {
     Dispatched {
         result: ToolResult::error(ToolFailure::Failed(message).render()),
         counted: false,
+        resolved: None,
     }
 }

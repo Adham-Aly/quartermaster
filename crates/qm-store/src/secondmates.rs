@@ -51,7 +51,7 @@ pub struct NewSecondmate<'a> {
     pub standing_branch: Option<&'a str>,
     /// Its supervisor: the Quartermaster's agent.
     pub parent: AgentId,
-    /// Where its folders are (`secondmates/SM-02/home`), known only once its ID is.
+    /// Where its folders are (`secondmates/S-02/home`), known only once its ID is.
     pub data_dir: &'a DataDir,
     pub at: Timestamp,
 }

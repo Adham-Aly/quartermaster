@@ -137,7 +137,7 @@ pub trait ChatLog: Send + Sync + fmt::Debug {
     /// Your messages to this agent that no turn has taken yet, oldest first.
     fn waiting_messages(&self, agent: AgentId) -> BoxFuture<'_, Result<Vec<MessageId>, SeatError>>;
 
-    /// The app's own acknowledgement beside your message ("Started: T-0048", "Got it").
+    /// The app's own acknowledgement beside your message ("Started: C-0048", "Got it").
     fn app_acknowledgement<'a>(
         &'a self,
         agent: AgentId,

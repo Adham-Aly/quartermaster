@@ -5,6 +5,7 @@ use super::*;
 fn plan_facts() -> BriefFacts {
     BriefFacts {
         task: TaskId::new(42).expect("nonzero task ID"),
+        label: TaskLabelId::new(42).expect("nonzero task ID"),
         kind: TaskKind::Plan,
         supervisor: BriefSupervisor::Quartermaster,
         project: "Example".into(),
@@ -13,6 +14,7 @@ fn plan_facts() -> BriefFacts {
         verification: BriefVerification::None,
         workspace: BriefWorkspace::Folder {
             path: "/project".into(),
+            repository: false,
         },
         pr_target: None,
         ports: PortBlock { base: 42000 },

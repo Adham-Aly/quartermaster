@@ -145,7 +145,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
 
 /// Who the speakers are in a conversation: the agent it belongs to and the one above it.
 pub(crate) struct Voices<'a> {
-    /// The header of the agent's own messages: `quartermaster`, or a secondmate's `SM-02`.
+    /// The header of the agent's own messages: `quartermaster`, or a secondmate's `S-02`.
     pub(crate) agent: &'a str,
     /// The header of marked messages from the agent's supervisor.
     pub(crate) supervisor: &'a str,
@@ -352,7 +352,7 @@ const BOX_MIN: u16 = 12;
 /// wrapped one cell inside. `None` when the pane is too narrow for a box.
 ///
 /// ```text
-/// ╭─ you 14:12 ─────────────────────────── ✓ Steered: T-0042 ─╮
+/// ╭─ you 14:12 ─────────────────────────── ✓ Steered: C-0042 ─╮
 /// │ tell 42 a unit test that reproduces the race is enough    │
 /// ╰───────────────────────────────────────────────────────────╯
 /// ```
@@ -459,12 +459,12 @@ mod tests {
     #[test]
     fn a_prompt_box_fills_the_width_and_drops_what_does_not_fit() {
         let title = || vec![Span::raw("you 14:12")];
-        let ack = || Some(Span::raw("✓ Steered: T-0042"));
+        let ack = || Some(Span::raw("✓ Steered: C-0042"));
         let rows = prompt_box(title(), ack(), "tell 42 to skip the e2e run", 40).unwrap();
         assert_eq!(
             texts(&rows),
             [
-                "╭─ you 14:12 ────── ✓ Steered: T-0042 ─╮",
+                "╭─ you 14:12 ────── ✓ Steered: C-0042 ─╮",
                 "│ tell 42 to skip the e2e run          │",
                 "╰──────────────────────────────────────╯",
             ]
@@ -497,12 +497,12 @@ mod tests {
             note(2, sent),
             note(
                 3,
-                "Plan reply sent from the page · T-0051 round 1 · 1 of 2 answered",
+                "Plan reply sent from the page · C-0051 round 1 · 1 of 2 answered",
             ),
             line(
                 4,
                 MessageSource::App,
-                "T-0051's plan, round 2, has 1 question for you",
+                "C-0051's plan, round 2, has 1 question for you",
             ),
         ];
         let voices = Voices::QUARTERMASTER;
@@ -510,7 +510,7 @@ mod tests {
         let at_note = drawn.iter().position(|r| r.starts_with('✓')).unwrap();
         // A blank row before the run, none inside it, one after it; no header for either note.
         assert_eq!(drawn[at_note - 1], "");
-        assert!(drawn[at_note + 1].starts_with("✓ Plan reply sent from the page · T-0051"));
+        assert!(drawn[at_note + 1].starts_with("✓ Plan reply sent from the page · C-0051"));
         assert_eq!(drawn[at_note + 2], "");
         assert!(drawn[at_note + 3].starts_with("app "));
         let first = &drawn[at_note];

@@ -53,7 +53,7 @@ pub const THINKING: &str = "thinking";
 /// (and so on the menu button).
 pub const MENU_BADGE: &str = "menu-badge";
 
-/// The Bridge with the Quartermaster compacting its context, and T-0042's last compaction
+/// The Bridge with the Quartermaster compacting its context, and C-0042's last compaction
 /// failed.
 pub const COMPACTING: &str = "compacting";
 
@@ -63,7 +63,7 @@ pub const CONTEXT_UNKNOWN: &str = "context-unknown";
 /// The Bridge with the Actions inbox focused and a long list in it.
 pub const ACTIONS: &str = "actions";
 
-/// Puts the sample worker session into `app`: T-0042's session in the Bridge sample's middle
+/// Puts the sample worker session into `app`: C-0042's session in the Bridge sample's middle
 /// panel, the input focused and empty. Nothing waits for you.
 pub(crate) fn install_session(app: &mut App) {
     install(app);
@@ -83,12 +83,12 @@ pub fn session_view() -> SessionView {
         1,
         SessionLineKind::Supervisor,
         2,
-        "Brief · T-0042 · fix(auth): token refresh race",
+        "Brief · C-0042 · fix(auth): token refresh race",
     );
     brief.detail = Some(String::from(
-        "# Brief · T-0042 · fix(auth): token refresh race\n\nThe token refresh in api-server \
+        "# Brief · C-0042 · fix(auth): token refresh race\n\nThe token refresh in api-server \
          sometimes logs people out. The repro from yesterday is solid; fix it from the confirmed \
-         reproduction in T-0041.",
+         reproduction in C-0041.",
     ));
     let mut view = SessionView::new(task(42));
     view.title = String::from("fix(auth): token refresh race");
@@ -146,11 +146,11 @@ pub fn session_view() -> SessionView {
     view.status = String::from("running 14m · job J3 idle");
     view.turn_running = true;
     view.open = true;
-    view.placeholder = String::from("message T-0042 directly…");
+    view.placeholder = String::from("message C-0042 directly…");
     view
 }
 
-/// The value of [`ENV`] that shows SM-02's session.
+/// The value of [`ENV`] that shows S-02's session.
 pub const SECONDMATE: &str = "secondmate";
 
 /// Shows the sample in `app` if [`ENV`] asks for it; returns whether it did.
@@ -190,7 +190,7 @@ fn secondmate_ref() -> AgentRef {
     }
 }
 
-/// Puts SM-02's session into `app`, in the Bridge sample's middle panel, the input focused and
+/// Puts S-02's session into `app`, in the Bridge sample's middle panel, the input focused and
 /// empty.
 pub(crate) fn install_secondmate(app: &mut App) {
     install(app);
@@ -199,7 +199,7 @@ pub(crate) fn install_secondmate(app: &mut App) {
     app.enter_session(secondmate_ref());
 }
 
-/// SM-02's session as the core builds it (`qm_core::sessions::view::load_secondmate`): its
+/// S-02's session as the core builds it (`qm_core::sessions::view::load_secondmate`): its
 /// conversation with the Quartermaster's routed request and your direct message, no cards.
 #[doc(hidden)]
 pub fn secondmate_view() -> SessionView {
@@ -211,15 +211,15 @@ pub fn secondmate_view() -> SessionView {
         "Add rate limiting to web-app's API client: back off on 429 and honour Retry-After. \
          Base it on web-app's standing branch.",
     );
-    routed.context = Some(String::from("C-0193"));
+    routed.context = Some(String::from("R-0193"));
     let mut started = ChatLine::new(
         MessageId::new(12),
         MessageSource::Agent,
         MessageKind::Reply,
         at(13, 51),
-        "Started T-0045 from `sm/web-app` on a medium model. I'll report back when its PR is up.",
+        "Started C-0045 from `sm/web-app` on a medium model. I'll report back when its PR is up.",
     );
-    started.acknowledgement = Some(String::from("Started: T-0045"));
+    started.acknowledgement = Some(String::from("Started: C-0045"));
     let asked = ChatLine::new(
         MessageId::new(13),
         MessageSource::You,
@@ -232,17 +232,17 @@ pub fn secondmate_view() -> SessionView {
         MessageSource::Agent,
         MessageKind::Reply,
         at(14, 5),
-        "Noted. I've told T-0045 to cap retries at 3.",
+        "Noted. I've told C-0045 to cap retries at 3.",
     );
     reply.context = Some(String::from("reply"));
-    reply.acknowledgement = Some(String::from("Steered: T-0045"));
+    reply.acknowledgement = Some(String::from("Steered: C-0045"));
     let mut view = SessionView::new(secondmate_ref());
     view.title = String::from("secondmate");
     view.note = String::from("web-app frontend and its API client · idle");
     view.status = String::from("idle");
     view.subtitle = String::from("Charter · web-app: the frontend, its API client and its build");
     view.open = true;
-    view.placeholder = String::from("message SM-02 directly…");
+    view.placeholder = String::from("message S-02 directly…");
     view.conversation = vec![routed, started, asked, reply];
     view
 }
@@ -286,7 +286,7 @@ pub fn thinking() -> Snapshot {
     out
 }
 
-/// Puts the sample Bridge into `app`: the data, the crew pane focused with T-0042 selected, and
+/// Puts the sample Bridge into `app`: the data, the crew pane focused with C-0042 selected, and
 /// your half-typed reply in the input box.
 pub(crate) fn install(app: &mut App) {
     app.snapshot = snapshot();
@@ -358,28 +358,28 @@ fn projects() -> Vec<ProjectRow> {
 }
 
 fn crew() -> Vec<CrewRow> {
-    let mut approve = CrewRow::new(task(39), 1, "T-0039 feat", "approve");
+    let mut approve = CrewRow::new(task(39), 1, "C-0039 feat", "approve");
     approve.needs_you = true;
     approve.waiting = Some(Waiting::Approval);
-    let mut decide = CrewRow::new(task(47), 1, "T-0047 fix", "decide");
+    let mut decide = CrewRow::new(task(47), 1, "C-0047 fix", "decide");
     decide.needs_you = true;
     decide.waiting = Some(Waiting::Decision);
     let secondmate = AgentRef::Secondmate {
         id: SecondmateId::new(2).expect("secondmate ids start at 1"),
     };
-    // T-0042 and T-0045 are in a turn; T-0046 runs but sits between turns.
+    // C-0042 and C-0045 are in a turn; C-0046 runs but sits between turns.
     let busy = |mut row: CrewRow| {
         row.busy = true;
         row
     };
     vec![
         CrewRow::new(AgentRef::Quartermaster, 0, "Quartermaster", "ready"),
-        busy(CrewRow::new(task(42), 1, "T-0042 fix", "12m")),
-        CrewRow::new(task(46), 1, "T-0046 review", "2m"),
+        busy(CrewRow::new(task(42), 1, "C-0042 fix", "12m")),
+        CrewRow::new(task(46), 1, "C-0046 review", "2m"),
         approve,
         decide,
-        CrewRow::new(secondmate, 1, "SM-02 web-app", "idle"),
-        busy(CrewRow::new(task(45), 2, "T-0045 build", "3m")),
+        CrewRow::new(secondmate, 1, "S-02 web-app", "idle"),
+        busy(CrewRow::new(task(45), 2, "C-0045 build", "3m")),
     ]
 }
 
@@ -392,7 +392,7 @@ fn conversation() -> Vec<ChatLine> {
         "the token refresh in api-server sometimes logs people out. the repro from yesterday \
          is solid, go ahead and fix it",
     );
-    yours.acknowledgement = Some(String::from("Started: T-0042"));
+    yours.acknowledgement = Some(String::from("Started: C-0042"));
     let mut reply = ChatLine::new(
         MessageId::new(2),
         MessageSource::Agent,
@@ -401,15 +401,15 @@ fn conversation() -> Vec<ChatLine> {
         "The rate-limiting plan for api-server is back: a token bucket per API key in Redis, \
          100 requests a minute by default. Want me to start the build?",
     );
-    reply.context = Some(String::from("after T-0043 reported"));
+    reply.context = Some(String::from("after C-0043 reported"));
     vec![yours, reply]
 }
 
-/// The sample approval for T-0039, listed in Actions.
+/// The sample approval for C-0039, listed in Actions.
 fn approval_card() -> Card {
     let mut card = Card::new(CardKind::Approval, "Approval needed");
     card.held = Some(HeldActionId::new(1));
-    card.title = Some(String::from("T-0039"));
+    card.title = Some(String::from("C-0039"));
     card.lines = vec![
         CardLine::new(2, vec![s("feat(billing): proration preview", Tone::Text)]),
         CardLine::new(
@@ -451,7 +451,7 @@ fn approval_card() -> Card {
     card
 }
 
-/// The chat sample (the reply, the app's `✓ Steered: T-0042`, the
+/// The chat sample (the reply, the app's `✓ Steered: C-0042`, the
 /// Quartermaster's `✓ Noted for next time`, your 14:20 message that nothing came of), a plan
 /// reply sent from its page as one line, then a question and a message of yours queued behind the
 /// turn that asked it. The notice, the question and a plan's round wait in Actions.
@@ -485,7 +485,7 @@ fn chat_conversation() -> Vec<ChatLine> {
         MessageSource::Agent,
         MessageKind::Reply,
         at(14, 10),
-        "T-0042 has the fix in and is re-running the auth suite before it opens the PR. Nothing \
+        "C-0042 has the fix in and is re-running the auth suite before it opens the PR. Nothing \
          needs you yet.",
     );
     reply.context = Some(String::from("reply"));
@@ -496,7 +496,7 @@ fn chat_conversation() -> Vec<ChatLine> {
         12,
         "tell 42 a unit test that reproduces the race is enough, skip the full e2e run",
     );
-    steered.acknowledgement = Some(String::from("Steered: T-0042"));
+    steered.acknowledgement = Some(String::from("Steered: C-0042"));
 
     let mut noted = you(4, 14, 13, "don't ping me for lint-only CI failures");
     noted.acknowledgement = Some(String::from("Noted for next time"));
@@ -508,7 +508,7 @@ fn chat_conversation() -> Vec<ChatLine> {
         MessageSource::App,
         MessageKind::Message,
         at(14, 22),
-        "Plan reply sent from the page · T-0039 round 1 · 4 of 4 answered",
+        "Plan reply sent from the page · C-0039 round 1 · 4 of 4 answered",
     )
     .with_one_line();
 
@@ -595,7 +595,7 @@ fn question_item() -> ActionItem {
 fn plan_item() -> ActionItem {
     let page = "/tmp/quartermaster/plans/T-0044/plan.html";
     let mut card = Card::new(CardKind::Plan, "Plan questions");
-    card.title = Some(String::from("T-0044 plan(auth): session store"));
+    card.title = Some(String::from("C-0044 plan(auth): session store"));
     card.note = Some(String::from("· api-server · round 2"));
     card.lines = vec![
         CardLine::new(
@@ -635,13 +635,14 @@ fn tasks() -> Vec<TaskDetail> {
     let mut detail = TaskDetail::new(task_id(42), "fix(auth): token refresh race");
     detail.rows = vec![
         TaskRow::new(Some("project"), vec![s("api-server", Tone::Text)]),
+        TaskRow::new(Some("task"), vec![s("T-0042", Tone::Text)]),
         TaskRow::new(Some("model"), vec![s("sonnet-5-5", Tone::Text)]),
         TaskRow::new(Some("account"), vec![s("Claude Max", Tone::Text)]),
         TaskRow::new(Some("tier"), vec![s("medium · effort Medium", Tone::Text)]),
         TaskRow::new(
             None,
             vec![s(
-                "why: “Fixing from the confirmed reproduction in T-0041”",
+                "why: “Fixing from the confirmed reproduction in C-0041”",
                 Tone::Dim,
             )],
         ),
@@ -1027,7 +1028,7 @@ pub(crate) fn install_decision(app: &mut App) {
 pub fn decision_card() -> Card {
     let mut card = Card::new(CardKind::Decision, "Decision");
     card.held = Some(HeldActionId::new(2));
-    card.title = Some(String::from("T-0047 fix(ci): flaky upload test"));
+    card.title = Some(String::from("C-0047 fix(ci): flaky upload test"));
     card.note = Some(String::from("· api-server · high · opus-5-5"));
     card.lines = vec![
         CardLine::new(
@@ -1074,7 +1075,7 @@ pub fn decision_card() -> Card {
     card
 }
 
-/// The sample Bridge with T-0047's decision waiting in Actions.
+/// The sample Bridge with C-0047's decision waiting in Actions.
 #[doc(hidden)]
 pub fn decision() -> Snapshot {
     let mut out = snapshot();
@@ -1106,14 +1107,14 @@ pub(crate) fn install_diff(app: &mut App) {
     app.press_action_button(button, std::time::Instant::now());
 }
 
-/// A Diff screen's content for the sample's T-0039. Only changed paths are present; counts and
+/// A Diff screen's content for the sample's C-0039. Only changed paths are present; counts and
 /// the compatibility patch are derived from these same files, never an invented summary.
 #[doc(hidden)]
 pub fn diff() -> qm_types::api::DiffView {
     use DiffLineKind::{Addition as A, Deletion as D};
     let mut view = qm_types::api::DiffView::new(
         HeldActionId::new(1),
-        "T-0039 · feat(billing): proration preview",
+        "C-0039 · feat(billing): proration preview",
     );
     let proration = diff_proration();
     let tests = diff_file(
@@ -1469,7 +1470,7 @@ fn occupancy(tokens: u64, point: u64, seconds: i64) -> ContextOccupancy {
 }
 
 /// The sample's context readings: the Quartermaster after a finished turn and an automatic
-/// compaction, T-0042 high and mid-turn, SM-02 not read yet.
+/// compaction, C-0042 high and mid-turn, S-02 not read yet.
 fn context() -> Vec<AgentContextView> {
     let qm_turn = TurnTokens::new(false, 1_240, 880, 3)
         .with_categories(Some(312), Some(94_000), Some(2_100))
@@ -1495,7 +1496,7 @@ fn context() -> Vec<AgentContextView> {
     ]
 }
 
-/// [`context`], with the Quartermaster compacting and T-0042's last compaction failed.
+/// [`context`], with the Quartermaster compacting and C-0042's last compaction failed.
 fn compacting_context() -> Vec<AgentContextView> {
     let mut views = context();
     let failed = CompactionNote::new(

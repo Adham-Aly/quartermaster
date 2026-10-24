@@ -1,6 +1,6 @@
 //! Creating a task's worktree.
 //!
-//! The worktree lives at `tasks/T-0042/worktree` (outside your checkout, next to the task's
+//! The worktree lives at `tasks/C-0042/worktree` (outside your checkout, next to the task's
 //! evidence folder, so evidence can never be committed) on the branch recorded with the task
 //! (`fix/upload-retry-on-slow-tmp`, named by the core), starting at
 //! the settled base commit. The project's listed files are then copied in from your checkout,

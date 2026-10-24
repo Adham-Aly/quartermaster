@@ -4,7 +4,7 @@
 //! ID is the correlation, never supplied by a model. The row carries your words (copied from your
 //! message on a turn you started; empty on an app-event turn), the Quartermaster's one-time
 //! instructions, and a base branch only from your turn. Model choices may instead cite an earlier
-//! actual user message. One `routed` wake (`routed:C-0193`) wakes the secondmate once.
+//! actual user message. One `routed` wake (`routed:R-0193`) wakes the secondmate once.
 
 use super::{SecondmateService, event_kind, failed, refuse};
 use crate::inbox::{Inbox, Notify};
@@ -230,9 +230,10 @@ impl SecondmateService {
         // A plain folder has no branches, so this refuses before any git runs in it; the task start
         // gives the same reason.
         if project.delivery == DeliveryMode::Folder {
-            return Err(refuse(
-                "the personal folder has no branches, so a base branch can't be named",
-            ));
+            return Err(refuse(format!(
+                "{} is a plain folder, which has no branches, so a base branch can't be named",
+                project.name
+            )));
         }
         let git = self.git().clone();
         let path = project.path.clone();

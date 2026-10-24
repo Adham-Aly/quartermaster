@@ -86,6 +86,8 @@ pub static TOOLS: &[ToolDef] = &[
     ToolDef::of::<defs::CancelCrewmateStartTool>(),
     ToolDef::of::<defs::ListCrewmateStartsTool>(),
     ToolDef::of::<defs::FindUserRequestsTool>(),
+    // Supervisors: moving a crewmate to another task.
+    ToolDef::of::<defs::SetTaskLabelTool>(),
 ];
 
 /// The tools one role is offered on one engine, in registry order. `plan` is the plan mode a plan

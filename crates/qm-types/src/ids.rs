@@ -1,14 +1,19 @@
 //! IDs.
 //!
-//! **Display IDs** are what agents and you see and type: `T-0042` (task), `SM-02` (secondmate),
-//! `C-0193` (correlation ID of a request routed to a secondmate), `J3` (background job), `SI-5`
-//! (standing instruction) and `SC-7` (schedule). Each wraps the positive integer that is its
-//! database key; it serialises as its display string (so tool arguments, tool results and events
-//! read naturally) and is stored as an `INTEGER`. Parsing is strict about the prefix and lenient
-//! about zero padding: `T-42` parses and displays as `T-0042`.
+//! **Display IDs** are what agents and you see and type: `C-0042` (a crewmate: its fixed name),
+//! `T-0017` (a task: a label grouping crewmates, which can change), `S-02` (a secondmate: its
+//! fixed name), `R-0193` (correlation ID of a request routed to a secondmate), `J3` (background
+//! job), `SI-5` (standing instruction) and `SC-7` (schedule). Each wraps the positive integer that
+//! is its database key; it serialises as its display string (so tool arguments, tool results and
+//! events read naturally) and is stored as an `INTEGER`. Parsing is strict about the prefix and
+//! lenient about zero padding: `C-42` parses and displays as `C-0042`. An ID whose prefix changed
+//! still parses in its older form (`SM-02`, `C-0193` for a correlation, `T-0042` for a crewmate),
+//! so stored history keeps working. Tool arguments are different: there a `T-` names a task, and
+//! the tool layer resolves it to that task's crewmate before anything reads it as a crewmate.
 //!
-//! A task's worktree folder derives from its ID (`T-0042`); its branch is named after its work
-//! and recorded with the task (`fix/upload-retry-on-slow-tmp`).
+//! A crewmate's own folder derives from its name (`tasks/C-0042`); its artifacts and scratchpad
+//! from its task and name (`artifacts/T-0017/C-0042`). Its branch is named after its work and
+//! recorded with it (`fix/upload-retry-on-slow-tmp`).
 //!
 //! **Row IDs** ([`AgentId`], [`TurnId`], [`WakeId`], …) are internal database keys with no display
 //! form; they serialise as plain numbers.
@@ -42,6 +47,9 @@ fn parse_number(kind: &'static str, input: &str, digits: &str) -> Result<NonZero
 
 macro_rules! display_id {
     ($(#[$meta:meta])* $name:ident, $kind:literal, $prefix:literal, $width:literal, $pattern:literal) => {
+        display_id!($(#[$meta])* $name, $kind, $prefix, $width, $pattern, legacy []);
+    };
+    ($(#[$meta:meta])* $name:ident, $kind:literal, $prefix:literal, $width:literal, $pattern:literal, legacy [$($legacy:literal),*]) => {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(NonZeroU32);
@@ -49,6 +57,9 @@ macro_rules! display_id {
         impl $name {
             /// The fixed prefix of the display form.
             pub const PREFIX: &'static str = $prefix;
+
+            /// Older prefixes still accepted when parsing; the display form never uses them.
+            pub const LEGACY_PREFIXES: &'static [&'static str] = &[$($legacy),*];
 
             /// The ID with this number; `None` for 0, since IDs start at 1.
             pub const fn new(n: u32) -> Option<Self> {
@@ -74,8 +85,9 @@ macro_rules! display_id {
             type Err = IdError;
 
             fn from_str(s: &str) -> Result<Self, IdError> {
-                let digits = s
-                    .strip_prefix(Self::PREFIX)
+                let digits = std::iter::once(Self::PREFIX)
+                    .chain(Self::LEGACY_PREFIXES.iter().copied())
+                    .find_map(|prefix| s.strip_prefix(prefix))
                     .ok_or_else(|| IdError::new($kind, s, concat!("it must start with ", $prefix)))?;
                 parse_number($kind, s, digits).map(Self)
             }
@@ -129,17 +141,28 @@ macro_rules! display_id {
 }
 
 display_id!(
-    /// A task, shown as `T-0042`.
-    TaskId, "task ID", "T-", 4, "^T-[0-9]+$"
+    /// A crewmate, shown as `C-0042`: its fixed name, which never changes. Its work is a row of
+    /// the store's `tasks` table, keyed by this number. `T-0042`, the older form, still parses as
+    /// the same crewmate: every task was one crewmate's work before tasks became labels.
+    CrewmateId, "crewmate ID", "C-", 4, "^[CT]-[0-9]+$", legacy ["T-"]
+);
+
+/// The older name of [`CrewmateId`], from when each task was exactly one crewmate's work.
+pub type TaskId = CrewmateId;
+
+display_id!(
+    /// A task, shown as `T-0017`: the label that groups crewmates working towards one thing. A
+    /// crewmate's task can change; a task holds any number of crewmates.
+    TaskLabelId, "task ID", "T-", 4, "^T-[0-9]+$"
 );
 display_id!(
-    /// A secondmate, shown as `SM-02`.
-    SecondmateId, "secondmate ID", "SM-", 2, "^SM-[0-9]+$"
+    /// A secondmate, shown as `S-02`: its fixed name. `SM-02`, the older form, still parses.
+    SecondmateId, "secondmate ID", "S-", 2, "^SM?-[0-9]+$", legacy ["SM-"]
 );
 display_id!(
-    /// A request routed to a secondmate, shown as `C-0193`; its answer on the parent channel
-    /// carries the same ID.
-    CorrelationId, "correlation ID", "C-", 4, "^C-[0-9]+$"
+    /// A request routed to a secondmate, shown as `R-0193`; its answer on the parent channel
+    /// carries the same ID. `C-0193`, the older form, still parses.
+    CorrelationId, "correlation ID", "R-", 4, "^[RC]-[0-9]+$", legacy ["C-"]
 );
 display_id!(
     /// A crewmate's background shell job, shown as `J3`.
@@ -154,7 +177,26 @@ display_id!(
     ScheduleId, "schedule ID", "SC-", 0, "^SC-[0-9]+$"
 );
 
-impl TaskId {
+impl TaskLabelId {
+    /// The crewmate numbered like this task (`T-0042` → `C-0042`): whose files an older version's
+    /// `artifacts/T-0042/` and `scratchpad/T-0042/` were, before tasks held crewmates.
+    pub const fn legacy_crewmate(self) -> CrewmateId {
+        CrewmateId(self.0)
+    }
+}
+
+impl CrewmateId {
+    /// The name older versions gave this crewmate's folders: `T-0042`.
+    pub fn legacy_name(self) -> String {
+        format!("T-{:04}", self.0)
+    }
+
+    /// The task numbered like this crewmate (`C-0042` → `T-0042`): the task a crewmate made before
+    /// tasks became labels belongs to, and the one a new crewmate's own task takes when free.
+    pub const fn own_label(self) -> TaskLabelId {
+        TaskLabelId(self.0)
+    }
+
     /// Prefix of the branches tasks were given before branches were named after their work.
     pub const LEGACY_BRANCH_PREFIX: &'static str = "qm/task-";
 
@@ -504,11 +546,13 @@ impl PortBlock {
 pub mod space {
     use std::ops::RangeInclusive;
 
-    /// Tasks: `T-` 1–9999.
+    /// Crewmates: `C-` 1–9999 (the store's `tasks` rows).
     pub const TASK: RangeInclusive<u32> = 1..=9_999;
-    /// Secondmates: `SM-` 1–99.
+    /// Task labels: `T-` 1–9999.
+    pub const TASK_LABEL: RangeInclusive<u32> = 1..=9_999;
+    /// Secondmates: `S-` 1–99.
     pub const SECONDMATE: RangeInclusive<u32> = 1..=99;
-    /// Requests routed to a secondmate: `C-` 1–9999.
+    /// Requests routed to a secondmate: `R-` 1–9999.
     pub const CORRELATION: RangeInclusive<u32> = 1..=9_999;
     /// Background jobs: `J` 1–999.
     pub const JOB: RangeInclusive<u32> = 1..=999;
@@ -577,3 +621,7 @@ pub fn free_number(
     free.get(usize::try_from(source.number(0, last)).ok()?)
         .copied()
 }
+
+#[cfg(test)]
+#[path = "ids_tests.rs"]
+mod tests;

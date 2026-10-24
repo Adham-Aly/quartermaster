@@ -49,7 +49,9 @@ use qm_types::domain::{
     Tier, VerificationLevel, VerificationSource,
 };
 use qm_types::error::Refusal;
-use qm_types::ids::{AgentId, CommitSha, MessageId, ModelId, PortBlock, SecondmateId, TaskId};
+use qm_types::ids::{
+    AgentId, CommitSha, MessageId, ModelId, PortBlock, SecondmateId, TaskId, TaskLabelId,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -679,6 +681,7 @@ async fn pick_ports(svc: &TaskService) -> Result<PortBlock, ToolFailure> {
 enum Recorded {
     Started {
         task: TaskId,
+        label: TaskLabelId,
         branch: Option<String>,
         agent: AgentId,
         summary: RoutingSummary,
@@ -695,11 +698,13 @@ pub(crate) enum StartOutcome {
 }
 
 /// The place `req` names: a listed project's folder, a folder (its project found by the git-root
-/// rule), or your home folder. A repository new to the app has its legacy task numbers reserved.
+/// rule), or your home folder. With `create`, a folder that doesn't exist yet is made first, with
+/// any missing parents. A repository new to the app has its legacy task numbers reserved.
 pub(crate) async fn find_place(
     svc: &TaskService,
     project: Option<String>,
     folder: Option<String>,
+    create: bool,
 ) -> Result<Place, ToolFailure> {
     if let Some(name) = project {
         let lookup = name.clone();
@@ -713,11 +718,24 @@ pub(crate) async fn find_place(
                 "There's no listed project called {name}; name its folder instead"
             )));
         };
-        return Ok(Place {
-            root: row.path.clone(),
-            folder: row.path,
-            repo: None,
-        });
+        // Its folder is read again: it may have changed kind since it was registered.
+        let (home, git, env) = (
+            svc.deps().home.clone(),
+            svc.deps().git.clone(),
+            svc.deps().inherited_env.clone(),
+        );
+        let data = svc.deps().data_dir.root().to_owned();
+        return tokio::task::spawn_blocking(move || {
+            Resolver {
+                home: &home,
+                data_dir: &data,
+                git: git.program(),
+                env: &env,
+            }
+            .at_root(row.path)
+        })
+        .await
+        .map_err(|e| ToolFailure::Failed(e.to_string()));
     }
     let text = folder.unwrap_or_else(|| "~".to_owned());
     let plain = svc
@@ -730,13 +748,16 @@ pub(crate) async fn find_place(
     let git = svc.deps().git.clone();
     let env = svc.deps().inherited_env.clone();
     let place = tokio::task::spawn_blocking(move || {
-        Resolver {
+        let resolver = Resolver {
             home: &home,
             data_dir: &data,
             git: git.program(),
             env: &env,
+        };
+        if create {
+            resolver.create(&text)?;
         }
-        .resolve(&text, &plain)
+        resolver.resolve(&text, &plain)
     })
     .await
     .map_err(|e| ToolFailure::Failed(e.to_string()))?
@@ -849,7 +870,13 @@ pub(crate) async fn start_when_ready(
         .await
         .map_err(|e| failed(&e))??;
     let authority = how.authority;
-    let place = find_place(svc, req.project.clone(), req.folder.clone()).await?;
+    let place = find_place(
+        svc,
+        req.project.clone(),
+        req.folder.clone(),
+        req.create_folder,
+    )
+    .await?;
     let req_copy = req.clone();
     let home = svc.deps().home.clone();
     let now = svc.clock().now();
@@ -883,7 +910,7 @@ pub(crate) async fn start_when_ready(
 
     // Code work on a plan waits for the plan: approved by the user, or finished under auto.
     if let Some(plan) = plan_built_on(svc, &req).await? {
-        super::plan::ready_to_build(svc, plan)
+        super::plan::ready_to_build(svc, &plan)
             .map_err(|why| refuse(format!("The task can't start: {why}")))?;
     }
 
@@ -1024,7 +1051,13 @@ pub(crate) async fn start_when_ready(
             {
                 validated.user_words_message = None;
             }
+            if let Some(label) = req.label
+                && let Some(why) = join_refusal(&tx, &caller, label, "join_task")?
+            {
+                return Ok((Recorded::Refused(why), notify));
+            }
             let new = NewTask {
+                label: req.label,
                 branch: branch.clone(),
                 project: project.id,
                 supervisor: caller.agent,
@@ -1061,7 +1094,7 @@ pub(crate) async fn start_when_ready(
             let workplace = if in_place {
                 validated.place.folder.clone()
             } else {
-                paths.task(task).worktree
+                paths.worktree(task)
             };
             let agent = agents::insert_crewmate(
                 &tx,
@@ -1162,10 +1195,12 @@ pub(crate) async fn start_when_ready(
             if let Err(r) = hook.on_recorded(&tx, task, &mut notify, at)? {
                 return Ok((Recorded::Refused(r), Notify::new()));
             }
+            let label = task_store::label(&tx, task)?.unwrap_or_else(|| task.own_label());
             tx.commit()?;
             Ok((
                 Recorded::Started {
                     task,
+                    label,
                     branch,
                     agent,
                     summary,
@@ -1183,6 +1218,7 @@ pub(crate) async fn start_when_ready(
         Recorded::DeferredWaiting => Ok(StartOutcome::DeferredWaiting),
         Recorded::Started {
             task,
+            label,
             branch,
             agent,
             summary,
@@ -1201,7 +1237,8 @@ pub(crate) async fn start_when_ready(
             }
             tracing::info!(%task, "task started");
             Ok(StartOutcome::Started(TaskStarted {
-                task,
+                crewmate: task,
+                task: label,
                 branch,
                 routing: summary,
             }))
@@ -1521,10 +1558,52 @@ pub(crate) async fn workplace(svc: &TaskService, task: TaskId) -> Result<Workpla
     Ok(Workplace { dir: agent.home })
 }
 
+/// Why `caller` can't put a crewmate in `label`, named in the argument `field`: it doesn't exist,
+/// or (for a secondmate) holds none of its crewmates. `None` when it can.
+pub(crate) fn join_refusal(
+    conn: &Connection,
+    caller: &Caller,
+    label: TaskLabelId,
+    field: &str,
+) -> Result<Option<Refusal>, StoreError> {
+    let crewmates = qm_store::task_labels::crewmates(conn, label)?;
+    if crewmates.is_empty() {
+        return Ok(Some(Refusal::new(format!(
+            "{label} doesn't exist; leave {field} out to give the crewmate a task of its own"
+        ))));
+    }
+    if crewmates.iter().all(|(_, open)| !open) {
+        return Ok(Some(Refusal::new(format!(
+            "{label} is finished: its crewmates are closed; leave {field} out to give the \
+             crewmate a task of its own"
+        ))));
+    }
+    if caller.role == Role::Secondmate {
+        let mut supervised = false;
+        for (crewmate, _) in &crewmates {
+            if task_store::load(conn, *crewmate)?.is_some_and(|r| r.supervisor == caller.agent) {
+                supervised = true;
+                break;
+            }
+        }
+        if !supervised {
+            return Ok(Some(Refusal::new(format!(
+                "{label} holds none of your crewmates; name one of your own tasks, or leave \
+                 {field} out"
+            ))));
+        }
+    }
+    Ok(None)
+}
+
 /// Gathers the crewmate's instruction files and skills (idempotent).
 pub(crate) async fn gather_for(svc: &TaskService, task: TaskId) -> Result<Gathered, PrepareError> {
     let home = svc.deps().home.clone();
-    let skills = svc.deps().data_dir.task(task).skills;
+    let skills = svc
+        .paths(task)
+        .await
+        .map_err(|e| PrepareError::Failed(e.to_string()))?
+        .skills;
     let dir = workplace(svc, task).await?.dir;
     tokio::task::spawn_blocking(move || gather(&home, &dir, &skills))
         .await
@@ -1536,7 +1615,7 @@ pub(crate) async fn gather_for(svc: &TaskService, task: TaskId) -> Result<Gather
 async fn plan_built_on(
     svc: &TaskService,
     req: &StartRequest,
-) -> Result<Option<TaskId>, ToolFailure> {
+) -> Result<Option<TaskRow>, ToolFailure> {
     let Some(target) = req.builds_on.filter(|_| req.kind.can_change_code()) else {
         return Ok(None);
     };
@@ -1545,7 +1624,7 @@ async fn plan_built_on(
         .call(move |conn| task_store::load(conn, target))
         .await
         .map_err(|e| failed(&e))?;
-    Ok(row.filter(|r| r.kind == TaskKind::Plan).map(|r| r.id))
+    Ok(row.filter(|r| r.kind == TaskKind::Plan))
 }
 
 /// Phase C: folders, worktree, setup, skills, brief. Every step picks up what an interrupted
@@ -1557,7 +1636,7 @@ pub(crate) async fn prepare(
     cancel: tokio::sync::watch::Receiver<bool>,
 ) -> Result<Prepared, PrepareError> {
     let (routed, ports, row) = routed_session(svc, task).await?;
-    let paths = svc.deps().data_dir.task(task);
+    let paths = svc.paths_of(&row);
 
     // 1. Folders.
     let mut dirs = vec![
@@ -1916,10 +1995,19 @@ pub(crate) async fn start_retry(
         .verification
         .filter(|(_, source)| *source == VerificationSource::User)
         .map(|(level, _)| level);
+    // A retired project (its last task closed meanwhile) isn't listed by name any more: its folder
+    // brings it back.
+    let (folder, by_name) = if project.removed {
+        (Some(project.path.display().to_string()), None)
+    } else {
+        (None, Some(project.name.clone()))
+    };
     let req = StartRequest {
-        folder: None,
-        project: Some(project.name.clone()),
+        folder,
+        project: by_name,
         in_place: row.in_place && project.delivery != DeliveryMode::Folder,
+        create_folder: false,
+        label: None,
         kind: row.kind,
         title: row.title.clone(),
         goal: row.goal.clone(),
@@ -1967,7 +2055,7 @@ async fn plan_folder(
             .await
             .map_err(|e| PrepareError::Failed(e.to_string()))?
             .filter(|r| r.kind == TaskKind::Plan)
-            .map(|r| svc.plan_dir(r.id)),
+            .map(|r| svc.plan_dir(&r)),
         None => None,
     };
     let mode = svc

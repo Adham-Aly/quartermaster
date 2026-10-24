@@ -1,8 +1,8 @@
 //! The reply the plan page builds and the user pastes into a chat:
 //!
 //! ```text
-//! <plan-reply task="T-0042" plan="b81f0c3a9e7d2f4c6a1e5d08" round="2">
-//! Reply to round 2 of the plan for T-0042 (1 of 2 questions answered).
+//! <plan-reply task="C-0042" plan="b81f0c3a9e7d2f4c6a1e5d08" round="2">
+//! Reply to round 2 of the plan for C-0042 (1 of 2 questions answered).
 //!
 //! ## Q1 storage-engine
 //! Choice: sqlite (SQLite)
@@ -39,7 +39,7 @@ pub const MAX_REPLY_CHARS: usize = 32_000;
 /// One pasted reply.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanReply {
-    /// `T-0042`.
+    /// `C-0042`.
     pub task: String,
     pub plan_uid: String,
     pub round: u32,
@@ -169,12 +169,15 @@ pub fn find(text: &str) -> (Vec<PlanReply>, Vec<Malformed>) {
     (replies, malformed)
 }
 
-/// Parses `<plan-reply task="T-0042" plan="<24 hex>" round="2">`.
+/// Parses `<plan-reply task="C-0042" plan="<24 hex>" round="2">`; a page made before crewmates had
+/// names says `T-0042` for the same crewmate.
 fn header(line: &str) -> Option<(String, String, u32)> {
     let rest = line.strip_prefix(OPEN)?.strip_suffix('>')?;
     let rest = rest.strip_prefix("task=\"")?;
     let (task, rest) = rest.split_once('"')?;
-    let digits = task.strip_prefix("T-")?;
+    let digits = task
+        .strip_prefix("C-")
+        .or_else(|| task.strip_prefix("T-"))?;
     if digits.is_empty() || digits.len() > 9 || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }

@@ -1,14 +1,14 @@
 //! The decision card and the stuck notice.
 //!
 //! ```text
-//! ⚑ Decision · T-0047 fix(ci): flaky upload test · api-server · high · opus-5-5
+//! ⚑ Decision · C-0047 fix(ci): flaky upload test · api-server · high · opus-5-5
 //! Held by the app: 3 repair attempts used. The upload test still fails after each fix …   (dim)
 //! Supervisor: the timeout moved from 30s to 31s after the last change, …                  (text)
 //!
 //!   1 · Retry with my guidance  2 · Try a premium model  3 · Discard the work
 //! ```
 //!
-//! The stored title is `qm_policy::holds::card_title` ("Decision · T-0047 fix(ci): flaky upload
+//! The stored title is `qm_policy::holds::card_title` ("Decision · C-0047 fix(ci): flaky upload
 //! test · api-server · high · opus-5-5", as the stuck notice stores it too); [`split_title`] takes
 //! it apart again into the card's title and its dim note. [`face`] is what the performer gives
 //! `HeldService` (the lines); [`decision_card`] builds the whole card.
@@ -27,7 +27,7 @@ const TITLE_PREFIX: &str = "Decision · ";
 /// The separator between the title and the project, tier and model.
 const SEP: &str = " · ";
 
-/// Takes a stored decision title apart: ("T-0047 fix(ci): flaky upload test", Some("· api-server
+/// Takes a stored decision title apart: ("C-0047 fix(ci): flaky upload test", Some("· api-server
 /// · high · opus-5-5")). A title not written by `card_title` stays whole, with no note.
 pub fn split_title(stored: &str) -> (String, Option<String>) {
     let Some(rest) = stored.strip_prefix(TITLE_PREFIX) else {

@@ -104,26 +104,37 @@ fn sweep_leftovers(data: &DataDir, open: &[TaskId], live: &[SecondmateId]) {
     remove(&data.seat().session);
     for (name, path) in subfolders(&data.secondmates_dir()) {
         match name.parse::<SecondmateId>() {
-            Ok(id) if live.contains(&id) => remove(&data.secondmate(id).session),
+            Ok(id) if live.contains(&id) => {
+                let current = data.secondmate(id);
+                // A folder under the older name (`SM-02`) moves to the current one (`S-02`).
+                if path != current.root {
+                    if current.root.exists() {
+                        remove(&path);
+                    } else if let Err(e) = std::fs::rename(&path, &current.root) {
+                        tracing::warn!(path = %path.display(), error = %e, "couldn't rename a secondmate's folder");
+                    }
+                }
+                remove(&current.session);
+            }
             Ok(_) => remove(&path),
             Err(_) => {}
         }
     }
-    for (name, _) in subfolders(&data.tasks_dir()) {
+    // A crewmate's own folder: `tasks/C-0042`, or `tasks/T-0042` from an older version.
+    for (name, root) in subfolders(&data.tasks_dir()) {
         let Ok(id) = name.parse::<TaskId>() else {
             continue;
         };
-        let paths = data.task(id);
         // Plans, evidence and transcripts are the retention sweep's (`crate::retention`), which
-        // runs next and moves an open task's old evidence folder in.
+        // runs next and moves an open crewmate's old evidence folder in.
         if open.contains(&id) {
-            remove(&paths.session);
-            remove(&paths.root.join("answer.md"));
+            remove(&root.join("session"));
+            remove(&root.join("answer.md"));
         } else {
-            remove(&paths.root.join(qm_types::data_dir::EVIDENCE));
-            remove(&paths.transcript);
-            if !paths.worktree.exists() {
-                remove(&paths.root);
+            remove(&root.join(qm_types::data_dir::EVIDENCE));
+            remove(&root.join(qm_types::data_dir::TRANSCRIPT));
+            if !root.join(qm_types::data_dir::WORKTREE).exists() {
+                remove(&root);
             }
         }
     }
@@ -653,7 +664,9 @@ async fn reattach(svc: &TaskService, task: TaskId, missing: &MissingWorktree) ->
         return false;
     };
     let git = svc.deps().git.clone();
-    let paths = svc.deps().data_dir.task(task);
+    let Ok(paths) = svc.paths(task).await else {
+        return false;
+    };
     let files = project.files_to_copy.clone();
     let branch = missing.branch.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -754,8 +767,9 @@ mod leftover_tests {
         let _ = fs::remove_dir_all(&base);
         let data = DataDir::with_scratch(base.join("home"), base.join("scratch"));
         let task = |n: u32| TaskId::new(n).expect("a task number");
-        let live: SecondmateId = "SM-1".parse().expect("a secondmate");
-        let retired: SecondmateId = "SM-2".parse().expect("a secondmate");
+        let live: SecondmateId = "S-1".parse().expect("a secondmate");
+        let retired: SecondmateId = "S-2".parse().expect("a secondmate");
+        let renamed: SecondmateId = "S-3".parse().expect("a secondmate");
         let folder = |path: PathBuf| {
             fs::create_dir_all(&path).expect("a folder");
             path
@@ -771,8 +785,12 @@ mod leftover_tests {
         let live_session = folder(data.secondmate(live).session);
         let plugin = folder(data.secondmate(live).root.join("plugin"));
         let retired_root = folder(data.secondmates_dir().join(retired.to_string()));
+        // A live secondmate whose folder has the older name (`SM-03`) keeps its transcript there.
+        let old_name = data.secondmates_dir().join("SM-03");
+        file(old_name.join("transcript/s.jsonl"));
+        let retired_old_name = folder(data.secondmates_dir().join("SM-04"));
         // An open task keeps its folder and worktree, but loses its session and answer file.
-        let open = data.task(task(1));
+        let open = data.task(task(1), task(1).own_label());
         folder(open.worktree.clone());
         let open_session = folder(open.session.clone());
         let open_answer = file(open.root.join("answer.md"));
@@ -780,16 +798,16 @@ mod leftover_tests {
         let open_transcript = file(open.transcript.join("s.jsonl"));
         // A closed task with no worktree goes whole; one whose worktree is still there keeps it,
         // less its old evidence and its transcript.
-        let closed = data.task(task(2));
+        let closed = data.task(task(2), task(2).own_label());
         folder(closed.session.clone());
-        let stuck = data.task(task(3));
+        let stuck = data.task(task(3), task(3).own_label());
         folder(stuck.worktree.clone());
         let stuck_evidence = file(stuck.root.join("evidence/shot.png"));
         let stuck_transcript = file(stuck.transcript.join("s.jsonl"));
         let unrelated = folder(data.tasks_dir().join("notes"));
 
         fs::set_permissions(data.root(), fs::Permissions::from_mode(0o700)).unwrap();
-        sweep_leftovers(&data, &[task(1)], &[live]);
+        sweep_leftovers(&data, &[task(1)], &[live, renamed]);
 
         assert!(!seat_session.exists(), "the Quartermaster's session folder");
         assert!(!live_session.exists(), "a live secondmate's session folder");
@@ -798,6 +816,15 @@ mod leftover_tests {
             "the secondmate's plugin folder is regenerated, not removed"
         );
         assert!(!retired_root.exists(), "a retired secondmate's folders");
+        assert!(
+            !retired_old_name.exists(),
+            "a retired secondmate's folders, older name"
+        );
+        assert!(!old_name.exists(), "the older name is gone");
+        assert!(
+            data.secondmate(renamed).transcript.join("s.jsonl").exists(),
+            "a live secondmate's folder moves to its current name"
+        );
         assert!(
             open.root.exists() && open.worktree.exists(),
             "an open task keeps its worktree"

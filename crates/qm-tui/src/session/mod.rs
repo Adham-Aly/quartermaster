@@ -2,7 +2,7 @@
 //!
 //! Opening one (a double-click or `⏎` on its crew row, the task pane's `Open session`, the crew
 //! menu) swaps the Quartermaster's conversation and input for the session's: its box, titled
-//! `T-0042 · {title}` with a `← Quartermaster` button, and your input to the worker. The projects,
+//! `C-0042 · {title}` with a `← Quartermaster` button, and your input to the worker. The projects,
 //! crew and task columns stay as they are. Your message goes to the worker as direct intervention
 //! (`Command::Send { to: agent }`); the core neutralises it and slips it into a running turn.
 //! `Esc`, `← Quartermaster` or the Quartermaster's crew row brings the conversation back.
@@ -313,12 +313,12 @@ mod tests {
         let title = &rows[1];
         assert!(title.starts_with("╭─ Projects "), "{title}");
         assert!(
-            title.contains("╭─ T-0042 · fix(auth): token refresh race "),
+            title.contains("╭─ C-0042 · fix(auth): token refresh race "),
             "{title}"
         );
         assert!(title.contains(" ← Quartermaster ─╮"), "{title}");
         assert!(
-            title.ends_with("╭─ T-0042 ─────────────────────────╮"),
+            title.ends_with("╭─ C-0042 ─────────────────────────╮"),
             "{title}"
         );
         assert!(rows.iter().any(|r| r.contains("╭─ Crew ")));
@@ -328,7 +328,7 @@ mod tests {
         );
         assert!(
             rows.iter()
-                .any(|r| r.contains("› message T-0042 directly…"))
+                .any(|r| r.contains("› message C-0042 directly…"))
         );
         assert!(!rows.iter().any(|r| r.contains("╭─ Quartermaster ")));
     }

@@ -100,7 +100,10 @@ mod tests {
     #[test]
     fn report_folder_is_absolute_and_reaches_setup_too() {
         // Injection must not depend on the report directory already existing.
-        let paths = DataDir::new("relative-report-env-test").task(TaskId::new(42).unwrap());
+        let paths = DataDir::new("relative-report-env-test").task(
+            TaskId::new(42).unwrap(),
+            TaskId::new(42).unwrap().own_label(),
+        );
         let ports = PortBlock { base: 41_000 };
         let env = crewmate_env(&paths, ports);
         let report = Path::new(env.get(QM_REPORT_DIR).unwrap());
@@ -114,7 +117,10 @@ mod tests {
     #[test]
     fn a_crewmate_gets_the_users_github_login_and_no_token() {
         let dir = DataDir::new(std::env::temp_dir().join("qm-env-test"));
-        let paths = dir.task(TaskId::new(42).expect("a task number"));
+        let paths = dir.task(
+            TaskId::new(42).expect("a task number"),
+            TaskId::new(42).expect("a task number").own_label(),
+        );
         let env = crewmate_env(&paths, PortBlock { base: 41_000 });
         assert_eq!(
             env.get("GIT_TERMINAL_PROMPT").map(String::as_str),

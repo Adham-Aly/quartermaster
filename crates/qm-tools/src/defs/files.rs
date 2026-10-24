@@ -58,7 +58,7 @@ pub struct ReadArgs {
 }
 
 file_tool! {
-    /// Writes a file; refused outside the worktree, the evidence folder and the temporary folder.
+    /// Writes a file; refused only inside the app's own state.
     WriteTool { name: "write", class: Act, args: WriteArgs }
 }
 

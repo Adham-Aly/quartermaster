@@ -1,8 +1,8 @@
 # Quartermaster
 
 A private, macOS-only Rust terminal app: one binary, `quartermaster`. You talk to one orchestrating
-agent, the Quartermaster. It hands project work to crewmates, each in its own working folder (a git
-worktree, or the plain personal folder), and brings the results back for you to approve and merge. Secondmates are standing orchestrators with
+agent, the Quartermaster. It hands project work to crewmates (`C-n`, grouped in short-lived tasks `T-n`),
+each in a git worktree or a plain folder edited in place, and brings the results back for you to approve. Secondmates are standing orchestrators with
 a charter. Claude agents run on the user's installed `claude`; every other
 account runs on the app's own Rust provider engine.
 
@@ -70,13 +70,13 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
   `--foreground` says so and exits non-zero. `server.sock` (0600, same-uid peers) is bound only under the lock.
 - `logs/quartermaster-YYYY-MM-DD.log`: redacted; level from `QM_LOG` (default `info`); seven days kept, a new file at local midnight. The
   terminal belongs to the UI, so nothing is logged there.
-- `seat/`, `secondmates/SM-n/`, `tasks/T-n/` (worktree, brief, jobs; the folder goes at close; each
-  has `transcript/`, the provider engine's durable sessions), `artifacts/T-n/` (`report/` until forgotten;
+- `seat/`, `secondmates/S-n/`, `tasks/C-n/` (a crewmate's worktree, brief, jobs; goes at close; each
+  has `transcript/`, the provider engine's durable sessions), `artifacts/T-n/C-n/` (`report/` until forgotten;
   `plan/`, `evidence/` while read; `qm-core` `retention.rs`), `attachments/`, `drafts/`,
   `ui.json` (UI state, never logged; `tui.toml` is only read once for old widths), `plan-endpoint.json`
   (the plan pages' loopback port, kept so pages rendered before a restart still send).
 - Scratch, `/tmp/quartermaster/<uid>/<hash>/` (`DataDir::scratch`; owner and 0700 checked, never a
-  symlink): only crewmates' `scratchpad/T-n/`. Provider engines refuse writes in the data dir.
+  symlink): only crewmates' `scratchpad/T-n/C-n/`. Provider engines refuse writes in the data dir.
 
 ## House rules
 

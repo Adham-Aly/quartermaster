@@ -43,7 +43,7 @@ pub fn charter_text(record: &SecondmateRecord) -> String {
     })
 }
 
-/// "There's already a secondmate called web-app (SM-02)".
+/// "There's already a secondmate called web-app (S-02)".
 fn name_refusal(conn: &Connection, name: &str) -> Result<Option<Refusal>, StoreError> {
     Ok(secondmates::by_name(conn, name)?
         .map(|id| Refusal::new(format!("There's already a secondmate called {name} ({id})"))))

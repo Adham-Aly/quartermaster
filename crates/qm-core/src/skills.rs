@@ -9,7 +9,7 @@
 //! `.claude/skills/*/` only when `.agents/skills/` doesn't exist. A skill is a folder with a
 //! `SKILL.md`; its name is the frontmatter `name:`, else the folder's name; its description the
 //! frontmatter `description:`, else the first non-empty line. On a name clash the project's
-//! skill wins. Every chosen skill is copied into `tasks/T-0042/skills/<name>/`, so both engines
+//! skill wins. Every chosen skill is copied into `tasks/C-0042/skills/<name>/`, so both engines
 //! get exactly the same set and a later edit in the worktree doesn't change it mid-task.
 //!
 //! **Nothing else of the project's is loaded.** No settings, hooks, MCP servers, agents or
@@ -37,7 +37,7 @@ pub struct Gathered {
     pub files: Vec<InstructionFile>,
     /// The gathered skills, by name; each `path` is its copied `SKILL.md`.
     pub skills: Vec<SkillEntry>,
-    /// `tasks/T-0042/skills/`, when at least one skill was gathered.
+    /// `tasks/C-0042/skills/`, when at least one skill was gathered.
     pub skills_dir: Option<PathBuf>,
 }
 

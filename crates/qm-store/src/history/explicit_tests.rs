@@ -45,12 +45,12 @@ fn shared_request_keeps_judgments_and_sibling_deliveries_but_forgets_owned_facts
                  (3, 1, 2, '{\"source_event\":11}', 0, 3),
                  (4, 1, 2, '{\"source_event\":30}', 0, 4);
              INSERT INTO wakes (id, target_agent_id, kind, payload, dedupe_key, task_id, created_at, seq) VALUES
-                 (100, 1, 'parent_report', '{\"text\":\"shared judgment\",\"correlation\":\"C-0002\"}',
-                      'parent:C-0002:2', NULL, 0, 100),
-                 (101, 1, 'parent_report', '{\"text\":\"closed fact\",\"correlation\":\"C-0002\"}',
-                      'parent:C-0002:3', 2, 0, 101),
-                 (102, 1, 'parent_report', '{\"text\":\"open fact\",\"correlation\":\"C-0002\"}',
-                      'parent:C-0002:4', 3, 0, 102);",
+                 (100, 1, 'parent_report', '{\"text\":\"shared judgment\",\"correlation\":\"R-0002\"}',
+                      'parent:R-0002:2', NULL, 0, 100),
+                 (101, 1, 'parent_report', '{\"text\":\"closed fact\",\"correlation\":\"R-0002\"}',
+                      'parent:R-0002:3', 2, 0, 101),
+                 (102, 1, 'parent_report', '{\"text\":\"open fact\",\"correlation\":\"R-0002\"}',
+                      'parent:R-0002:4', 3, 0, 102);",
         ).expect("shared request judgment and pumped sibling facts");
         if explicit {
             forget_closed_task_details(&mut conn).expect("clear");
@@ -172,6 +172,7 @@ fn explicit_forgetting_discards_details_without_waiting_for_the_pump() {
     assert_eq!(count(&conn, "wakes"), 2, "no duplicate delivery");
 }
 
+/// The wakes here were written before correlation IDs read `R-`.
 #[test]
 fn already_pumped_pending_fact_is_detached_not_duplicated_or_discarded() {
     let mut conn = routed_history();
@@ -310,13 +311,13 @@ fn request_only_history_uses_display_correlations_and_shared_requests_stay() {
     let mut conn = routed_history();
     conn.execute_batch(
         "INSERT INTO events (id, at, kind, summary, payload, seq) VALUES
-             (40, 0, 'secondmate.routed', 'PRIVATE exclusive request', '{\"correlation\":\"C-0001\"}', 40),
-             (41, 0, 'secondmate.routed', 'active shared request', '{\"correlation\":\"C-0002\"}', 41);
+             (40, 0, 'secondmate.routed', 'PRIVATE exclusive request', '{\"correlation\":\"R-0001\"}', 40),
+             (41, 0, 'secondmate.routed', 'active shared request', '{\"correlation\":\"R-0002\"}', 41);
          INSERT INTO wakes (id, target_agent_id, kind, payload, dedupe_key, created_at, seq)
-             VALUES (100, 1, 'parent_report', '{\"text\":\"PRIVATE judgment\",\"correlation\":\"C-0001\"}',
-                     'parent:C-0001:1', 0, 100),
-                    (101, 2, 'routed', '{\"text\":\"active request\",\"correlation\":\"C-0002\"}',
-                     'routed:C-0002', 0, 101);",
+             VALUES (100, 1, 'parent_report', '{\"text\":\"PRIVATE judgment\",\"correlation\":\"R-0001\"}',
+                     'parent:R-0001:1', 0, 100),
+                    (101, 2, 'routed', '{\"text\":\"active request\",\"correlation\":\"R-0002\"}',
+                     'routed:R-0002', 0, 101);",
     ).expect("typed request history without task references");
     forget_closed_task_details(&mut conn).expect("forget");
     assert_eq!(count(&conn, "events WHERE id = 40"), 0);

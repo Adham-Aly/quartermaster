@@ -18,7 +18,7 @@
 //!
 //! A secondmate's arm is [`intervene_secondmate`]: your message goes into the secondmate's own
 //! conversation as a turn you started, and steps 3 and 4 tell its supervisor, the Quartermaster
-//! ("you told SM-02 directly").
+//! ("you told S-02 directly").
 
 use crate::attachments::Staged;
 use crate::held::HeldService;

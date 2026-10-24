@@ -3,7 +3,7 @@
 //! Every routing decision is recorded: the declared facts it read, the rule that matched, the tier
 //! the work landed in and the tier, model, account and effort actually used, every model skipped
 //! and why, every fallback step, and the one plain-language line the task's record shows ("You
-//! asked for this model", "No high model was available", "Building from the plan in task T-0043").
+//! asked for this model", "No high model was available", "Building from C-0043's plan").
 //! A record with no choice is waiting: no tier can serve, or a stronger-model retry to high or
 //! medium waits rather than drop a tier.
 

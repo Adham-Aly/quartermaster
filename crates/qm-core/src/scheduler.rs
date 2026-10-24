@@ -10,7 +10,7 @@
 //!   time already past fires at once.
 //!
 //! Its users: the re-route tick for queued tasks (`tasks:reroute`), account resets
-//! (`account_reset:T-0042`) and due schedules (`at_time`). Watchdog ladders live in
+//! (`account_reset:C-0042`) and due schedules (`at_time`). Watchdog ladders live in
 //! their runners, not here.
 
 use jiff::Timestamp;

@@ -7,7 +7,7 @@
 //!
 //! | From the runner | Line |
 //! |---|---|
-//! | the first turn's brief | `supervisor` "Brief · T-0042 · {title}", the brief as its detail |
+//! | the first turn's brief | `supervisor` "Brief · C-0042 · {title}", the brief as its detail |
 //! | a reopened session | `app` with the note, the brief as its detail |
 //! | a `steer` wake | `supervisor`, the message |
 //! | any other wake | `app`, its `short` (or first sentence), its text as the detail |

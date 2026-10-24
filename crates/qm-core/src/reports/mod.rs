@@ -121,7 +121,12 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let paths = data.task(TaskId::new(u32::try_from(n + 1).unwrap()).unwrap());
+            let paths = data.task(
+                TaskId::new(u32::try_from(n + 1).unwrap()).unwrap(),
+                TaskId::new(u32::try_from(n + 1).unwrap())
+                    .unwrap()
+                    .own_label(),
+            );
             prepare(&paths, kind).unwrap();
             let dir = paths.artifacts.join("report");
             assert!(dir.join("template.html").is_file());

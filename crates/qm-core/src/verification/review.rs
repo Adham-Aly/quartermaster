@@ -487,7 +487,13 @@ fn invalid(r: &Refusal) -> StoreError {
 /// What a review brief adds about the builder: the evidence folder's manifest with its absolute
 /// path, and, once the builder has been reviewed, the findings already settled.
 pub async fn brief_extras(db: &Db, data_dir: &DataDir, builder: TaskId) -> Vec<String> {
-    let paths = data_dir.task(builder);
+    let folders = db
+        .call(move |conn| qm_store::tasks::folder_label(conn, builder))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| builder.own_label());
+    let paths = data_dir.task(builder, folders);
     let listed = paths.clone();
     let files = tokio::task::spawn_blocking(move || manifest(&listed))
         .await

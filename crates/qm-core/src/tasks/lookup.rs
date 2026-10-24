@@ -6,7 +6,7 @@ use qm_store::tasks::{self as task_store, TaskRow};
 use qm_tools::defs::{FindTasksArgs, FoundTasks, HistoryEntry, TaskDetail, TaskSummary};
 use qm_tools::handler::{Caller, ToolFailure};
 use qm_types::domain::{ReportSource, TaskStatus};
-use qm_types::ids::{ProjectId, TaskId};
+use qm_types::ids::{ProjectId, TaskId, TaskLabelId};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
@@ -48,6 +48,7 @@ pub fn state_line(row: &TaskRow) -> String {
 fn summary(row: &TaskRow, project: &str) -> TaskSummary {
     TaskSummary {
         task: row.id,
+        label: row.label,
         project: project.to_owned(),
         kind: row.kind,
         title: row.title.clone(),
@@ -139,8 +140,14 @@ pub(crate) async fn task_detail(
     })
 }
 
-fn matches_key(row: &TaskRow, key: &str) -> bool {
+/// Whether `row` matches a `find_tasks` key. A task (`T-0017`) matches its crewmates; when no
+/// crewmate is in it, the crewmate numbered like it, the name crewmates had before tasks held
+/// several (`labelled` says which).
+fn matches_key(row: &TaskRow, key: &str, labelled: bool) -> bool {
     let key = key.trim();
+    if labelled && let Ok(label) = key.parse::<TaskLabelId>() {
+        return row.label == label;
+    }
     if let Ok(id) = key.parse::<TaskId>() {
         return row.id == id;
     }
@@ -196,6 +203,11 @@ pub(crate) async fn find_tasks(
         return Err(refuse(format!("There's no project called {name}")));
     }
     let text = query.text.as_deref().map(|t| t.trim().to_lowercase());
+    let labelled = query
+        .key
+        .as_deref()
+        .and_then(|k| k.trim().parse::<TaskLabelId>().ok())
+        .is_some_and(|label| rows.iter().any(|r| r.label == label));
     let mut matching: Vec<&TaskRow> = rows
         .iter()
         .filter(|r| {
@@ -212,7 +224,12 @@ pub(crate) async fn find_tasks(
                     .is_some_and(|p| p.name.eq_ignore_ascii_case(name))
             })
         })
-        .filter(|r| query.key.as_deref().is_none_or(|k| matches_key(r, k)))
+        .filter(|r| {
+            query
+                .key
+                .as_deref()
+                .is_none_or(|k| matches_key(r, k, labelled))
+        })
         .filter(|r| {
             text.as_deref().is_none_or(|t| {
                 t.is_empty()

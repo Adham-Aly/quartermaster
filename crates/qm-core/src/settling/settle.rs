@@ -502,7 +502,7 @@ pub(crate) async fn settle(
             let payload = match write {
                 Write::Settling => return Ok(Recorded::Settling),
                 Write::Local => {
-                    // The workspace pushes nothing; delivered locally at once, no hold.
+                    // No remote to push to; delivered locally at once, no hold.
                     let fact = Fact::DeliveredLocal {
                         branch: record_branch,
                         head: record_head,
@@ -597,7 +597,7 @@ pub(crate) async fn settle(
 enum Act {
     /// Hold for the user's approval with this one payload.
     Hold(HeldPayload),
-    /// The personal workspace: delivered locally at once.
+    /// A branch-only project with no remote: delivered locally at once.
     Local,
     /// Autonomy on: land now with this payload.
     LandNow(HeldPayload),
