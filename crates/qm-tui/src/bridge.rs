@@ -84,7 +84,8 @@ pub(crate) fn draw_body(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut 
     let cols = columns(body, app);
     map.folded = cols.right.is_none();
 
-    // Left column: projects and crew as tall as their rows, then the Actions inbox to the bottom.
+    // Left column: projects and crew as tall as their rows (Projects within a quarter, plus any
+    // rows Actions can spare), then the Actions inbox to the bottom.
     let inner_width = cols.left.width.saturating_sub(4);
     let (projects_height, crew_height, actions_height) = crate::widgets::sidebar::heights(
         cols.left.height,

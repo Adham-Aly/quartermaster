@@ -177,7 +177,7 @@ impl App {
     /// What a left click on `hit` does.
     fn left_click(&mut self, hit: Hit, double: bool, now: Instant) {
         match hit {
-            Hit::Project(i) => {
+            Hit::Project(i) | Hit::ProjectTask(i) => {
                 self.change(|app| &mut app.view.selected_project, Some(i));
                 self.focus_pane(Pane::Projects);
             }
@@ -277,7 +277,7 @@ impl App {
         }
         let target = match hit {
             Some(Hit::Crew(agent)) => MenuTarget::Crew(agent),
-            Some(Hit::Project(i)) => MenuTarget::Project(i),
+            Some(Hit::Project(i) | Hit::ProjectTask(i)) => MenuTarget::Project(i),
             Some(Hit::ActionRow(i)) => {
                 self.focus_pane(Pane::Actions);
                 MenuTarget::Action(i)
