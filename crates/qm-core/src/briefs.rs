@@ -225,12 +225,20 @@ async fn builds_on_for(
         (None, Some(task)) => (task, true),
         (None, None) => return Ok(None),
     };
-    let Some(prior) = db
+    let Some(mut prior) = db
         .call(move |conn| crew_view::prior_task(conn, prior_id))
         .await?
     else {
         return Ok(None);
     };
+    // A review is about its immutable start SHA, not a builder head that can advance while
+    // routing, preparing or writing this brief. Do not fall back to a newer clear report.
+    if inputs.kind == TaskKind::Review && !retry {
+        prior.head_commit.clone_from(&inputs.base_commit);
+        if let Some(report) = prior.last_clear.as_mut() {
+            report.head_commit.clone_from(&inputs.base_commit);
+        }
+    }
     // The answer is the report's own text, kept with the task; there is no file to read.
     let answer = prior.last_clear.as_ref().and_then(|r| r.answer.clone());
     let changed = if inputs.kind == TaskKind::Review && !retry {
@@ -305,7 +313,7 @@ fn prior_facts(
         "the failed attempt this task retries".to_owned()
     } else if kind == TaskKind::Review {
         match &head {
-            Some(head) => format!("the work under review at {}", head.short()),
+            Some(head) => format!("the work under review at {head}"),
             None => match &prior.branch {
                 Some(branch) => format!("the work under review on {branch}"),
                 None => "the work under review".to_owned(),
@@ -339,6 +347,9 @@ fn prior_facts(
         answer.unwrap_or_default().to_owned()
     } else {
         let mut body = match (&prior.branch, &head) {
+            (Some(branch), Some(head)) if kind == TaskKind::Review => {
+                format!("Branch {branch} @ {head}\n")
+            }
             (Some(branch), Some(head)) => format!("Branch {branch} @ {}\n", head.short()),
             (Some(branch), None) => format!("Branch {branch}\n"),
             (None, _) => String::new(),

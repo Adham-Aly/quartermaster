@@ -18,6 +18,7 @@ pub mod projects;
 
 pub mod secondmates;
 
+pub mod deferred;
 pub mod parent;
 pub mod schedules;
 
@@ -73,4 +74,9 @@ pub static HANDLERS: &[Binding] = &[
     bind::<crate::defs::ProposeReleaseTagTool>(),
     bind::<crate::defs::ReleaseStatusTool>(),
     bind::<crate::defs::UnlinkTasksTool>(),
+    bind::<crate::defs::ScheduleCrewmateTool>(),
+    bind::<crate::defs::SecondmateScheduleCrewmateTool>(),
+    bind::<crate::defs::CancelCrewmateStartTool>(),
+    bind::<crate::defs::ListCrewmateStartsTool>(),
+    bind::<crate::defs::FindUserRequestsTool>(),
 ];

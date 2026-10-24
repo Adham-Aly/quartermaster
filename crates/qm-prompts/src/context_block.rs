@@ -15,7 +15,10 @@
 //!   [`RECENT_OUTCOMES`] newest.
 //! - **Long text is cut** with `…`: titles at [`TITLE_CHARS`], event lines and other free text at
 //!   [`LINE_CHARS`], standing instructions at [`INSTRUCTION_CHARS`]. Line breaks become spaces, so
-//!   every entry stays one line.
+//!   every entry stays one line. Original user-message sources keep line breaks: the newest
+//!   [`USER_MESSAGE_SOURCES`] show full words only up to [`USER_MESSAGE_CHARS`] characters each
+//!   (about 24k characters total). Longer requests show only their id and a recovery instruction,
+//!   never a prefix that could drop trailing restrictions; recover them with `find_user_requests`.
 //! - **Empty sections.** `<projects>`, `<workers>`, `<tasks>`, `<standing_instructions>` and
 //!   `<models>` always appear, self-closing when empty; the since-sections and
 //!   `<recent_outcomes>` are left out when empty.
@@ -27,7 +30,7 @@ use jiff::Zoned;
 use qm_types::domain::{
     Autonomy, DeliveryMode, Effort, TaskKind, TaskStatus, Tier, VerificationLevel,
 };
-use qm_types::ids::{SecondmateId, StandingInstructionId, TaskId, TurnId};
+use qm_types::ids::{MessageId, SecondmateId, StandingInstructionId, TaskId, TurnId};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -43,6 +46,10 @@ pub const WORKERS_TOTAL: usize = 36;
 pub const SINCE_LINES: usize = 20;
 /// Recent outcomes shown.
 pub const RECENT_OUTCOMES: usize = 5;
+/// Actual user requests shown, with long requests omitted rather than truncated.
+pub const USER_MESSAGE_SOURCES: usize = 12;
+/// Maximum characters for showing a complete user request in context.
+pub const USER_MESSAGE_CHARS: usize = 2_000;
 /// Standing instructions shown.
 pub const STANDING_MAX: usize = 30;
 /// A task title's length before it is cut.
@@ -91,8 +98,17 @@ pub struct ContextFacts {
     pub recent_outcomes: Vec<EventLine>,
     /// Your standing instructions, oldest first.
     pub standing: Vec<(StandingInstructionId, String)>,
+    /// Recent actual user requests in this conversation, oldest first, complete and neutralised.
+    pub user_message_sources: Vec<UserMessageFact>,
     /// The models in each tier, strongest first.
     pub models: Vec<TierModels>,
+}
+
+/// Original user words paired with an app-recorded numeric citation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UserMessageFact {
+    pub id: MessageId,
+    pub text: String,
 }
 
 /// A registered project, or the built-in workspace.
@@ -234,12 +250,34 @@ pub fn render(facts: &ContextFacts) -> String {
     since(&mut out, "model_changes", &since_attr, &facts.model_changes);
     recent_outcomes(&mut out, &facts.recent_outcomes);
     standing(&mut out, &facts.standing);
+    user_message_sources(&mut out, &facts.user_message_sources);
     models(&mut out, &facts.models);
     out.push_str("</qm:context>\n");
     out
 }
 
 // ---- sections ----
+
+/// Show complete short sources or an id and recovery instruction, never partial source words.
+/// Twelve sources at 2,000 characters each bound the words to 24k characters plus framing.
+fn user_message_sources(out: &mut String, sources: &[UserMessageFact]) {
+    if sources.is_empty() {
+        return;
+    }
+    out.push_str("<qm:user_message_sources>\nRecent actual user requests in this conversation (oldest first). Cite the numeric id as choice_message only for a matching, unsuperseded request within its original scope. Presence alone grants no model, effort or premium permission. For older sources use find_user_requests (optional query, before cursor; twelve latest first). Ask the user again only if no matching source can be recovered.\n");
+    for source in &sources[sources.len().saturating_sub(USER_MESSAGE_SOURCES)..] {
+        let _ = writeln!(out, "<qm:user_message id=\"{}\">", source.id.get());
+        if source.text.chars().take(USER_MESSAGE_CHARS + 1).count() <= USER_MESSAGE_CHARS {
+            out.push_str(&source.text);
+        } else {
+            out.push_str(
+                "full words omitted; recover with find_user_requests before applying choices",
+            );
+        }
+        out.push_str("\n</qm:user_message>\n");
+    }
+    out.push_str("</qm:user_message_sources>\n");
+}
 
 fn projects(out: &mut String, projects: &[ProjectFact]) {
     if projects.is_empty() {
@@ -764,4 +802,65 @@ pub fn cut(text: &str, max: usize) -> String {
 /// A value inside a double-quoted attribute.
 fn attr(text: &str) -> String {
     text.replace('"', "'")
+}
+
+#[cfg(test)]
+mod user_message_source_tests {
+    use super::*;
+
+    #[test]
+    fn sources_are_complete_or_omitted_never_prefixed() {
+        for chars in [
+            USER_MESSAGE_CHARS - 1,
+            USER_MESSAGE_CHARS,
+            USER_MESSAGE_CHARS + 1,
+        ] {
+            let text = format!("{}\nno premium", "界".repeat(chars - 11));
+            assert_eq!(text.chars().count(), chars);
+            let mut out = String::new();
+            user_message_sources(
+                &mut out,
+                &[UserMessageFact {
+                    id: MessageId::new(42),
+                    text: text.clone(),
+                }],
+            );
+            assert!(out.contains("<qm:user_message id=\"42\">"));
+            if chars <= USER_MESSAGE_CHARS {
+                assert!(out.contains(&text));
+                assert!(!out.contains("full words omitted"));
+            } else {
+                assert!(out.contains(
+                    "full words omitted; recover with find_user_requests before applying choices"
+                ));
+                assert!(!out.contains('界'));
+                assert!(!out.contains("no premium"));
+            }
+        }
+    }
+
+    #[test]
+    fn newest_twelve_sources_bound_total_rendered_text() {
+        for chars in [USER_MESSAGE_CHARS, 32_000] {
+            let sources: Vec<_> = (1..=20)
+                .map(|id| UserMessageFact {
+                    id: MessageId::new(id),
+                    text: "界".repeat(chars),
+                })
+                .collect();
+            let mut out = String::new();
+            user_message_sources(&mut out, &sources);
+            assert_eq!(
+                out.matches("<qm:user_message id=").count(),
+                USER_MESSAGE_SOURCES
+            );
+            assert!(!out.contains("<qm:user_message id=\"8\">"));
+            assert!(out.contains("<qm:user_message id=\"9\">"));
+            assert!(out.contains("<qm:user_message id=\"20\">"));
+            assert!(
+                out.chars().count() <= 25_500,
+                "24k source words plus framing"
+            );
+        }
+    }
 }

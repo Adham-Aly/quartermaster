@@ -1,6 +1,6 @@
 //! Starting, steering, settling and looking up work: the orchestrators' tools.
 
-use super::{Constraint, Held, LaterStep, RoutingSummary, TaskSummary};
+use super::{Ack, Constraint, Held, LaterStep, RoutingSummary, TaskSummary};
 use crate::{Tool, ToolClass};
 use jiff::Timestamp;
 use qm_types::domain::{Effort, Role, TaskKind, TaskStatus, VerificationLevel};
@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 tool! {
     /// Starts a task. The app checks: the project is registered, the kind is valid, `builds_on` is
-    /// checked as a fact, your words are copied by the app from your message, every override needs
-    /// a turn you started, and the model comes from routing.
+    /// checked as a fact, your words are copied by the app from your message, overrides need user
+    /// authority (model choices can cite an earlier actual message), and the model comes from routing.
     StartCrewmateTool {
         name: "start_crewmate",
         class: Act,
@@ -49,7 +49,7 @@ pub struct StartCrewmateArgs {
     // One-time instructions from the supervisor, for this task only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instructions: Vec<String>,
-    // Overrides from here on: only on a turn you started.
+    // Overrides need user authority; model/effort/premium may cite an earlier user message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub later_steps: Vec<LaterStep>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,6 +58,10 @@ pub struct StartCrewmateArgs {
     pub effort: Option<Effort>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub premium: bool,
+    // The actual user message authorizing model/effort/premium; defaults to this turn's message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<i64>")]
+    pub choice_message: Option<qm_types::ids::MessageId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,14 +73,14 @@ pub struct StartCrewmateArgs {
     pub stronger_retry_of: Option<TaskId>,
 }
 
-/// A secondmate's `start_crewmate`: the same, with no base branch, which the app fills in from the
+/// A secondmate's `start_crewmate`: the app fills in the base branch from the
 /// routed request, else the secondmate's standing branch, else the default.
 ///
 /// `correlation` names the routed request the task serves. The app then applies what the stored
 /// request carries, all of it authorised on the Quartermaster's turn that routed it: its base
 /// branch, your words, and its model, effort, premium and later steps. It sets
-/// `tasks.secondmate_request_id`. The secondmate's own override fields still need a turn you
-/// started (your direct message to the secondmate); on any other turn they are refused.
+/// `tasks.secondmate_request_id`. Own overrides need a direct user turn, except model/effort/premium
+/// may cite an earlier actual user message through `choice_message`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SecondmateStartCrewmateTool;
 
@@ -130,11 +134,105 @@ pub struct SecondmateStartCrewmateArgs {
     pub effort: Option<Effort>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub premium: bool,
+    // The actual user message authorizing model/effort/premium; defaults to this turn's message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<i64>")]
+    pub choice_message: Option<qm_types::ids::MessageId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<VerificationLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stronger_retry_of: Option<TaskId>,
 }
+
+// A condition for starting a crewmate; no child task exists before it is met.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "when", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StartTrigger {
+    Commit { task: TaskId },
+    Done { task: TaskId },
+    Landed { task: TaskId },
+    At { due: Timestamp },
+}
+
+/// The kept state of a deferred start, not a task until its trigger fires.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeferredStart {
+    pub schedule: i64,
+    pub trigger: StartTrigger,
+    pub status: String,
+    pub task: Option<TaskId>,
+    pub note: Option<String>,
+}
+
+tool! {
+    /// Keeps a start request until its trigger fires; uses the normal start checks.
+    ScheduleCrewmateTool {
+        name: "schedule_crewmate",
+        class: Act,
+        roles: [Quartermaster],
+        args: ScheduleCrewmateArgs,
+        output: DeferredStart,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleCrewmateArgs {
+    pub start: StartCrewmateArgs,
+    pub trigger: StartTrigger,
+}
+
+tool! {
+    /// A secondmate's deferred start retains the normal correlation and scope checks.
+    SecondmateScheduleCrewmateTool {
+        name: "schedule_crewmate",
+        key: "schedule_crewmate.secondmate",
+        plan: Any,
+        class: Act,
+        roles: [Secondmate],
+        args: SecondmateScheduleCrewmateArgs,
+        output: DeferredStart,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecondmateScheduleCrewmateArgs {
+    pub start: SecondmateStartCrewmateArgs,
+    pub trigger: StartTrigger,
+}
+
+tool! {
+    /// Cancels a pending start owned by the caller, not a task already started.
+    CancelCrewmateStartTool {
+        name: "cancel_crewmate_start",
+        class: Act,
+        roles: [Quartermaster, Secondmate],
+        args: CancelCrewmateStartArgs,
+        output: Ack,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CancelCrewmateStartArgs {
+    pub schedule: i64,
+}
+
+tool! {
+    /// Lists the caller's deferred starts and their outcomes.
+    ListCrewmateStartsTool {
+        name: "list_crewmate_starts",
+        class: Read,
+        roles: [Quartermaster, Secondmate],
+        args: ListCrewmateStartsArgs,
+        output: Vec<DeferredStart>,
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListCrewmateStartsArgs {}
 
 /// A task was started.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

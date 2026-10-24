@@ -5,8 +5,8 @@
 //! of precedence, highest first:
 //!
 //! 1. A model you named for this task in your own words: "If you named a model for this task in
-//!    your own words, that comes first. If the named model can't serve, the app falls back normally
-//!    and says so."
+//!    your own words, that comes first." If the named model cannot serve, the task waits rather
+//!    than substituting another model.
 //! 2. A `later_steps` entry recorded on your turn. Your words for this task (a model, an effort or
 //!    premium) replace the entry altogether, and so does a stronger-model retry you pick.
 //! 3. A stronger-model retry or premium, which you asked for: premium sits above high and is
@@ -21,10 +21,11 @@
 //!
 //! Premium is asked for in one of four ways: the `premium` flag, naming a model placed in premium
 //! (for this task or in its `later_steps` entry), an entry with `premium` set, or a stronger-model
-//! retry whose target is premium. All four take one path: the named premium model if there is one,
-//! then every premium model, ranked as usual, then high → medium → low ([`fallback::order`]). The
-//! pin and the rule table never come first. When premium runs on another tier, the routing line
-//! names each premium model that couldn't serve and why, and the record has the fallback step.
+//! retry whose target is premium. An explicitly named model must serve or the task waits. Without
+//! a named model, every premium model is ranked as usual, then high → medium → low
+//! ([`fallback::order`]). The pin and the rule table never come first. When premium runs on another
+//! tier, the routing line names each premium model that couldn't serve and why, and the record
+//! has the fallback step.
 //!
 //! A `Decider` failure routes high: "if the call fails, times out or can't decide, the task routes
 //! high. It never blocks a task".
@@ -150,8 +151,6 @@ struct Router<'r, 'a> {
     later_step: Option<AppliedLaterStep>,
     /// You asked for premium, in any of the four ways (module docs).
     premium_asked: bool,
-    /// The premium model you named couldn't serve, so other premium models are tried.
-    named_premium_failed: Option<ModelId>,
     tier_landed: Tier,
     skipped: Vec<SkippedModel>,
     fallbacks: Vec<FallbackStep>,
@@ -201,7 +200,6 @@ impl<'r, 'a> Router<'r, 'a> {
             retry_target,
             later_step,
             premium_asked: premium_asked && retry_target.is_none(),
-            named_premium_failed: None,
             tier_landed,
             skipped: Vec::new(),
             fallbacks: Vec::new(),
@@ -273,47 +271,50 @@ impl<'r, 'a> Router<'r, 'a> {
         }
     }
 
-    /// Steps 1–2: a model you named, in this task's words or a later step's. A premium model
-    /// named for premium serves from its premium placement; if it can't serve, the other premium
-    /// models are tried next ([`Self::try_tiers`]), never the pin or the rule table.
-    fn try_named(&mut self) -> Option<(RoutedChoice, String)> {
-        let from_later = self.later_step.as_ref().map(|l| l.from);
+    /// Steps 1–2: an explicitly named model must serve or the task waits. The core checks
+    /// placement separately: absence from the available pool does not mean it is unplaced.
+    fn try_named(&mut self) -> Result<Option<(RoutedChoice, String)>, String> {
         let (model, later_from) = match (&self.req.user.model, &self.later_step) {
             (Some(m), _) => (m.clone(), None),
-            (None, Some(l)) => (l.model.clone()?, from_later),
-            (None, None) => return None,
+            (None, Some(l)) => {
+                let Some(model) = &l.model else {
+                    return Ok(None);
+                };
+                (model.clone(), Some(l.from))
+            }
+            (None, None) => return Ok(None),
         };
         let why = match later_from {
             Some(t) => format!("You asked for this model for later steps in task {t}"),
             None => "You asked for this model".to_owned(),
         };
+        let premium = self.premium_asked && is_premium_model(self.req, self.pool, &model);
         let placed = self.pool.placed;
-        if self.premium_asked && is_premium_model(self.req, self.pool, &model) {
-            let premium = placed
-                .iter()
-                .filter(|c| c.model == model && c.tier == Tier::Premium);
-            if let Some(c) = self.pick_from(premium, self.placement_check()) {
-                return Some((
-                    self.choice(c, Tier::Premium, Tier::Premium, c.effort_override),
-                    why,
-                ));
-            }
-            self.named_premium_failed = Some(model);
-            return None;
-        }
         if let Some(c) = self.pick_from(
-            placed.iter().filter(|c| c.model == model),
+            placed
+                .iter()
+                .filter(|c| c.model == model && (!premium || c.tier == Tier::Premium)),
             self.placement_check(),
         ) {
-            return Some((self.choice(c, c.tier, c.tier, c.effort_override), why));
+            return Ok(Some((
+                self.choice(c, c.tier, c.tier, c.effort_override),
+                why,
+            )));
         }
-        let note = if placed.iter().any(|c| c.model == model) {
-            format!("The model you named ({model}) couldn't serve, so routing picked")
+        let reasons: Vec<&str> = self
+            .skipped
+            .iter()
+            .filter(|s| s.model == model)
+            .map(|s| s.reason.as_str())
+            .collect();
+        let reason = if reasons.is_empty() {
+            "no usable account currently offers it".to_owned()
         } else {
-            format!("The model you named ({model}) isn't in any tier, so routing picked")
+            reasons.join("; ")
         };
-        self.notes.push(note);
-        None
+        Err(format!(
+            "{why} ({model}), but it cannot serve: {reason}; the task waits for it instead of using another model"
+        ))
     }
 
     /// Step 4: the "always use" pin, unless you asked for premium or a stronger model.
@@ -390,11 +391,6 @@ impl<'r, 'a> Router<'r, 'a> {
                         self.premium_unavailable(),
                         fallback::runs_on_line(landed, tier)
                     );
-                } else if let Some(m) = &self.named_premium_failed {
-                    why = format!(
-                        "{why}. The model you named ({m}) couldn't serve, so another premium \
-                         model runs"
-                    );
                 }
             } else if tier != landed {
                 why = format!(
@@ -469,16 +465,13 @@ pub fn route(table: &RuleTable, req: &RouteRequest<'_>, pool: Pool<'_>) -> Routi
     let matched = table.tier_for(kind, fact);
     let mut router = Router::new(req, pool, kind, matched);
 
-    let mut picked = router.try_named();
-    if picked.is_none() {
-        picked = router.try_pin();
-    }
-    if picked.is_none() {
-        picked = router.try_tiers();
-    }
-    let (choice, mut why) = match picked {
-        Some((choice, why)) => (Some(choice), why),
-        None => (None, router.waiting_line()),
+    let (choice, mut why) = match router.try_named() {
+        Ok(Some((choice, why))) => (Some(choice), why),
+        Ok(None) => match router.try_pin().or_else(|| router.try_tiers()) {
+            Some((choice, why)) => (Some(choice), why),
+            None => (None, router.waiting_line()),
+        },
+        Err(why) => (None, why),
     };
     for n in &router.notes {
         why.push_str(". ");

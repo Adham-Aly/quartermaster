@@ -115,6 +115,41 @@ impl Repo {
         })
     }
 
+    /// Whether `head` contains a local non-merge commit belonging to this task, without
+    /// fetching. Deferred starts observe this before a report. The original base excludes
+    /// inherited HEAD; current target tips also exclude upstream commits after a rebase.
+    pub fn has_own_local_commit(
+        &self,
+        head: &CommitSha,
+        base: &CommitSha,
+        target: &str,
+    ) -> Result<bool, GitError> {
+        if !self.is_valid_branch_name(target)? {
+            return Err(BaseRefusal::InvalidBranchName {
+                branch: target.to_owned(),
+            }
+            .into());
+        }
+        let mut args = vec![
+            "rev-list".to_owned(),
+            "--max-count=1".to_owned(),
+            "--no-merges".to_owned(),
+            head.as_str().to_owned(),
+            format!("^{}", base.as_str()),
+        ];
+        for tip in [
+            self.local_branch_commit(target)?,
+            self.origin_branch_commit(target)?,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            args.push(format!("^{}", tip.as_str()));
+        }
+        args.push("--".to_owned());
+        Ok(!self.run(args)?.trim().is_empty())
+    }
+
     /// The files that differ between `base` and `head`, as paths relative to the repository's
     /// top folder, sorted: added, modified and deleted files, and both sides of a rename. The
     /// comparison starts from where `head` branched off `base` (`base...head`), so a base that

@@ -62,7 +62,7 @@ pub fn insert(conn: &Connection, message: &NewMessage<'_>) -> Result<MessageId, 
             })?,
         )
     };
-    Ok(conn.query_row(
+    let id = conn.query_row(
         "INSERT INTO messages (agent_id, source, kind, text, options, replies_to, turn_id, created_at, seq,
                                 id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
@@ -79,8 +79,17 @@ pub fn insert(conn: &Connection, message: &NewMessage<'_>) -> Result<MessageId, 
             seq::next(message.at),
             ids::fresh(conn, "messages", space::MESSAGE)?,
         ],
-        |r| r.get(0),
-    )?)
+        |r| r.get::<_, MessageId>(0),
+    )?;
+    // Capture provenance only from app-written user messages, never from a tool's claims.
+    if message.source == MessageSource::You && message.kind == MessageKind::Message {
+        conn.execute(
+            "INSERT INTO user_message_sources (id, agent_id, text, created_at, seq)
+             SELECT id, agent_id, text, created_at, seq FROM messages WHERE id = ?1",
+            params![id],
+        )?;
+    }
+    Ok(id)
 }
 
 const COLUMNS: &str = "id, agent_id, source, kind, text, options, replies_to, turn_id, created_at";
@@ -241,7 +250,8 @@ pub fn get(conn: &Connection, message: MessageId) -> Result<Option<MessageRow>, 
 }
 
 /// Replaces a message's text, in the transaction that stored it: your message gets its pasted
-/// images' paths once its ID (their folder's name) is known.
+/// images' paths once its ID (their folder's name) is known. The original user authority
+/// source is immutable and deliberately does not receive these app-generated additions.
 pub fn set_text(conn: &Connection, message: MessageId, text: &str) -> Result<(), StoreError> {
     conn.execute(
         "UPDATE messages SET text = ?2 WHERE id = ?1",

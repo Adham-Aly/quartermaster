@@ -635,6 +635,7 @@ pub async fn catch_up(svc: &TaskService, outcome: ReconcileOutcome) {
     if reroute {
         svc.schedule_reroute();
     }
+    svc.start_deferred_starts();
 }
 
 /// Puts a vanished worktree back on its existing branch, with the project's listed

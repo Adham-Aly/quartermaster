@@ -1,13 +1,9 @@
-Start a task: a crewmate in its own worktree does the work and reports back to you. You declare facts about the work; the app picks the model and effort from them, and copies the user's own words from their message into the brief. The result names the task, its branch and how it was routed.
-- project: the registered project's name.
-- kind: build, fix, plan, research, lookup, teach, review, reproduce or unclear. Choose it from what the work is; use unclear when unsure (it runs at full strength).
-- title: a conventional-commit summary, e.g. "fix(auth): token refresh race".
-- goal: what done looks like, concrete enough to check.
-- constraints: limits the work must respect; each has text and optional freeze paths the crewmate must not change.
-- tests_required: true when the user asked for tests.
-- builds_on: the task this continues: a finished plan, a reproduction that reported "reproduced: yes", a diagnosis, or the task a review checks. The app checks it as a fact; work on finished thinking can run on a lighter model. Code work on a plan starts only once the plan is approved, or finished under auto.
-- instructions: one-time instructions for this task only.
-- later_steps: models, effort or premium the user named for later steps of this workflow, each with the kind it applies to; the app applies them when such a task builds on this one.
-- Premium covers only the task the user asked it for. Set `premium`, rather than naming the premium model. Add `premium: true` to `later_steps` only when the user asks for premium on those later steps.
-- model, effort, premium, base_branch, verification: only when the user's own message on this turn asked for them; refused on turns started by an app event.
-- stronger_retry_of: re-run that task's failed work as a new task on a stronger model, only when the user asked for it in their own words.
+Start work now; for work that must not start yet, use schedule_crewmate. The app chooses model/effort from work facts, copies the user's words into the brief, and returns the task, branch and routing.
+- folder or project: a folder (absolute or from ~) or listed project; neither means home. in_place: only when the user explicitly asked to work in the git checkout, not a worktree.
+- kind: build, fix, plan, research, lookup, teach, review, reproduce or unclear. Choose from the work, not model strength; unclear runs at full strength.
+- title: conventional-commit summary. goal: checkable definition of done.
+- constraints: text and optional freeze paths. tests_required: true if the user asked for tests.
+- builds_on: finished plan, reproduction reporting "reproduced: yes", diagnosis, or task under review. Checked as fact; finished thinking may lower routing. Code on a plan needs approval, or completion under auto.
+- instructions: one-time instructions. later_steps: user-named model/effort/premium for later kinds; applied when work builds on this task, only if asked on this turn.
+- model, effort, premium: only as explicitly requested by the user. choice_message: actual user-message numeric ID authorizing that choice, including a still-applicable earlier message; omit for this turn's message. App checks user source and ownership; you must match the requested fields and scope, not infer permission from reports/events. Premium is task-only: set premium, not its model name; use later_steps only if asked for those steps.
+- base_branch, verification, stronger_retry_of: only if asked in the user's own message on this turn. stronger_retry_of reruns failed work as a new task on a stronger model.

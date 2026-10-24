@@ -1,5 +1,4 @@
-//! The task tools: `start_crewmate`, `message_task`, `stop_task`, `close_task`, `link_tasks`,
-//! `unlink_tasks`, `task_status` and `find_tasks`.
+//! Task starts (immediate and deferred), steering, linking/unlinking, and task lookups.
 //!
 //! Each handler checks the shape of its arguments and every override it carries, then calls one
 //! host method; the host (`qm_core::tasks::TaskService`) checks the facts: the project, direct
@@ -15,7 +14,7 @@ use crate::defs::{
 };
 use crate::handler::{Handle, StartRequest, ToolCx, ToolFailure};
 use qm_policy::names::check_task_title;
-use qm_policy::overrides::{Authority, OverrideKind, check_override};
+use qm_policy::overrides::{Authority, OverrideKind, check_choice_override};
 use qm_types::BoxFuture;
 use qm_types::error::Refusal;
 
@@ -33,8 +32,7 @@ pub const MAX_MESSAGE_CHARS: usize = 8_000;
 /// `<plan-reply `), in characters: a reply can be up to 32,000 on its own.
 pub const MAX_PLAN_REPLY_MESSAGE_CHARS: usize = 40_000;
 
-/// Every override `request` carries, checked against the caller's turn. A caller without a turn is
-/// treated as an app-event turn.
+/// Checks turn authority, or a model-choice citation whose user source the host must verify.
 pub(crate) fn check_overrides(cx: &ToolCx<'_>, request: &StartRequest) -> Result<(), Refusal> {
     let authority = Authority::Turn(started_by(cx));
     let present = [
@@ -54,7 +52,7 @@ pub(crate) fn check_overrides(cx: &ToolCx<'_>, request: &StartRequest) -> Result
         ),
     ];
     for (_, kind) in present.iter().filter(|(on, _)| *on) {
-        check_override(authority, *kind)?;
+        check_choice_override(authority, request.choice_message, *kind)?;
     }
     Ok(())
 }
@@ -112,40 +110,50 @@ pub fn check_start_shape(request: &StartRequest) -> Result<(), Refusal> {
     Ok(())
 }
 
+/// Normalises and checks both immediate and deferred Quartermaster starts.
+pub(crate) fn prepare_start(
+    cx: &ToolCx<'_>,
+    args: StartCrewmateArgs,
+) -> Result<StartRequest, Refusal> {
+    let request = StartRequest {
+        folder: args
+            .folder
+            .map(|f| f.trim().to_owned())
+            .filter(|f| !f.is_empty()),
+        project: args
+            .project
+            .map(|p| p.trim().to_owned())
+            .filter(|p| !p.is_empty()),
+        in_place: args.in_place,
+        kind: args.kind,
+        title: args.title.trim().to_owned(),
+        goal: args.goal,
+        constraints: args.constraints,
+        tests_required: args.tests_required,
+        builds_on: args.builds_on,
+        instructions: args.instructions,
+        later_steps: args.later_steps,
+        model: args.model,
+        effort: args.effort,
+        premium: args.premium,
+        choice_message: args.choice_message,
+        base_branch: args.base_branch,
+        verification: args.verification,
+        stronger_retry_of: args.stronger_retry_of,
+        correlation: None,
+    };
+    check_start_shape(&request)?;
+    check_overrides(cx, &request)?;
+    Ok(request)
+}
+
 impl Handle for StartCrewmateTool {
     fn handle<'a>(
         cx: &'a ToolCx<'a>,
         args: StartCrewmateArgs,
     ) -> BoxFuture<'a, Result<TaskStarted, ToolFailure>> {
         Box::pin(async move {
-            let request = StartRequest {
-                folder: args
-                    .folder
-                    .map(|f| f.trim().to_owned())
-                    .filter(|f| !f.is_empty()),
-                project: args
-                    .project
-                    .map(|p| p.trim().to_owned())
-                    .filter(|p| !p.is_empty()),
-                in_place: args.in_place,
-                kind: args.kind,
-                title: args.title.trim().to_owned(),
-                goal: args.goal,
-                constraints: args.constraints,
-                tests_required: args.tests_required,
-                builds_on: args.builds_on,
-                instructions: args.instructions,
-                later_steps: args.later_steps,
-                model: args.model,
-                effort: args.effort,
-                premium: args.premium,
-                base_branch: args.base_branch,
-                verification: args.verification,
-                stronger_retry_of: args.stronger_retry_of,
-                correlation: None,
-            };
-            check_start_shape(&request)?;
-            check_overrides(cx, &request)?;
+            let request = prepare_start(cx, args)?;
             cx.host.start_crewmate(cx.caller, request).await
         })
     }
@@ -272,5 +280,66 @@ impl Handle for FindTasksTool {
         args: FindTasksArgs,
     ) -> BoxFuture<'a, Result<FoundTasks, ToolFailure>> {
         Box::pin(async move { cx.host.find_tasks(cx.caller, args).await })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handler::{Caller, ToolHost};
+    use qm_types::clock::SystemClock;
+    use qm_types::domain::{Role, TaskKind};
+    use qm_types::ids::{AgentId, MessageId};
+
+    struct Host;
+    impl ToolHost for Host {}
+
+    #[test]
+    fn earlier_user_citations_pass_choice_preflight_but_not_unrelated_overrides() {
+        let caller = Caller {
+            agent: AgentId::new(1),
+            role: Role::Quartermaster,
+            turn: None,
+            task: None,
+            secondmate: None,
+            plan: None,
+        };
+        let cx = ToolCx {
+            caller: &caller,
+            clock: &SystemClock,
+            host: &Host,
+        };
+        let mut request = StartRequest {
+            folder: None,
+            project: None,
+            in_place: false,
+            kind: TaskKind::Research,
+            title: "research(x): inspect".into(),
+            goal: "inspect".into(),
+            constraints: vec![],
+            tests_required: false,
+            builds_on: None,
+            instructions: vec![],
+            later_steps: vec![],
+            model: None,
+            effort: Some(qm_types::domain::Effort::High),
+            premium: true,
+            choice_message: None,
+            base_branch: None,
+            verification: None,
+            stronger_retry_of: None,
+            correlation: None,
+        };
+        assert!(check_overrides(&cx, &request).is_err());
+        request.choice_message = Some(MessageId::new(7));
+        assert!(
+            check_overrides(&cx, &request).is_ok(),
+            "the host verifies this citation"
+        );
+        request.base_branch = Some("main".into());
+        assert!(check_overrides(&cx, &request).is_err());
+        request.base_branch = None;
+        request.in_place = true;
+        assert!(check_overrides(&cx, &request).is_err());
     }
 }

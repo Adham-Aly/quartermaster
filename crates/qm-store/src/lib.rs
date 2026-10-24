@@ -29,6 +29,7 @@ pub mod context;
 pub mod crew_view;
 pub mod db;
 pub mod decisions;
+pub mod deferred;
 pub mod delivery;
 mod error;
 pub mod events;
@@ -58,6 +59,7 @@ pub mod standing_instructions;
 pub mod tasks;
 pub mod time;
 pub mod turns;
+pub mod user_message_sources;
 pub mod verification;
 pub mod wakes;
 

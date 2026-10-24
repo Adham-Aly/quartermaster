@@ -31,7 +31,7 @@ pub struct StartSecondmateArgs {
 tool! {
     /// Sends a request into one of the Quartermaster's own secondmates' scope; the app stamps the
     /// marker and a correlation ID, and carries your words, the one-time instructions, and
-    /// overrides only from your turn.
+    /// overrides with user authority (model choices may cite an earlier actual user message).
     RouteToSecondmateTool {
         name: "route_to_secondmate",
         class: Act,
@@ -48,7 +48,7 @@ pub struct RouteToSecondmateArgs {
     pub request: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instructions: Vec<String>,
-    // Overrides from here on: only on a turn you started; stored on the request.
+    // Stored overrides need user authority; model/effort/premium may cite an earlier message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -57,6 +57,10 @@ pub struct RouteToSecondmateArgs {
     pub effort: Option<Effort>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub premium: bool,
+    // The actual user message authorizing model/effort/premium, including on a later turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<i64>")]
+    pub choice_message: Option<qm_types::ids::MessageId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub later_steps: Vec<LaterStep>,
 }

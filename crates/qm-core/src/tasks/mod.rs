@@ -71,7 +71,7 @@ use rusqlite::Transaction;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -205,6 +205,7 @@ pub(crate) struct Inner {
     outside: OnceLock<Arc<dyn OutsideWatch>>,
     /// The plan pages' endpoint port; 0 while it isn't listening.
     plan_port: AtomicU16,
+    deferred_pulse_started: AtomicBool,
 }
 
 /// Held while a task is being retired; a second retirement of the same task waits its turn by
@@ -309,6 +310,40 @@ pub trait OutsideWatch: Send + Sync + fmt::Debug {
 }
 
 impl TaskService {
+    /// Starts exactly one deferred-start pulse, after startup recovery has completed.
+    /// Weak ownership prevents the pulse retaining the service; shutdown interrupts its sleep.
+    pub fn start_deferred_starts(&self) {
+        if self
+            .inner
+            .deferred_pulse_started
+            .swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        let weak = Arc::downgrade(&self.inner);
+        let clock = self.clock_arc();
+        let mut shutdown = self.inner.shutting_down.subscribe();
+        tokio::spawn(async move {
+            loop {
+                if *shutdown.borrow() {
+                    break;
+                }
+                let Some(inner) = weak.upgrade() else {
+                    break;
+                };
+                let svc = TaskService { inner };
+                if let Err(error) = crate::deferred_starts::pulse(&svc).await {
+                    tracing::warn!(%error, "deferred starts pulse failed; pending intent will be retried");
+                }
+                drop(svc);
+                tokio::select! {
+                    () = clock.sleep(Duration::from_secs(2)) => {},
+                    _ = shutdown.changed() => break,
+                }
+            }
+        });
+    }
+
     /// Sets delivery's outside watch (once; a second call is ignored).
     pub fn set_outside_watch(&self, hook: Arc<dyn OutsideWatch>) {
         if self.inner.outside.set(hook).is_err() {
@@ -346,6 +381,7 @@ impl TaskService {
                 close_facts: OnceLock::new(),
                 outside: OnceLock::new(),
                 plan_port: AtomicU16::new(0),
+                deferred_pulse_started: AtomicBool::new(false),
             }),
         };
         svc.spawn_refresh();
