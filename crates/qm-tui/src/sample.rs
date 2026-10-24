@@ -871,6 +871,10 @@ pub(crate) fn settings_broken() -> Settings {
         key.status = AccountStatus::Active;
         key.api_key = true;
         key.provider = Some(ProviderId::Anthropic);
+        key.quota_problem = Some(String::from(
+            "Provider quota unavailable for API-key accounts; see the provider billing dashboard.",
+        ));
+        key.quota_checked_at = Some(String::from("today 12:04"));
         key.problem = Some(String::from(
             "the key was refused (401); routing skips this account until you reconnect it",
         ));
@@ -884,9 +888,21 @@ pub(crate) fn settings_with(login: SampleLogin) -> Settings {
     claude.preferred = true;
     claude.follows_cli = true;
     claude.usage = Some(String::from(
-        "5-hour window 41% · 7-day 35%, resets Thu 09:00",
+        "today: 18 turns · 142k input · 24k output tokens",
     ));
-    let chatgpt = sample_account(2, "ChatGPT Pro", "Sign in with ChatGPT · provider engine");
+    claude.quota_problem = Some(String::from(
+        "Quota lookup is not supported for this provider or credential type.",
+    ));
+    let mut chatgpt = sample_account(2, "ChatGPT Pro", "Sign in with ChatGPT · provider engine");
+    chatgpt.usage = Some(String::from(
+        "today: 9 turns · 63k input · 8k output tokens",
+    ));
+    chatgpt.quota_lines = vec![
+        String::from("5-hour window: 82% remaining · resets today 16:00"),
+        String::from("Weekly allowance: 94% remaining · resets Mon 09:00"),
+    ];
+    chatgpt.quota_checked_at = Some(String::from("today 12:03"));
+    chatgpt.quota_refreshing = true;
     let mut key = sample_account(3, "Anthropic key", "API key · pay per token");
     key.status = AccountStatus::Paused;
 

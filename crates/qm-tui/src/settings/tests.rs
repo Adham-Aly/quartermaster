@@ -275,6 +275,7 @@ fn catalogue_indicators_and_clickable_back_survive_empty_results_and_resize() {
 fn back_and_escape_dismiss_fields_pickers_and_connect_without_saving() {
     for (width, height) in SIZES {
         let mut app = app(Tab::Accounts);
+        assert_eq!(app.take_commands(), [Command::RefreshQuotas]);
         app.view.settings.model.login = None;
         draw(&mut app, width, height);
         key(&mut app, KeyCode::Char('c'));
