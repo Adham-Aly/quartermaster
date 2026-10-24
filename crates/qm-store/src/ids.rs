@@ -91,6 +91,8 @@ fn is_free(conn: &Connection, table: &'static str, n: u32) -> Result<bool, Store
     }
     let extra = if table == "events" {
         " OR EXISTS (SELECT 1 FROM forgotten_parent_facts WHERE id = ?1)"
+    } else if table == "messages" {
+        " OR EXISTS (SELECT 1 FROM user_message_sources WHERE id = ?1)"
     } else {
         ""
     };
@@ -110,6 +112,8 @@ fn taken_in(
 ) -> Result<BTreeSet<u32>, StoreError> {
     let extra = if table == "events" {
         " UNION SELECT id FROM forgotten_parent_facts WHERE id BETWEEN ?1 AND ?2"
+    } else if table == "messages" {
+        " UNION SELECT id FROM user_message_sources WHERE id BETWEEN ?1 AND ?2"
     } else {
         ""
     };

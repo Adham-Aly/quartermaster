@@ -162,10 +162,10 @@ impl StartHook for VerificationService {
             TaskStatus::InReview => {}
             _ => return Ok(Ok(())),
         }
-        let head = b
-            .head_commit
+        let head = review
+            .base_commit
             .as_ref()
-            .map_or_else(|| "its head".to_owned(), |h| h.short().to_owned());
+            .map_or_else(|| "its head".to_owned(), |h| h.as_str().to_owned());
         task_store::event(
             conn,
             REVIEW_STARTED_EVENT,
@@ -202,6 +202,21 @@ impl VerificationService {
         let Some(facts) = store::facts(conn, builder)? else {
             return Ok(GateNote::default());
         };
+        // Only the snapshot this reviewer actually started at can satisfy the gate. In
+        // particular, a builder report arriving while the reviewer runs cannot relabel a pass.
+        let Some(reviewed_head) = review.base_commit.as_ref() else {
+            return Ok(GateNote {
+                note_for_supervisor: Some(re_review_note(builder)),
+            });
+        };
+        if review.project != b.project || b.head_commit.as_ref() != Some(reviewed_head) {
+            return Ok(GateNote {
+                note_for_supervisor: Some(format!(
+                    "The review covered {reviewed_head}, not {builder}'s current reported head; {}",
+                    re_review_note(builder)
+                )),
+            });
+        }
         let found = findings(report);
         let severities: Vec<Severity> = found.iter().map(|f| f.severity).collect();
         let rounds = facts.review_rounds;
@@ -234,7 +249,7 @@ impl VerificationService {
                         "review": task,
                         "report": report.id,
                         "risk": report.review_risk,
-                        "head": b.head_commit,
+                        "head": reviewed_head,
                     }),
                     at,
                 )?;
@@ -261,7 +276,7 @@ impl VerificationService {
                     builder,
                     None,
                     &format!("{task} found {} in {builder}", count_words(&found)),
-                    serde_json::json!({ "review": task, "report": report.id, "head": b.head_commit }),
+                    serde_json::json!({ "review": task, "report": report.id, "head": reviewed_head }),
                     at,
                 )?;
                 format!(
@@ -381,9 +396,9 @@ impl VerificationService {
         if let Ok(to) = next_for(builder, status, TaskEvent::ReviewStarted) {
             task_store::set_status(conn, builder, status, to, at)?;
         }
-        let head = task_store::load(conn, builder)?
-            .and_then(|r| r.head_commit)
-            .map_or_else(|| row.branch.clone(), |h| h.short().to_owned());
+        let Some(head) = reported else {
+            return Ok(Some(re_review_note(builder)));
+        };
         let Some((reviewer, reviewer_status, _)) = store::last_reviewer(conn, builder)? else {
             return Ok(Some(re_review_note(builder)));
         };
@@ -396,13 +411,16 @@ impl VerificationService {
         // The head the last review started at, as its `task.review_started` event recorded it.
         let previous = task_store::last_event(conn, builder, REVIEW_STARTED_EVENT)?
             .and_then(|(_, p)| p.get("head").and_then(|h| h.as_str()).map(str::to_owned));
+        if !pin_reviewer(conn, reviewer, &head)? {
+            return Ok(Some(re_review_note(builder)));
+        }
         task_store::set_status(conn, reviewer, reviewer_status, to, at)?;
         let settled = settled_findings(conn, builder)?;
         let mut text = format!(
             "Re-review {builder} at its new head {head}{}. Its branch {} is in this repository; \
              check every changed file again against the user's words.",
             previous
-                .filter(|p| *p != head)
+                .filter(|p| p != head.as_str())
                 .map(|p| format!(" (you reviewed {p})"))
                 .unwrap_or_default(),
             row.branch,
@@ -441,6 +459,18 @@ impl VerificationService {
             "{builder} reported its fix; {reviewer} re-reviews it at {head}."
         )))
     }
+}
+
+/// Reusing a reviewer explicitly starts a new immutable source snapshot.
+fn pin_reviewer(conn: &Connection, reviewer: TaskId, head: &CommitSha) -> Result<bool, StoreError> {
+    let Some(row) = task_store::load(conn, reviewer)? else {
+        return Ok(false);
+    };
+    let Some(base_ref) = row.base_ref.as_deref() else {
+        return Ok(false);
+    };
+    task_store::set_base(conn, reviewer, row.base_branch.as_deref(), base_ref, head)?;
+    Ok(true)
 }
 
 fn re_review_note(builder: TaskId) -> String {

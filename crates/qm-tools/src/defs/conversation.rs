@@ -1,4 +1,4 @@
-//! Talking to you: the Quartermaster and secondmates speak only through these.
+//! Conversation tools: speaking to you and finding original user requests.
 
 use super::MessageShown;
 use schemars::JsonSchema;
@@ -57,5 +57,37 @@ tool! {
 #[serde(deny_unknown_fields)]
 pub struct AcknowledgeArgs {
     // At most about 40 characters (checked by the handler).
+    pub text: String,
+}
+
+tool! {
+    /// Finds immutable original user requests in the caller's own conversation.
+    FindUserRequestsTool {
+        name: "find_user_requests",
+        class: Read,
+        roles: [Quartermaster, Secondmate],
+        args: FindUserRequestsArgs,
+        output: FoundUserRequests,
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FindUserRequestsArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<i64>")]
+    pub before: Option<qm_types::ids::MessageId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FoundUserRequests {
+    pub requests: Vec<UserRequest>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UserRequest {
+    pub message: i64,
     pub text: String,
 }

@@ -429,6 +429,45 @@ impl ToolHost for CoreToolHost {
         })
     }
 
+    fn schedule_crewmate<'a>(
+        &'a self,
+        caller: &'a Caller,
+        request: StartRequest,
+        trigger: qm_tools::defs::StartTrigger,
+    ) -> BoxFuture<'a, Result<qm_tools::defs::DeferredStart, ToolFailure>> {
+        Box::pin(async move {
+            offered_to(caller, "schedule_crewmate")?;
+            self.tasks("schedule_crewmate")?
+                .schedule_crewmate(caller, request, trigger)
+                .await
+        })
+    }
+
+    fn cancel_crewmate_start<'a>(
+        &'a self,
+        caller: &'a Caller,
+        schedule: i64,
+    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
+        Box::pin(async move {
+            offered_to(caller, "cancel_crewmate_start")?;
+            self.tasks("cancel_crewmate_start")?
+                .cancel_crewmate_start(caller, schedule)
+                .await
+        })
+    }
+
+    fn list_crewmate_starts<'a>(
+        &'a self,
+        caller: &'a Caller,
+    ) -> BoxFuture<'a, Result<Vec<qm_tools::defs::DeferredStart>, ToolFailure>> {
+        Box::pin(async move {
+            offered_to(caller, "list_crewmate_starts")?;
+            self.tasks("list_crewmate_starts")?
+                .list_crewmate_starts(caller)
+                .await
+        })
+    }
+
     fn find_project_folder<'a>(
         &'a self,
         caller: &'a Caller,
@@ -864,6 +903,38 @@ impl ToolHost for CoreToolHost {
         Box::pin(async move { self.schedules("schedule")?.add(caller, due, what).await })
     }
 
+    fn find_user_requests<'a>(
+        &'a self,
+        caller: &'a Caller,
+        args: qm_tools::defs::FindUserRequestsArgs,
+    ) -> BoxFuture<'a, Result<qm_tools::defs::FoundUserRequests, ToolFailure>> {
+        Box::pin(async move {
+            offered_to(caller, "find_user_requests")?;
+            let agent = caller.agent;
+            let sources = self
+                .db
+                .call(move |conn| {
+                    qm_store::user_message_sources::search(
+                        conn,
+                        agent,
+                        args.query.as_deref(),
+                        args.before,
+                    )
+                })
+                .await
+                .map_err(|e| failed(&e))?;
+            Ok(qm_tools::defs::FoundUserRequests {
+                requests: sources
+                    .into_iter()
+                    .map(|source| qm_tools::defs::UserRequest {
+                        message: source.id.get(),
+                        text: source.text,
+                    })
+                    .collect(),
+            })
+        })
+    }
+
     fn cancel_schedule<'a>(
         &'a self,
         caller: &'a Caller,
@@ -876,3 +947,7 @@ impl ToolHost for CoreToolHost {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "tool_host_user_requests_tests.rs"]
+mod user_requests_tests;

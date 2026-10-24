@@ -216,6 +216,7 @@ impl Fixture {
             model: None,
             effort: None,
             premium: false,
+            choice_message: None,
             base_branch: None,
             verification: None,
             stronger_retry_of: None,

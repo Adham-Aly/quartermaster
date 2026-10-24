@@ -77,6 +77,7 @@ pub const TABLES: &[&str] = &[
     "secondmate_projects",
     "agents",
     "messages",
+    "user_message_sources",
     "turns",
     "secondmate_requests",
     "tasks",
@@ -89,6 +90,7 @@ pub const TABLES: &[&str] = &[
     "parent_channel",
     "standing_instructions",
     "schedules",
+    "deferred_starts",
     "jobs",
     "processes",
     "session_lines",
@@ -151,6 +153,22 @@ mod tests {
             observe_all(&conn).expect("startup observation");
             assert!(next_millis(1) > high, "must observe {column}");
         }
+    }
+
+    #[test]
+    fn startup_observes_user_sources_after_their_messages_are_gone() {
+        LAST.with(|last| last.set(0));
+        let mut conn = crate::connection::open_memory().expect("memory");
+        crate::schema::migrate(&mut conn).expect("schema");
+        conn.execute_batch(
+            "INSERT INTO agents (id, role, home, status, created_at, seq) \
+                 VALUES (1, 'quartermaster', '/unused', 'idle', 1, 1);
+             INSERT INTO user_message_sources (id, agent_id, text, created_at, seq) \
+                 VALUES (1, 1, 'Use high effort', 1, 10000000);",
+        )
+        .expect("durable source without chat");
+        observe_all(&conn).expect("startup observation");
+        assert!(next_millis(1) > 10_000_000);
     }
 
     #[test]

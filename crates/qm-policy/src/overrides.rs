@@ -1,12 +1,13 @@
-//! One rule for every override: it needs a turn you started.
+//! Overrides require a user turn, or verified user-message provenance for model choices.
 //!
-//! Every tool that takes an override calls [`check_override`] for each override present in its
-//! arguments, before doing anything else. The Quartermaster's prompt decides whether your message
-//! asked for it; this function decides whether the turn could carry it. Autonomy is stricter still:
-//! no agent can change it at all, so it isn't an override.
+//! Every tool checks its overrides before acting. Model, effort and premium can cite an earlier
+//! actual user message, verified by the host against app-recorded provenance; the prompt still
+//! decides what those words ask for. Other overrides retain their current-user-turn rule.
+//! Autonomy is stricter still: no agent can change it at all.
 
 use qm_types::domain::StartedBy;
 use qm_types::error::Refusal;
+use qm_types::ids::MessageId;
 
 /// What gives an override its authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +89,24 @@ impl OverrideKind {
     }
 }
 
+/// Model, effort and premium may cite an earlier user message. The host MUST verify that the
+/// source is a real user-authored message belonging to the caller (or a checked routed request),
+/// not an agent's assertion. A citation does not authorize unrelated overrides.
+pub fn check_choice_override(
+    authority: Authority,
+    source: Option<MessageId>,
+    kind: OverrideKind,
+) -> Result<(), Refusal> {
+    if matches!(
+        kind,
+        OverrideKind::NamedModel | OverrideKind::Effort | OverrideKind::Premium
+    ) && source.is_some()
+    {
+        return Ok(());
+    }
+    check_override(authority, kind)
+}
+
 /// Accepts an override on a turn you started or as a card choice; refuses it with a plain reason
 /// on any other turn.
 pub fn check_override(authority: Authority, kind: OverrideKind) -> Result<(), Refusal> {
@@ -97,5 +116,33 @@ pub fn check_override(authority: Authority, kind: OverrideKind) -> Result<(), Re
             "{} needs a turn started by the user's own message",
             kind.describe()
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_earlier_user_message_only_authorizes_model_effort_and_premium() {
+        let app = Authority::Turn(StartedBy::AppEvent);
+        let source = Some(MessageId::new(7));
+        for &kind in OverrideKind::ALL {
+            let choice = matches!(
+                kind,
+                OverrideKind::NamedModel | OverrideKind::Effort | OverrideKind::Premium
+            );
+            assert_eq!(
+                check_choice_override(app, source, kind).is_ok(),
+                choice,
+                "{kind:?}"
+            );
+            assert!(check_choice_override(app, None, kind).is_err(), "{kind:?}");
+            assert!(check_choice_override(Authority::CardChoice, None, kind).is_ok());
+            let user = Authority::Turn(StartedBy::User {
+                message: MessageId::new(8),
+            });
+            assert!(check_choice_override(user, None, kind).is_ok());
+        }
     }
 }

@@ -1,4 +1,4 @@
-//! Premium routing: every way of asking for premium takes one path (#59).
+//! Premium routing: explicit models wait; tier-only requests retain premium fallback (#59).
 
 use super::*;
 use crate::rank::Usage;
@@ -213,9 +213,7 @@ fn ways(kind: TaskKind) -> Vec<(&'static str, Ask, Option<&'static str>)> {
     ]
 }
 
-/// The #59 guard: whenever premium is asked for, a premium model runs if any can serve;
-/// otherwise the first tier of high → medium → low that can, with the step recorded and the
-/// premium models that couldn't serve named in the routing line.
+/// Named premium models must serve or wait. Tier-only requests still fall back with reasons.
 #[test]
 fn premium_runs_on_premium_whenever_any_premium_model_can_serve() {
     for &kind in TaskKind::ALL {
@@ -234,6 +232,15 @@ fn premium_runs_on_premium_whenever_any_premium_model_can_serve() {
                     .iter()
                     .filter(|c| c.tier == Tier::Premium && serves(c))
                     .collect();
+                if let Some(m) = named
+                    && !premium_serving.iter().any(|c| c.model == id(m))
+                {
+                    assert!(r.choice.is_none(), "{ctx}: {}", r.why);
+                    assert!(r.fallbacks.is_empty(), "{ctx}");
+                    assert!(r.why.contains(m), "{ctx}: {}", r.why);
+                    assert!(r.why.contains("wait"), "{ctx}: {}", r.why);
+                    continue;
+                }
                 let (tier, model) = used(&r).unwrap_or_else(|| panic!("{ctx}: waits"));
                 if premium_serving.is_empty() {
                     let expected = [Tier::High, Tier::Medium, Tier::Low]
@@ -332,36 +339,34 @@ fn case_c_premium_flag_with_premium_empty_runs_on_high_and_says_so() {
 }
 
 #[test]
-fn case_d_named_premium_model_at_its_limit_tries_premium_then_high() {
-    // Alone in premium: high, with the step and the reason.
-    let r = run(&Ask::new(TaskKind::Build).model(FABLE), &claude_pool(true));
-    assert_eq!(r.tier_landed, Tier::Premium);
-    assert_eq!(used(&r), Some((Tier::High, OPUS.to_owned())));
-    assert!(r.why.contains("so premium runs on high"), "{}", r.why);
-    // With another premium model free: that one.
+fn case_d_named_premium_model_at_its_limit_waits_even_with_other_premium_available() {
     let mut placed = claude_pool(true);
-    placed.push(cand(GPT, 2, Tier::Premium));
-    let r = run(&Ask::new(TaskKind::Build).model(FABLE), &placed);
-    assert_eq!(used(&r), Some((Tier::Premium, GPT.to_owned())));
-    assert_eq!(
-        r.why,
-        "You asked for premium. The model you named (claude-fable-5-1) couldn't serve, so \
-         another premium model runs"
-    );
+    for another_premium in [false, true] {
+        if another_premium {
+            placed.push(cand(GPT, 2, Tier::Premium));
+        }
+        let r = run(&Ask::new(TaskKind::Build).model(FABLE), &placed);
+        assert_eq!(r.tier_landed, Tier::Premium);
+        assert!(r.choice.is_none());
+        assert_eq!(r.fallbacks, []);
+        assert!(r.why.contains(FABLE), "{}", r.why);
+        assert!(r.why.contains("at its limit"), "{}", r.why);
+    }
 }
 
 #[test]
-fn case_e_named_model_in_no_tier_routes_normally_here_and_is_refused_in_the_core() {
+fn case_e_absent_named_model_waits_here_and_unplaced_models_are_refused_in_the_core() {
     let r = run(
         &Ask::new(TaskKind::Build).model(FABLE),
         &[cand(OPUS, 1, Tier::High)],
     );
     assert_eq!(r.tier_landed, Tier::High);
-    assert!(r.why.contains("isn't in any tier"), "{}", r.why);
+    assert!(r.choice.is_none());
+    assert!(r.why.contains("no usable account"), "{}", r.why);
 }
 
 #[test]
-fn a_named_premium_model_whose_login_broke_still_asks_for_premium() {
+fn a_named_premium_model_whose_login_broke_waits_for_that_model() {
     // The core leaves an unusable account's pairs out of the pool but lists premium's models.
     let mut ask = Ask::new(TaskKind::Build).model(FABLE);
     ask.premium_models = vec![id(FABLE)];
@@ -370,7 +375,8 @@ fn a_named_premium_model_whose_login_broke_still_asks_for_premium() {
         &[cand(GPT, 2, Tier::Premium), cand(OPUS, 3, Tier::High)],
     );
     assert_eq!(r.tier_landed, Tier::Premium);
-    assert_eq!(used(&r), Some((Tier::Premium, GPT.to_owned())));
+    assert!(r.choice.is_none());
+    assert_eq!(r.fallbacks, []);
 }
 
 #[test]
@@ -428,7 +434,7 @@ fn a_model_in_high_and_premium_named_for_premium_runs_as_premium() {
 }
 
 #[test]
-fn a_named_model_that_isnt_premium_keeps_todays_fallback() {
+fn a_named_model_that_isnt_premium_also_waits() {
     let placed = vec![
         cand(FABLE, 1, Tier::Premium),
         cut(cand(OPUS, 2, Tier::High)),
@@ -436,7 +442,8 @@ fn a_named_model_that_isnt_premium_keeps_todays_fallback() {
     ];
     let r = run(&Ask::new(TaskKind::Build).model(OPUS), &placed);
     assert_eq!(r.tier_landed, Tier::High);
-    assert_eq!(used(&r), Some((Tier::Medium, SONNET.to_owned())));
+    assert!(r.choice.is_none());
+    assert_eq!(r.fallbacks, []);
 }
 
 #[test]

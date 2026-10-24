@@ -3,8 +3,8 @@
 //! The app stamps the marker and a **fresh correlation ID**: a new `secondmate_requests` row whose
 //! ID is the correlation, never supplied by a model. The row carries your words (copied from your
 //! message on a turn you started; empty on an app-event turn), the Quartermaster's one-time
-//! instructions, and a base branch and overrides only from your turn (the handler refused them on
-//! any other). One `routed` wake (`routed:C-0193`) wakes the secondmate once.
+//! instructions, and a base branch only from your turn. Model choices may instead cite an earlier
+//! actual user message. One `routed` wake (`routed:C-0193`) wakes the secondmate once.
 
 use super::{SecondmateService, event_kind, failed, refuse};
 use crate::inbox::{Inbox, Notify};
@@ -84,6 +84,20 @@ impl SecondmateService {
             StartedBy::User { message } => Some(message),
             StartedBy::AppEvent => None,
         };
+        let choice_message = req.choice_message.or(message);
+        if req.model.is_some() || req.effort.is_some() || req.premium {
+            let Some(source) = choice_message else {
+                return Err(refuse(
+                    "model, effort and premium choices need the user's message; cite it with choice_message",
+                ));
+            };
+            let agent = caller.agent;
+            self.db()
+                .call(move |conn| qm_store::user_message_sources::verify(conn, agent, source))
+                .await
+                .map_err(|e| failed(&e))?
+                .map_err(ToolFailure::Refused)?;
+        }
         let caller_agent = caller.agent;
         let (record, user_words, single) = self
             .db()
@@ -117,6 +131,7 @@ impl SecondmateService {
             model: req.model.clone(),
             effort: req.effort,
             premium: req.premium,
+            choice_message,
             later_steps: req
                 .later_steps
                 .iter()

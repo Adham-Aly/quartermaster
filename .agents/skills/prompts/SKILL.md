@@ -38,7 +38,13 @@ about four characters each:
 - its prompt plus all its tool descriptions: at most about 7,500 tokens;
 - one tool description: at most 1,900 characters.
 
-Cut words before adding them; one exact sentence beats a paragraph.
+Cut words before adding them; one exact sentence beats a paragraph. Check both orchestrator roles.
+
+For deferred starts, distinguish `schedule_crewmate` (no child before its trigger), `link_tasks`
+(existing tasks), and `schedule` (reminder wake). Keep normal start fields in one schema, nested
+under `start`. Lasting model/effort/premium choices cite `choice_message`, an actual user-message
+numeric ID. The core verifies user source and ownership/delegation, not semantic field intent:
+wording must still require a matching, unsuperseded user request within its original scope.
 
 ## Markers
 
