@@ -1929,9 +1929,16 @@ pub(crate) async fn start_retry(
         .verification
         .filter(|(_, source)| *source == VerificationSource::User)
         .map(|(level, _)| level);
+    // A retired project (its last task closed meanwhile) isn't listed by name any more: its folder
+    // brings it back.
+    let (folder, by_name) = if project.removed {
+        (Some(project.path.display().to_string()), None)
+    } else {
+        (None, Some(project.name.clone()))
+    };
     let req = StartRequest {
-        folder: None,
-        project: Some(project.name.clone()),
+        folder,
+        project: by_name,
         in_place: row.in_place && project.delivery != DeliveryMode::Folder,
         kind: row.kind,
         title: row.title.clone(),
