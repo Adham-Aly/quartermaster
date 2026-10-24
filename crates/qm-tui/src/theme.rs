@@ -90,6 +90,11 @@ pub(crate) fn ok() -> Style {
     Style::new().fg(palette().ok)
 }
 
+/// Diff additions retain their green hue even where it must be a fill for contrast.
+pub(crate) fn diff_addition() -> Style {
+    palette().addition
+}
+
 /// A warning.
 pub(crate) fn warn() -> Style {
     Style::new().fg(palette().accent)

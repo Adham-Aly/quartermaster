@@ -4,8 +4,8 @@
 //! loads the held merge's diff ([`DecisionService::load_diff`]) and puts it in every snapshot's
 //! `diff` until `ShowDiff { held: None }` closes it. Only merges (and held pushes) have a diff:
 //! the stat and the patch from where the branch left its base to the approved head, at most
-//! [`DIFF_MAX_LINES`] lines, each toned (`+` ok, `-` error, hunk and file headers accent, the rest
-//! text).
+//! [`DIFF_MAX_LINES`] lines. The core parses changed files, metadata and numbered text hunks for
+//! split rendering; the original toned lines remain available for old clients and read errors.
 //!
 //! Reading the diff is git's: [`DiffReader`] is the seam, and [`GitDiffReader`] reads it with
 //! `qm_git`'s `Repo::diff_stat` and `Repo::diff_text`; [`NoDiffReader`] answers that the diff can't
@@ -23,6 +23,9 @@ use qm_types::ids::{CommitSha, HeldActionId};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
+
+mod patch;
+pub use patch::parse_patch;
 
 /// The most patch lines the Diff screen carries.
 pub const DIFF_MAX_LINES: usize = 20_000;
@@ -126,6 +129,21 @@ pub fn stat_line(raw: &RawDiff) -> String {
     )
 }
 
+fn fill_view(view: &mut DiffView, raw: RawDiff) {
+    view.stat = stat_line(&raw);
+    let (files, incomplete) = patch::parse_with_status(&raw.lines);
+    view.files = files;
+    view.truncated = raw.truncated || incomplete;
+    view.lines = raw
+        .lines
+        .into_iter()
+        .map(|line| {
+            let tone = tone_of(&line);
+            Styled::new(line, tone)
+        })
+        .collect();
+}
+
 /// What a held action's diff is read from: the checkout, the base and the approved head.
 struct Target {
     title: String,
@@ -184,18 +202,7 @@ impl DecisionService {
             tokio::task::spawn_blocking(move || reader.read(&repo, &base, &head, DIFF_MAX_LINES))
                 .await;
         match read {
-            Ok(Ok(raw)) => {
-                view.stat = stat_line(&raw);
-                view.truncated = raw.truncated;
-                view.lines = raw
-                    .lines
-                    .into_iter()
-                    .map(|l| {
-                        let tone = tone_of(&l);
-                        Styled::new(l, tone)
-                    })
-                    .collect();
-            }
+            Ok(Ok(raw)) => fill_view(&mut view, raw),
             Ok(Err(why)) => view.lines = vec![Styled::new(why, Tone::Warn)],
             Err(e) => view.lines = vec![Styled::new(e.to_string(), Tone::Error)],
         }

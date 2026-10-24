@@ -1025,6 +1025,23 @@ mod popup_tests {
         key(&mut app, KeyCode::Char('d'));
         assert_eq!(app.screen, Screen::Diff);
         assert_eq!(app.popup(), None);
+        let rows = screen(&mut app, 150, 45);
+        let cells = |y: usize, x: usize, width: usize| {
+            rows[y].chars().skip(x).take(width).collect::<String>()
+        };
+        assert_eq!(cells(3, 0, 12), "╭ Files · 6 ");
+        assert_eq!(cells(5, 38, 7), " Before");
+        assert_eq!(cells(5, 94, 6), " After");
+        assert_eq!(cells(8, 38, 6), " 13 − ");
+        assert_eq!(cells(8, 94, 6), " 13 + ");
+        assert_eq!(cells(9, 38, 6), "      ");
+        assert_eq!(
+            app.term
+                .drawn
+                .hits
+                .rect_of(Hit::Diff(crate::diff::DiffHit::Body)),
+            Some(Rect::new(38, 6, 111, 37))
+        );
         key(&mut app, KeyCode::Esc);
         assert_eq!(app.screen, Screen::Bridge);
         assert_eq!(app.popup(), Some(Popup::Action));
