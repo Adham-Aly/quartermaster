@@ -49,7 +49,9 @@ use qm_types::domain::{
     Tier, VerificationLevel, VerificationSource,
 };
 use qm_types::error::Refusal;
-use qm_types::ids::{AgentId, CommitSha, MessageId, ModelId, PortBlock, SecondmateId, TaskId};
+use qm_types::ids::{
+    AgentId, CommitSha, MessageId, ModelId, PortBlock, SecondmateId, TaskId, TaskLabelId,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -907,7 +909,7 @@ pub(crate) async fn start_when_ready(
 
     // Code work on a plan waits for the plan: approved by the user, or finished under auto.
     if let Some(plan) = plan_built_on(svc, &req).await? {
-        super::plan::ready_to_build(svc, plan)
+        super::plan::ready_to_build(svc, &plan)
             .map_err(|why| refuse(format!("The task can't start: {why}")))?;
     }
 
@@ -1048,7 +1050,13 @@ pub(crate) async fn start_when_ready(
             {
                 validated.user_words_message = None;
             }
+            if let Some(label) = req.label
+                && let Some(why) = join_refusal(&tx, &caller, label)?
+            {
+                return Ok((Recorded::Refused(why), notify));
+            }
             let new = NewTask {
+                label: req.label,
                 branch: branch.clone(),
                 project: project.id,
                 supervisor: caller.agent,
@@ -1085,7 +1093,7 @@ pub(crate) async fn start_when_ready(
             let workplace = if in_place {
                 validated.place.folder.clone()
             } else {
-                paths.task(task).worktree
+                paths.worktree(task)
             };
             let agent = agents::insert_crewmate(
                 &tx,
@@ -1545,10 +1553,45 @@ pub(crate) async fn workplace(svc: &TaskService, task: TaskId) -> Result<Workpla
     Ok(Workplace { dir: agent.home })
 }
 
+/// Why `caller` can't put a new crewmate in `label`: it doesn't exist, or (for a secondmate) holds
+/// none of its crewmates. `None` when it can.
+fn join_refusal(
+    conn: &Connection,
+    caller: &Caller,
+    label: TaskLabelId,
+) -> Result<Option<Refusal>, StoreError> {
+    let crewmates = qm_store::task_labels::crewmates(conn, label)?;
+    if crewmates.is_empty() {
+        return Ok(Some(Refusal::new(format!(
+            "{label} doesn't exist; leave join_task out to give the crewmate a task of its own"
+        ))));
+    }
+    if caller.role == Role::Secondmate {
+        let mut supervised = false;
+        for (crewmate, _) in &crewmates {
+            if task_store::load(conn, *crewmate)?.is_some_and(|r| r.supervisor == caller.agent) {
+                supervised = true;
+                break;
+            }
+        }
+        if !supervised {
+            return Ok(Some(Refusal::new(format!(
+                "{label} holds none of your crewmates; join one of your own tasks, or leave \
+                 join_task out"
+            ))));
+        }
+    }
+    Ok(None)
+}
+
 /// Gathers the crewmate's instruction files and skills (idempotent).
 pub(crate) async fn gather_for(svc: &TaskService, task: TaskId) -> Result<Gathered, PrepareError> {
     let home = svc.deps().home.clone();
-    let skills = svc.deps().data_dir.task(task).skills;
+    let skills = svc
+        .paths(task)
+        .await
+        .map_err(|e| PrepareError::Failed(e.to_string()))?
+        .skills;
     let dir = workplace(svc, task).await?.dir;
     tokio::task::spawn_blocking(move || gather(&home, &dir, &skills))
         .await
@@ -1560,7 +1603,7 @@ pub(crate) async fn gather_for(svc: &TaskService, task: TaskId) -> Result<Gather
 async fn plan_built_on(
     svc: &TaskService,
     req: &StartRequest,
-) -> Result<Option<TaskId>, ToolFailure> {
+) -> Result<Option<TaskRow>, ToolFailure> {
     let Some(target) = req.builds_on.filter(|_| req.kind.can_change_code()) else {
         return Ok(None);
     };
@@ -1569,7 +1612,7 @@ async fn plan_built_on(
         .call(move |conn| task_store::load(conn, target))
         .await
         .map_err(|e| failed(&e))?;
-    Ok(row.filter(|r| r.kind == TaskKind::Plan).map(|r| r.id))
+    Ok(row.filter(|r| r.kind == TaskKind::Plan))
 }
 
 /// Phase C: folders, worktree, setup, skills, brief. Every step picks up what an interrupted
@@ -1581,7 +1624,7 @@ pub(crate) async fn prepare(
     cancel: tokio::sync::watch::Receiver<bool>,
 ) -> Result<Prepared, PrepareError> {
     let (routed, ports, row) = routed_session(svc, task).await?;
-    let paths = svc.deps().data_dir.task(task);
+    let paths = svc.paths_of(&row);
 
     // 1. Folders.
     let mut dirs = vec![
@@ -1952,6 +1995,7 @@ pub(crate) async fn start_retry(
         project: by_name,
         in_place: row.in_place && project.delivery != DeliveryMode::Folder,
         create_folder: false,
+        label: None,
         kind: row.kind,
         title: row.title.clone(),
         goal: row.goal.clone(),
@@ -1999,7 +2043,7 @@ async fn plan_folder(
             .await
             .map_err(|e| PrepareError::Failed(e.to_string()))?
             .filter(|r| r.kind == TaskKind::Plan)
-            .map(|r| svc.plan_dir(r.id)),
+            .map(|r| svc.plan_dir(&r)),
         None => None,
     };
     let mode = svc

@@ -66,6 +66,23 @@ pub fn fresh(
     })
 }
 
+/// `preferred` when `table` doesn't hold it and no reservation covers it; else as [`fresh`]. A new
+/// task takes its first crewmate's number this way, so `T-0042` holds `C-0042`.
+pub fn fresh_preferring(
+    conn: &Connection,
+    table: &'static str,
+    space: RangeInclusive<u32>,
+    preferred: u32,
+) -> Result<u32, StoreError> {
+    if HELD.with_borrow(|held| !held.contains_key(table))
+        && space.contains(&preferred)
+        && is_free(conn, table, preferred)?
+    {
+        return Ok(preferred);
+    }
+    fresh(conn, table, space)
+}
+
 fn draw(
     conn: &Connection,
     table: &'static str,

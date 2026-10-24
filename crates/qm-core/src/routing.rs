@@ -1070,8 +1070,8 @@ mod tests {
         assert_eq!(choice.account, account.id);
         assert_eq!(routed.account_model, model.model);
         assert_eq!(routed.provider, account.provider);
-        let paths =
-            DataDir::with_scratch("/fixture", "/fixture/scratch").task(TaskId::new(1).unwrap());
+        let paths = DataDir::with_scratch("/fixture", "/fixture/scratch")
+            .task(TaskId::new(1).unwrap(), TaskId::new(1).unwrap().own_label());
         let spec = crewmate_spec(
             AgentId::new(2),
             &RoutedSession {

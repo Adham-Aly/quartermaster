@@ -5,18 +5,23 @@
 //! - [`set_status`] and [`set_closed`] are compare-and-swaps: they fail if the row moved, and write
 //!   the `task.status` event in the same transaction as the change.
 //! - [`signs`] reads the watchdogs' signs of life in one query.
+//!
+//! A row is one crewmate's work (`C-0042`); `label_id` names the task (`T-0017`) it belongs to,
+//! which can change ([`set_label`]), and `folder_label_id` the task whose folders hold its
+//! artifacts and scratchpad until they are moved ([`set_folder_label`]).
 
 use crate::StoreError;
 use crate::events::{self, EventRow, NewEvent};
 use crate::ids;
 use crate::seq;
+use crate::task_labels;
 use crate::time::{from_millis, to_millis};
 use jiff::Timestamp;
 use qm_types::domain::{
     DeliveryMode, TaskKind, TaskOutcome, TaskStatus, VerificationLevel, VerificationSource,
 };
 use qm_types::ids::space;
-use qm_types::ids::{AgentId, CommitSha, EventId, MessageId, ProjectId, TaskId};
+use qm_types::ids::{AgentId, CommitSha, EventId, MessageId, ProjectId, TaskId, TaskLabelId};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// The `events.kind` of a status change.
@@ -54,6 +59,8 @@ pub struct NewTask {
     /// The task's branch, named after its work ([`first_free_branch`]); `None` for a folder task.
     pub branch: Option<String>,
     pub port_base: Option<u16>,
+    /// The task it joins; `None` makes a new one, numbered like the crewmate when that is free.
+    pub label: Option<TaskLabelId>,
     pub at: Timestamp,
 }
 
@@ -97,6 +104,11 @@ pub struct TaskRow {
     pub started_at: Option<Timestamp>,
     pub reported_at: Option<Timestamp>,
     pub closed_at: Option<Timestamp>,
+    /// The task this crewmate belongs to.
+    pub label: TaskLabelId,
+    /// The task whose folders hold its artifacts and scratchpad: `label`, unless a relabel hasn't
+    /// moved them yet.
+    pub folder_label: TaskLabelId,
 }
 
 const COLUMNS: &str = "id, project_id, supervisor_id, kind, title, goal, user_words,
@@ -104,7 +116,7 @@ const COLUMNS: &str = "id, project_id, supervisor_id, kind, title, goal, user_wo
     retry_of, later_steps, secondmate_request_id, delivery_mode, verification_level,
     verification_source, base_branch, base_ref, base_commit, branch, port_base, status, outcome,
     waiting_on, pr_number, head_commit, escalations, created_at, started_at, reported_at,
-    closed_at, in_place";
+    closed_at, in_place, label_id, folder_label_id";
 
 fn json_text(column: &'static str, v: &serde_json::Value) -> Result<String, StoreError> {
     serde_json::to_string(v).map_err(|source| StoreError::Json { column, source })
@@ -175,6 +187,8 @@ struct Raw {
     reported_at: Option<i64>,
     closed_at: Option<i64>,
     in_place: bool,
+    label: Option<TaskLabelId>,
+    folder_label: Option<TaskLabelId>,
 }
 
 fn raw(r: &rusqlite::Row<'_>) -> rusqlite::Result<Raw> {
@@ -214,6 +228,8 @@ fn raw(r: &rusqlite::Row<'_>) -> rusqlite::Result<Raw> {
         reported_at: r.get(32)?,
         closed_at: r.get(33)?,
         in_place: r.get(34)?,
+        label: r.get(35)?,
+        folder_label: r.get(36)?,
     })
 }
 
@@ -257,6 +273,8 @@ impl Raw {
             started_at: millis("tasks.started_at", self.started_at)?,
             reported_at: millis("tasks.reported_at", self.reported_at)?,
             closed_at: millis("tasks.closed_at", self.closed_at)?,
+            label: self.label.unwrap_or_else(|| self.id.own_label()),
+            folder_label: self.folder_label.unwrap_or_else(|| self.id.own_label()),
         })
     }
 }
@@ -272,22 +290,33 @@ fn collect(
         .collect()
 }
 
-/// Records a task as `queued`, allocating its ID; returns it. Call inside the start transaction.
+/// Records a crewmate's work as `queued`, allocating its ID, and makes or joins its task; returns
+/// the ID. Call inside the start transaction.
 pub fn insert(conn: &Connection, task: &NewTask) -> Result<TaskId, StoreError> {
     let number = ids::fresh(conn, "tasks", space::TASK)?;
     let id = TaskId::new(number).ok_or_else(|| StoreError::Invalid {
         column: "tasks.id",
-        message: format!("{number} is out of range for a task ID"),
+        message: format!("{number} is out of range for a crewmate ID"),
     })?;
+    let label = match task.label {
+        Some(label) if task_labels::exists(conn, label)? => label,
+        Some(label) => {
+            return Err(StoreError::Invalid {
+                column: "tasks.label_id",
+                message: format!("{label} doesn't exist"),
+            });
+        }
+        None => task_labels::create(conn, Some(number), task.at)?,
+    };
     let (level, source) = task.verification.unzip();
     conn.execute(
         "INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, user_words,
              user_words_message_id, instructions, constraints, tests_required, builds_on,
              parent_task_id, retry_of, later_steps, secondmate_request_id, delivery_mode,
              verification_level, verification_source, base_branch, base_ref, base_commit, branch,
-             port_base, status, escalations, created_at, seq, in_place)
+             port_base, status, escalations, created_at, seq, in_place, label_id, folder_label_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20, ?21, ?22, ?23, ?24, 'queued', ?25, ?26, ?27, ?28)",
+                 ?19, ?20, ?21, ?22, ?23, ?24, 'queued', ?25, ?26, ?27, ?28, ?29, ?29)",
         params![
             id,
             task.project,
@@ -319,6 +348,7 @@ pub fn insert(conn: &Connection, task: &NewTask) -> Result<TaskId, StoreError> {
             to_millis(task.at),
             seq::next(task.at),
             task.in_place,
+            label,
         ],
     )?;
     Ok(id)
@@ -619,6 +649,42 @@ pub fn set_project(
     )? == 1)
 }
 
+/// Moves an open crewmate to another task. Its folders stay where they are until
+/// [`set_folder_label`] records their move. Returns whether a row changed.
+pub fn set_label(conn: &Connection, task: TaskId, label: TaskLabelId) -> Result<bool, StoreError> {
+    Ok(conn.execute(
+        "UPDATE tasks SET label_id = ?2
+         WHERE id = ?1 AND status <> 'closed' AND COALESCE(label_id, id) <> ?2",
+        params![task, label],
+    )? == 1)
+}
+
+/// The task whose folders hold `task`'s artifacts and scratchpad; `None` for a crewmate the store
+/// doesn't hold.
+pub fn folder_label(conn: &Connection, task: TaskId) -> Result<Option<TaskLabelId>, StoreError> {
+    let label: Option<Option<TaskLabelId>> = conn
+        .query_row(
+            "SELECT folder_label_id FROM tasks WHERE id = ?1",
+            params![task],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(label.map(|l| l.unwrap_or_else(|| task.own_label())))
+}
+
+/// Records that a crewmate's artifacts and scratchpad now live under `label`'s folders.
+pub fn set_folder_label(
+    conn: &Connection,
+    task: TaskId,
+    label: TaskLabelId,
+) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE tasks SET folder_label_id = ?2 WHERE id = ?1",
+        params![task, label],
+    )?;
+    Ok(())
+}
+
 /// The port blocks of tasks closed since `since`, newest first, at most `limit`.
 pub fn recently_closed_ports(
     conn: &Connection,
@@ -904,6 +970,7 @@ mod branch_tests {
             base_commit: None,
             branch: branch.map(str::to_owned),
             port_base: None,
+            label: None,
             at: Timestamp::now(),
         }
     }
@@ -948,6 +1015,71 @@ mod branch_tests {
         let row = load(&conn, task).expect("read").expect("row");
         assert_eq!(row.branch, "");
         assert!(with_branch(&conn, "fix/x").expect("read").is_none());
+    }
+
+    #[test]
+    fn a_new_crewmate_makes_its_own_task_numbered_like_it_or_joins_one() {
+        let (conn, project, qm) = db();
+        let first = insert(&conn, &new_task(project, qm, Some("fix/x"))).expect("insert");
+        let row = load(&conn, first).expect("read").expect("row");
+        assert_eq!(
+            row.label,
+            first.own_label(),
+            "a new task takes the crewmate's number"
+        );
+        assert_eq!(row.folder_label, row.label);
+
+        let mut joining = new_task(project, qm, Some("fix/y"));
+        joining.label = Some(row.label);
+        let second = insert(&conn, &joining).expect("insert");
+        assert_eq!(
+            load(&conn, second).expect("read").expect("row").label,
+            row.label
+        );
+        assert_eq!(
+            task_labels::crewmates(&conn, row.label).expect("read"),
+            vec![(first, true), (second, true)]
+        );
+
+        joining.label = TaskLabelId::new(9_999);
+        assert!(
+            insert(&conn, &joining).is_err(),
+            "only an existing task can be joined"
+        );
+    }
+
+    #[test]
+    fn relabelling_moves_an_open_crewmate_and_its_folders_follow_separately() {
+        let (conn, project, qm) = db();
+        let task = insert(&conn, &new_task(project, qm, Some("fix/x"))).expect("insert");
+        let old = task.own_label();
+        let new = task_labels::create(&conn, None, Timestamp::now()).expect("label");
+        assert!(set_label(&conn, task, new).expect("relabel"));
+        assert!(
+            !set_label(&conn, task, new).expect("relabel"),
+            "already there"
+        );
+        let row = load(&conn, task).expect("read").expect("row");
+        assert_eq!((row.label, row.folder_label), (new, old));
+        set_folder_label(&conn, task, new).expect("folders");
+        assert_eq!(
+            load(&conn, task).expect("read").expect("row").folder_label,
+            new
+        );
+
+        assert_eq!(
+            task_labels::forget_unused(&conn).expect("forget"),
+            vec![old.get()]
+        );
+        conn.execute(
+            "UPDATE tasks SET status = 'closed', outcome = 'landed', closed_at = 0 WHERE id = ?1",
+            params![task],
+        )
+        .expect("close");
+        assert!(
+            !set_label(&conn, task, old).expect("relabel"),
+            "a closed crewmate stays put"
+        );
     }
 
     #[test]

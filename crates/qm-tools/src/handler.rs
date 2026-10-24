@@ -23,7 +23,7 @@ use qm_types::domain::{Effort, PlanMode, TaskKind, VerificationLevel};
 use qm_types::domain::{MessageKind, Role, StartedBy};
 use qm_types::error::Refusal;
 use qm_types::ids::{AgentId, MessageId, SecondmateId, StandingInstructionId, TaskId, TurnId};
-use qm_types::ids::{CorrelationId, ModelId};
+use qm_types::ids::{CorrelationId, ModelId, TaskLabelId};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -545,6 +545,10 @@ pub struct StartRequest {
     /// starts saved before this field existed read as false.
     #[serde(default)]
     pub create_folder: bool,
+    /// The task the new crewmate joins; `None` makes it a task of its own. Deferred starts saved
+    /// before tasks held crewmates read as `None`.
+    #[serde(default)]
+    pub label: Option<TaskLabelId>,
     pub kind: TaskKind,
     pub title: String,
     pub goal: String,

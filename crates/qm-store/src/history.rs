@@ -10,7 +10,7 @@
 
 use crate::kept;
 use crate::mirror::with_guards_lifted;
-use crate::{StoreError, ids};
+use crate::{StoreError, ids, task_labels};
 use qm_types::ids::{AgentId, MessageId, TurnId};
 use rusqlite::{Connection, Transaction, params};
 
@@ -139,8 +139,9 @@ pub fn forget_before_turn_except(
 
 /// Forgets every closed task beyond the newest `keep`, with what hangs off it: reports, links,
 /// jobs, processes, routing decisions, wakes and held actions, and the crewmates that worked on it
-/// with their conversations. Tasks with unread parent-channel facts stay even beyond the cap,
-/// until the pump advances its durable cursor. Returns the forgotten task numbers.
+/// with their conversations, and the task labels no crewmate names any more. Tasks with unread
+/// parent-channel facts stay even beyond the cap, until the pump advances its durable cursor.
+/// Returns the forgotten crewmate numbers.
 pub fn forget_closed_tasks(conn: &mut Connection, keep: usize) -> Result<Vec<u32>, StoreError> {
     forget_closed(conn, keep, false)
 }
@@ -171,7 +172,7 @@ fn forget_closed(
             .query_map(params![keep, explicit], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         if ids.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         tx.execute_batch(
             "CREATE TEMP TABLE forgetting_tasks (id INTEGER PRIMARY KEY);
@@ -192,7 +193,7 @@ fn forget_closed(
         tx.execute_batch(
             "UPDATE events SET
                      summary = CASE WHEN task_id IS NULL THEN kind
-                                    ELSE printf('T-%04d %s', task_id, substr(kind, 9)) END,
+                                    ELSE printf('C-%04d %s', task_id, substr(kind, 9)) END,
                      payload = json_object('supervisor', COALESCE(
                          json_extract(payload, '$.supervisor'),
                          (SELECT supervisor_id FROM tasks WHERE id = events.task_id)))
@@ -208,15 +209,18 @@ fn forget_closed(
                                      (SELECT id FROM temp.forgetting_agents)));",
         )?;
         forget_tasks(tx)?;
+        let labels = task_labels::forget_unused(tx)?;
         forget_seen_events(tx)?;
         tx.execute_batch("DROP TABLE temp.forgetting_agents; DROP TABLE temp.forgetting_tasks;")?;
-        Ok(ids)
+        Ok((ids, labels))
     })?;
+    let (forgotten, labels) = forgotten;
     let numbers: Vec<u32> = forgotten
         .iter()
         .filter_map(|id| u32::try_from(*id).ok())
         .collect();
     ids::reserve("tasks", numbers.iter().copied());
+    ids::reserve("task_labels", labels);
     Ok(numbers)
 }
 

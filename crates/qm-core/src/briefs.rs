@@ -82,9 +82,8 @@ pub async fn write_brief(
     let whole_builds_on = builds_on.as_ref().map(|on| on.body.clone());
     let facts = brief_facts(&inputs, builds_on)?;
     let text = render_brief(&facts);
-    let paths = data_dir.task(task);
-    let path = paths.brief.clone();
-    let root = paths.root.clone();
+    let root = data_dir.crewmate_root(task);
+    let path = root.join(qm_types::data_dir::BRIEF);
     let written = text.clone();
     let target = path.clone();
     tokio::task::spawn_blocking(move || -> Result<(), BriefError> {

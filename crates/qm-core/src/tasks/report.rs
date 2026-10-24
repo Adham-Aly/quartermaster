@@ -365,7 +365,7 @@ pub(crate) async fn record(
     // its headings decide.
     let mut head: Option<CommitSha> = None;
     if needs_own_commits(args.outcome, row.delivery) {
-        let paths = svc.deps().data_dir.task(task);
+        let paths = svc.paths_of(&row);
         let project = svc
             .db()
             .call(move |conn| super::load_project(conn, row.project))
@@ -420,7 +420,7 @@ pub(crate) async fn record(
         &args,
     )?;
     if args.outcome == ReportOutcome::Done && crate::reports::required(row.kind) {
-        crate::reports::check(&svc.deps().data_dir.task(task)).map_err(|e| {
+        crate::reports::check(&svc.paths_of(&row)).map_err(|e| {
             refuse(format!(
                 "Write $QM_REPORT_DIR/report.html using template.html and SKILL.md before reporting done: {e}"
             ))

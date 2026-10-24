@@ -1,20 +1,23 @@
 //! What the app keeps on disk for work in progress, and when each piece goes.
 //!
 //! Plans, evidence, reports and provider-engine transcripts live in the data directory so a restart
-//! loses none of them. Reports are kept until the task is forgotten, even after it closes; they
-//! must then go because task IDs can be reused. The other files go once no reader is left:
+//! loses none of them; each crewmate's sit under its task, `artifacts/T-t/C-n/`. Reports are kept
+//! until the crewmate is forgotten, even after it closes; they must then go because IDs can be
+//! reused. The other files go once no reader is left:
 //!
 //! | What | Kept while |
 //! |---|---|
-//! | `artifacts/T-n/plan/` | T-n is open, or an open task that can change code builds on T-n and has no copy of the plan yet |
-//! | `artifacts/T-n/evidence/` | T-n is open, or an open task builds on or retries T-n |
-//! | `artifacts/T-n/report/` | T-n's row still exists (until forgotten, not just closed) |
-//! | `artifacts/T-n/` | while it holds anything |
-//! | a transcript, `<folder>/transcript/<session>.jsonl` | its owner (the seat, a live secondmate, an open task) is on that session |
+//! | `artifacts/T-t/C-n/plan/` | C-n is open, or an open crewmate that can change code builds on C-n and has no copy of the plan yet |
+//! | `artifacts/T-t/C-n/evidence/` | C-n is open, or an open crewmate builds on or retries C-n |
+//! | `artifacts/T-t/C-n/report/` | C-n's row still exists (until forgotten, not just closed) |
+//! | `artifacts/T-t/C-n/`, `artifacts/T-t/` | while it holds anything |
+//! | a link `artifacts/T-t/C-n` or `scratchpad/T-t/C-n`, left when C-n moved to another task | C-n is open |
+//! | `scratchpad/T-t/C-n/` (in the scratch root) | C-n is open |
+//! | a transcript, `<folder>/transcript/<session>.jsonl` | its owner (the seat, a live secondmate, an open crewmate) is on that session |
 //! | a temporary file of an atomic write, a plan copy's staging folder | for [`TEMP_AFTER`] |
 //!
 //! [`sweep`] applies the table. It runs at startup (before any session opens, so a transcript no
-//! one names goes at once and an older layout's scratch plans and evidence move in), after a
+//! one names goes at once and an older layout's files move in), after a
 //! task closes, and every [`SWEEP_EVERY`], which also takes what a retired secondmate or `/clear`
 //! left behind. Away from
 //! startup a transcript no one names is kept for [`TEMP_AFTER`], so a session that has just
@@ -24,11 +27,11 @@
 
 use qm_store::StoreError;
 use qm_store::db::Db;
-use qm_store::retention::{Facts, Owner};
+use qm_store::retention::{Facts, OpenTask, Owner};
 use qm_types::clock::Clock;
-use qm_types::data_dir::{DataDir, PLANS, SCRATCHPAD, ensure_scratch_folder, remove_path};
+use qm_types::data_dir::{DataDir, PLANS, TaskPaths, ensure_scratch_folder, remove_path};
 use qm_types::fsio::is_temporary;
-use qm_types::ids::TaskId;
+use qm_types::ids::{TaskId, TaskLabelId};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,7 +41,7 @@ use std::time::{Duration, SystemTime};
 pub const TEMP_AFTER: Duration = Duration::from_hours(1);
 /// How often the sweep runs while the app does.
 pub const SWEEP_EVERY: Duration = Duration::from_hours(1);
-/// The prefix of a plan copy's staging folder in `artifacts/T-n/`.
+/// The prefix of a plan copy's staging folder in `artifacts/T-t/C-n/`.
 pub const PLAN_STAGING: &str = ".plan.tmp-";
 
 /// When the sweep runs.
@@ -90,8 +93,12 @@ struct Tally {
 /// The blocking half of [`sweep`].
 fn apply(data: &DataDir, facts: &Facts, now: SystemTime, when: When) {
     let mut tally = Tally::default();
+    if when == When::Startup {
+        file_under_tasks(data, facts, &mut tally);
+    }
     artifacts(data, facts, now, when, &mut tally);
     legacy_scratch(data, facts, &mut tally);
+    scratchpads(data, facts, &mut tally);
     transcripts(data, facts, now, when, &mut tally);
     if tally != Tally::default() {
         tracing::info!(
@@ -102,14 +109,32 @@ fn apply(data: &DataDir, facts: &Facts, now: SystemTime, when: When) {
     }
 }
 
-/// Whether T-`id`'s plan folder is still needed.
+/// The open crewmate `id`, if it is one.
+fn open_crewmate(facts: &Facts, id: TaskId) -> Option<&OpenTask> {
+    facts.open.iter().find(|t| t.id == id)
+}
+
+/// Where the files of crewmate `id` are filed now: its task's folders while it is open, else its
+/// own number's (only open crewmates' files move; a closed one's stay where they were).
+fn filed(data: &DataDir, facts: &Facts, id: TaskId) -> TaskPaths {
+    let folders = open_crewmate(facts, id).map_or_else(|| id.own_label(), |t| t.folder_label);
+    data.task(id, folders)
+}
+
+/// Whether C-`id`'s plan folder is still needed.
 fn keep_plan(data: &DataDir, facts: &Facts, id: TaskId) -> bool {
     facts.open.iter().any(|t| {
-        t.id == id || (t.builds_on == Some(id) && !data.task(t.id).plan.join("plan.md").is_file())
+        t.id == id
+            || (t.builds_on == Some(id)
+                && !data
+                    .task(t.id, t.folder_label)
+                    .plan
+                    .join("plan.md")
+                    .is_file())
     })
 }
 
-/// Whether T-`id`'s evidence is still needed.
+/// Whether C-`id`'s evidence is still needed.
 fn keep_evidence(facts: &Facts, id: TaskId) -> bool {
     facts
         .open
@@ -117,6 +142,101 @@ fn keep_evidence(facts: &Facts, id: TaskId) -> bool {
         .any(|t| t.id == id || t.builds_on == Some(id) || t.retry_of == Some(id))
 }
 
+/// A crewmate's own folder in a task's folder: named `C-0042`, never the older `T-0042`.
+fn crewmate_name(name: &str) -> Option<TaskId> {
+    name.starts_with(TaskId::PREFIX)
+        .then(|| name.parse().ok())
+        .flatten()
+}
+
+/// Whether a link is one.
+fn is_link(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+/// Whether `dir`, named like a task, holds an older version's files of one crewmate rather than a
+/// task's crewmates: anything in it but crewmates' folders and links.
+fn holds_one_crewmate(dir: &Path) -> bool {
+    entries(dir)
+        .iter()
+        .any(|(name, path)| crewmate_name(name).is_none() && !is_link(path))
+}
+
+/// At startup, files from before tasks held crewmates: `artifacts/T-0042/{plan,…}` and
+/// `scratchpad/T-0042/` were crewmate 42's own, and it now belongs to task `T-0042`, so they move
+/// into `…/T-0042/C-0042/`. An open crewmate's artifacts keep a link at each old path, for the
+/// paths it was given.
+fn file_under_tasks(data: &DataDir, facts: &Facts, tally: &mut Tally) {
+    let dir = data.artifacts_dir();
+    if fs::symlink_metadata(&dir).is_ok() && ensure_scratch_folder(&dir).is_ok() {
+        for (name, path) in subfolders(&dir) {
+            let Ok(label) = name.parse::<TaskLabelId>() else {
+                continue;
+            };
+            if !holds_one_crewmate(&path) {
+                continue;
+            }
+            let id = label.legacy_crewmate();
+            let target = data.task(id, label).artifacts;
+            let open = open_crewmate(facts, id).is_some();
+            for (entry, from) in entries(&path) {
+                if crewmate_name(&entry).is_some() || is_link(&from) {
+                    continue;
+                }
+                let to = target.join(&entry);
+                let moved = ensure_scratch_folder(&target).and_then(|()| {
+                    if open && fs::symlink_metadata(&from).is_ok_and(|m| m.is_dir()) {
+                        qm_types::data_dir::migrate_directory(&from, &to)
+                    } else {
+                        fs::rename(&from, &to)
+                    }
+                });
+                match moved {
+                    Ok(()) => tally.moved += 1,
+                    Err(e) => tracing::error!(
+                        from = %from.display(),
+                        error = %e,
+                        "an older crewmate's files couldn't be filed under its task; they stay"
+                    ),
+                }
+            }
+        }
+    }
+    let pads = data.scratchpads_dir();
+    if fs::symlink_metadata(&pads).is_ok() && ensure_scratch_folder(&pads).is_ok() {
+        for (name, path) in subfolders(&pads) {
+            let Ok(label) = name.parse::<TaskLabelId>() else {
+                continue;
+            };
+            if !holds_one_crewmate(&path) {
+                continue;
+            }
+            let id = label.legacy_crewmate();
+            if open_crewmate(facts, id).is_none() {
+                remove(&path, tally);
+                continue;
+            }
+            // Renamed aside, then back in as the crewmate's folder inside its task's.
+            let aside = pads.join(format!(".{name}.filing"));
+            let target = data.task(id, label).scratchpad;
+            let moved = fs::rename(&path, &aside)
+                .and_then(|()| ensure_scratch_folder(&path))
+                .and_then(|()| fs::rename(&aside, &target));
+            match moved {
+                Ok(()) => tally.moved += 1,
+                Err(e) => tracing::error!(
+                    from = %path.display(),
+                    error = %e,
+                    "an older scratchpad couldn't be filed under its task"
+                ),
+            }
+        }
+    }
+}
+
+/// `artifacts/T-n/C-n/`: each crewmate's plan, evidence and report go by the table in this
+/// module's docs; a link a relabel left goes once its crewmate is closed; a folder goes once
+/// empty.
 fn artifacts(data: &DataDir, facts: &Facts, now: SystemTime, when: When, tally: &mut Tally) {
     let dir = data.artifacts_dir();
     if !dir.exists() {
@@ -126,29 +246,81 @@ fn artifacts(data: &DataDir, facts: &Facts, now: SystemTime, when: When, tally: 
         tracing::error!(error = %e, "the artifacts folder isn't private; nothing in it removed");
         return;
     }
-    for (name, path) in subfolders(&dir) {
-        let Ok(id) = name.parse::<TaskId>() else {
+    for (name, task_dir) in subfolders(&dir) {
+        let Ok(label) = name.parse::<TaskLabelId>() else {
             continue;
         };
-        let paths = data.task(id);
-        if keep_plan(data, facts, id) {
-            old_temporaries(&paths.plan, now, when, tally);
-        } else {
-            remove(&paths.plan, tally);
-        }
-        if !keep_evidence(facts, id) {
-            remove(&paths.evidence, tally);
-        }
-        if !facts.retained_tasks.contains(&id) {
-            remove(&paths.artifacts.join("report"), tally);
-        }
-        for (entry, entry_path) in entries(&path) {
-            if entry.starts_with(PLAN_STAGING) && old_enough(&entry_path, now, when) {
-                remove(&entry_path, tally);
+        for (entry, path) in entries(&task_dir) {
+            let crewmate = crewmate_name(&entry);
+            if is_link(&path) {
+                // A crewmate's folder moved to another task, or (named `plan`, `evidence`, …) one
+                // of an older version's files moved into `C-n/`.
+                let owner = crewmate.unwrap_or_else(|| label.legacy_crewmate());
+                if open_crewmate(facts, owner).is_none() {
+                    remove(&path, tally);
+                }
+                continue;
+            }
+            let Some(id) = crewmate else {
+                continue;
+            };
+            let paths = data.task(id, label);
+            if keep_plan(data, facts, id) {
+                old_temporaries(&paths.plan, now, when, tally);
+            } else {
+                remove(&paths.plan, tally);
+            }
+            if !keep_evidence(facts, id) {
+                remove(&paths.evidence, tally);
+            }
+            if !facts.retained_tasks.contains(&id) {
+                remove(&paths.artifacts.join("report"), tally);
+            }
+            for (staged, staged_path) in entries(&path) {
+                if staged.starts_with(PLAN_STAGING) && old_enough(&staged_path, now, when) {
+                    remove(&staged_path, tally);
+                }
+            }
+            // Gone once empty; `remove_dir` refuses a folder that still holds anything.
+            if fs::remove_dir(&path).is_ok() {
+                tally.removed += 1;
             }
         }
-        // Gone once empty; `remove_dir` refuses a folder that still holds anything.
-        if fs::remove_dir(&path).is_ok() {
+        if fs::remove_dir(&task_dir).is_ok() {
+            tally.removed += 1;
+        }
+    }
+}
+
+/// `scratchpad/T-n/C-n/`: a crewmate's scratchpad goes with it; a link a relabel left goes once
+/// its crewmate is closed; anything else in the scratchpads' folder goes.
+fn scratchpads(data: &DataDir, facts: &Facts, tally: &mut Tally) {
+    let pads = data.scratchpads_dir();
+    if fs::symlink_metadata(&pads).is_err() || ensure_scratch_folder(&pads).is_err() {
+        return;
+    }
+    for (name, task_dir) in entries(&pads) {
+        let Some(label) = name
+            .parse::<TaskLabelId>()
+            .ok()
+            .filter(|_| !is_link(&task_dir))
+        else {
+            remove(&task_dir, tally);
+            continue;
+        };
+        // An older version's scratchpad that startup couldn't file under its task stays while its
+        // crewmate is open.
+        if holds_one_crewmate(&task_dir) && open_crewmate(facts, label.legacy_crewmate()).is_some()
+        {
+            continue;
+        }
+        for (entry, path) in entries(&task_dir) {
+            let open = crewmate_name(&entry).is_some_and(|id| open_crewmate(facts, id).is_some());
+            if !open {
+                remove(&path, tally);
+            }
+        }
+        if fs::remove_dir(&task_dir).is_ok() {
             tally.removed += 1;
         }
     }
@@ -156,10 +328,8 @@ fn artifacts(data: &DataDir, facts: &Facts, now: SystemTime, when: When, tally: 
 
 /// An older layout's plans and evidence, in the scratch root: what is still needed moves into
 /// `artifacts/` (a link is left at the old path, for the paths agents were given); the rest goes,
-/// and so do the links once their task's files are no longer needed. A scratchpad goes with its
-/// task.
+/// and so do the links once their crewmate's files are no longer needed.
 fn legacy_scratch(data: &DataDir, facts: &Facts, tally: &mut Tally) {
-    let is_open = |id: TaskId| facts.open.iter().any(|t| t.id == id);
     let kinds: [(&str, KeepRule); 2] = [
         (PLANS, keep_plan),
         (qm_types::data_dir::EVIDENCE, |_, facts, id| {
@@ -179,11 +349,10 @@ fn legacy_scratch(data: &DataDir, facts: &Facts, tally: &mut Tally) {
             let Ok(id) = name.parse::<TaskId>() else {
                 continue;
             };
-            let link = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
             if !keep(data, facts, id) {
                 remove(&path, tally);
-            } else if !link {
-                let paths = data.task(id);
+            } else if !is_link(&path) {
+                let paths = filed(data, facts, id);
                 let target = if kind == PLANS {
                     paths.plan
                 } else {
@@ -193,20 +362,12 @@ fn legacy_scratch(data: &DataDir, facts: &Facts, tally: &mut Tally) {
             }
         }
     }
-    // Evidence once lived in the task's own folder.
-    for id in facts.open.iter().map(|t| t.id) {
-        let paths = data.task(id);
+    // Evidence once lived in the crewmate's own folder.
+    for t in &facts.open {
+        let paths = data.task(t.id, t.folder_label);
         let old = paths.root.join(qm_types::data_dir::EVIDENCE);
         if fs::symlink_metadata(&old).is_ok_and(|m| m.is_dir()) {
             move_in(&old, &paths.evidence, tally);
-        }
-    }
-    let pads = data.scratch().join(SCRATCHPAD);
-    if fs::symlink_metadata(&pads).is_ok() && ensure_scratch_folder(&pads).is_ok() {
-        for (name, path) in entries(&pads) {
-            if !name.parse::<TaskId>().is_ok_and(is_open) {
-                remove(&path, tally);
-            }
         }
     }
 }
@@ -237,12 +398,12 @@ fn transcripts(data: &DataDir, facts: &Facts, now: SystemTime, when: When, tally
         Owner::Secondmate(id) => Some((s.owner, data.secondmate(id).transcript)),
         _ => None,
     }));
-    folders.extend(
-        facts
-            .open
-            .iter()
-            .map(|t| (Owner::Task(t.id), data.task(t.id).transcript)),
-    );
+    folders.extend(facts.open.iter().map(|t| {
+        (
+            Owner::Task(t.id),
+            data.task(t.id, t.folder_label).transcript,
+        )
+    }));
     folders.sort();
     folders.dedup();
     for (owner, dir) in folders {

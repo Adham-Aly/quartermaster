@@ -219,6 +219,7 @@ pub(crate) fn prepare_secondmate_start(
             .filter(|p| !p.is_empty()),
         in_place: args.in_place,
         create_folder: args.create_folder,
+        label: args.join_task,
         kind: args.kind,
         title: args.title.trim().to_owned(),
         goal: args.goal,

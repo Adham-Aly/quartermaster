@@ -4,7 +4,7 @@ use super::{Ack, Constraint, Held, LaterStep, RoutingSummary, TaskSummary};
 use crate::{Tool, ToolClass};
 use jiff::Timestamp;
 use qm_types::domain::{Effort, Role, TaskKind, TaskStatus, Tier, VerificationLevel};
-use qm_types::ids::{CommitSha, CorrelationId, HeldActionId, ModelId, TaskId};
+use qm_types::ids::{CommitSha, CorrelationId, HeldActionId, ModelId, TaskId, TaskLabelId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +42,9 @@ pub struct StartCrewmateArgs {
     // The folder doesn't exist yet and the user asked for a new one: the app makes it first.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub create_folder: bool,
+    // An open task (T-n) the new crewmate joins. Leave it out: the crewmate gets a task of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join_task: Option<TaskLabelId>,
     pub kind: TaskKind,
     // Conventional-commit style, e.g. "fix(auth): token refresh race".
     pub title: String,
@@ -127,6 +130,9 @@ pub struct SecondmateStartCrewmateArgs {
     // The folder doesn't exist yet and the user asked for a new one: the app makes it first.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub create_folder: bool,
+    // An open task (T-n) the new crewmate joins. Leave it out: the crewmate gets a task of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join_task: Option<TaskLabelId>,
     // The routed request this task serves, whose stored fields the app applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation: Option<CorrelationId>,

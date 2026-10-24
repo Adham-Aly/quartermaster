@@ -8,8 +8,8 @@
 //! config.toml   state.db   auth.json   run.lock   server.sock   logs/   workspace/
 //! seat/{home,session,transcript}/           the Quartermaster
 //! secondmates/S-02/{home,session,transcript}/
-//! tasks/T-0042/{worktree/,brief.md,skills/,session/,transcript/,jobs/}
-//! artifacts/T-0042/{plan,evidence}/         a task's plan and evidence, kept while anyone uses them
+//! tasks/C-0042/{worktree/,brief.md,skills/,session/,transcript/,jobs/}   a crewmate's own folder
+//! artifacts/T-0017/C-0042/{plan,evidence,report}/   its plan, evidence and report, under its task
 //! attachments/message-<id>/                 images pasted into a chat
 //! drafts/                                   images in unsent drafts
 //! ```
@@ -18,13 +18,17 @@
 //! keeps its own transcripts, which the app never reads. What may be deleted, and when, is decided
 //! in one place, `qm_core::retention`.
 //!
+//! A crewmate's own folder is named after it and never moves (a Claude session resumes by its
+//! working folder's path); one started before crewmates had names keeps its `tasks/T-0042/`.
+//! Its artifacts and scratchpad sit under its task and move when its task changes.
+//!
 //! Only scratchpads live elsewhere, in the scratch root: `/tmp/quartermaster/<uid>/<hash>/`, where
 //! `<hash>` is the first 12 hex digits of the SHA-256 of the data directory's path. Older versions
 //! also kept attachments, drafts, plans and evidence there; startup moves them into the data
 //! directory (the `legacy_*` paths). See [`DataDir::ensure_scratch`].
 
 use crate::env::QUARTERMASTER_HOME;
-use crate::ids::{SecondmateId, TaskId};
+use crate::ids::{CrewmateId, SecondmateId, TaskLabelId};
 use sha2::{Digest as _, Sha256};
 use std::ffi::OsStr;
 use std::fmt::Write as _;
@@ -229,14 +233,35 @@ impl DataDir {
         self.scratch.join(DRAFT_IMAGES)
     }
 
-    /// Where older versions kept a task's plan, in the scratch root.
-    pub fn legacy_plan(&self, id: TaskId) -> PathBuf {
+    /// Where older versions kept a crewmate's plan, in the scratch root.
+    pub fn legacy_plan(&self, id: CrewmateId) -> PathBuf {
         self.scratch.join(PLANS).join(id.legacy_name())
     }
 
-    /// Where older versions kept a task's evidence, in the scratch root.
-    pub fn legacy_evidence(&self, id: TaskId) -> PathBuf {
+    /// Where older versions kept a crewmate's evidence, in the scratch root.
+    pub fn legacy_evidence(&self, id: CrewmateId) -> PathBuf {
         self.scratch.join(EVIDENCE).join(id.legacy_name())
+    }
+
+    /// Where older versions kept a crewmate's plan, evidence and report: `artifacts/T-0042/`,
+    /// named after the crewmate's number, with no task level.
+    pub fn legacy_artifacts(&self, id: CrewmateId) -> PathBuf {
+        self.artifacts_dir().join(id.legacy_name())
+    }
+
+    /// Where older versions kept a crewmate's scratchpad: `scratchpad/T-0042/`.
+    pub fn legacy_scratchpad(&self, id: CrewmateId) -> PathBuf {
+        self.scratchpads_dir().join(id.legacy_name())
+    }
+
+    /// The folder of every task's scratchpads, in the scratch root.
+    pub fn scratchpads_dir(&self) -> PathBuf {
+        self.scratch.join(SCRATCHPAD)
+    }
+
+    /// `artifacts/T-0017/`: the artifacts of every crewmate of one task.
+    pub fn task_artifacts(&self, label: TaskLabelId) -> PathBuf {
+        self.artifacts_dir().join(label.to_string())
     }
 
     /// The app's own folders, the data directory and the scratch root: an agent writes inside them
@@ -245,7 +270,8 @@ impl DataDir {
         vec![self.root.clone(), self.scratch.clone()]
     }
 
-    /// `artifacts/`: each task's plan and evidence, `artifacts/T-0042/{plan,evidence}`.
+    /// `artifacts/`: each crewmate's plan, evidence and report, under its task:
+    /// `artifacts/T-0017/C-0042/{plan,evidence,report}`.
     pub fn artifacts_dir(&self) -> PathBuf {
         self.root.join(ARTIFACTS)
     }
@@ -259,16 +285,62 @@ impl DataDir {
         self.root.join(TASKS)
     }
 
-    /// A task's folders and files. Its plan and evidence live in `artifacts/`, apart from its
-    /// folder, because they can outlive the task (a build reads its plan task's plan); only its
-    /// scratchpad is in the scratch root. The folders keep the `T-0042` name.
-    pub fn task(&self, id: TaskId) -> TaskPaths {
+    /// A crewmate's folders and files, with its artifacts and scratchpad under `folders`, the task
+    /// they are filed under now (`tasks.folder_label_id`). Its plan, evidence and report live in
+    /// `artifacts/`, apart from its own folder, because they can outlive it (a build reads its
+    /// plan crewmate's plan); only its scratchpad is in the scratch root.
+    pub fn task(&self, id: CrewmateId, folders: TaskLabelId) -> TaskPaths {
         TaskPaths::at(
-            self.tasks_dir().join(id.legacy_name()),
-            self.artifacts_dir().join(id.legacy_name()),
-            self.scratch.join(SCRATCHPAD).join(id.legacy_name()),
+            self.crewmate_root(id),
+            self.task_artifacts(folders).join(id.to_string()),
+            self.scratchpads_dir()
+                .join(folders.to_string())
+                .join(id.to_string()),
         )
     }
+
+    /// Every crewmate's artifacts folder that is a real folder (a link a relabel left is skipped),
+    /// under its task: `(T-0017, C-0042, artifacts/T-0017/C-0042)`.
+    pub fn filed_artifacts(&self) -> Vec<(TaskLabelId, CrewmateId, PathBuf)> {
+        let mut out = Vec::new();
+        for (label, dir) in named_dirs::<TaskLabelId>(&self.artifacts_dir()) {
+            for (crewmate, path) in named_dirs::<CrewmateId>(&dir) {
+                if path.file_name().and_then(OsStr::to_str) == Some(&crewmate.to_string()) {
+                    out.push((label, crewmate, path));
+                }
+            }
+        }
+        out
+    }
+
+    /// A crewmate's worktree: `tasks/C-0042/worktree/`. It doesn't depend on the crewmate's task.
+    pub fn worktree(&self, id: CrewmateId) -> PathBuf {
+        self.crewmate_root(id).join(WORKTREE)
+    }
+
+    /// A crewmate's own folder: `tasks/C-0042/`, or `tasks/T-0042/` when an older version made
+    /// it (it never moves: a Claude session resumes by its working folder's path).
+    pub fn crewmate_root(&self, id: CrewmateId) -> PathBuf {
+        let current = self.tasks_dir().join(id.to_string());
+        let legacy = self.tasks_dir().join(id.legacy_name());
+        if fs::symlink_metadata(&current).is_err() && fs::symlink_metadata(&legacy).is_ok() {
+            legacy
+        } else {
+            current
+        }
+    }
+}
+
+/// The real folders in `dir` (no links) whose names parse as `I`, with their paths.
+fn named_dirs<I: std::str::FromStr>(dir: &Path) -> Vec<(I, PathBuf)> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| Some((e.file_name().to_str()?.parse().ok()?, e.path())))
+        .collect()
 }
 
 fn development_scratch(
@@ -315,16 +387,19 @@ fn development_scratch(
     Ok(scratch)
 }
 
-/// The folder of every task's own folder (`tasks/T-n/`), in the data directory.
+/// The folder of every crewmate's own folder (`tasks/C-n/`), in the data directory.
 pub const TASKS: &str = "tasks";
 
-/// A task's worktree, inside its `tasks/T-n/`.
+/// A crewmate's brief exactly as sent, inside its `tasks/C-n/`.
+pub const BRIEF: &str = "brief.md";
+
+/// A crewmate's worktree, inside its `tasks/C-n/`.
 pub const WORKTREE: &str = "worktree";
 
-/// The folder of every task's plan and evidence, in the data directory.
+/// The folder of every crewmate's plan, evidence and report, by task, in the data directory.
 pub const ARTIFACTS: &str = "artifacts";
 
-/// A task's plan folder, inside its `artifacts/T-n/`; also older versions' folder of plans in
+/// A crewmate's plan folder, inside its `artifacts/T-n/C-n/`; also older versions' folder of plans in
 /// the scratch root.
 pub const PLANS: &str = "plans";
 
@@ -570,7 +645,7 @@ impl AgentPaths {
     }
 }
 
-/// A task's folders and files.
+/// A crewmate's folders and files.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskPaths {
     pub root: PathBuf,
@@ -584,7 +659,7 @@ pub struct TaskPaths {
     pub session: PathBuf,
     /// The provider engine's transcripts of this crewmate's conversation.
     pub transcript: PathBuf,
-    /// `artifacts/T-0042/`: this task's plan and evidence, which can outlive the task.
+    /// `artifacts/T-0017/C-0042/`: this crewmate's plan, evidence and report, which can outlive it.
     pub artifacts: PathBuf,
     /// Screenshots, recordings, logs, reproduction output; never committed (`QM_EVIDENCE_DIR`).
     pub evidence: PathBuf,
@@ -605,7 +680,7 @@ impl TaskPaths {
             evidence: artifacts.join(EVIDENCE),
             artifacts,
             worktree: root.join(WORKTREE),
-            brief: root.join("brief.md"),
+            brief: root.join(BRIEF),
             skills: root.join("skills"),
             session: root.join("session"),
             transcript: root.join(TRANSCRIPT),
@@ -869,14 +944,25 @@ mod tests {
     #[test]
     fn active_artifacts_live_in_the_data_directory_and_only_scratchpads_in_scratch() {
         let dir = DataDir::with_scratch("/data", "/scratch");
-        let id = TaskId::new(42).expect("a task number");
-        let task = dir.task(id);
+        let id = CrewmateId::new(42).expect("a crewmate number");
+        let label = TaskLabelId::new(17).expect("a task number");
+        let task = dir.task(id, label);
         assert_eq!(dir.attachments(), Path::new("/data/attachments"));
         assert_eq!(dir.draft_images(), Path::new("/data/drafts"));
-        assert_eq!(task.evidence, Path::new("/data/artifacts/T-0042/evidence"));
-        assert_eq!(task.plan, Path::new("/data/artifacts/T-0042/plan"));
-        assert_eq!(task.transcript, Path::new("/data/tasks/T-0042/transcript"));
-        assert_eq!(task.scratchpad, Path::new("/scratch/scratchpad/T-0042"));
+        assert_eq!(
+            task.evidence,
+            Path::new("/data/artifacts/T-0017/C-0042/evidence")
+        );
+        assert_eq!(task.plan, Path::new("/data/artifacts/T-0017/C-0042/plan"));
+        assert_eq!(task.transcript, Path::new("/data/tasks/C-0042/transcript"));
+        assert_eq!(
+            task.scratchpad,
+            Path::new("/scratch/scratchpad/T-0017/C-0042")
+        );
+        assert_eq!(
+            dir.legacy_artifacts(id),
+            Path::new("/data/artifacts/T-0042")
+        );
         assert_eq!(dir.seat().transcript, Path::new("/data/seat/transcript"));
         assert_eq!(dir.legacy_attachments(), Path::new("/scratch/attachments"));
         assert_eq!(dir.legacy_plan(id), Path::new("/scratch/plans/T-0042"));
@@ -884,7 +970,21 @@ mod tests {
             dir.legacy_evidence(id),
             Path::new("/scratch/evidence/T-0042")
         );
-        assert_eq!(task.jobs, Path::new("/data/tasks/T-0042/jobs"));
+        assert_eq!(task.jobs, Path::new("/data/tasks/C-0042/jobs"));
+    }
+
+    #[test]
+    fn a_crewmate_folder_an_older_version_made_keeps_its_name() {
+        let base = std::env::temp_dir().join(format!("qm-legacy-crew-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let dir = DataDir::with_scratch(base.join("data"), base.join("scratch"));
+        let id = CrewmateId::new(42).expect("a crewmate number");
+        assert_eq!(dir.crewmate_root(id), dir.tasks_dir().join("C-0042"));
+        fs::create_dir_all(dir.tasks_dir().join("T-0042")).expect("an older folder");
+        assert_eq!(dir.crewmate_root(id), dir.tasks_dir().join("T-0042"));
+        fs::create_dir_all(dir.tasks_dir().join("C-0042")).expect("a current folder");
+        assert_eq!(dir.crewmate_root(id), dir.tasks_dir().join("C-0042"));
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

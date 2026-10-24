@@ -15,7 +15,10 @@ impl Fixture {
         let _ = fs::remove_dir_all(&root);
         private_folder(&root).unwrap();
         let data = DataDir::with_scratch(root.join("home"), root.join("scratch"));
-        let paths = data.task(TaskId::new(42).unwrap());
+        let paths = data.task(
+            TaskId::new(42).unwrap(),
+            TaskId::new(42).unwrap().own_label(),
+        );
         private_folder(&paths.root.join("evidence")).unwrap();
         fs::write(paths.root.join("evidence/unique.png"), b"legacy").unwrap();
         Self { root, paths }

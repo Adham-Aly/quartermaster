@@ -266,7 +266,7 @@ pub(crate) async fn retire(
     let retired = match project {
         Some(project) if row.status != TaskStatus::Queued && folder_left.is_none() => {
             let git = svc.deps().git.clone();
-            let paths = svc.deps().data_dir.task(task);
+            let paths = svc.paths_of(&row);
             // Only a task whose base was recorded made its branch (creation records the base before
             // it makes the branch), so only it may delete the branch: any other is kept as it is.
             let keep_branch = row.base_commit.is_none()
@@ -369,7 +369,7 @@ pub(crate) async fn retire(
     // The task's folder (its transcript too) and scratchpad go with the close: its outcome and
     // answer are in the store. Its plan and evidence go once no open task reads them (the
     // retention sweep, below). A failure is logged; the startup sweep removes what it leaves.
-    let paths = svc.deps().data_dir.task(task);
+    let paths = svc.paths_of(&row);
     let removed = tokio::task::spawn_blocking(move || {
         qm_types::data_dir::remove_path(&paths.root)?;
         qm_types::data_dir::remove_path(&paths.scratchpad)

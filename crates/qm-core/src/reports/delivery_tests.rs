@@ -53,8 +53,20 @@ impl Delivery {
             plan: None,
         };
         // Seed exactly as start does, but don't launch an engine in this fixture.
-        fs::create_dir_all(svc.deps().data_dir.task(caller.task.unwrap()).artifacts).unwrap();
-        crate::reports::prepare(&svc.deps().data_dir.task(caller.task.unwrap()), kind).unwrap();
+        fs::create_dir_all(
+            svc.deps()
+                .data_dir
+                .task(caller.task.unwrap(), caller.task.unwrap().own_label())
+                .artifacts,
+        )
+        .unwrap();
+        crate::reports::prepare(
+            &svc.deps()
+                .data_dir
+                .task(caller.task.unwrap(), caller.task.unwrap().own_label()),
+            kind,
+        )
+        .unwrap();
         Self {
             fixture,
             host: ReportHost(svc),
@@ -68,7 +80,10 @@ impl Delivery {
             .0
             .deps()
             .data_dir
-            .task(self.caller.task.unwrap())
+            .task(
+                self.caller.task.unwrap(),
+                self.caller.task.unwrap().own_label(),
+            )
             .artifacts
             .join("report/report.html")
     }

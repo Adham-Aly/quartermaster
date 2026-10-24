@@ -20,6 +20,7 @@ fn request() -> StartRequest {
         project: None,
         in_place: false,
         create_folder: false,
+        label: None,
         kind: TaskKind::Research,
         title: "test(core): investigate follow-up".into(),
         goal: "Answer the question".into(),
@@ -498,7 +499,11 @@ async fn prepare_commit_repo(
     );
     let base = git(&dir, &["rev-parse", "HEAD"]);
     git(&dir, &["switch", "-c", "crew"]);
-    let worktree = svc.deps().data_dir.task(TaskId::new(2).unwrap()).worktree;
+    let worktree = svc
+        .deps()
+        .data_dir
+        .task(TaskId::new(2).unwrap(), TaskId::new(2).unwrap().own_label())
+        .worktree;
     std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
     // The app observes the task's actual registered worktree, not the user's checkout.
     git(&dir, &["switch", "main"]);
@@ -653,7 +658,11 @@ async fn advance_and_reroute(
     tokio::time::timeout(std::time::Duration::from_secs(10), opened.notified())
         .await
         .expect("the runner prepared and opened its session");
-    let review_worktree = svc.deps().data_dir.task(reviewer).worktree;
+    let review_worktree = svc
+        .deps()
+        .data_dir
+        .task(reviewer, reviewer.own_label())
+        .worktree;
     assert_eq!(
         git(
             dir,

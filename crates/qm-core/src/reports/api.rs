@@ -5,7 +5,7 @@ use crate::tasks::TaskService;
 use qm_store::tasks;
 use qm_types::BoxFuture;
 use qm_types::api::{AgentRef, Command, CrewRow, Snapshot, TaskDetail};
-use qm_types::data_dir::DataDir;
+use qm_types::data_dir::TaskPaths;
 use qm_types::ids::TaskId;
 use std::path::PathBuf;
 
@@ -25,15 +25,13 @@ impl ReportPart {
             .svc
             .deps()
             .db
-            .call(move |conn| {
-                Ok(tasks::load(conn, task)?.is_some_and(|row| row.reported_at.is_some()))
-            })
+            .call(move |conn| Ok(tasks::load(conn, task)?.filter(|row| row.reported_at.is_some())))
             .await
             .map_err(|_| "The report's task couldn't be read.".to_owned())?;
-        if !reported {
+        let Some(reported) = reported else {
             return Err(format!("{task} has no completed report yet."));
-        }
-        report_page(&self.svc.deps().data_dir, task).map_err(|_| {
+        };
+        report_page(&self.svc.paths_of(&reported)).map_err(|_| {
             format!("{task}'s report is missing or isn't a plain file with plain parent folders.")
         })
     }
@@ -65,8 +63,8 @@ impl ReportPart {
 
 /// No caller-supplied path, and no symlink in the entry point or any parent, including the
 /// artifacts root and data directory. Check parents before the leaf, without following links.
-fn report_page(data: &DataDir, task: TaskId) -> std::io::Result<PathBuf> {
-    let page = std::path::absolute(data.task(task).artifacts.join("report").join("report.html"))?;
+fn report_page(paths: &TaskPaths) -> std::io::Result<PathBuf> {
+    let page = std::path::absolute(paths.artifacts.join("report").join("report.html"))?;
     let ancestors: Vec<_> = page.ancestors().collect();
     for path in ancestors.into_iter().rev() {
         let metadata = std::fs::symlink_metadata(path)?;
@@ -99,21 +97,8 @@ impl ApiPart for ReportPart {
         Box::pin(async move {
             // Closed answer-only tasks leave the live crew tree. Retained reports get a
             // resting crew row so their task detail action survives closure and restart.
-            let Ok(entries) = std::fs::read_dir(self.svc.deps().data_dir.artifacts_dir()) else {
-                return;
-            };
             let mut reports = Vec::new();
-            for entry in entries.flatten() {
-                let Some(task) = entry
-                    .file_name()
-                    .to_str()
-                    .and_then(|s| s.parse::<TaskId>().ok())
-                else {
-                    continue;
-                };
-                if report_page(&self.svc.deps().data_dir, task).is_err() {
-                    continue;
-                }
+            for (_, task, _) in self.svc.deps().data_dir.filed_artifacts() {
                 if let Ok(Some(row)) = self
                     .svc
                     .deps()
@@ -121,6 +106,7 @@ impl ApiPart for ReportPart {
                     .call(move |conn| tasks::load(conn, task))
                     .await
                     && row.reported_at.is_some()
+                    && report_page(&self.svc.paths_of(&row)).is_ok()
                 {
                     reports.push(row);
                 }
@@ -186,31 +172,29 @@ mod tests {
             .join(format!("qm-report-api-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
-        let data = DataDir::new(base.join("data"));
+        let data = qm_types::data_dir::DataDir::new(base.join("data"));
         let task = TaskId::new(42).unwrap();
-        let page = data.task(task).artifacts.join("report/report.html");
+        let paths = data.task(task, task.own_label());
+        let page = paths.artifacts.join("report/report.html");
         std::fs::create_dir_all(page.parent().unwrap()).unwrap();
-        assert!(report_page(&data, task).is_err(), "missing page");
+        assert!(report_page(&paths).is_err(), "missing page");
         std::fs::write(&page, "<!doctype html><title>Report</title>").unwrap();
-        assert_eq!(report_page(&data, task).unwrap(), page);
-        assert!(report_page(&data, TaskId::new(43).unwrap()).is_err());
+        assert_eq!(report_page(&paths).unwrap(), page);
+        let other = TaskId::new(43).unwrap();
+        assert!(report_page(&data.task(other, other.own_label())).is_err());
 
-        // Leaf, report folder, task artifact folder, artifacts root and data root.
-        for path in page.ancestors().take(5) {
+        // Leaf, report folder, crewmate and task artifact folders, artifacts root and data root.
+        for path in page.ancestors().take(6) {
             let moved = base.join("moved");
             std::fs::rename(path, &moved).unwrap();
             symlink(&moved, path).unwrap();
-            assert!(
-                report_page(&data, task).is_err(),
-                "accepted {}",
-                path.display()
-            );
+            assert!(report_page(&paths).is_err(), "accepted {}", path.display());
             std::fs::remove_file(path).unwrap();
             std::fs::rename(moved, path).unwrap();
         }
         std::fs::remove_file(&page).unwrap();
         std::fs::create_dir(&page).unwrap();
-        assert!(report_page(&data, task).is_err(), "directory page");
+        assert!(report_page(&paths).is_err(), "directory page");
         std::fs::remove_dir_all(base).unwrap();
     }
 }

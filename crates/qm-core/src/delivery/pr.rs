@@ -58,7 +58,7 @@ pub(crate) async fn open(
     // The worktree's head and the task's own commit names, off the async threads.
     let git = svc.git();
     let checkout = loaded.project.path.clone();
-    let worktree = svc.tasks().deps().data_dir.task(task).worktree;
+    let worktree = svc.tasks().deps().data_dir.worktree(task);
     let branch = target.clone();
     let (head, own) = tokio::task::spawn_blocking(move || {
         let repo = Repo::open(git, &checkout)?;

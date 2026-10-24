@@ -57,7 +57,7 @@ impl Page {
         let (svc, scheduler) = fixture.task_service();
         fs::create_dir_all(svc.deps().data_dir.artifacts_dir()).unwrap();
         let task = TaskId::new(3).unwrap();
-        let dir = svc.plan_dir(task);
+        let dir = svc.deps().data_dir.task(task, task.own_label()).plan;
         fs::create_dir_all(dir.parent().unwrap()).unwrap();
         create(&dir).unwrap();
         fs::write(dir.join(PLAN_FILE), PLAN_MD).unwrap();

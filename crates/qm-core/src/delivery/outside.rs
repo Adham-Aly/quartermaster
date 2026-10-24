@@ -209,7 +209,12 @@ async fn remote_tags(svc: &DeliveryService, task: TaskId) -> Result<Option<Vec<S
 
 /// At a task's start on a GitHub project: keeps the repository's tag names, once.
 pub(crate) async fn record_baseline(svc: &DeliveryService, task: TaskId) {
-    let file = svc.tasks().deps().data_dir.task(task).root.join(TAGS_FILE);
+    let file = svc
+        .tasks()
+        .deps()
+        .data_dir
+        .crewmate_root(task)
+        .join(TAGS_FILE);
     if file.exists() {
         return;
     }
@@ -229,7 +234,12 @@ pub(crate) async fn record_baseline(svc: &DeliveryService, task: TaskId) {
 /// At report and at settle: records each tag that appeared since the task started and that the
 /// app wasn't asked to push. Returns the tags recorded now.
 pub(crate) async fn check_tags(svc: &DeliveryService, task: TaskId) -> Result<Vec<String>, String> {
-    let file = svc.tasks().deps().data_dir.task(task).root.join(TAGS_FILE);
+    let file = svc
+        .tasks()
+        .deps()
+        .data_dir
+        .crewmate_root(task)
+        .join(TAGS_FILE);
     let Ok(text) = std::fs::read_to_string(&file) else {
         return Ok(Vec::new());
     };

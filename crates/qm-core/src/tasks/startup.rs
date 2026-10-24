@@ -120,21 +120,21 @@ fn sweep_leftovers(data: &DataDir, open: &[TaskId], live: &[SecondmateId]) {
             Err(_) => {}
         }
     }
-    for (name, _) in subfolders(&data.tasks_dir()) {
+    // A crewmate's own folder: `tasks/C-0042`, or `tasks/T-0042` from an older version.
+    for (name, root) in subfolders(&data.tasks_dir()) {
         let Ok(id) = name.parse::<TaskId>() else {
             continue;
         };
-        let paths = data.task(id);
         // Plans, evidence and transcripts are the retention sweep's (`crate::retention`), which
-        // runs next and moves an open task's old evidence folder in.
+        // runs next and moves an open crewmate's old evidence folder in.
         if open.contains(&id) {
-            remove(&paths.session);
-            remove(&paths.root.join("answer.md"));
+            remove(&root.join("session"));
+            remove(&root.join("answer.md"));
         } else {
-            remove(&paths.root.join(qm_types::data_dir::EVIDENCE));
-            remove(&paths.transcript);
-            if !paths.worktree.exists() {
-                remove(&paths.root);
+            remove(&root.join(qm_types::data_dir::EVIDENCE));
+            remove(&root.join(qm_types::data_dir::TRANSCRIPT));
+            if !root.join(qm_types::data_dir::WORKTREE).exists() {
+                remove(&root);
             }
         }
     }
@@ -664,7 +664,9 @@ async fn reattach(svc: &TaskService, task: TaskId, missing: &MissingWorktree) ->
         return false;
     };
     let git = svc.deps().git.clone();
-    let paths = svc.deps().data_dir.task(task);
+    let Ok(paths) = svc.paths(task).await else {
+        return false;
+    };
     let files = project.files_to_copy.clone();
     let branch = missing.branch.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -788,7 +790,7 @@ mod leftover_tests {
         file(old_name.join("transcript/s.jsonl"));
         let retired_old_name = folder(data.secondmates_dir().join("SM-04"));
         // An open task keeps its folder and worktree, but loses its session and answer file.
-        let open = data.task(task(1));
+        let open = data.task(task(1), task(1).own_label());
         folder(open.worktree.clone());
         let open_session = folder(open.session.clone());
         let open_answer = file(open.root.join("answer.md"));
@@ -796,9 +798,9 @@ mod leftover_tests {
         let open_transcript = file(open.transcript.join("s.jsonl"));
         // A closed task with no worktree goes whole; one whose worktree is still there keeps it,
         // less its old evidence and its transcript.
-        let closed = data.task(task(2));
+        let closed = data.task(task(2), task(2).own_label());
         folder(closed.session.clone());
-        let stuck = data.task(task(3));
+        let stuck = data.task(task(3), task(3).own_label());
         folder(stuck.worktree.clone());
         let stuck_evidence = file(stuck.root.join("evidence/shot.png"));
         let stuck_transcript = file(stuck.transcript.join("s.jsonl"));

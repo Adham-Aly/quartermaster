@@ -61,7 +61,7 @@ use qm_types::BoxFuture;
 use qm_types::api::{AgentRef, Command, Snapshot};
 use qm_types::clock::Clock;
 use qm_types::config::Config;
-use qm_types::data_dir::DataDir;
+use qm_types::data_dir::{DataDir, TaskPaths};
 use qm_types::domain::{EngineKind, Role, WakeKind};
 use qm_types::error::Refusal;
 use qm_types::ids::{AgentId, MessageId, TaskId};
@@ -442,6 +442,22 @@ impl TaskService {
 
     pub(crate) fn db(&self) -> &Db {
         &self.inner.deps.db
+    }
+
+    /// `row`'s folders, its artifacts and scratchpad under the task they are filed under now.
+    pub(crate) fn paths_of(&self, row: &qm_store::tasks::TaskRow) -> TaskPaths {
+        self.deps().data_dir.task(row.id, row.folder_label)
+    }
+
+    /// `task`'s folders, read from its row; a crewmate the store no longer holds is filed under
+    /// its own number, as every crewmate was before tasks became labels.
+    pub(crate) async fn paths(&self, task: TaskId) -> Result<TaskPaths, StoreError> {
+        let folders = self
+            .db()
+            .call(move |conn| qm_store::tasks::folder_label(conn, task))
+            .await?
+            .unwrap_or_else(|| task.own_label());
+        Ok(self.deps().data_dir.task(task, folders))
     }
 
     pub(crate) fn clock(&self) -> &dyn Clock {

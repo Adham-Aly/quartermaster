@@ -170,7 +170,8 @@ impl VerificationService {
             store::set_validation_pending(conn, task, false)?;
         }
         // The evidence manifest.
-        let files = manifest(&self.data_dir().task(task));
+        let folders = task_store::folder_label(conn, task)?.unwrap_or_else(|| task.own_label());
+        let files = manifest(&self.data_dir().task(task, folders));
         let count = files.len();
         let pieces = if count == 1 { "piece" } else { "pieces" };
         task_store::event(

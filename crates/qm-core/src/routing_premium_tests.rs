@@ -795,6 +795,7 @@ fn request(f: &Fixture, overrides: &RequestOverrides) -> (Caller, StartRequest) 
         project: Some("p".into()),
         in_place: false,
         create_folder: false,
+        label: None,
         kind: TaskKind::Build,
         title: "feat(x): y".into(),
         goal: "g".into(),

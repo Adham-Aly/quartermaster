@@ -4,13 +4,15 @@
 
 use crate::StoreError;
 use qm_types::domain::{EngineKind, TaskKind};
-use qm_types::ids::{SecondmateId, SessionRef, TaskId};
+use qm_types::ids::{SecondmateId, SessionRef, TaskId, TaskLabelId};
 use rusqlite::Connection;
 
-/// An open task and the tasks whose files it reads.
+/// An open crewmate, where its files are filed, and the crewmates whose files it reads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenTask {
     pub id: TaskId,
+    /// The task whose folders hold its artifacts and scratchpad.
+    pub folder_label: TaskLabelId,
     pub kind: TaskKind,
     pub builds_on: Option<TaskId>,
     pub retry_of: Option<TaskId>,
@@ -49,11 +51,13 @@ pub fn facts(conn: &Connection) -> Result<Facts, StoreError> {
         .collect::<Result<Vec<_>, _>>()?;
     let open = conn
         .prepare(
-            "SELECT id, kind, builds_on, retry_of FROM tasks WHERE status <> 'closed' ORDER BY seq",
+            "SELECT id, kind, builds_on, retry_of, COALESCE(folder_label_id, id) FROM tasks
+             WHERE status <> 'closed' ORDER BY seq",
         )?
         .query_map([], |r| {
             Ok(OpenTask {
                 id: r.get(0)?,
+                folder_label: r.get(4)?,
                 kind: r.get(1)?,
                 builds_on: r.get(2)?,
                 retry_of: r.get(3)?,

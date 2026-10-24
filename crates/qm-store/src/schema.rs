@@ -28,6 +28,7 @@ const SQL: &[&str] = &[
     include_str!("../migrations/0017_in_place.sql"),
     include_str!("../migrations/0018_user_message_sources.sql"),
     include_str!("../migrations/0019_deferred_starts.sql"),
+    include_str!("../migrations/0020_task_labels.sql"),
 ];
 
 /// Every migration, in order.
@@ -50,6 +51,7 @@ pub static MIGRATIONS: &[M<'static>] = &[
     M::up(SQL[15]).foreign_key_check(),
     M::up(SQL[16]).foreign_key_check(),
     M::up(SQL[17]).foreign_key_check(),
+    M::up(SQL[18]).foreign_key_check(),
 ];
 
 /// Upgrades an intentionally incomplete mirror. Its foreign keys are repaired and validated only
@@ -279,5 +281,39 @@ mod tests {
             )
             .expect("the indexes");
         assert_eq!(indexes, 4, "name, path, workspace and seq indexes are back");
+    }
+
+    #[test]
+    fn every_task_before_labels_becomes_its_own_label() {
+        let mut conn = Connection::open_in_memory().expect("memory database");
+        conn.pragma_update(None, "foreign_keys", false)
+            .expect("foreign keys off");
+        // Every migration before 0020 added task labels.
+        Migrations::from_slice(&MIGRATIONS[..18])
+            .to_latest(&mut conn)
+            .expect("the old schema");
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, \
+                 merge_method, created_at, seq) \
+             VALUES (1, 'p', '/p', 'created', 'main', 'direct_pr', 'merge', 1, 1);
+             INSERT INTO agents (id, role, home, status, created_at, seq) \
+             VALUES (1, 'quartermaster', '/home', 'idle', 1, 1);
+             INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, delivery_mode, \
+                 branch, status, created_at, seq) \
+             VALUES (42, 1, 1, 'build', 't', 'g', 'direct_pr', 'fix/x', 'running', 5, 3);",
+        )
+        .expect("the old rows");
+
+        migrate(&mut conn).expect("the upgrade");
+
+        let row: (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT t.label_id, t.folder_label_id, l.created_at, l.seq \
+                 FROM tasks t JOIN task_labels l ON l.id = t.label_id WHERE t.id = 42",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("the task's label");
+        assert_eq!(row, (42, 42, 5, 3), "T-0042 now holds C-0042");
     }
 }

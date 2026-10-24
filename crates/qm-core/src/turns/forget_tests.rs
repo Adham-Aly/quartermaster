@@ -210,6 +210,7 @@ impl Fixture {
             project: Some("p".into()),
             in_place: false,
             create_folder: false,
+            label: None,
             kind: qm_types::domain::TaskKind::Build,
             title: "new".into(),
             goal: "new".into(),

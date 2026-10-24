@@ -105,8 +105,10 @@ mod tests {
 
     #[test]
     fn report_access_and_environment_are_available_on_every_engine() {
-        let paths = DataDir::new(PathBuf::from("/nonexistent/qm-session-test"))
-            .task(TaskId::new(42).unwrap());
+        let paths = DataDir::new(PathBuf::from("/nonexistent/qm-session-test")).task(
+            TaskId::new(42).unwrap(),
+            TaskId::new(42).unwrap().own_label(),
+        );
         let place = Workplace {
             dir: paths.worktree.clone(),
         };
