@@ -542,8 +542,8 @@ impl Host {
         result
     }
 
-    /// Applies an update from the core. Window-state it sets on the app's own `Term` (a bell, the
-    /// quit dialog) is moved to the windows it belongs to.
+    /// Applies an update from the core. Window-state it sets on the app's own `Term` (the quit
+    /// dialog) is moved to the windows it belongs to.
     fn on_update(&mut self, update: Update) {
         match &update {
             Update::Snapshot(snapshot) => {
@@ -573,11 +573,6 @@ impl Host {
         }
         self.app.on_update(update);
         let scratch = std::mem::replace(&mut self.app.term, Term::new());
-        if scratch.bells > 0 {
-            for window in &mut self.windows {
-                window.term.bells = 1;
-            }
-        }
         if matches!(scratch.quit, Quit::Confirm { .. }) {
             // The dialog belongs to the window that asked to quit; with none waiting, to all.
             let asked = self
@@ -623,9 +618,6 @@ impl Host {
         if let Some(osc52) = app.term.osc52.take() {
             // Outside the synchronized update, so the terminal acts on it at once.
             bytes.extend_from_slice(osc52.as_bytes());
-        }
-        if std::mem::take(&mut app.term.bells) > 0 {
-            bytes.push(0x07);
         }
         std::mem::swap(&mut self.app.term, &mut self.windows[at].term);
         if drawn.is_ok() && !bytes.is_empty() {

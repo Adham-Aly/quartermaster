@@ -31,9 +31,9 @@ pub trait ApiPart: Send + Sync + fmt::Debug {
 `qm_core::api::serve` handles the seat's own commands, then asks each part in `ApiDeps.parts`;
 the first `Some` wins. `handle` returns `Handled::Changed` (send a fresh snapshot), `Unchanged`,
 `Quit` or `ConfirmQuit { working }`. `fill` adds the part's facts to each snapshot. Put a feature's
-part in its own module (`SettingsPart`, `TasksPart`, `SessionsPart`, `NotificationsPart` are
+part in its own module (`SettingsPart`, `TasksPart`, `SessionsPart`, `ActionsPart` are
 examples) and register it in `start_core` in `crates/quartermaster/src/wiring.rs`; order matters only where a
-part reads what earlier parts filled (`NotificationsPart` is last). A change the UI should see
+part reads what earlier parts filled (`ActionsPart` is last). A change the UI should see
 from a background task signals the conversation (`ChatLog::changed()`), which triggers a snapshot.
 A refusal the user should see goes in the chat as an app note.
 

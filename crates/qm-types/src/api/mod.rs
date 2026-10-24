@@ -231,11 +231,6 @@ pub enum Command {
         #[serde(default)]
         effort: Option<Effort>,
     },
-    /// Turn the bell and desktop notifications on or off; saved to `config.toml` and applied at
-    /// once.
-    SetNotifications {
-        enabled: bool,
-    },
     /// Set the autocompact window, in tokens, for every agent; the core clamps and rounds it to a
     /// step. Saved to `config.toml`; each agent applies it at its next idle moment.
     SetAutocompactWindow {
@@ -439,11 +434,6 @@ pub struct Snapshot {
     /// The Diff screen's content, after [`Command::ShowDiff`]; `None` when it's closed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diff: Option<DiffView>,
-    /// How many times the bell has rung since launch: when it rises, the UI writes BEL to the
-    /// terminal. Only questions, decisions and approvals raise it, and only while notifications are
-    /// on.
-    #[serde(default)]
-    pub bell: u64,
     /// The Quartermaster is in a turn and hasn't written anything in it yet: the conversation
     /// shows the busy indicator where its words will appear.
     #[serde(default)]
@@ -1229,9 +1219,6 @@ pub struct SettingsView {
     /// A login in progress or just finished.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login: Option<LoginView>,
-    /// The bell and desktop notifications are on (Settings ▸ System).
-    #[serde(default)]
-    pub notifications: bool,
     /// The personal workspace's folder as Settings shows it (`~` for your home folder); empty
     /// until the core has one to show.
     #[serde(default)]

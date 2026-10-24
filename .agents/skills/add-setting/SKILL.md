@@ -9,8 +9,8 @@ description: Add or change a user setting stored in config.toml - the schema in 
 
 - **`config.toml`** (`qm_types::config::Config`): the user's preferences that aren't about a
   particular account or detected model: the Quartermaster's model and optional effort override,
-  the "always use" pin, tier effort defaults, project search roots, notifications. **Never a
-  secret**: credentials go in `auth.json` through `qm_auth`.
+  the "always use" pin, tier effort defaults, project search roots. **Never a secret**:
+  credentials go in `auth.json` through `qm_auth`.
   Tier defaults (`[tiers]`, `TierEfforts`) are for model-only pins, explicitly selected
   Quartermaster models without an effort override, and legacy effort migration—not normal
   model+effort entry routing. Quartermaster Auto with no separate effort override uses the
@@ -38,8 +38,7 @@ description: Add or change a user setting stored in config.toml - the schema in 
    `save` writes atomically (temp file, fsync, rename, 0600).
 3. **Reading it**: the core holds the live config in a `tokio::sync::watch` channel built in
    `crates/quartermaster/src/wiring.rs`. Read the current value where it's used (`config.borrow()`) rather
-   than copying it at startup, so a change applies without a restart. Notifications are the
-   example: `NotificationsPart` reads it at each snapshot.
+   than copying it at startup, so a change applies without a restart.
 4. **Changing it from Settings** (if the user should change it in the app):
    - a `Command` variant in `crates/qm-types/src/api/mod.rs` and a field on `SettingsView`
      (`#[serde(default)]`), additive only (skill `core-ui-api`);

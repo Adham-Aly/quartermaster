@@ -327,7 +327,7 @@ fn apply(c: &mut AgentContext, event: &EngineEvent, now: Timestamp) -> bool {
 }
 
 /// Puts the monitor's view into every snapshot. Register it after the crew and secondmates parts
-/// (it reads the crew list they fill) and before `NotificationsPart`.
+/// (it reads the crew list they fill).
 pub struct ContextPart {
     monitor: Arc<ContextMonitor>,
 }

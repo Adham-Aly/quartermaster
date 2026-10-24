@@ -31,8 +31,6 @@ pub(crate) struct Term {
     pub(crate) pointer: crate::input::mouse::Pointer,
     /// An OSC 52 copy to write to the terminal right after the next frame.
     pub(crate) osc52: Option<String>,
-    /// The core rang the bell: how many BELs to write to the terminal (at most one).
-    pub(crate) bells: u8,
     /// Where quitting stands, including the first `Ctrl`+`C` waiting for its second.
     pub(crate) quit: Quit,
     /// The app's own text selection, in this window's screen cells, while dragging and until the
@@ -64,7 +62,6 @@ impl Term {
             drag: None,
             pointer: crate::input::mouse::Pointer::default(),
             osc52: None,
-            bells: 0,
             quit: Quit::Idle,
             selection: None,
             flash: None,
