@@ -1,77 +1,95 @@
 ---
 name: quartermaster-plan
-description: How to write plan.md for an interactive plan - the format, the question blocks, images and drawings, and how the user's answers come back. Use whenever you write or revise the plan.
+description: Author the user's plan.html separately from the agent's technical plan.md, with questions, diagrams, and review controls. Use whenever writing or revising an interactive plan.
 ---
 
-# Writing an interactive plan
+# Planning with the user
 
-You are planning with the user, not for them. Your job is to grill them on every point you would
-otherwise have to assume, one round at a time, until nothing important is left open. The app turns
-your `plan.md` into a page the user reads in a browser; they answer there and paste the reply back.
+Write two distinct documents in the plan folder:
+- `plan.md`: the technical handoff to the implementing agent. Include code findings, file paths,
+  architecture, implementation steps, constraints, tests and acceptance criteria. Keep it current
+  with the user's decisions, but do not duplicate the review UI or put question fences here.
+- `plan.html`: the user-facing explanation YOU author. Start with $QM_PLAN_DIR/template.html.
+  Explain the outcome, trade-offs, approach and open decisions in a layout suited to this task.
+  The app preserves your markup, adding only trusted metadata and interactive controls. It does
+  not generate your explanation from the technical Markdown.
 
 ## The loop
 
-1. Read the code and the brief. List every decision the plan depends on.
-2. Write `plan.md` with the plan so far and a question block for each open point. Round 1 must
-   ask at least one question.
-3. Call `plan_check`. The app checks the file and renders the page. Fix anything it reports and
-   call again.
-4. Call `report` (done) with a short summary of the round, never the plan itself. The app posts
-   the page's card to the user. Then stop and wait: the user's answers arrive as a message holding
-   a `<plan-reply …>` block. Never guess an answer and never start the work yourself.
-5. Fold the answers into the plan, remove the answered questions, and ask the next round. Only
-   when nothing is left open, and the user has answered at least one round (or told you to take
-   your recommendations), write the plan with no question blocks, check it and report: that is
-   the final plan. The user approves it; the build starts only then. Changes they ask for after
-   that come as messages too: apply them and report again.
+1. Read the brief and code. Identify every decision you would otherwise assume.
+2. Write both documents. In round 1 ask at least one meaningful question in `plan.html`.
+3. Call `plan_check`; fix all reported problems and check again.
+4. Call `report` with a short summary, not the documents. The app presents the review to the user.
+   Stop: do not implement or guess answers. Answers arrive in a `<plan-reply …>` block.
+5. Fold answers into both documents, remove answered question placeholders, and ask the next open
+   questions. Challenge an answer when the code suggests a problem and explain why.
+6. Only after the user has answered a round (or asked you to take recommendations), remove all
+   questions for the final review. Check and report again. Implementation waits for approval.
 
-Push back when an answer looks wrong for the code you have read, and say why in the next round.
+## HTML authoring contract
 
-## Format
+`plan_check` composes plan.html in place and retains your authored source internally. For each
+revision replace plan.html with the complete new authored fragment, never edit the generated
+runtime. The app reuses your retained source when refreshing status or the endpoint.
 
-- One `# Title`, then `##` sections and `###` subsections. Each gets an anchor, a "Suggest a
-  change" and an "Ask" button, and an "updated" badge when it changes between rounds.
-- A `## Assumptions` section is required: everything you still assume. Each assumption the user
-  could reasonably disagree with should be a question instead.
-- Put each question block in the section it concerns:
+`plan.html` is an HTML **fragment** with one `<article>` root, not a full document. Do not copy
+runtime output back into it. Use XML-well-formed syntax: close elements, self-close `<img />`,
+`<br />`, `<hr />`, quote attributes, and escape `&` as `&amp;` and `<` as `&lt;` in text.
+There are no declarations, comments, scripts, event handlers, namespaces or external resources.
 
-  ````markdown
-  ```question
-  id = "storage-engine"
-  ask = "Which storage engine should the cache use?"
-  why = "It decides the migration story in the Data flow section."
-  multiple = false
-  choices = [
-    { id = "sqlite", label = "SQLite", detail = "already a dependency", recommended = true },
-    { id = "sled",   label = "sled",   detail = "embedded, but unmaintained" },
-  ]
-  ```
-  ````
+- Exactly one plain-text `<h1>` title. Use plain-text `<h2 id="approach">` and `<h3 id="…">`
+  headings for reviewable sections. IDs are unique lowercase `a-z`, digits and hyphens, at most
+  64 bytes. Keep them stable across revisions. Runtime IDs and the `q-` prefix are reserved.
+  The app adds outline links, updated badges, Suggest a change and Ask controls to each section.
+- Include `<h2 id="assumptions">Assumptions</h2>` listing remaining assumptions (or None).
+  Turn each important assumption the user could disagree with into a question.
+- Compose prose using article, section, div, span, p, ul/ol/li, dl/dt/dd, strong/em/b/i/s/small,
+  blockquote, pre/code, a, img, br/hr, table/thead/tbody/tr/th/td, figure/figcaption, details/summary.
+  Attributes: class (names must start `author-`), style, title, aria-label, href on links,
+  src on images, alt, width, height, colspan, rowspan. Use inline styles for your custom layout.
+  Avoid fixed light/dark colors: the surrounding UI supports both themes. Use `var(--fg)`,
+  `var(--bg)`, `var(--muted)`, `var(--soft)`, `var(--line)` and `var(--accent)` for custom layouts.
+  Keep content in normal flow, responsive on narrow screens, and never cover review controls.
+- Links use http, https, mailto or #anchor. Images use `src="assets/name.png"` (PNG/JPEG/GIF/WebP/SVG).
+  The app embeds assets; it never fetches remote images. Keep files directly in `assets/`.
+- Rich displays use `<pre data-render="svg">escaped SVG</pre>`, or kinds `mockup`, `math`,
+  `terminal`, `rust`, `json`, `text`. SVG is cleaned; mockups use the existing sandbox; maths
+  uses bundled KaTeX. No Mermaid. Escape markup inside these placeholders; do not nest elements
+  or include Markdown triple-backtick fences. Everything outside placeholders is preserved.
 
-  `id` is `[a-z0-9-]`, unique. Two to nine choices, at most one `recommended` unless
-  `multiple = true`. An "Other" box is offered unless `other = false`. No `choices` makes an open
-  question with a text box. Keep `ask` short and put the trade-offs in `why`.
-- Code fences highlight by language. `svg` fences draw inline (a safe subset: shapes, paths,
-  text, gradients; no scripts, links out or external images). `math` fences and `$…$` render
-  maths. `mockup` fences show HTML in a sandboxed frame (`mockup height=300`). `terminal` fences
-  show ANSI colours. There is no Mermaid: draw diagrams as SVG.
-- Images go in the plan folder's `assets/` and are linked as `![alt](assets/name.png)` (PNG,
-  JPEG, GIF, WebP or SVG). They are embedded in the page and copied to the build.
-- Links may be `http`, `https`, `mailto` or `#anchor`. Raw HTML is shown as text.
+## Questions live in HTML
 
-## The reply
+Place each question after the h2/h3 it concerns. The placeholder contains escaped TOML using
+exactly the same question fields as below. The app supplies typed answer, multiple-choice,
+Other, recommendation and note widgets; do not hand-build inputs or buttons.
 
-```text
-## Q1 storage-engine
-Choice: sqlite (SQLite)
-Note:
-> keep WAL off for now
-
-## Section data-flow (Data flow)
-Change:
-> put the cache in front of the queue
+```html
+<pre data-question="">id = "storage-engine"
+ask = "Which storage engine should the cache use?"
+why = "This determines migration complexity."
+multiple = false
+choices = [
+  { id = "sqlite", label = "SQLite", detail = "Already a dependency", recommended = true },
+  { id = "files", label = "Files", detail = "Simpler initial setup" },
+]</pre>
 ```
 
-`Choice`, `Other` and `Answer` answer a question; `Left open.` means the user skipped it, so ask
-again or decide it in the next round and say so under Assumptions. `Change` and `Ask` under a
-section are edits and questions about that section: make the change, or answer in the plan.
+Question and choice IDs are unique `[a-z0-9-]`, at most 40 bytes. Use two to nine choices, or
+omit choices for a typed open answer. Other is available by default; `other = false` disables it.
+At most one recommendation unless `multiple = true`. At most 60 questions per document.
+Keep ask short; put reasoning in why. Never assign the user's answer yourself.
+
+## Writing and visual clarity
+
+Write for humans: simple, clear and easy to follow, with full relevant technical depth. Explain
+proposed code, feature and behaviour changes, alternatives and risks without irrelevant detail.
+Encourage understanding with diagrams, visuals and relevant images wherever they help. Keep the
+technical Markdown comprehensive and synchronized, rather than hiding important changes there.
+
+## Replies
+
+Replies identify the task, plan and round. `Choice`, `Other`, `Answer` and `Note` belong to a
+question. `Left open.` means it was skipped: ask again or explain how it is resolved under
+Assumptions. Section `Change` and `Ask` entries are requested edits and discussion: apply changes
+or answer in the document. Stable section/question IDs preserve that connection. Copy/send,
+saved responses, theme, discussion and the approval/locked state are app-owned.

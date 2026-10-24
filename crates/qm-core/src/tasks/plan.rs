@@ -176,7 +176,7 @@ pub(crate) async fn plan_check(svc: &TaskService, caller: &Caller) -> Result<Str
                 )
                 .map_err(refuse)?;
                 Ok(format!(
-                    "plan.md OK · round {} draft · {} · page at file://{}{notes}",
+                    "plan.md and plan.html OK · round {} draft · {} · page at file://{}{notes}",
                     next.round,
                     rendered.checked.summary(),
                     dir.join(qm_plans::PAGE_FILE).display()
@@ -388,7 +388,7 @@ async fn take_recommendations(
         svc,
         row,
         "The user approved your plan and asked you to take your recommended answer for every \
-         open question. Settle them in plan.md, remove the question blocks, add no new \
+         open question. Settle them in plan.md and plan.html, remove the HTML question placeholders, add no new \
          questions, check it and report.",
     )
     .await?;
@@ -698,7 +698,8 @@ async fn plan_autonomy_changed(svc: &TaskService, row: &TaskRow) -> Result<(), T
         else {
             return Ok(None);
         };
-            // The page, if there is one, shows it's closed (or open again).
+            plans::prepare_template(&dir, mode).map_err(|e| e.to_string())?;
+            // An existing normal-autonomy page can be refreshed without regenerating prose.
             let _ = plans::render_saved(&dir, task, &project, port, |_| {
                 std::collections::BTreeMap::new()
             });

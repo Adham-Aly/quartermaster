@@ -1768,11 +1768,18 @@ async fn plan_folder(
             .map(|r| svc.plan_dir(r.id)),
         None => None,
     };
+    let mode = svc
+        .live_plan_mode(row)
+        .await
+        .map_err(|e| PrepareError::Failed(format!("{e:?}")))?;
     let is_plan = row.kind == TaskKind::Plan;
     let dir = paths.plan.clone();
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         if is_plan {
             crate::plans::create(&dir)?;
+            if let Some(mode) = mode {
+                crate::plans::prepare_template(&dir, mode)?;
+            }
         } else if let Some(from) = source
             && !dir.join(qm_plans::PLAN_FILE).is_file()
         {
