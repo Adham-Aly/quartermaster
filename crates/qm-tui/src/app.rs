@@ -241,11 +241,13 @@ impl App {
         }
     }
 
-    /// Work that needs the frame just drawn: the prompt field's scroll remembered and a card
-    /// scrolled into view a step at a time.
+    /// Remembers the viewport-derived prompt and Diff tree scrolls just drawn.
     pub(crate) fn after_draw(&mut self) {
         if let Some(field) = &self.term.drawn.field {
             self.view.input_scroll = field.scroll;
+        }
+        if let Some(scroll) = self.term.drawn.diff_tree_scroll {
+            self.view.diff.tree_scroll = scroll;
         }
     }
 

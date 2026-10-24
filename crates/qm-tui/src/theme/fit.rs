@@ -10,7 +10,7 @@
 //! a light background assumes macOS Terminal's Basic palette, and a dark one trusts today's
 //! choices.
 
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 
 /// Contrast every role aims for: WCAG AA for text.
 const READABLE: f64 = 4.5;
@@ -154,6 +154,8 @@ pub(crate) struct Palette {
     pub(crate) accent: Color,
     /// Running, ready, passed.
     pub(crate) ok: Color,
+    /// Diff additions: green text, or readable text on a green fill when green text fades.
+    pub(crate) addition: Style,
     /// Errors.
     pub(crate) error: Color,
     /// A supervisor's marker in a session.
@@ -179,6 +181,7 @@ impl Palette {
         dim: Color::DarkGray,
         accent: Color::Yellow,
         ok: Color::Green,
+        addition: Style::new().fg(Color::Green),
         error: Color::Red,
         blue: Color::LightBlue,
         violet: Color::Magenta,
@@ -226,6 +229,7 @@ impl Palette {
             dim: fit.dim(),
             accent,
             ok: fit.pick(&[Color::Green, Color::LightGreen]),
+            addition: fit.addition(),
             error: fit.pick(&[Color::Red, Color::LightRed]),
             blue: fit.pick(&[Color::LightBlue, Color::Blue, Color::LightCyan, Color::Cyan]),
             violet: fit.pick(&[Color::Magenta, Color::LightMagenta]),
@@ -285,6 +289,29 @@ impl Fit {
                     .find(|c| self.contrast(*c, self.bg) >= min)
             })
             .unwrap_or(Color::Reset)
+    }
+
+    /// Keep the diff's semantic green without sacrificing text contrast. If the terminal's
+    /// greens are too pale for text (common on white), use one as a fill instead. We cannot
+    /// invent a darker RGB green without breaking the terminal's 16-colour contract.
+    fn addition(&self) -> Style {
+        let greens = [Color::Green, Color::LightGreen];
+        if let Some(green) = greens
+            .into_iter()
+            .find(|c| self.contrast(*c, self.bg) >= READABLE)
+        {
+            return Style::new().fg(green);
+        }
+        let green =
+            if self.contrast(Color::LightGreen, self.bg) > self.contrast(Color::Green, self.bg) {
+                Color::LightGreen
+            } else {
+                Color::Green
+            };
+        Style::new().bg(green).fg(self.text_on(
+            green,
+            &[Color::Black, Color::White, Color::DarkGray, Color::Gray],
+        ))
     }
 
     /// Bright black if it reads; else the faintest grey that does; else the default text colour.
@@ -439,6 +466,58 @@ mod tests {
             ..Reported::default()
         });
         assert_eq!(p.accent, Color::Blue);
+    }
+
+    #[test]
+    fn diff_additions_keep_green_and_readable_text_in_light_and_dark_palettes() {
+        for reported in [
+            reported("#c7c7c7", "#000000", ITERM2),
+            reported("#000000", "#ffffff", ITERM2),
+            reported("#383a42", "#fafafa", BASE16_ONE_LIGHT),
+            Reported {
+                bg: Some(Rgb::WHITE),
+                ..Reported::default()
+            },
+        ] {
+            let p = Palette::fit(&reported);
+            let style = p.addition;
+            let greens = [Color::Green, Color::LightGreen];
+            assert!(
+                style.fg.is_some_and(|c| greens.contains(&c))
+                    || style.bg.is_some_and(|c| greens.contains(&c))
+            );
+            let fg = p.ansi[index(style.fg.unwrap()).unwrap()].unwrap();
+            let bg = style
+                .bg
+                .map_or(reported.bg.unwrap(), |c| p.ansi[index(c).unwrap()].unwrap());
+            assert!(
+                fg.contrast(bg) >= READABLE,
+                "{style:?}: {}",
+                fg.contrast(bg)
+            );
+        }
+        let p = Palette::fit(&reported("#000000", "#ffffff", ITERM2));
+        assert_eq!(p.ok, Color::Reset); // Shared good-news styling is unchanged.
+        assert_eq!(p.addition, Style::new().fg(Color::Black).bg(Color::Green));
+    }
+
+    #[test]
+    fn diff_green_brightness_follows_reported_contrast_not_the_slot_name() {
+        for (background, dull, readable) in [
+            (Rgb::BLACK, Rgb::new(0, 32, 0), Rgb::new(0, 194, 0)),
+            (Rgb::WHITE, Rgb::new(0, 217, 0), Rgb::new(0, 100, 0)),
+        ] {
+            let mut reported = Reported {
+                bg: Some(background),
+                ..Reported::default()
+            };
+            reported.ansi[2] = Some(dull);
+            reported.ansi[10] = Some(readable);
+            assert_eq!(
+                Palette::fit(&reported).addition,
+                Style::new().fg(Color::LightGreen)
+            );
+        }
     }
 
     #[test]

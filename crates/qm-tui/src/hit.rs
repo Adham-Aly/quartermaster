@@ -176,6 +176,8 @@ pub(crate) struct FrameMap {
     pub(crate) diff_scroll_max: usize,
     pub(crate) diff_horizontal_max: usize,
     pub(crate) diff_tree_scroll_max: usize,
+    /// The tree's actual scroll after clamping and preserving a visible selection on shrink.
+    pub(crate) diff_tree_scroll: Option<usize>,
     /// Where a worker's session drew its scrolling rows, when one showed.
     pub(crate) session_rows: Option<Rect>,
     /// The prompt field, when one that takes text was drawn.

@@ -1,5 +1,6 @@
 //! End-to-end cell and input regressions for the parsed diff, without a core or filesystem.
 
+mod finalize;
 mod polish;
 
 use super::*;
@@ -266,7 +267,18 @@ fn split_layout_and_focus_styles_survive_small_sizes_and_the_bridge_fold_boundar
             assert_eq!(buffer[(body.x - 1, header_y)].fg, app.term.palette.accent);
             assert_eq!(buffer[(0, header_y)].fg, app.term.palette.dim);
             assert_eq!(buffer[(body.x + 1, side_y)].fg, app.term.palette.error);
-            assert_eq!(buffer[(after + 1, side_y)].fg, app.term.palette.ok);
+            assert_eq!(
+                buffer[(after + 1, side_y)].fg,
+                app.term.palette.addition.fg.unwrap()
+            );
+            assert_eq!(
+                buffer[(after + 1, side_y)].bg,
+                app.term
+                    .palette
+                    .addition
+                    .bg
+                    .unwrap_or(ratatui::style::Color::Reset)
+            );
             assert!(
                 buffer[(after + 1, side_y)]
                     .modifier

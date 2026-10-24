@@ -100,7 +100,7 @@ fn draw_summary(frame: &mut Frame<'_>, body: Rect, view: Option<&qm_types::api::
     summary.push_span(Span::styled(format!(" {}", view.stat), theme::strong()));
     let mut legend = Line::default();
     for (label, style) in [
-        ("A added", theme::ok()),
+        ("A added", theme::diff_addition()),
         ("M modified", theme::accent()),
         ("D deleted", theme::error()),
         ("R renamed", theme::blue()),
@@ -131,7 +131,7 @@ fn panel(title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
 
 fn status_style(status: DiffFileStatus) -> Style {
     match status {
-        DiffFileStatus::Added => theme::ok(),
+        DiffFileStatus::Added => theme::diff_addition(),
         DiffFileStatus::Deleted => theme::error(),
         DiffFileStatus::Renamed | DiffFileStatus::Copied => theme::blue(),
         _ => theme::accent(),
@@ -149,7 +149,8 @@ fn draw_tree(frame: &mut Frame<'_>, area: Rect, app: &App, files: &[DiffFile], m
     map.hits.add(inner, Hit::Diff(DiffHit::Tree));
     let height = usize::from(inner.height);
     map.diff_tree_scroll_max = entries.len().saturating_sub(height);
-    let scroll = app.view.diff.tree_scroll.min(map.diff_tree_scroll_max);
+    let scroll = tree_scroll(app, &entries, height, map.diff_tree_scroll_max);
+    map.diff_tree_scroll = Some(scroll);
     for (i, entry) in entries.iter().skip(scroll).take(height).enumerate() {
         let row = Rect::new(inner.x, inner.y + cells(i), inner.width, 1);
         let selected = entry.file == Some(app.view.diff.file);
@@ -200,7 +201,7 @@ fn draw_tree(frame: &mut Frame<'_>, area: Rect, app: &App, files: &[DiffFile], m
         frame.render_widget(
             Span::styled(
                 badge,
-                if filled {
+                if filled && badge_style.bg.is_none() {
                     theme::on_selection(badge_style)
                 } else {
                     badge_style
@@ -224,6 +225,27 @@ fn draw_tree(frame: &mut Frame<'_>, area: Rect, app: &App, files: &[DiffFile], m
             Rect::new(area.right() - 4, area.bottom() - 1, 3, 1),
         );
     }
+}
+
+/// A shrink keeps a previously visible selection in view. A leaf deliberately scrolled
+/// away with the tree wheel stays away, including wheel input batched with the resize.
+fn tree_scroll(app: &App, entries: &[tree::Entry], height: usize, max: usize) -> usize {
+    let top = app.view.diff.tree_scroll;
+    let mut scroll = top.min(max);
+    if let Some(previous) = app.term.drawn.hits.rect_of(Hit::Diff(DiffHit::Tree))
+        && usize::from(previous.height) > height
+        && let Some(row) = entries
+            .iter()
+            .position(|entry| entry.file == Some(app.view.diff.file))
+        && row >= top
+        && row < top.saturating_add(usize::from(previous.height))
+    {
+        scroll = scroll
+            .min(row)
+            .max(row.saturating_sub(height.saturating_sub(1)))
+            .min(max);
+    }
+    scroll
 }
 
 fn draw_file(
@@ -273,7 +295,7 @@ fn draw_file(
     frame.render_widget(
         Line::from(vec![
             Span::styled(format!(" {label}  "), status_style(file.status)),
-            Span::styled(format!("+{additions}"), theme::ok()),
+            Span::styled(format!("+{additions}"), theme::diff_addition()),
             Span::styled(format!("  −{deletions}"), theme::error()),
         ]),
         Rect::new(inner.x, inner.y, inner.width, 1),
@@ -288,7 +310,12 @@ fn draw_file(
     );
     for (rect, name, path, style) in [
         (left, "Before", file.old_path.as_deref(), theme::error()),
-        (right, "After", file.new_path.as_deref(), theme::ok()),
+        (
+            right,
+            "After",
+            file.new_path.as_deref(),
+            theme::diff_addition(),
+        ),
     ] {
         let label = format!(" {name} · {}", visible(path.unwrap_or("(absent)")));
         frame.render_widget(
@@ -459,10 +486,13 @@ fn draw_side(
     };
     let (number, mark, style) = match (after, line.kind) {
         (false, DiffLineKind::Deletion) => (line.old_number, "−", theme::error()),
-        (true, DiffLineKind::Addition) => (line.new_number, "+", theme::ok()),
+        (true, DiffLineKind::Addition) => (line.new_number, "+", theme::diff_addition()),
         (true, _) => (line.new_number, " ", theme::text()),
         (false, _) => (line.old_number, " ", theme::text()),
     };
+    if style.bg.is_some() {
+        frame.render_widget(Block::new().style(style), area);
+    }
     let changed = line.kind != DiffLineKind::Context;
     let number = number.map_or_else(String::new, |n| n.to_string());
     let digits = usize::from(gutter.saturating_sub(3));
