@@ -1017,6 +1017,13 @@ pub(crate) async fn start_when_ready(
                     None => return Ok((Recorded::Refused(no_free_branch(&req.title)), notify)),
                 },
             };
+            // Deferred words can outlive their chat row. This link is optional metadata,
+            // not choice authority; check it in the insert transaction, after settlement.
+            if let Some(message) = validated.user_words_message
+                && qm_store::messages::get(&tx, message)?.is_none()
+            {
+                validated.user_words_message = None;
+            }
             let new = NewTask {
                 branch: branch.clone(),
                 project: project.id,
