@@ -11,10 +11,12 @@
 //!    premium) replace the entry altogether, and so does a stronger-model retry you pick.
 //! 3. A stronger-model retry or premium, which you asked for: premium sits above high and is
 //!    used only when you ask for it, choose "try again with a stronger model", or set a task kind
-//!    to it (step 5).
+//!    to it (step 6).
 //! 4. The "always use" pin: "'Always use' stays as a setting on the pool, with its fallback model
 //!    and a notice while it's on."
-//! 5. The tier of the task's row in the rule table (yours or the default), with fallbacks and
+//! 5. A model preference, revalidated against live entries within the landed tier, unless an
+//!    explicit task or inherited choice takes priority.
+//! 6. The tier of the task's row in the rule table (yours or the default), with fallbacks and
 //!    ranking.
 //!
 //! # Premium
@@ -65,6 +67,8 @@ pub struct RouteRequest<'a> {
     pub quick_verification: bool,
     /// Your words for this task, each already accepted by the override check.
     pub user: UserChoices,
+    /// A decision about the strongest model matching the user's within-tier requirements.
+    pub preference: Option<qm_types::model_preference::ModelPreference>,
     /// A stronger-model retry's target tier, worked out by `qm_policy::holds`. Set exactly when
     /// `user.stronger_retry` is.
     pub stronger_retry_target: Option<Tier>,
@@ -155,6 +159,7 @@ struct Router<'r, 'a> {
     skipped: Vec<SkippedModel>,
     fallbacks: Vec<FallbackStep>,
     notes: Vec<String>,
+    preference_applied: bool,
 }
 
 impl<'r, 'a> Router<'r, 'a> {
@@ -204,6 +209,7 @@ impl<'r, 'a> Router<'r, 'a> {
             skipped: Vec::new(),
             fallbacks: Vec::new(),
             notes,
+            preference_applied: false,
         }
     }
 
@@ -354,6 +360,50 @@ impl<'r, 'a> Router<'r, 'a> {
         None
     }
 
+    /// Validate the decision maker's selection against live entries, never invent a combo.
+    fn try_preference(&mut self) -> Option<(RoutedChoice, String)> {
+        let preference = self.req.preference.as_ref()?;
+        if self.req.user.model.is_some()
+            || self.named_effort().is_some()
+            || self.premium_asked
+            || self.retry_target.is_some()
+            || self.later_step.is_some()
+        {
+            return None;
+        }
+        let placed = self.pool.placed;
+        let candidates: Vec<_> = placed
+            .iter()
+            .filter(|c| {
+                c.tier == self.tier_landed
+                    && c.model == preference.selection
+                    && preference.provider.is_none_or(|p| p == c.provider)
+                    && preference.model.as_ref().is_none_or(|m| m == &c.model)
+                    && preference.effort.is_none_or(|e| {
+                        c.efforts.contains(&e)
+                            && self.effort_for(c, self.tier_landed, c.effort_override) == e
+                    })
+            })
+            .collect();
+        if let Some(c) = self.pick_from(candidates.into_iter(), placement_skip_reason) {
+            self.preference_applied = true;
+            return Some((
+                self.choice(c, self.tier_landed, self.tier_landed, c.effort_override),
+                format!(
+                    "{}. Your model preference selected {} within {}",
+                    rule_line(self.kind, self.req.builds_on.as_ref(), self.matched),
+                    c.model,
+                    self.tier_landed
+                ),
+            ));
+        }
+        self.notes.push(format!(
+            "The preferred selection ({}) couldn't meet every requirement in {}; normal routing was used",
+            preference.selection, self.tier_landed
+        ));
+        None
+    }
+
     /// Steps 3 and 5: the tier, with fallbacks.
     fn try_tiers(&mut self) -> Option<(RoutedChoice, String)> {
         let landed = self.tier_landed;
@@ -467,7 +517,11 @@ pub fn route(table: &RuleTable, req: &RouteRequest<'_>, pool: Pool<'_>) -> Routi
 
     let (choice, mut why) = match router.try_named() {
         Ok(Some((choice, why))) => (Some(choice), why),
-        Ok(None) => match router.try_pin().or_else(|| router.try_tiers()) {
+        Ok(None) => match router
+            .try_pin()
+            .or_else(|| router.try_preference())
+            .or_else(|| router.try_tiers())
+        {
             Some((choice, why)) => (Some(choice), why),
             None => (None, router.waiting_line()),
         },
@@ -487,6 +541,8 @@ pub fn route(table: &RuleTable, req: &RouteRequest<'_>, pool: Pool<'_>) -> Routi
             needs_image_input: req.needs.image_input,
             quick_verification: req.quick_verification,
             user,
+            preference: req.preference.clone(),
+            preference_applied: router.preference_applied,
             later_step_from: router.later_step.as_ref().map(|l| l.from),
             prefer_provider_other_than: None,
         },

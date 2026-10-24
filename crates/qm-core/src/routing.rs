@@ -375,6 +375,7 @@ fn candidate(row: &PoolRow, now: Timestamp) -> Candidate {
     let (usage, cut_off) = usage_of(row.usage.as_deref(), now);
     Candidate {
         model: row.facts.canonical.clone(),
+        provider: row.provider,
         family: row.facts.family.clone(),
         generation: row.facts.generation,
         account: row.account,
@@ -517,6 +518,7 @@ pub struct CrewmateFacts {
     pub quick_verification: bool,
     /// A model you named for this task.
     pub named_model: Option<ModelId>,
+    pub preference: Option<qm_types::model_preference::ModelPreference>,
     /// An effort level you named for this task.
     pub named_effort: Option<qm_types::domain::Effort>,
     /// You asked for premium.
@@ -672,16 +674,37 @@ fn route_preferring(
         placed: &pool.placed,
         pinned: &pool.pinned,
     };
+    if avoid.is_none()
+        || request.user.model.is_some()
+        || request
+            .later_step
+            .as_ref()
+            .is_some_and(|l| l.model.is_some())
+    {
+        return route(table, request, full);
+    }
+    if request.preference.is_some() {
+        let record = route(table, request, full);
+        if record.facts.preference_applied {
+            return record;
+        }
+        let mut ordinary = request.clone();
+        ordinary.preference = None;
+        let mut reviewed = route_preferring(table, &ordinary, pool, avoid);
+        reviewed.facts.preference = record.facts.preference;
+        reviewed
+            .why
+            .push_str(". The preference did not select an entry; normal review routing was used");
+        return reviewed;
+    }
     let Some(avoid) = avoid else {
         return route(table, request, full);
     };
-    // `placed[i]` was built from `rows[i]`, so the rows say each candidate's provider.
     let others: Vec<Candidate> = pool
         .placed
         .iter()
-        .zip(&pool.rows)
-        .filter(|(_, row)| row.provider != avoid)
-        .map(|(c, _)| c.clone())
+        .filter(|c| c.provider != avoid)
+        .cloned()
         .collect();
     let preferred = route(
         table,
@@ -703,6 +726,24 @@ fn route_preferring(
     }
 }
 
+fn canonical_preference(
+    conn: &Connection,
+    preference: Option<&qm_types::model_preference::ModelPreference>,
+) -> Result<Option<qm_types::model_preference::ModelPreference>, StoreError> {
+    preference
+        .cloned()
+        .map(|mut preference| {
+            preference.model = preference
+                .model
+                .as_ref()
+                .map(|model| canonical(conn, model))
+                .transpose()?;
+            preference.selection = canonical(conn, &preference.selection)?;
+            Ok(preference)
+        })
+        .transpose()
+}
+
 /// Routes one crewmate and records the decision (see the module docs). Call inside the transaction
 /// that starts the crewmate. Accounts whose login `health` marks unusable are left out of the pool
 /// and listed in the record's `skipped`.
@@ -722,6 +763,7 @@ pub fn route_crewmate(
         .as_ref()
         .map(|m| canonical(conn, m))
         .transpose()?;
+    let preference = canonical_preference(conn, facts.preference.as_ref())?;
     let later_step = facts
         .later_step
         .clone()
@@ -761,6 +803,7 @@ pub fn route_crewmate(
             premium: facts.premium,
             stronger_retry: facts.stronger_retry.is_some(),
         },
+        preference,
         stronger_retry_target: facts.stronger_retry,
         later_step,
         always_use: pin.as_ref(),
@@ -1065,6 +1108,7 @@ mod tests {
                     needs: Needs::default(),
                     quick_verification: false,
                     named_model: None,
+                    preference: None,
                     named_effort: None,
                     premium: false,
                     choice_message: None,
@@ -1144,6 +1188,7 @@ mod tests {
                 needs: Needs::default(),
                 quick_verification: true,
                 named_model: None,
+                preference: None,
                 named_effort: None,
                 premium: false,
                 choice_message: None,

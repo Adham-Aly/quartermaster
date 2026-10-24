@@ -1,9 +1,13 @@
-//! Routing: code picks the model, never an agent.
+//! Routing: typed agent decisions within app-enforced tiers and user authority.
 //!
-//! The Quartermaster declares facts about the work; a rule table turns them into a tier;
-//! the app picks a (model, account) pair from your pool at that tier and an effort level; and every
-//! decision is recorded with a plain-language "why". All of it is plain functions over declared
-//! facts, never task text, so every row, fallback and cap is testable exhaustively.
+//! The Quartermaster declares task facts; a rule table turns them into a tier. It can also
+//! select the smartest model meeting all user constraints among actual tier entries via a typed
+//! preference. The app validates the selection, provider, model and effort against live eligible
+//! entries; an invalid preference gets ordinary routing with a note, never a tier escape.
+//! Explicit user-turn model/effort overrides retain authority over preferences on later turns.
+//! Every decision is recorded with a plain-language "why". A future external decision model can
+//! return the same typed preference; none is configured today. The routing rules remain plain,
+//! testable functions over declared facts, never task-text keyword heuristics.
 //!
 //! - [`decider`]: the `Decider` interface.
 //! - [`rules`]: the rule table (each task kind's tier, yours or the default) and the `builds_on`

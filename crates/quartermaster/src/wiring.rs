@@ -253,7 +253,15 @@ pub(crate) async fn start_core(
     // pages' endpoint listens (on its saved port, so pages rendered before still send).
     qm_core::plans::submit::recover(&tasks).await;
     let plan_endpoint = qm_core::plans::endpoint::Endpoint::start(tasks.clone()).await;
-    let mut seat_loop = spawn_seat_loop(&db, &clock, seat, &conversation, host, inbox_rx, &wakes);
+    let mut seat_loop = spawn_seat_loop(
+        &db,
+        (&clock, base.config.subscribe()),
+        seat,
+        &conversation,
+        host,
+        inbox_rx,
+        &wakes,
+    );
     // Every secondmate's loop, idle until work arrives.
     start_secondmates(&secondmates);
     // Resume the crew once the seat runs.
@@ -470,6 +478,7 @@ fn secondmate_service(
     conversation: &Arc<Conversation>,
 ) -> SecondmateService {
     let secondmates = SecondmateService::new(SecondmateDeps {
+        config: base.config.subscribe(),
         db: db.clone(),
         clock: Arc::clone(clock),
         data_dir: dir.clone(),
@@ -510,7 +519,7 @@ async fn crew_reconcile(tasks: &TaskService) -> ReconcileOutcome {
 /// The seat's turn loop, on its own task.
 fn spawn_seat_loop(
     db: &Db,
-    clock: &Arc<dyn Clock>,
+    (clock, config): (&Arc<dyn Clock>, watch::Receiver<Config>),
     seat: Arc<Seat>,
     conversation: &Arc<Conversation>,
     host: Arc<CoreToolHost>,
@@ -523,7 +532,9 @@ fn spawn_seat_loop(
             inbox: wakes.clone(),
             clock: Arc::clone(clock),
             seat,
-            context: Arc::new(ContextBuilder::new(db.clone(), Arc::clone(clock))),
+            context: Arc::new(
+                ContextBuilder::new(db.clone(), Arc::clone(clock)).with_config(config),
+            ),
             chat: conversation.clone(),
             host,
             dispatcher: Dispatcher::builtin(),

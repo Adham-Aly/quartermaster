@@ -170,6 +170,40 @@ you named an effort. Quick verification can lower that default, and the result
 is adjusted to the pinned model's supported efforts. If neither pinned model can
 serve, normal routing takes over.
 
+## Within-tier preferences
+
+After classifying the kind, the Quartermaster can choose the **smartest model
+meeting all of the user's constraints** among actual routed tier entries, not
+from the whole catalogue. `start_crewmate.preference` is a structured decision:
+
+```text
+{selection: ModelId, provider?: Provider, model?: ModelId, effort?: Effort}
+```
+
+`selection` is required: the chosen model ID. Optional `provider`, `model` and
+`effort` describe the user's requirements, **all** of which must hold together.
+They are not independent hints or authority to invent a new model/effort
+combination. For example, a provider requirement and an effort requirement must
+match the same eligible entry in the routed tier. The context's `<models>` lists
+canonical IDs with provider, provider model ID and placement effort; `default/none`
+means no explicit placement effort, not an extra effort value to request. The
+live app still checks account availability and task capabilities.
+
+The app validates the selection against eligible entries within the tier,
+including effort. A missing, stale, out-of-tier or otherwise ineligible match
+falls back to ordinary routing with a note. A preference never escapes its tier
+or asks for Premium; only ordinary fallback rules can move between levels.
+
+Preferences may be supplied on later or app-event turns to carry the user's
+constraints forward. They do **not** replace the authority of `model` and
+`effort`: those remain explicit, user-turn-only, cross-tier overrides, and a
+preference cannot weaken or contradict them. Inherited `later_steps`, premium
+requests, pins and stronger retries keep their routing authority too.
+
+Today the Quartermaster supplies this typed answer. A future external decision
+model can return the same answer for the same validation; none is configured
+today.
+
 ## The Quartermaster and secondmates
 
 Their model and effort are separate controls in **Settings ▸ Routing**; crew task

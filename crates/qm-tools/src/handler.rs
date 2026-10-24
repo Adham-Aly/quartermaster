@@ -546,6 +546,7 @@ pub struct StartRequest {
     pub instructions: Vec<String>,
     pub later_steps: Vec<LaterStep>,
     pub model: Option<ModelId>,
+    pub preference: Option<qm_types::model_preference::ModelPreference>,
     pub effort: Option<Effort>,
     pub premium: bool,
     /// Actual user-message provenance for model/effort/premium, checked by the host.

@@ -121,6 +121,8 @@ pub(crate) struct StartAs {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RouteInputs {
     pub named_model: Option<ModelId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preference: Option<qm_types::model_preference::ModelPreference>,
     pub named_effort: Option<Effort>,
     pub premium: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -946,6 +948,7 @@ pub(crate) async fn start_when_ready(
         let (words, message) = authority_words(authority);
         RouteInputs {
             named_model: req.model.clone(),
+            preference: req.preference.clone(),
             named_effort: req.effort,
             premium: req.premium,
             choice_message: req.choice_message,
@@ -1215,6 +1218,7 @@ fn facts_for(
         needs: Needs::default(),
         quick_verification: quick,
         named_model: inputs.named_model.clone(),
+        preference: inputs.preference.clone(),
         named_effort: inputs.named_effort,
         premium: inputs.premium,
         choice_message: inputs.choice_message,
@@ -1914,6 +1918,7 @@ pub(crate) async fn start_retry(
         instructions: serde_json::from_value(row.instructions.clone()).unwrap_or_default(),
         later_steps: Vec::new(),
         model: None,
+        preference: None,
         effort: None,
         premium: false,
         choice_message: None,

@@ -123,6 +123,7 @@ impl Fixture {
             needs: Needs::default(),
             quick_verification: false,
             named_model: None,
+            preference: None,
             named_effort: None,
             premium: false,
             choice_message: None,
@@ -166,6 +167,59 @@ fn routed(outcome: RouteOutcome) -> RoutingRecord {
 fn used(record: &RoutingRecord) -> (Tier, String) {
     let c = record.choice.as_ref().unwrap();
     (c.tier, c.model.to_string())
+}
+
+#[test]
+fn preference_aliases_are_canonicalized_and_persisted() {
+    let f = Fixture::new("preference-alias");
+    f.conn
+        .execute(
+            "UPDATE models SET model = 'account-opus' WHERE canonical = ?1",
+            [OPUS],
+        )
+        .unwrap();
+    let mut facts = f.facts();
+    facts.preference = Some(qm_types::model_preference::ModelPreference {
+        selection: id("account-opus"),
+        provider: Some(Provider::Anthropic),
+        model: Some(id("account-opus")),
+        effort: Some(Effort::ExtraHigh),
+    });
+    let RouteOutcome::Routed(result) = f.route(&facts) else {
+        panic!("preference should route");
+    };
+    assert_eq!(used(&result.record), (Tier::High, OPUS.to_owned()));
+    assert_eq!(result.account_model, id("account-opus"));
+    let preference = result.record.facts.preference.as_ref().unwrap();
+    assert_eq!(preference.selection, id(OPUS));
+    assert_eq!(preference.model, Some(id(OPUS)));
+    assert!(result.record.why.contains("Your model preference selected"));
+    let stored: String = f
+        .conn
+        .query_row("SELECT facts FROM routing_decisions", [], |row| row.get(0))
+        .unwrap();
+    let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(stored["preference"]["selection"], OPUS);
+    assert_eq!(stored["preference"]["model"], OPUS);
+}
+
+#[test]
+fn stale_preference_is_not_refused_and_never_enables_premium() {
+    let f = Fixture::new("preference-stale");
+    for selection in ["missing-model", FABLE] {
+        let mut facts = f.facts();
+        facts.preference = Some(qm_types::model_preference::ModelPreference {
+            selection: id(selection),
+            provider: None,
+            model: None,
+            effort: None,
+        });
+        let record = routed(f.route(&facts));
+        assert_eq!(used(&record), (Tier::High, OPUS.to_owned()));
+        assert!(record.why.contains("normal review routing was used"));
+        assert!(!record.facts.user.premium);
+    }
+    assert_eq!(f.decisions(), 2);
 }
 
 #[test]
@@ -296,6 +350,123 @@ fn a_named_premium_model_at_its_limit_waits_for_that_model() {
 }
 
 #[test]
+fn explicit_review_models_outrank_provider_diversification() {
+    for later in [false, true] {
+        let f = Fixture::new("review-explicit-model");
+        let mut facts = f.facts();
+        facts.kind = Decided::Answer {
+            value: TaskKind::Review,
+            by: DecidedBy::Declared,
+        };
+        facts.prefer_provider_other_than = Some(Provider::Anthropic);
+        if later {
+            facts.later_step = Some(AppliedLaterStep {
+                from: TaskId::new(7).unwrap(),
+                message: None,
+                model: Some(id(FABLE)),
+                effort: None,
+                premium: false,
+            });
+        } else {
+            facts.named_model = Some(id(FABLE));
+        }
+        let record = routed(f.route(&facts));
+        assert_eq!(used(&record), (Tier::Premium, FABLE.to_owned()));
+        assert_eq!(
+            record.facts.prefer_provider_other_than,
+            Some(Provider::Anthropic)
+        );
+    }
+}
+
+/// Two high-tier providers, with the builder's Anthropic model preferred by ordinary ranking.
+fn review_fixture(name: &str) -> (Fixture, CrewmateFacts) {
+    let f = Fixture::new(name);
+    f.conn
+        .execute(
+            "UPDATE placements SET tier = 'high' WHERE canonical = ?1",
+            [GPT],
+        )
+        .unwrap();
+    let mut facts = f.facts();
+    facts.kind = Decided::Answer {
+        value: TaskKind::Review,
+        by: DecidedBy::Declared,
+    };
+    facts.preference = Some(qm_types::model_preference::ModelPreference {
+        selection: id(OPUS),
+        provider: Some(Provider::Anthropic),
+        model: Some(id(OPUS)),
+        effort: None,
+    });
+    (f, facts)
+}
+
+#[test]
+fn stale_and_unavailable_review_preferences_restore_diversification() {
+    for unavailable in [false, true] {
+        let (f, mut facts) = review_fixture("review-invalid-preference");
+        if unavailable {
+            f.conn
+                .execute(
+                    "UPDATE placements SET tier = 'high' WHERE canonical = ?1",
+                    [FABLE],
+                )
+                .unwrap();
+            f.cut_off(101);
+            let preference = facts.preference.as_mut().unwrap();
+            preference.selection = id(FABLE);
+            preference.model = Some(id(FABLE));
+        } else {
+            facts.preference.as_mut().unwrap().selection = id("missing-model");
+        }
+        facts.prefer_provider_other_than = Some(Provider::Anthropic);
+        let record = routed(f.route(&facts));
+        assert_eq!(used(&record), (Tier::High, GPT.to_owned()));
+        assert!(!record.facts.preference_applied);
+        assert_eq!(record.facts.preference, facts.preference);
+        assert!(record.why.contains("preference did not select an entry"));
+        assert!(record.why.contains("normal review routing was used"));
+    }
+}
+
+#[test]
+fn valid_review_preference_outranks_provider_diversification() {
+    let (f, mut facts) = review_fixture("review-valid-preference");
+    facts.prefer_provider_other_than = Some(Provider::Anthropic);
+    let mut ordinary = facts.clone();
+    ordinary.preference = None;
+    assert_eq!(
+        used(&routed(f.route(&ordinary))),
+        (Tier::High, GPT.to_owned())
+    );
+    let record = routed(f.route(&facts));
+    assert_eq!(used(&record), (Tier::High, OPUS.to_owned()));
+    assert!(record.facts.preference_applied);
+    assert_eq!(record.facts.preference, facts.preference);
+    assert!(!record.why.contains("normal review routing was used"));
+}
+
+#[test]
+fn inherited_effort_suppresses_preference_but_keeps_review_diversification() {
+    let (f, mut facts) = review_fixture("review-inherited-effort");
+    facts.prefer_provider_other_than = Some(Provider::Anthropic);
+    facts.later_step = Some(AppliedLaterStep {
+        from: TaskId::new(7).unwrap(),
+        message: None,
+        model: None,
+        effort: Some(Effort::Low),
+        premium: false,
+    });
+    let record = routed(f.route(&facts));
+    assert_eq!(used(&record), (Tier::High, GPT.to_owned()));
+    assert_eq!(record.choice.as_ref().unwrap().effort, Effort::Low);
+    assert!(!record.facts.preference_applied);
+    assert_eq!(record.facts.preference, facts.preference);
+    assert!(record.why.contains("normal review routing was used"));
+}
+
+#[test]
 fn premium_with_every_premium_model_cut_off_runs_on_high_and_says_why() {
     let f = Fixture::new("all-cut-off");
     f.cut_off(101);
@@ -392,6 +563,7 @@ fn request(f: &Fixture, overrides: &RequestOverrides) -> (Caller, StartRequest) 
         instructions: Vec::new(),
         later_steps: Vec::new(),
         model: None,
+        preference: None,
         effort: None,
         premium: false,
         choice_message: None,

@@ -17,8 +17,8 @@ use crate::StoreError;
 use crate::time::from_millis;
 use jiff::Timestamp;
 use qm_types::domain::{
-    AgentStatus, Autonomy, DeliveryMode, Effort, ProjectOrigin, TaskKind, TaskStatus, Tier,
-    VerificationLevel,
+    AgentStatus, Autonomy, DeliveryMode, Effort, ProjectOrigin, Provider, TaskKind, TaskStatus,
+    Tier, VerificationLevel,
 };
 use qm_types::ids::{AgentId, ModelId, SecondmateId, TaskId, TurnId};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -309,12 +309,23 @@ pub fn watermark(
     Ok(range(conn, agent, turn)?.watermark)
 }
 
-/// The models in one tier, as routing can use them now.
+/// One actual provider/model/effort combination in the routing pool.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TierEntry {
+    pub canonical: ModelId,
+    pub provider: Provider,
+    /// The model ID used by this provider (possibly an alias of the canonical ID).
+    pub model: ModelId,
+    /// None means no explicit placement effort, not a promise of a supported effort.
+    pub effort: Option<Effort>,
+}
+
+/// The entries in one tier. Live task eligibility is still checked by routing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TierRow {
     pub tier: Tier,
-    /// Canonical model ids, in placement order, each once.
-    pub models: Vec<ModelId>,
+    /// In placement order; identical combinations across accounts appear only once.
+    pub models: Vec<TierEntry>,
 }
 
 /// The routing pool by tier, strongest first; tiers with nothing usable are left out.
@@ -322,10 +333,16 @@ pub fn tier_models(conn: &Connection) -> Result<Vec<TierRow>, StoreError> {
     let pool = crate::models::pool(conn)?;
     let mut out = Vec::new();
     for tier in [Tier::Premium, Tier::High, Tier::Medium, Tier::Low] {
-        let mut models: Vec<ModelId> = Vec::new();
+        let mut models = Vec::new();
         for row in pool.iter().filter(|r| r.tier == Some(tier)) {
-            if !models.contains(&row.facts.canonical) {
-                models.push(row.facts.canonical.clone());
+            let entry = TierEntry {
+                canonical: row.facts.canonical.clone(),
+                provider: row.provider,
+                model: row.facts.model.clone(),
+                effort: row.effort_override,
+            };
+            if !models.contains(&entry) {
+                models.push(entry);
             }
         }
         if !models.is_empty() {
@@ -342,6 +359,79 @@ mod tests {
     use crate::events;
     use crate::turns::{self, FinishedTurn, NO_WAKES, NewTurn, TurnTotals};
     use qm_types::domain::{StartedBy, TurnStatus};
+
+    #[test]
+    fn context_keeps_provider_alias_and_effort_combinations_but_deduplicates_accounts() {
+        use crate::accounts::{self, NewAccount};
+        use crate::models::{self, ListSource, ModelFacts};
+        use qm_types::domain::AccountKind;
+
+        let mut conn = crate::connection::open_memory().expect("database");
+        crate::schema::migrate(&mut conn).expect("schema");
+        let at = Timestamp::from_second(1).expect("time");
+        let canonical = ModelId::new("reasoner").expect("id");
+        for (label, provider, alias) in [
+            ("one", Provider::Custom, "reasoner-custom"),
+            ("two", Provider::Custom, "reasoner-custom"),
+            ("three", Provider::OpenAi, "reasoner-openai"),
+        ] {
+            let account = accounts::insert_account(
+                &conn,
+                &NewAccount {
+                    provider,
+                    label: label.to_owned(),
+                    kind: AccountKind::ApiKey,
+                    credential_ref: None,
+                    base_url: Some("http://localhost:1234".to_owned()),
+                    at,
+                },
+            )
+            .expect("account");
+            models::record_model_list(
+                &conn,
+                account,
+                ListSource::Account,
+                &[ModelFacts {
+                    model: ModelId::new(alias).expect("alias"),
+                    canonical: canonical.clone(),
+                    display_name: None,
+                    family: "reasoner".to_owned(),
+                    generation: 1,
+                    image_input: false,
+                    context_window: 100_000,
+                    efforts: vec![Effort::Low, Effort::High],
+                    known: true,
+                }],
+                at,
+            )
+            .expect("model");
+        }
+        for effort in [Some(Effort::Low), Some(Effort::High), None] {
+            models::place_model(&conn, &canonical, None, effort, Tier::High, at)
+                .expect("placement");
+        }
+        let tiers = tier_models(&conn).expect("context");
+        assert_eq!(tiers.len(), 1);
+        assert_eq!(tiers[0].tier, Tier::High);
+        assert_eq!(
+            tiers[0].models.len(),
+            6,
+            "two providers times three efforts"
+        );
+        for effort in [Some(Effort::Low), Some(Effort::High), None] {
+            for (provider, alias) in [
+                (Provider::Custom, "reasoner-custom"),
+                (Provider::OpenAi, "reasoner-openai"),
+            ] {
+                assert!(tiers[0].models.contains(&TierEntry {
+                    canonical: canonical.clone(),
+                    provider,
+                    model: ModelId::new(alias).expect("alias"),
+                    effort,
+                }));
+            }
+        }
+    }
 
     /// Starts a turn and ends it with `reason`, as a completed turn.
     fn finished(conn: &mut Connection, agent: AgentId, at: i64, reason: Option<&str>) -> TurnId {

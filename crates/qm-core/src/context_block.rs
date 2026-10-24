@@ -30,11 +30,13 @@ use qm_store::events::{self, EventPage, EventRow};
 use qm_store::standing_instructions;
 use qm_types::BoxFuture;
 use qm_types::clock::Clock;
-use qm_types::domain::{ProjectOrigin, TaskKind, TaskStatus, Tier};
+use qm_types::config::Config;
+use qm_types::domain::{KindRow, ProjectOrigin, TaskKind, TaskStatus, Tier};
 use qm_types::ids::{AgentId, StandingInstructionId, TurnId};
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::watch;
 
 /// `<you>`: your own actions and choices.
 pub const YOU: &[&str] = &["you."];
@@ -53,6 +55,7 @@ pub struct ContextBuilder {
     clock: Arc<dyn Clock>,
     tz: TimeZone,
     home: Option<PathBuf>,
+    config: Option<watch::Receiver<Config>>,
 }
 
 impl ContextBuilder {
@@ -61,11 +64,19 @@ impl ContextBuilder {
         Self {
             db,
             clock,
+            config: None,
             tz: TimeZone::system(),
             home: std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .filter(|h| h.is_absolute()),
         }
+    }
+
+    /// Read live Task kinds settings each turn; without a source, use the app defaults.
+    #[must_use]
+    pub fn with_config(mut self, config: watch::Receiver<Config>) -> Self {
+        self.config = Some(config);
+        self
     }
 
     /// The same builder with another home folder for `~` (or none).
@@ -119,6 +130,20 @@ impl ContextBuilder {
                     text: neutralise(&s.text),
                 })
                 .collect(),
+            kind_tiers: {
+                let config = self.config.as_ref().map(watch::Receiver::borrow);
+                KindRow::ALL
+                    .iter()
+                    .map(|&row| {
+                        (
+                            row,
+                            config
+                                .as_ref()
+                                .map_or_else(|| row.default_tier(), |c| c.routing.kinds.tier(row)),
+                        )
+                    })
+                    .collect()
+            },
         }
     }
 
@@ -259,7 +284,19 @@ fn task_fact(t: &TaskRow) -> TaskFact {
 fn tier_models(t: &TierRow) -> TierModels {
     TierModels {
         tier: t.tier,
-        models: t.models.iter().map(|m| neutralise(m.as_str())).collect(),
+        models: t
+            .models
+            .iter()
+            .map(|m| {
+                let effort = m.effort.map_or("default/none", |e| e.as_str());
+                format!(
+                    "{} (provider={} model={} effort={effort})",
+                    neutralise(m.canonical.as_str()),
+                    m.provider,
+                    neutralise(m.model.as_str()),
+                )
+            })
+            .collect(),
         note: (t.tier == Tier::Premium).then(|| PREMIUM_NOTE.to_owned()),
     }
 }
@@ -272,6 +309,37 @@ mod tests {
     use qm_types::clock::Sleep;
     use qm_types::domain::{StartedBy, TurnStatus};
     use std::time::Instant as StdInstant;
+
+    #[test]
+    fn context_renders_complete_provider_model_and_effort_combinations() {
+        use qm_store::context::TierEntry;
+        use qm_types::domain::{Effort, Provider};
+        use qm_types::ids::ModelId;
+
+        let canonical = ModelId::new(
+            "a-model-id-longer-than-a-display-title-should-ever-be-truncated-to-1234567890",
+        )
+        .expect("id");
+        let entries = [Some(Effort::Low), Some(Effort::High), None]
+            .into_iter()
+            .map(|effort| TierEntry {
+                canonical: canonical.clone(),
+                provider: Provider::Custom,
+                model: ModelId::new("provider-alias").expect("alias"),
+                effort,
+            })
+            .collect();
+        let tier = tier_models(&TierRow {
+            tier: Tier::High,
+            models: entries,
+        });
+        assert_eq!(
+            tier.models,
+            ["low", "high", "default/none"].map(|effort| format!(
+                "{canonical} (provider=custom model=provider-alias effort={effort})"
+            ))
+        );
+    }
 
     /// A clock that stands still, so a render of the same state is the same bytes.
     #[derive(Debug)]
@@ -440,6 +508,63 @@ mod tests {
         drop(builder);
         drop(db);
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn both_contexts_follow_live_task_kind_tiers() {
+        let dir = std::env::temp_dir().join(format!("qm-kind-tiers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch folder");
+        let db = Db::open(&dir.join("state.db")).expect("database");
+        db.call(|conn| {
+            conn.execute_batch(SETUP)?;
+            conn.execute_batch(
+                "INSERT INTO secondmates (id, name, scope, created_at, seq)
+                     VALUES (1, 'first', 'p', 1, 1);
+                 INSERT INTO agents (id, role, home, status, supervisor_id, secondmate_id, created_at, seq)
+                     VALUES (2, 'secondmate', '/sm1', 'idle', 1, 1, 1, 2);",
+            )?;
+            Ok(())
+        }).await.expect("setup");
+        let clock: Arc<dyn Clock> = Arc::new(Still(Timestamp::from_second(100).expect("time")));
+        let (config, rx) = watch::channel(Config::default());
+        let qm = ContextBuilder::new(db.clone(), Arc::clone(&clock)).with_config(rx.clone());
+        let sm = crate::secondmates::context::SecondmateContext::new(
+            db.clone(),
+            &clock,
+            qm_types::ids::SecondmateId::new(1).expect("SM"),
+        )
+        .with_config(rx);
+        for tier in [None, Some(Tier::Low), Some(Tier::Premium), None] {
+            config.send_modify(|c| {
+                for &row in KindRow::ALL {
+                    c.routing.kinds.set(row, tier);
+                }
+            });
+            for (source, agent) in [
+                (&qm as &dyn ContextSource, 1),
+                (&sm as &dyn ContextSource, 2),
+            ] {
+                let rendered = source
+                    .context_block(AgentId::new(agent), TurnId::new(1))
+                    .await
+                    .expect("context");
+                let table = rendered
+                    .split("<task_kind_tiers>\n")
+                    .nth(1)
+                    .expect("live Task kinds table")
+                    .split("</task_kind_tiers>")
+                    .next()
+                    .expect("table end");
+                assert_eq!(table.lines().count(), KindRow::ALL.len());
+                for &row in KindRow::ALL {
+                    assert!(table.lines().any(
+                        |line| line == format!("{row}  {}", tier.unwrap_or(row.default_tier()))
+                    ));
+                }
+            }
+        }
+        drop((qm, sm, db));
+        std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
     #[tokio::test]
