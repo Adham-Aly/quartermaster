@@ -216,7 +216,7 @@ async fn a_page_reply_reaches_the_planner_once_as_a_paste_does() {
     assert_eq!(page.status().await, "running");
     assert_eq!(
         notes,
-        ["Plan reply sent from the page · T-0003 round 1 · 1 of 1 answered"]
+        ["Plan reply sent from the page · C-0003 round 1 · 1 of 1 answered"]
     );
     let state = page.state();
     assert!(state.pending_reply && state.sent_from_page());

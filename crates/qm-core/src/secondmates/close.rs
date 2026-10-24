@@ -260,7 +260,7 @@ mod tests {
         f.open_task(agent);
         let why = refusal(f.close(f.qm, id));
         assert!(why.contains("still has open tasks"), "{why}");
-        assert!(why.contains("T-0001"), "{why}");
+        assert!(why.contains("C-0001"), "{why}");
         assert!(f.listed(id), "it stays until its tasks are closed");
     }
 

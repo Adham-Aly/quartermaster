@@ -146,7 +146,7 @@ pub fn session_view() -> SessionView {
     view.status = String::from("running 14m · job J3 idle");
     view.turn_running = true;
     view.open = true;
-    view.placeholder = String::from("message T-0042 directly…");
+    view.placeholder = String::from("message C-0042 directly…");
     view
 }
 

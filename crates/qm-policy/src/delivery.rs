@@ -282,7 +282,7 @@ mod tests {
         let open_docs = [(t(2), docs.as_path(), TaskKind::Unclear)];
         let refusal = check_folder_writer(true, &site, TaskKind::Build, &open_docs)
             .expect_err("above an open writer");
-        assert!(refusal.to_string().contains("T-0002"), "{refusal}");
+        assert!(refusal.to_string().contains("C-0002"), "{refusal}");
         // A sibling folder, an answer kind, or a worktree task never conflicts.
         assert!(check_folder_writer(true, &other, TaskKind::Build, &open).is_ok());
         assert!(check_folder_writer(true, &site, TaskKind::Lookup, &open).is_ok());

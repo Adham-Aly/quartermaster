@@ -333,7 +333,7 @@ fn reconcile_project(
         report.missing_worktrees.push(MissingWorktree {
             project: id,
             task: *task,
-            expected_path: tasks_dir.join(task.to_string()).join("worktree"),
+            expected_path: tasks_dir.join(task.legacy_name()).join("worktree"),
             branch: branch.clone(),
             branch_exists: !branch.is_empty() && repo.local_branch_commit(branch)?.is_some(),
         });

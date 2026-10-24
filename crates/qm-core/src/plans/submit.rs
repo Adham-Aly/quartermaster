@@ -471,16 +471,16 @@ mod acknowledgement_tests {
         let task = TaskId::new(7).expect("a task number");
         assert_eq!(
             acknowledgement(task, 1, 2, 3, 0),
-            "Plan reply sent from the page · T-0007 round 1 · 2 of 3 answered"
+            "Plan reply sent from the page · C-0007 round 1 · 2 of 3 answered"
         );
         assert_eq!(
             acknowledgement(task, 1, 1, 1, 2),
-            "Plan reply sent from the page · T-0007 round 1 · 1 of 1 answered, 2 section notes"
+            "Plan reply sent from the page · C-0007 round 1 · 1 of 1 answered, 2 section notes"
         );
         // A final round has no questions: its reply is section notes only.
         assert_eq!(
             acknowledgement(task, 2, 0, 0, 1),
-            "Plan reply sent from the page · T-0007 round 2 · 1 section note"
+            "Plan reply sent from the page · C-0007 round 2 · 1 section note"
         );
     }
 }

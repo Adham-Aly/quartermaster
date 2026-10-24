@@ -231,12 +231,12 @@ impl DataDir {
 
     /// Where older versions kept a task's plan, in the scratch root.
     pub fn legacy_plan(&self, id: TaskId) -> PathBuf {
-        self.scratch.join(PLANS).join(id.to_string())
+        self.scratch.join(PLANS).join(id.legacy_name())
     }
 
     /// Where older versions kept a task's evidence, in the scratch root.
     pub fn legacy_evidence(&self, id: TaskId) -> PathBuf {
-        self.scratch.join(EVIDENCE).join(id.to_string())
+        self.scratch.join(EVIDENCE).join(id.legacy_name())
     }
 
     /// The app's own folders, the data directory and the scratch root: an agent writes inside them
@@ -261,12 +261,12 @@ impl DataDir {
 
     /// A task's folders and files. Its plan and evidence live in `artifacts/`, apart from its
     /// folder, because they can outlive the task (a build reads its plan task's plan); only its
-    /// scratchpad is in the scratch root.
+    /// scratchpad is in the scratch root. The folders keep the `T-0042` name.
     pub fn task(&self, id: TaskId) -> TaskPaths {
         TaskPaths::at(
-            self.tasks_dir().join(id.to_string()),
-            self.artifacts_dir().join(id.to_string()),
-            self.scratch.join(SCRATCHPAD).join(id.to_string()),
+            self.tasks_dir().join(id.legacy_name()),
+            self.artifacts_dir().join(id.legacy_name()),
+            self.scratch.join(SCRATCHPAD).join(id.legacy_name()),
         )
     }
 }

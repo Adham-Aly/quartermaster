@@ -109,8 +109,8 @@ fn unlink_tasks_schema_requires_only_directed_task_ids() {
         json!({
             "type": "object",
             "properties": {
-                "blocker": {"type": "string", "pattern": "^T-[0-9]+$"},
-                "blocked": {"type": "string", "pattern": "^T-[0-9]+$"}
+                "blocker": {"type": "string", "pattern": "^[CT]-[0-9]+$"},
+                "blocked": {"type": "string", "pattern": "^[CT]-[0-9]+$"}
             },
             "required": ["blocker", "blocked"],
             "additionalProperties": false
@@ -158,7 +158,7 @@ fn unlink_tasks_refuses_bad_arguments_before_calling_host() {
         (json!({"blocked": "T-43"}), "missing field `blocker`"),
         (
             json!({"blocker": "SM-02", "blocked": "T-43"}),
-            "must start with T-",
+            "must start with C-",
         ),
         (
             json!({"blocker": "T-42", "blocked": "T-0"}),
