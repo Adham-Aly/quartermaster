@@ -256,7 +256,7 @@ impl DataDir {
     }
 
     pub fn tasks_dir(&self) -> PathBuf {
-        self.root.join("tasks")
+        self.root.join(TASKS)
     }
 
     /// A task's folders and files. Its plan and evidence live in `artifacts/`, apart from its
@@ -314,6 +314,12 @@ fn development_scratch(
     }
     Ok(scratch)
 }
+
+/// The folder of every task's own folder (`tasks/T-n/`), in the data directory.
+pub const TASKS: &str = "tasks";
+
+/// A task's worktree, inside its `tasks/T-n/`.
+pub const WORKTREE: &str = "worktree";
 
 /// The folder of every task's plan and evidence, in the data directory.
 pub const ARTIFACTS: &str = "artifacts";
@@ -598,7 +604,7 @@ impl TaskPaths {
             plan: artifacts.join(PLAN),
             evidence: artifacts.join(EVIDENCE),
             artifacts,
-            worktree: root.join("worktree"),
+            worktree: root.join(WORKTREE),
             brief: root.join("brief.md"),
             skills: root.join("skills"),
             session: root.join("session"),

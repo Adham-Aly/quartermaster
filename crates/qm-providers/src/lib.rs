@@ -13,8 +13,8 @@
 //! - compaction and JSONL session files in the agent's `session/` folder;
 //! - the crewmate's file and shell tools (`read`, `write`, `edit`, `grep`, `find`, `ls`, `bash`,
 //!   `job_output`, `job_kill`), whose argument types and descriptions are defined once in
-//!   `qm_tools::defs::files` and implemented here; writes are refused outside the worktree, the
-//!   evidence folder and the system temporary folder;
+//!   `qm_tools::defs::files` and implemented here; writes go anywhere except the app's own
+//!   state (`files::paths`);
 //! - the crewmate's `agent` tool: helper agents, child sessions with the file and shell tools
 //!   only, whose final text is the result (`helpers`).
 //!

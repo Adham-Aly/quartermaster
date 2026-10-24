@@ -174,10 +174,10 @@ pub enum Builtins {
     None,
     /// Claude Code's built-in tools, permission prompts off: crewmates on the Claude engine.
     ClaudeCode,
-    /// Our file and shell tools: crewmates on the provider engine. Writes are refused outside these
-    /// folders (the worktree, evidence, report, plan for a planner, and scratchpad)
-    /// and the system temporary folder, and inside the spec's `protected_roots` only these folders
-    /// are writable. `scratchpad`, when
+    /// Our file and shell tools: crewmates on the provider engine. Writes go anywhere except the app's
+    /// own state: inside the spec's `protected_roots` and the app's scratch root, only these
+    /// folders (the worktree, evidence, report, plan for a planner, and scratchpad) and, under a
+    /// protected root, any task's worktree are writable. `scratchpad`, when
     /// set, is the agent's private scratch folder: it is also a write root, and the engine tells
     /// the model to use it for temporary files.
     ProviderFileTools {
