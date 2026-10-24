@@ -147,13 +147,14 @@ fn resolve_root(root: &Path) -> Option<PathBuf> {
     at.is_dir().then_some(at)
 }
 
-/// Folders named `name` (any case) containing a `.git`, up to [`SEARCH_DEPTH`] levels under each
-/// root, best first: an exact-case match before others, shallower before deeper. Symbolic links to
+/// Folders named `name` (any case), up to [`SEARCH_DEPTH`] levels under each root, best first: an
+/// exact-case match before others, a git repository before a plain folder, shallower before
+/// deeper. A plain folder is a project too, so it is found as well. Symbolic links to
 /// folders are followed once each; nothing is read beyond the depth.
 pub fn find_folders(roots: &[PathBuf], name: &str) -> Vec<PathBuf> {
     let wanted = name.to_lowercase();
     let mut seen: HashSet<PathBuf> = HashSet::new();
-    let mut found: Vec<(bool, usize, PathBuf)> = Vec::new();
+    let mut found: Vec<(bool, bool, usize, PathBuf)> = Vec::new();
     for root in roots {
         let Some(root) = resolve_root(root) else {
             continue;
@@ -186,8 +187,9 @@ pub fn find_folders(roots: &[PathBuf], name: &str) -> Vec<PathBuf> {
                     if !seen.insert(canonical) {
                         continue;
                     }
-                    if file_name.to_lowercase() == wanted && path.join(".git").exists() {
-                        found.push((file_name != name, depth, path.clone()));
+                    if file_name.to_lowercase() == wanted {
+                        let plain = !path.join(".git").exists();
+                        found.push((file_name != name, plain, depth, path.clone()));
                     }
                     next.push(path);
                 }
@@ -198,7 +200,7 @@ pub fn find_folders(roots: &[PathBuf], name: &str) -> Vec<PathBuf> {
     found.sort();
     found
         .into_iter()
-        .map(|(_, _, p)| p)
+        .map(|(_, _, _, p)| p)
         .take(MAX_FOUND)
         .collect()
 }
@@ -888,3 +890,7 @@ impl ApiPart for ProjectsPart {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "projects_tests.rs"]
+mod tests;

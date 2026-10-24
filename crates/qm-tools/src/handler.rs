@@ -336,8 +336,8 @@ pub trait ToolHost: Send + Sync {
         Box::pin(async { Err(ToolFailure::not_available("parent_report")) })
     }
 
-    /// `find_project_folder`: folders named `name` (any case) that contain a `.git`, up to three
-    /// levels under the search roots in settings, best first.
+    /// `find_project_folder`: folders named `name` (any case), repositories or plain folders, up
+    /// to three levels under the search roots in settings, best first.
     fn find_project_folder<'a>(
         &'a self,
         caller: &'a Caller,
