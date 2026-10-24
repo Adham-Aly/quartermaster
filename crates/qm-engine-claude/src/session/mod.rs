@@ -518,12 +518,14 @@ impl Session {
         let settings = &mut self.settings;
         tokio::select! {
             biased;
+            // Deliver queued steering before buffered stdout can end its turn. Keep stdout
+            // ahead of exit so the process's final messages are still drained first.
+            command = commands.recv(), if accept_commands => Wake::Command(command),
             line = recv_line(lines) => match line {
                 Some(line) => Wake::Line(line),
                 None => Wake::LinesClosed,
             },
             cause = wait_exit(exit) => Wake::Exited(cause),
-            command = commands.recv(), if accept_commands => Wake::Command(command),
             changed = settings.changed(), if watch_settings => Wake::Settings(changed.is_ok()),
             kind = sleep => Wake::Timer(kind),
         }

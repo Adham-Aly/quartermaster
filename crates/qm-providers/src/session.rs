@@ -516,6 +516,22 @@ impl Session {
         }
     }
 
+    /// Takes commands already queued at a safe turn boundary, in channel order, using the same
+    /// handler as an in-flight wait. A cancellation stops intake immediately; later commands
+    /// keep their normal after-cancellation semantics. This never waits for a new command.
+    pub(crate) fn drain_turn_commands(&mut self) -> Result<(), Cancel> {
+        loop {
+            let command = match self.commands.try_recv() {
+                Ok(command) => Some(command),
+                Err(mpsc::error::TryRecvError::Empty) => return Ok(()),
+                Err(mpsc::error::TryRecvError::Disconnected) => None,
+            };
+            if let Some(cancel) = self.turn_command(command) {
+                return Err(cancel);
+            }
+        }
+    }
+
     /// After every turn: the model switch asked for during it, then compaction if the context
     /// is over the threshold, then steering left over becomes the next turn.
     async fn after_turn(&mut self) {
