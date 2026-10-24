@@ -65,7 +65,7 @@ const OUTCOMES_PER_ROW: usize = 3;
 const TIERS_PER_ROW: usize = 2;
 /// The gap between the cells of a multi-column row (`<recent_outcomes>`, `<models>`).
 const GUTTER: &str = "     ";
-/// The gap before a worker's note ("reviews T-0040").
+/// The gap before a worker's note ("reviews C-0040").
 const NOTE_GAP: &str = "   ";
 /// The gap between columns.
 const GAP: &str = "  ";
@@ -131,7 +131,7 @@ pub enum WorkerFact {
     Secondmate(SecondmateFact),
 }
 
-/// A crewmate at work: `T-0042  crewmate  api-server  fix  running  12m  medium · sonnet-5-5`.
+/// A crewmate at work: `C-0042  crewmate  api-server  fix  running  12m  medium · sonnet-5-5`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CrewmateFact {
     pub task: TaskId,
@@ -145,7 +145,7 @@ pub struct CrewmateFact {
     pub minutes: u64,
     pub effort: Option<Effort>,
     pub model: Option<String>,
-    /// A few words after the model: "reviews T-0040".
+    /// A few words after the model: "reviews C-0040".
     pub note: Option<String>,
 }
 
@@ -173,7 +173,7 @@ pub struct TaskFact {
     pub detail: Option<String>,
 }
 
-/// One line of a since-section or of the recent outcomes: `14:01  T-0043 reported (plan)`.
+/// One line of a since-section or of the recent outcomes: `14:01  C-0043 reported (plan)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventLine {
     pub at: Zoned,

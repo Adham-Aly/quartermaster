@@ -9,9 +9,9 @@
 //! <qm:app event="session_summary">
 //! This is a new session (the Quartermaster moved to another engine). The last few turns, oldest first:
 //! 14:10 user: how's 42 going?
-//! 14:10 you replied: T-0042 has the fix in and is re-running the auth suite before it opens the PR.
+//! 14:10 you replied: C-0042 has the fix in and is re-running the auth suite before it opens the PR.
 //! 14:12 user: tell 42 a unit test that reproduces the race is enough, skip the full e2e run
-//! 14:12 app noted: Steered: T-0042
+//! 14:12 app noted: Steered: C-0042
 //! </qm:app>
 //! ```
 //!

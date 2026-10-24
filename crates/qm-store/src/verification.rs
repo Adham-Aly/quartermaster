@@ -288,7 +288,7 @@ pub fn line_facts(conn: &Connection, task: TaskId) -> Result<Option<LineFacts>, 
 }
 
 /// The context block's verification part of a task's line, or `None` when verification has nothing
-/// to say: "committed locally · in review by T-0046", "held · 3 repair attempts used · decision is
+/// to say: "committed locally · in review by C-0046", "held · 3 repair attempts used · decision is
 /// with you", "held · review still has findings after 2 re-reviews · decision is with you", "held ·
 /// the review is blocked · decision is with you", "stuck · decision is with you", "review passed ·
 /// pushing".

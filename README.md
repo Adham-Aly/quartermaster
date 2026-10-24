@@ -11,8 +11,10 @@ curl -fsSL https://github.com/Adham-Aly/quartermaster/releases/latest/download/q
 > page: in a browser they install nothing.
 
 A macOS terminal app where you talk to one agent, the Quartermaster. It hands project work to
-crewmates, each in its own working folder (a git worktree, or a plain folder for the personal
-workspace), and delivers the results through GitHub once you approve.
+crewmates (C-0042), grouped into short-lived tasks (T-0017), and brings the results back for you to
+approve. A project is any folder they work in, listed while they do: a GitHub repository gets
+worktrees and pull requests, a local repository worktrees merged once you approve, and a plain
+folder is edited in place, with no git unless you ask.
 
 ![How Quartermaster works](assets/overview.svg)
 

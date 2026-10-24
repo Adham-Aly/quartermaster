@@ -9,7 +9,7 @@
 //!   [`LANDED_OUTSIDE_EVENT`] and lands (`settling::facts::landed_outside`), and its supervisor
 //!   gets one `landed_outside` wake.
 //! - **A new tag.** When a task starts on a GitHub project, the repository's tag names are kept in
-//!   `tasks/T-n/tags-at-start` ([`TAGS_FILE`]). At report and at settle they are listed again;
+//!   `tasks/C-n/tags-at-start` ([`TAGS_FILE`]). At report and at settle they are listed again;
 //!   each new one the app wasn't asked to push (`propose_release_tag`) gets a
 //!   [`RELEASED_OUTSIDE_EVENT`] and one `released_outside` wake. A task with no baseline (started
 //!   before this existed) skips the tag check.

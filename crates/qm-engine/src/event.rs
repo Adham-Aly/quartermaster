@@ -111,7 +111,7 @@ pub enum EngineEvent {
         /// The command as the crewmate wrote it.
         command: String,
         /// Where the job's output is written, when the engine knows (the provider engine writes
-        /// `tasks/T-0042/jobs/J3.log`).
+        /// `tasks/C-0042/jobs/J3.log`).
         log_path: Option<PathBuf>,
         /// How long the command had already run when it became a job, when the engine knows:
         /// Claude reports a `Bash` call it moved to the background only then. `None` means it

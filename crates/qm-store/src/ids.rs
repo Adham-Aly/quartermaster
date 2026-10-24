@@ -67,7 +67,7 @@ pub fn fresh(
 }
 
 /// `preferred` when `table` doesn't hold it and no reservation covers it; else as [`fresh`]. A new
-/// task takes its first crewmate's number this way, so `T-0042` holds `C-0042`.
+/// task takes its first crewmate's number this way, so `C-0042` holds `C-0042`.
 pub fn fresh_preferring(
     conn: &Connection,
     table: &'static str,

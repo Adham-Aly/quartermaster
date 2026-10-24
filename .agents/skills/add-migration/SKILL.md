@@ -15,7 +15,7 @@ Progress is `PRAGMA user_version`, which counts entries in `MIGRATIONS`.
   `user_version` counts positions, so users' databases would skip or repeat work. Only append.
 - File names are `NNNN_<what>.sql` in `crates/qm-store/migrations/`. Numbers follow the last line of `MIGRATIONS` (0003 was never used).
 - Conventions every table follows (`0001_initial.sql`): `STRICT`; `INTEGER PRIMARY KEY` ids (display
-  IDs such as `T-0042` are these ids); instants as `INTEGER` milliseconds since the epoch, UTC, in
+  IDs such as `C-0042` are these ids); instants as `INTEGER` milliseconds since the epoch, UTC, in
   `*_at` columns (`qm_store::time`); booleans `INTEGER` with `CHECK (x IN (0, 1))`; enums as their
   wire names with a `CHECK` listing them; JSON columns with `CHECK (json_valid(x))`.
 - Nothing is deleted: retire rows with an `*_at` column. Append-only tables (`events`,

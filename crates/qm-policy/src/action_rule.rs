@@ -7,7 +7,7 @@
 //!
 //! - "Not every turn needs a reply. … If the Quartermaster wrote no words, the app writes its own
 //!   one-line acknowledgement from what actually happened, never from the model's text: 'Started:
-//!   T-0048', 'Steered: T-0042', or a plain 'Got it'."
+//!   C-0048', 'Steered: C-0042', or a plain 'Got it'."
 //! - "A turn with no action gets one retry. In the retry only `reply`, `ask_user` and
 //!   `acknowledge` work, and every tool that changes work or settings returns a refusal as text.
 //!   If that does nothing too, you get one notice that quotes your message, with two choices: Ask

@@ -400,7 +400,7 @@ impl fmt::Debug for Submit {
 /// What the page shows besides `plan.md`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Meta {
-    /// `T-0042`.
+    /// `C-0042`.
     pub task: String,
     /// The plan's random id, 24 hex digits: the key for the reply and the browser's storage.
     pub plan_uid: String,

@@ -5,7 +5,7 @@
 //! the paths; creating them with safe permissions at first run is the binary's job.
 //!
 //! ```text
-//! config.toml   state.db   auth.json   run.lock   server.sock   logs/   workspace/
+//! config.toml   state.db   auth.json   run.lock   server.sock   logs/
 //! seat/{home,session,transcript}/           the Quartermaster
 //! secondmates/S-02/{home,session,transcript}/
 //! tasks/C-0042/{worktree/,brief.md,skills/,session/,transcript/,jobs/}   a crewmate's own folder

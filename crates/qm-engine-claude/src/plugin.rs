@@ -1,6 +1,6 @@
 //! The skills-only plugin folder.
 //!
-//! A crewmate's skills, gathered by the app into `tasks/T-0042/skills/`, reach Claude Code as a
+//! A crewmate's skills, gathered by the app into `tasks/C-0042/skills/`, reach Claude Code as a
 //! local plugin that holds nothing but them: `<session_dir>/claude-plugin/.claude-plugin/
 //! plugin.json` and a `skills` symlink to the gathered folder, passed with
 //! `--plugin-dir-no-mcp=`. Nothing else goes in it, so a skill folder's hooks or MCP config are

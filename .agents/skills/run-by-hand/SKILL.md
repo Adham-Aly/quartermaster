@@ -62,7 +62,7 @@ Mouse input is easiest to check in a real terminal window.
 `bridge`, `chat`, `thinking`, `decision`, `diff` (the approval's split diff and changed-file tree),
 `session`, `secondmate`, `settings` (the Settings
 popup over the Bridge) or `menu-badge` (a badge on the menu's Settings entry), `compacting` (the Quartermaster compacting
-its context, a failed compaction on T-0042) or `context-unknown` (no context readings); all values are in
+its context, a failed compaction on C-0042) or `context-unknown` (no context readings); all values are in
 `crates/qm-tui/src/sample.rs`. Only the busy indicator still moves. Use them to
 compare layout and styles without any account.
 

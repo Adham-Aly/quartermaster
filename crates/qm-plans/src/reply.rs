@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! <plan-reply task="C-0042" plan="b81f0c3a9e7d2f4c6a1e5d08" round="2">
-//! Reply to round 2 of the plan for T-0042 (1 of 2 questions answered).
+//! Reply to round 2 of the plan for C-0042 (1 of 2 questions answered).
 //!
 //! ## Q1 storage-engine
 //! Choice: sqlite (SQLite)
@@ -39,7 +39,7 @@ pub const MAX_REPLY_CHARS: usize = 32_000;
 /// One pasted reply.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanReply {
-    /// `T-0042`.
+    /// `C-0042`.
     pub task: String,
     pub plan_uid: String,
     pub round: u32,

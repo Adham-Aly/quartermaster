@@ -539,7 +539,7 @@ impl UpdateButton {
 pub struct DiffView {
     /// The held action whose diff this is; the card's keys still answer it from the Diff screen.
     pub held: HeldActionId,
-    /// "T-0039 · feat(billing): proration preview".
+    /// "C-0039 · feat(billing): proration preview".
     pub title: String,
     /// "+214 −37 · 12 files".
     #[serde(default)]
@@ -773,7 +773,7 @@ pub struct CrewRow {
     pub agent: AgentRef,
     /// Indent: 0 for the Quartermaster, 1 for its reports, 2 for a secondmate's crewmates.
     pub depth: u8,
-    /// e.g. "T-0042 fix", "S-02 web-app".
+    /// e.g. "C-0042 fix", "S-02 web-app".
     pub label: String,
     /// e.g. "12m", "idle", "approve", "decide".
     pub status: String,
@@ -817,10 +817,10 @@ pub struct ChatLine {
     pub kind: MessageKind,
     pub at: Timestamp,
     pub text: String,
-    /// The acknowledgement shown beside your message ("Steered: T-0042"), if any.
+    /// The acknowledgement shown beside your message ("Steered: C-0042"), if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acknowledgement: Option<String>,
-    /// Dim words after the time in the header ("after T-0043 reported", "reply").
+    /// Dim words after the time in the header ("after C-0043 reported", "reply").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
     /// Never set: cards are only in [`Snapshot::actions`], and the chat draws none. Kept so an
@@ -1018,7 +1018,7 @@ pub struct Card {
     pub held: Option<HeldActionId>,
     /// After the glyph, in the card's colour: "Approval needed", "Decision".
     pub heading: String,
-    /// After " · ", in the text colour: "T-0039".
+    /// After " · ", in the text colour: "C-0039".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// After one space, dim: "· api-server · high · opus-5-5".
@@ -1125,7 +1125,7 @@ pub struct SessionView {
     /// You can still write to it: false once the task is closed or ending.
     #[serde(default)]
     pub open: bool,
-    /// The empty input's text ("message T-0042 directly…"), or why it takes no text when not
+    /// The empty input's text ("message C-0042 directly…"), or why it takes no text when not
     /// `open`.
     #[serde(default)]
     pub placeholder: String,

@@ -1,4 +1,4 @@
-//! The context block's task line, verification's part: "committed locally · in review by T-0046",
+//! The context block's task line, verification's part: "committed locally · in review by C-0046",
 //! "held · 3 repair attempts used · decision is with you", "held · review still has findings after
 //! 2 re-reviews · decision is with you", "held · the review is blocked · decision is with you",
 //! "stuck · decision is with you", "review passed · pushing". The words are

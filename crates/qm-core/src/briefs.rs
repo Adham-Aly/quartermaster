@@ -3,7 +3,7 @@
 //! [`write_brief`] gathers the facts the core recorded when the task started (the task row, its
 //! project, its supervisor, the user's words as the stored message holds them, and what it builds
 //! on), renders them with `qm_prompts::brief::render_brief`, and saves the text as
-//! `tasks/T-0042/brief.md` atomically, mode 0600, exactly as the runner then sends it.
+//! `tasks/C-0042/brief.md` atomically, mode 0600, exactly as the runner then sends it.
 //!
 //! [`crewmate_system_prompt`] wraps `qm_prompts::brief::crewmate_prompt` for the engine the
 //! crewmate runs on: appended to Claude Code's own preset on Claude, the whole prompt elsewhere.
@@ -65,7 +65,7 @@ pub enum BriefError {
 /// The file, in a task's folder, that holds the whole of the task it builds on.
 const BUILDS_ON_FILE: &str = "builds-on.md";
 
-/// Renders the brief of `task` from the store and saves it as `tasks/T-0042/brief.md`
+/// Renders the brief of `task` from the store and saves it as `tasks/C-0042/brief.md`
 /// (atomically: a temporary file in the task folder, then a rename), mode 0600.
 pub async fn write_brief(
     db: &Db,

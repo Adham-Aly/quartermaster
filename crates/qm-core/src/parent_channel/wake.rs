@@ -1,9 +1,9 @@
 //! The Quartermaster's wake for each parent-channel row. Pure.
 //!
-//! - fact row: `S-02 · R-0193: T-0045 (build) PR #231 is ready at 9c0d2e4.`, short
-//!   `S-02 · T-0045 pr_ready`;
+//! - fact row: `S-02 · R-0193: C-0045 (build) PR #231 is ready at 9c0d2e4.`, short
+//!   `S-02 · C-0045 pr_ready`;
 //! - judgment row: `S-02 on R-0193 (add a dark mode toggle to settings): <summary>. Recommends:
-//!   <…>. Needs the user: <…>. Tasks: T-0045 build ci_passed PR #231.`, short
+//!   <…>. Needs the user: <…>. Tasks: C-0045 build ci_passed PR #231.`, short
 //!   `S-02 reported R-0193`.
 //!
 //! Every payload is `{"text", "short", "correlation"}`; text is cut at [`WAKE_TEXT_CHARS`].
@@ -28,7 +28,7 @@ pub fn payload(text: &str, short: &str, corr: CorrelationId) -> serde_json::Valu
     })
 }
 
-/// One fact as a sentence: `T-0045 (build) PR #231 is ready at 9c0d2e4.`
+/// One fact as a sentence: `C-0045 (build) PR #231 is ready at 9c0d2e4.`
 pub fn fact_sentence(o: &Outcome) -> String {
     let who = format!("{} ({})", o.task, o.task_kind);
     let at = o
@@ -67,7 +67,7 @@ pub fn fact_wake(secondmate: SecondmateId, corr: CorrelationId, o: &Outcome) -> 
     )
 }
 
-/// The snapshot's tasks on one line: `T-0045 build ci_passed PR #231, T-0046 fix running`.
+/// The snapshot's tasks on one line: `C-0045 build ci_passed PR #231, C-0046 fix running`.
 pub fn tasks_line(facts: &Facts) -> String {
     if facts.tasks.is_empty() {
         return "none yet".to_owned();

@@ -29,14 +29,15 @@ report. Reproduce the bug end to end before fixing it.
 
 Open it read-only, even while the app runs (WAL): `sqlite3 -readonly <data dir>/state.db`.
 Times are milliseconds since the epoch, UTC: `datetime(at/1000, 'unixepoch', 'localtime')`.
-Display IDs are the row IDs: `T-0042` is `tasks.id = 42`, `S-02` is `secondmates.id = 2`.
+Display IDs are the row IDs: crewmate `C-0042` is `tasks.id = 42` (older logs say `T-0042`), its
+task `T-0017` is `tasks.label_id = 17` (`task_labels`), `S-02` is `secondmates.id = 2`.
 
 | Table | Answers |
 |---|---|
 | `events` | what happened, in order: `kind` (`seat.*`, `task.*`, `pr.*`, `checks.*`, `you.*`, `model.*`), `summary` (the display line), `payload` JSON; append-only |
 | `turns` | each agent's turns: `started_by` (`user`/`app_event`), `status`, `outcome_reason`, `model`, `model_calls`, tokens, `cost_usd` |
 | `agents` | who is who: `role`, `engine`, `model`, `effort`, `status`, `session_ref`, `last_sign_of_life_at`, `task_id` |
-| `tasks` | a task's `status`, `outcome`, `branch`, `head_commit`, `pr_number`, `retry_of`, repair and review counts |
+| `tasks` | one row per crewmate's work: `status`, `outcome`, `branch`, `head_commit`, `pr_number`, `retry_of`, repair and review counts; `label_id` its task, `folder_label_id` the task its folders are under until a move lands |
 | `wakes` | the inbox: pending (`delivered_at` null), delivered to a turn, consumed; `dedupe_key` stops repeats |
 | `messages` | the conversations: `source`, `kind`, `replies_to`, `turn_id` |
 | `session_lines` | what a worker's session screen shows, line by line |
@@ -54,10 +55,11 @@ SELECT id, target_agent_id, kind, dedupe_key, delivered_turn_id, consumed_at FRO
 
 ## Transcripts and task folders
 
-- `tasks/T-n/`: `worktree/` (the crewmate's checkout), `brief.md` (exactly what it was told),
-  `jobs/` (each background job's output log), `builds-on.md` (the whole text of the task it builds
-  on). The folder goes at close, so only open tasks have one.
-- `artifacts/T-n/` holds `plan/` and `evidence/`, removed once no open task reads them
+- `tasks/C-n/` (older crewmates: `tasks/T-n/`): `worktree/` (the crewmate's checkout), `brief.md`
+  (exactly what it was told), `jobs/` (each background job's output log), `builds-on.md` (the whole
+  text of the task it builds on). The folder goes at close, so only open crewmates have one.
+- `artifacts/T-n/C-n/` holds `plan/` and `evidence/`, removed once no open task reads them; a
+  crewmate moved to another task (`crewmate.task_changed` event) leaves a link at its old folders
   (`qm-core` `retention.rs`, at start, at close and hourly); `attachments/` is swept at each start.
   For done lookup, research, reproduce and teach tasks, `report/` (`QM_REPORT_DIR`) holds the
   app-seeded `SKILL.md` and `template.html`, the agent-authored `report.html`, and local `assets/`.

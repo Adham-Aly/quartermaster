@@ -41,7 +41,7 @@ pub struct SessionSpec {
     /// The engine's own built-in tools, if any.
     #[serde(default)]
     pub builtins: Builtins,
-    /// The skills this crewmate gets, gathered by the app into `tasks/T-0042/skills/`. The Claude
+    /// The skills this crewmate gets, gathered by the app into `tasks/C-0042/skills/`. The Claude
     /// engine hands them over as a local plugin folder with skills only; the provider engine's
     /// prompt already lists them.
     #[serde(default)]

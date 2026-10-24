@@ -45,7 +45,7 @@ pub fn assemble(
     TurnInput { blocks }
 }
 
-/// One wake as the model reads it: `<qm:app event="checks" task="T-0042">…</qm:app>`.
+/// One wake as the model reads it: `<qm:app event="checks" task="C-0042">…</qm:app>`.
 ///
 /// The payload convention every wake producer follows: `"text"` is what the agent reads, `"short"`
 /// the chat header's words. A payload without `"text"` renders as compact JSON.

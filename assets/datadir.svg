@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="474" viewBox="0 0 720 474" role="img" aria-labelledby="title desc">
   <title id="title">The data directory</title>
-  <desc id="desc">Everything lives in ~/.quartermaster, or QUARTERMASTER_HOME when set: config.toml — settings, never secrets; state.db — SQLite: tasks, conversations, schedules; auth.json — logins and keys for non-Claude accounts; run.lock — one running app per data directory; logs/ — one log a day, secrets redacted; workspace/ — the built-in personal project; seat/ — the Quartermaster's session; secondmates/SM-02/ — a secondmate's session; tasks/T-0042/ — one folder per task; worktree/ — the git worktree, on branch qm/task-0042; brief.md — the brief, exactly as sent; evidence/ — screenshots, recordings, logs; never committed; session/ — the crewmate's transcript; skills/ jobs/ answer.md — its skills, shell jobs, an answer.</desc>
+  <desc id="desc">Everything lives in ~/.quartermaster, or QUARTERMASTER_HOME when set: config.toml — settings, never secrets; state.db — SQLite: tasks, conversations, schedules; auth.json — logins and keys for non-Claude accounts; run.lock — one running app per data directory; logs/ — one log a day, secrets redacted; seat/ — the Quartermaster's session; secondmates/S-02/ — a secondmate's session; tasks/C-0042/ — crewmate C-0042's own folder, removed when it closes; worktree/ — the git worktree, on its branch; brief.md — the brief, exactly as sent; transcript/ skills/ jobs/ — its transcript, skills and shell jobs; artifacts/T-0017/C-0042/ — its work, filed under its task T-0017; evidence/ — screenshots, recordings, logs; never committed; plan/ report/ — its plan and its answer page.</desc>
   <style>
     .bg { fill: #ffffff; stroke: #d1d9e0; }
     .t { fill: #1f2328; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 600; }
@@ -44,8 +44,9 @@
   <text class="t m" x="40" y="54">~/.quartermaster</text>
   <text class="s" x="190" y="54">or <tspan class="m">$QUARTERMASTER_HOME</tspan> · private to you (0700)</text>
 
-  <path class="ln" d="M52,66 V300"/>
-  <path class="ln" d="M88,310 V430"/>
+  <path class="ln" d="M52,66 V378"/>
+  <path class="ln" d="M88,284 V352"/>
+  <path class="ln" d="M88,388 V430"/>
   <path class="ln" d="M52,92 H68"/>
   <text class="t m" x="76" y="97">config.toml</text>
   <text class="s" x="352" y="97">settings, never secrets</text>
@@ -62,30 +63,30 @@
   <text class="t m" x="76" y="201">logs/</text>
   <text class="s" x="352" y="201">one log a day, secrets redacted</text>
   <path class="ln" d="M52,222 H68"/>
-  <text class="t m" x="76" y="227">workspace/</text>
-  <text class="s" x="352" y="227">the built-in personal project</text>
+  <text class="t m" x="76" y="227">seat/</text>
+  <text class="s" x="352" y="227">the Quartermaster's session</text>
   <path class="ln" d="M52,248 H68"/>
-  <text class="t m" x="76" y="253">seat/</text>
-  <text class="s" x="352" y="253">the Quartermaster's session</text>
+  <text class="t m" x="76" y="253">secondmates/S-02/</text>
+  <text class="s" x="352" y="253">a secondmate's session</text>
   <path class="ln" d="M52,274 H68"/>
-  <text class="t m" x="76" y="279">secondmates/SM-02/</text>
-  <text class="s" x="352" y="279">a secondmate's session</text>
-  <path class="ln" d="M52,300 H68"/>
-  <text class="t m" x="76" y="305">tasks/T-0042/</text>
-  <text class="s" x="352" y="305">one folder per task</text>
+  <text class="t m" x="76" y="279">tasks/C-0042/</text>
+  <text class="s" x="352" y="279">a crewmate's own folder; goes when it closes</text>
+  <path class="ln" d="M88,300 H104"/>
+  <text class="t m" x="112" y="305">worktree/</text>
+  <text class="s" x="352" y="305">the git worktree, on its branch</text>
   <path class="ln" d="M88,326 H104"/>
-  <text class="t m" x="112" y="331">worktree/</text>
-  <text class="s" x="352" y="331">the git worktree, on branch qm/task-0042</text>
+  <text class="t m" x="112" y="331">brief.md</text>
+  <text class="s" x="352" y="331">the brief, exactly as sent</text>
   <path class="ln" d="M88,352 H104"/>
-  <text class="t m" x="112" y="357">brief.md</text>
-  <text class="s" x="352" y="357">the brief, exactly as sent</text>
-  <path class="ln" d="M88,378 H104"/>
-  <text class="t m" x="112" y="383">evidence/</text>
-  <text class="s" x="352" y="383">screenshots, recordings, logs; never committed</text>
+  <text class="t m" x="112" y="357">transcript/ skills/ jobs/</text>
+  <text class="s" x="352" y="357">its transcript, skills and shell jobs</text>
+  <path class="ln" d="M52,378 H68"/>
+  <text class="t m" x="76" y="383">artifacts/T-0017/C-0042/</text>
+  <text class="s" x="352" y="383">its work, filed under its task</text>
   <path class="ln" d="M88,404 H104"/>
-  <text class="t m" x="112" y="409">session/</text>
-  <text class="s" x="352" y="409">the crewmate's transcript</text>
+  <text class="t m" x="112" y="409">evidence/</text>
+  <text class="s" x="352" y="409">screenshots, recordings, logs; never committed</text>
   <path class="ln" d="M88,430 H104"/>
-  <text class="t m" x="112" y="435">skills/ jobs/ answer.md</text>
-  <text class="s" x="352" y="435">its skills, shell jobs, an answer</text>
+  <text class="t m" x="112" y="435">plan/ report/</text>
+  <text class="s" x="352" y="435">its plan and its answer page</text>
 </svg>
