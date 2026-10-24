@@ -302,10 +302,13 @@ pub fn mark_removed(conn: &Connection, id: ProjectId, at: Timestamp) -> Result<b
     )? == 1)
 }
 
-/// The project's tasks that aren't closed, oldest first.
+/// The project's tasks that aren't closed, oldest first, with any that a waiting move takes there.
 pub fn open_tasks(conn: &Connection, id: ProjectId) -> Result<Vec<TaskId>, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT id FROM tasks WHERE project_id = ?1 AND status <> 'closed' ORDER BY seq",
+        "SELECT id FROM tasks
+         WHERE (project_id = ?1 OR json_extract(pending_move, '$.project') = ?1)
+           AND status <> 'closed'
+         ORDER BY seq",
     )?;
     Ok(stmt
         .query_map(params![id], |r| r.get(0))?

@@ -168,7 +168,8 @@ pub(crate) async fn set_task_project(
                 return Ok(Err(r));
             }
             // A move that waits is replaced by this one.
-            if let Some(before) = task_store::pending_move(tx, task)? {
+            let replaced = task_store::pending_move(tx, task)?;
+            if let Some(before) = &replaced {
                 task_store::set_pending_move(tx, task, None)?;
                 forget_news(tx, task, before.asked_at)?;
             }
@@ -200,6 +201,9 @@ pub(crate) async fn set_task_project(
                 asked_at: at.as_millisecond(),
             };
             task_store::set_pending_move(tx, task, Some(&pending))?;
+            if let Some(before) = replaced {
+                leave_destination(tx, &now_row, &before, at)?;
+            }
             let from = projects::load(tx, now_row.project)?.map_or_else(String::new, |p| p.name);
             task_store::event(
                 tx,
@@ -294,6 +298,9 @@ async fn cancel(
                 return Ok(None);
             }
             task_store::set_pending_move(tx, task, None)?;
+            if let Some(row) = task_store::load(tx, task)? {
+                leave_destination(tx, &row, &now, at)?;
+            }
             let told = !forget_news(tx, task, asked_at)?;
             task_store::event(
                 tx,
@@ -365,6 +372,20 @@ fn forget_news(
     let waits = format!("{WAITS_KEY}:{task}:{asked_at}");
     qm_store::wakes::withdraw_pending(conn, agent.id, &waits)?;
     Ok(unread)
+}
+
+/// A move that won't be made no longer keeps its destination listed: the project goes when no
+/// other work is there (a new project is listed from the moment a move to it is asked for).
+fn leave_destination(
+    conn: &rusqlite::Connection,
+    row: &TaskRow,
+    to: &PendingMove,
+    at: jiff::Timestamp,
+) -> Result<(), qm_store::StoreError> {
+    if to.project != row.project {
+        places::retire_if_idle(conn, to.project, at)?;
+    }
+    Ok(())
 }
 
 /// Whether `row` can move now.
@@ -826,6 +847,7 @@ async fn drop_move(svc: &TaskService, task: TaskId, reason: &str) -> Applied {
                 return Ok(());
             };
             task_store::set_pending_move(tx, task, None)?;
+            leave_destination(tx, &row, &to, at)?;
             task_store::event(
                 tx,
                 MOVE_FAILED_EVENT,

@@ -158,6 +158,21 @@ impl Move {
             .unwrap()
             .name
     }
+    /// Whether a project at `dir` is listed (not retired).
+    async fn listed(&self, dir: &Path) -> bool {
+        let dir = dir.to_str().unwrap().to_owned();
+        self.fixture
+            .db()
+            .call(move |conn| {
+                Ok(conn.query_row(
+                    "SELECT count(*) FROM projects WHERE path = ?1 AND removed_at IS NULL",
+                    [dir],
+                    |r| r.get::<_, i64>(0),
+                )? > 0)
+            })
+            .await
+            .unwrap()
+    }
     /// The crewmate's unread wakes' texts, oldest first.
     async fn unread(&self) -> Vec<String> {
         self.fixture
@@ -344,12 +359,14 @@ async fn a_dirty_worktree_waits_and_naming_where_it_works_calls_the_move_off() {
         unread.iter().any(|t| t.contains("uncommitted changes")),
         "{unread:?}"
     );
+    assert!(m.listed(&m.a).await, "where it is going is listed");
 
     // Naming the worktree's project again calls it off; the unread news goes with it.
     let repo = m.repo.clone();
     let moved = m.moved(to(&repo)).await;
     assert_eq!(moved.when, MoveTiming::CalledOff);
     assert!(m.pending().await.is_none());
+    assert!(!m.listed(&m.a).await, "and leaves the list once called off");
     assert!(m.unread().await.is_empty(), "{:?}", m.unread().await);
     assert_eq!(m.home().await, m.worktree());
 
@@ -368,6 +385,11 @@ async fn a_new_move_replaces_one_that_waits() {
     assert_eq!(m.moved(to(&m.a)).await.when, MoveTiming::BetweenTurns);
     assert_eq!(m.moved(to(&m.b)).await.when, MoveTiming::BetweenTurns);
     assert_eq!(m.pending().await.unwrap().home, m.b);
+    assert!(
+        !m.listed(&m.a).await,
+        "the replaced destination isn't listed"
+    );
+    assert!(m.listed(&m.b).await);
     let unread = m.unread().await;
     assert!(
         !unread
