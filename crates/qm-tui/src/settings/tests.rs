@@ -253,6 +253,7 @@ fn routing_explanations_wrap_without_cutting_off_in_the_popup() {
 fn task_kind_help_opens_scrolls_and_returns_to_routing_without_changes() {
     for (width, height) in SIZES {
         let mut app = app(Tab::Routing);
+        assert_eq!(app.take_commands(), [Command::RefreshQuotas]);
         draw(&mut app, width, height);
         key(&mut app, KeyCode::End);
         draw(&mut app, width, height);
@@ -321,6 +322,7 @@ fn task_kind_help_opens_scrolls_and_returns_to_routing_without_changes() {
 fn task_kind_help_button_and_mouse_dismissal_work_at_every_size() {
     for (width, height) in SIZES {
         let mut app = app(Tab::Routing);
+        assert_eq!(app.take_commands(), [Command::RefreshQuotas]);
         draw(&mut app, width, height);
         // Reveal the heading through Settings' actual clipped viewport, then click its '?'.
         let max = app.term.drawn.scroll_max_of(Pane::Settings);
