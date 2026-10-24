@@ -47,7 +47,8 @@ pub struct SessionSpec {
     #[serde(default)]
     pub skills_dir: Option<PathBuf>,
     /// Variables added to the environment the engine builds from scratch for the agent's process
-    /// (`QM_EVIDENCE_DIR`, `QM_PORT_BASE`, `GIT_TERMINAL_PROMPT`). Never a secret, and never
+    /// (`QM_EVIDENCE_DIR`, `QM_REPORT_DIR`, `QM_PLAN_DIR`, `QM_PORT_BASE`,
+    /// `GIT_TERMINAL_PROMPT`). Never a secret, and never
     /// one of `qm_types::env::NEVER_PASSED_TO_AGENTS`.
     ///
     /// They are added to what the engine sets itself and may not replace it: a spec naming a key
@@ -174,7 +175,7 @@ pub enum Builtins {
     /// Claude Code's built-in tools, permission prompts off: crewmates on the Claude engine.
     ClaudeCode,
     /// Our file and shell tools: crewmates on the provider engine. Writes are refused outside these
-    /// folders (the worktree, the evidence folder, the plan folder for a planner, the scratchpad)
+    /// folders (the worktree, evidence, report, plan for a planner, and scratchpad)
     /// and the system temporary folder, and inside the spec's `protected_roots` only these folders
     /// are writable. `scratchpad`, when
     /// set, is the agent's private scratch folder: it is also a write root, and the engine tells

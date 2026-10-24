@@ -52,6 +52,7 @@ pub(crate) enum StatusItem {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TaskButton {
     OpenSession,
+    OpenReport,
     Stop,
 }
 

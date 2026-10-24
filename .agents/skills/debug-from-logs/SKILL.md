@@ -59,6 +59,8 @@ SELECT id, target_agent_id, kind, dedupe_key, delivered_turn_id, consumed_at FRO
   on). The folder goes at close, so only open tasks have one.
 - `artifacts/T-n/` holds `plan/` and `evidence/`, removed once no open task reads them
   (`qm-core` `retention.rs`, at start, at close and hourly); `attachments/` is swept at each start.
+  For done lookup, research, reproduce and teach tasks, `report/` (`QM_REPORT_DIR`) holds the
+  app-seeded `SKILL.md` and `template.html`, the agent-authored `report.html`, and local `assets/`.
 - `seat/` and `secondmates/SM-n/`: `home/`; `session/` is removed at each start.
 - A provider-engine agent's session is `<owner>/transcript/<session>.jsonl` (header line, then one
   line per message; replaced whole on compaction, removed on `/clear` or retire), so a restart resumes it. Claude's transcript is Claude's own, under `~/.claude/projects/`; the app keeps no copy.

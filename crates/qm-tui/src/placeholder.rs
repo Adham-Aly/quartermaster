@@ -142,6 +142,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("↑ ↓ · pgup pgdn", "scroll"),
             ("⏎", "open session"),
             ("s", "stop"),
+            ("r", "open completed report in browser"),
         ],
     ),
     (

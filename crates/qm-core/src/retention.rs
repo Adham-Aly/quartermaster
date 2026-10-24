@@ -1,12 +1,14 @@
 //! What the app keeps on disk for work in progress, and when each piece goes.
 //!
-//! Plans, evidence and provider-engine transcripts live in the data directory so a restart loses
-//! none of them. Each is removed once nothing that could still read it is left:
+//! Plans, evidence, reports and provider-engine transcripts live in the data directory so a restart
+//! loses none of them. Reports are kept until the task is forgotten, even after it closes; they
+//! must then go because task IDs can be reused. The other files go once no reader is left:
 //!
 //! | What | Kept while |
 //! |---|---|
 //! | `artifacts/T-n/plan/` | T-n is open, or an open task that can change code builds on T-n and has no copy of the plan yet |
 //! | `artifacts/T-n/evidence/` | T-n is open, or an open task builds on or retries T-n |
+//! | `artifacts/T-n/report/` | T-n's row still exists (until forgotten, not just closed) |
 //! | `artifacts/T-n/` | while it holds anything |
 //! | a transcript, `<folder>/transcript/<session>.jsonl` | its owner (the seat, a live secondmate, an open task) is on that session |
 //! | a temporary file of an atomic write, a plan copy's staging folder | for [`TEMP_AFTER`] |
@@ -135,6 +137,9 @@ fn artifacts(data: &DataDir, facts: &Facts, now: SystemTime, when: When, tally: 
         }
         if !keep_evidence(facts, id) {
             remove(&paths.evidence, tally);
+        }
+        if !facts.retained_tasks.contains(&id) {
+            remove(&paths.artifacts.join("report"), tally);
         }
         for (entry, entry_path) in entries(&path) {
             if entry.starts_with(PLAN_STAGING) && old_enough(&entry_path, now, when) {

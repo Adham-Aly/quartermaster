@@ -1,6 +1,6 @@
 //! What the retention sweep (`qm_core::retention`) must know before it deletes anything: which
-//! tasks are open and what they build on or retry, and which provider-engine session each live
-//! agent is on.
+//! tasks still have rows, which are open and what they build on or retry, and which
+//! provider-engine session each live agent is on.
 
 use crate::StoreError;
 use qm_types::domain::{EngineKind, TaskKind};
@@ -35,12 +35,18 @@ pub struct LiveSession {
 /// Every fact the sweep decides by, read in one go so the decisions agree with each other.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
+    /// All task rows, including closed tasks; their IDs cannot yet be reused.
+    pub retained_tasks: Vec<TaskId>,
     pub open: Vec<OpenTask>,
     pub sessions: Vec<LiveSession>,
 }
 
 /// Reads the [`Facts`].
 pub fn facts(conn: &Connection) -> Result<Facts, StoreError> {
+    let retained_tasks = conn
+        .prepare("SELECT id FROM tasks ORDER BY seq")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
     let open = conn
         .prepare(
             "SELECT id, kind, builds_on, retry_of FROM tasks WHERE status <> 'closed' ORDER BY seq",
@@ -87,5 +93,9 @@ pub fn facts(conn: &Connection) -> Result<Facts, StoreError> {
             })
         })
         .collect();
-    Ok(Facts { open, sessions })
+    Ok(Facts {
+        retained_tasks,
+        open,
+        sessions,
+    })
 }

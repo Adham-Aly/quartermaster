@@ -153,6 +153,16 @@ fn detail_rows(app: &App, agent: AgentRef, detail: &TaskDetail, max: u16) -> Vec
         }
     }
     out.push(Row::plain(Line::default()));
+    if detail.report_available {
+        // Its own row keeps the action readable even in the narrow folded task pane.
+        let hit = Hit::TaskButton(TaskButton::OpenReport);
+        out.push(Row {
+            line: Line::from(button::span("Open report", hover == Some(hit))),
+            text: None,
+            hits: vec![(0, button::width_of("Open report"), hit)],
+        });
+        out.push(Row::plain(Line::default()));
+    }
     out.push(buttons(detail.running, hover));
     out
 }
@@ -231,5 +241,67 @@ fn push_wrapped(out: &mut Vec<Row>, runs: &[(String, Style)], indent: usize, max
             }),
             hits: Vec::new(),
         });
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+    use crate::hit::Pane;
+    use crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    use qm_types::api::Command;
+    use qm_types::ids::TaskId;
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::time::Instant;
+
+    #[test]
+    fn report_action_is_persistent_narrow_safe_and_has_mouse_and_keyboard_controls() {
+        let task = TaskId::new(42).unwrap();
+        let mut app = App::new();
+        let mut detail = TaskDetail::new(task, "Research results");
+        detail.report_available = true;
+        app.snapshot.tasks.push(detail);
+        app.view.selected_crew = Some(AgentRef::Crewmate { task });
+        app.focus = Pane::Task;
+        for (w, h) in [(150, 45), (120, 40), (119, 40), (100, 30)] {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            // Draw the same persistent task panel at its narrowest supported width.
+            let mut map = FrameMap::default();
+            terminal
+                .draw(|frame| draw(frame, Rect::new(0, 0, 24, h), &app, &mut map, true))
+                .unwrap();
+            let hit = Hit::TaskButton(TaskButton::OpenReport);
+            let area = map.hits.rect_of(hit).expect("visible report action");
+            assert!(area.right() <= 24);
+            app.term.drawn = map;
+            app.on_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: area.x,
+                    row: area.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                Instant::now(),
+            );
+            assert_eq!(app.take_commands(), [Command::OpenReport { task }]);
+            app.on_event(
+                Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+                Instant::now(),
+            );
+            assert_eq!(app.take_commands(), [Command::OpenReport { task }]);
+        }
+        app.snapshot.tasks[0].report_available = false;
+        assert!(!rows(&app, 24).iter().any(|row| {
+            row.hits
+                .iter()
+                .any(|(_, _, hit)| *hit == Hit::TaskButton(TaskButton::OpenReport))
+        }));
+        app.open_selected_report();
+        assert_eq!(app.take_commands(), [] as [Command; 0]);
+        app.view.selected_crew = Some(AgentRef::Quartermaster);
+        app.open_selected_report();
+        assert_eq!(app.take_commands(), [] as [Command; 0]);
     }
 }

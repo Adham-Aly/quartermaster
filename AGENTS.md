@@ -71,8 +71,8 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
 - `logs/quartermaster-YYYY-MM-DD.log`: redacted; level from `QM_LOG` (default `info`); seven days kept, a new file at local midnight. The
   terminal belongs to the UI, so nothing is logged there.
 - `seat/`, `secondmates/SM-n/`, `tasks/T-n/` (worktree, brief, jobs; the folder goes at close; each
-  has `transcript/`, the provider engine's durable sessions), `artifacts/T-n/` (`plan/`, `evidence/`,
-  kept while a task reads them; `qm-core` `retention.rs`), `attachments/`, `drafts/`,
+  has `transcript/`, the provider engine's durable sessions), `artifacts/T-n/` (`report/` until forgotten;
+  `plan/`, `evidence/` while read; `qm-core` `retention.rs`), `attachments/`, `drafts/`,
   `ui.json` (UI state, never logged; `tui.toml` is only read once for old widths), `plan-endpoint.json`
   (the plan pages' loopback port, kept so pages rendered before a restart still send).
 - Scratch, `/tmp/quartermaster/<uid>/<hash>/` (`DataDir::scratch`; owner and 0700 checked, never a
