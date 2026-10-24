@@ -51,6 +51,9 @@ pub(crate) fn lines(room: usize) -> Vec<Line<'static>> {
         }
     }
     lines.push(Line::default());
+    lines.extend(wrap("Medium tier means a model + effort combination you ranked in the Medium Model level. Medium effort is the model's effort setting, independent of its tier placement. The same distinction applies to High and Low.", room.max(1))
+        .into_iter().map(|text| Line::styled(text, theme::text())));
+    lines.push(Line::default());
     lines.extend(wrap("The app checks the earlier task before using either 'on a' row. These are special cases of Build and Fix, not extra task kinds.", room.max(1))
         .into_iter().map(|text| Line::styled(text, theme::dim())));
     lines

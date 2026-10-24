@@ -294,6 +294,17 @@ fn task_kind_help_opens_scrolls_and_returns_to_routing_without_changes() {
                 "{width}×{height}: {row:?}"
             );
         }
+        let seen = seen.split_whitespace().collect::<Vec<_>>().join(" ");
+        for copy in [
+            "Medium tier means a model + effort combination you ranked in the Medium Model level.",
+            "Medium effort is the model's effort setting, independent of its tier placement.",
+            "The same distinction applies to High and Low.",
+        ] {
+            assert!(
+                seen.contains(copy),
+                "{width}×{height}: missing {copy:?}\n{seen}"
+            );
+        }
         key(&mut app, KeyCode::Home);
         draw(&mut app, width, height);
         app.on_mouse(
