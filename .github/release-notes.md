@@ -12,34 +12,30 @@
 > you get a loose file that your terminal can't find and that macOS blocks from opening. They are
 > only there for the install command above to fetch.
 
-## What's new in 0.4.0
+## What's new in 0.5.0
 
-Changes since [0.3.0](https://github.com/Adham-Aly/quartermaster/releases/tag/v0.3.0):
+Changes since [0.4.0](https://github.com/Adham-Aly/quartermaster/releases/tag/v0.4.0):
 
-- **Send plan replies from the page.** Plan pages now have a **Send to Quartermaster** button that
-  delivers your answers straight to the planner, with a one-line note in the chat. **Copy reply**
-  still works as a fallback. If the app can't be reached, your answers stay saved in the page and
-  it says so; each round accepts one reply, whichever way it arrives.
-- **An Actions inbox.** A new list in the left column, below Projects and Crew, collects everything
-  waiting on you: approvals, decisions, plan questions and approvals, agent questions, notices and
-  setup prompts. Press Enter to open one and answer it; nothing is approved from the list itself.
-- **Live context meter.** A strip above the input shows how full the current agent's context is,
-  measured against the point where it compacts, along with the latest turn's tokens and cost.
-  Task cards show a context row and token totals, and the chat shows when context is being
-  compacted and how it went.
-- **Release tags from the app.** A crewmate can propose a release tag for a GitHub project. Once
-  you approve its card, the app pushes exactly that tag at that commit and never overwrites an
-  existing one. It then watches GitHub and reports the tag, the release and its workflow runs as
-  separate facts.
-- **Chats survive restarts.** For agents on the app's own provider engine, the current chat and
-  model context now survive a quit or a crash. A turn cut off by the app quitting says so, with
-  **Ask again** or **Leave it**. Compaction and `/clear` trim what is kept; chats with Claude agents
-  are still not saved to disk.
-- **Durable working files.** Plans, evidence, pasted images, drafts and provider transcripts now
-  live in your Quartermaster data folder instead of a temporary folder, and are removed once nothing
-  needs them. Files left by older versions are moved over or cleaned up automatically.
-- **Set up model levels first.** New installations start with empty model levels, and connecting
-  an account no longer fills them for you. Add at least one model in **Settings ▸ Model levels**
-  before messaging the Quartermaster; existing levels are kept. The
-  [routing guide](https://github.com/Adham-Aly/quartermaster/blob/v0.4.0/docs/routing.md) explains
-  how.
+- **Choose a model level for each kind of task.** **Settings ▸ Routing** has a new **Task kinds**
+  section: set build, fix, plan, research and the other kinds to Premium, High, Medium or Low.
+  Changes apply at once and survive restarts; `r` resets a row and `R` resets them all. The
+  [routing guide](https://github.com/Adham-Aly/quartermaster/blob/v0.5.0/docs/routing.md) explains
+  the defaults.
+- **Model levels hold model and effort pairs.** Each entry in **Settings ▸ Model levels** is now a
+  fixed pairing such as `model (high)`, chosen from a searchable list, and the same model can sit
+  in several levels at different efforts. Levels you saved before are kept and converted for you.
+- **Premium means premium.** Asking for premium, or naming a premium model, now always tries the
+  premium models first. If none can serve, the task falls back to High, then Medium, then Low,
+  instead of waiting or quietly running a lower model, and the task card says why.
+- **Cards open from Actions.** Approvals, decisions and questions no longer appear inside the chat.
+  Each one is listed in **Actions**; click it or press Enter to answer it in a popup with the same
+  buttons and keys.
+- **Projects are folders.** A folder becomes a project when work starts in it, and you can ask the
+  Quartermaster to clone a repository. The separate personal workspace is gone. Crewmates can use
+  your GitHub login, and merges or tags made on GitHub outside the app are recorded.
+- **Branches named after the work.** A task titled `fix(upload): retry on slow tmp` now works on
+  the branch `fix/upload-retry-on-slow-tmp`, and its pull request reads like an ordinary one.
+- **Desktop notifications removed.** Quartermaster no longer sends macOS notifications or rings the
+  terminal bell; everything waiting on you is in **Actions**.
+- **Fixes.** Helper agents started by a Claude crewmate are no longer stopped when another one
+  finishes, and the quit dialog now reads correctly for one crewmate and for several.
