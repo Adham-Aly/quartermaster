@@ -27,6 +27,8 @@ pub mod lookup;
 pub mod plan;
 pub mod ports;
 pub mod relabel;
+#[cfg(test)]
+mod relabel_tests;
 pub mod report;
 pub mod runner;
 pub mod session;
@@ -54,7 +56,7 @@ use qm_store::db::Db;
 use qm_store::wakes::NewWake;
 use qm_tools::defs::{
     Ack, DeliveryCheck, FileFollowupArgs, FindTasksArgs, FoundTasks, Linked, ReportArgs,
-    TaskDetail, TaskStarted, TaskUpdated, Unlinked,
+    TaskChanged, TaskDetail, TaskStarted, TaskUpdated, Unlinked,
 };
 use qm_tools::handler::{Caller, DeclaredWait, Dispatcher, StartRequest, ToolFailure, ToolHost};
 use qm_types::BoxFuture;
@@ -64,7 +66,7 @@ use qm_types::config::Config;
 use qm_types::data_dir::{DataDir, TaskPaths};
 use qm_types::domain::{EngineKind, Role, WakeKind};
 use qm_types::error::Refusal;
-use qm_types::ids::{AgentId, MessageId, TaskId};
+use qm_types::ids::{AgentId, MessageId, TaskId, TaskLabelId};
 use report::ReportGate;
 use runner::{CrewActivity, CrewInput, RunnerState, StopReport};
 use rusqlite::Transaction;
@@ -601,6 +603,11 @@ impl TaskService {
         self.changed();
     }
 
+    /// Whether `task`'s crewmate has a runner.
+    pub(crate) fn has_runner(&self, task: TaskId) -> bool {
+        self.runners().contains_key(&task)
+    }
+
     pub(crate) fn send_to(&self, task: TaskId, input: CrewInput) -> bool {
         let runners = self.runners();
         runners.get(&task).is_some_and(|r| r.handle.send(input))
@@ -766,6 +773,20 @@ impl TaskService {
         folder: Option<String>,
     ) -> Result<TaskUpdated, ToolFailure> {
         relabel::set_task_project(self, caller, task, project, folder).await
+    }
+
+    pub async fn set_task_label(
+        &self,
+        caller: &Caller,
+        crewmate: TaskId,
+        task: Option<TaskLabelId>,
+    ) -> Result<TaskChanged, ToolFailure> {
+        relabel::set_task_label(self, caller, crewmate, task).await
+    }
+
+    /// The crewmate a task names where a crewmate is asked for.
+    pub async fn resolve_task_label(&self, task: TaskLabelId) -> Result<TaskId, ToolFailure> {
+        relabel::resolve_task_label(self, task).await
     }
 
     pub async fn close_task(

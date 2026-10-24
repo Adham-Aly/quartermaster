@@ -659,12 +659,25 @@ pub fn set_label(conn: &Connection, task: TaskId, label: TaskLabelId) -> Result<
     )? == 1)
 }
 
+/// The task `task` belongs to; `None` for a crewmate the store doesn't hold.
+pub fn label(conn: &Connection, task: TaskId) -> Result<Option<TaskLabelId>, StoreError> {
+    label_column(conn, task, "label_id")
+}
+
 /// The task whose folders hold `task`'s artifacts and scratchpad; `None` for a crewmate the store
 /// doesn't hold.
 pub fn folder_label(conn: &Connection, task: TaskId) -> Result<Option<TaskLabelId>, StoreError> {
+    label_column(conn, task, "folder_label_id")
+}
+
+fn label_column(
+    conn: &Connection,
+    task: TaskId,
+    column: &'static str,
+) -> Result<Option<TaskLabelId>, StoreError> {
     let label: Option<Option<TaskLabelId>> = conn
         .query_row(
-            "SELECT folder_label_id FROM tasks WHERE id = ?1",
+            &format!("SELECT {column} FROM tasks WHERE id = ?1"),
             params![task],
             |r| r.get(0),
         )

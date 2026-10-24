@@ -931,7 +931,7 @@ async fn child_guidance_preserves_inherited_authority_for_immediate_and_deferred
     assert_eq!(row.status, "started", "{row:?}");
     svc.db()
         .call(move |conn| {
-            for task in [immediate.task, row.task.unwrap()] {
+            for task in [immediate.crewmate, row.task.unwrap()] {
                 assert_eq!(
                     qm_store::tasks::load(conn, task)?.unwrap().status,
                     TaskStatus::Queued

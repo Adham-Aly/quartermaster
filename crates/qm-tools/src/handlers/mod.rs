@@ -79,4 +79,5 @@ pub static HANDLERS: &[Binding] = &[
     bind::<crate::defs::CancelCrewmateStartTool>(),
     bind::<crate::defs::ListCrewmateStartsTool>(),
     bind::<crate::defs::FindUserRequestsTool>(),
+    bind::<crate::defs::SetTaskLabelTool>(),
 ];

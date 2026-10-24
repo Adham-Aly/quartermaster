@@ -20,7 +20,6 @@ use qm_store::db::Db;
 use qm_store::events::{self, NewEvent};
 use qm_store::messages::{self, NewMessage as MessageRow};
 use qm_store::standing_instructions;
-use qm_tools::defs::Routed;
 use qm_tools::defs::{
     Ack, ConfigureProjectArgs, Held, ProposeReleaseTagArgs, ReleaseStatus, ReleaseStatusArgs,
 };
@@ -32,6 +31,7 @@ use qm_tools::defs::{
     DeliveryCheck, FileFollowupArgs, FindTasksArgs, FoundTasks, Linked, ReportArgs, TaskDetail,
     TaskStarted, TaskUpdated, Unlinked,
 };
+use qm_tools::defs::{Routed, TaskChanged};
 use qm_tools::handler::ParentJudgment;
 use qm_tools::handler::{Caller, NewMessage, ToolFailure, ToolHost};
 use qm_tools::handler::{CharterChange, RouteRequest, SecondmateProposal};
@@ -41,7 +41,7 @@ use qm_types::clock::Clock;
 use qm_types::domain::{MessageKind, MessageSource, Role};
 use qm_types::error::Refusal;
 use qm_types::ids::{MessageId, StandingInstructionId};
-use qm_types::ids::{SecondmateId, TaskId};
+use qm_types::ids::{SecondmateId, TaskId, TaskLabelId};
 use std::fmt;
 use std::sync::Arc;
 
@@ -518,6 +518,33 @@ impl ToolHost for CoreToolHost {
             self.tasks("set_task_project")?
                 .set_task_project(caller, task, project, folder)
                 .await
+        })
+    }
+
+    fn set_task_label<'a>(
+        &'a self,
+        caller: &'a Caller,
+        crewmate: TaskId,
+        task: Option<TaskLabelId>,
+    ) -> BoxFuture<'a, Result<TaskChanged, ToolFailure>> {
+        Box::pin(async move {
+            offered_to(caller, "set_task_label")?;
+            self.tasks("set_task_label")?
+                .set_task_label(caller, crewmate, task)
+                .await
+        })
+    }
+
+    fn resolve_task_label<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        task: TaskLabelId,
+    ) -> BoxFuture<'a, Result<TaskId, ToolFailure>> {
+        Box::pin(async move {
+            match &self.tasks {
+                Some(tasks) => tasks.resolve_task_label(task).await,
+                None => Ok(task.legacy_crewmate()),
+            }
         })
     }
 

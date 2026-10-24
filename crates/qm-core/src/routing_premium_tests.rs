@@ -656,6 +656,7 @@ mod tier_tool_tests {
     use qm_tools::handler::{Dispatcher, ToolCx, ToolFailure, ToolHost, TurnCx};
     use qm_types::BoxFuture;
     use qm_types::clock::SystemClock;
+    use qm_types::ids::TaskLabelId;
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -670,7 +671,8 @@ mod tier_tool_tests {
             self.0.lock().unwrap().push((caller.role, request));
             Box::pin(async {
                 Ok(TaskStarted {
-                    task: TaskId::new(1).unwrap(),
+                    crewmate: TaskId::new(1).unwrap(),
+                    task: TaskLabelId::new(1).unwrap(),
                     branch: None,
                     routing: RoutingSummary {
                         tier: Tier::Medium,

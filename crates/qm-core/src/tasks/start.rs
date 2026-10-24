@@ -681,6 +681,7 @@ async fn pick_ports(svc: &TaskService) -> Result<PortBlock, ToolFailure> {
 enum Recorded {
     Started {
         task: TaskId,
+        label: TaskLabelId,
         branch: Option<String>,
         agent: AgentId,
         summary: RoutingSummary,
@@ -1051,7 +1052,7 @@ pub(crate) async fn start_when_ready(
                 validated.user_words_message = None;
             }
             if let Some(label) = req.label
-                && let Some(why) = join_refusal(&tx, &caller, label)?
+                && let Some(why) = join_refusal(&tx, &caller, label, "join_task")?
             {
                 return Ok((Recorded::Refused(why), notify));
             }
@@ -1194,10 +1195,12 @@ pub(crate) async fn start_when_ready(
             if let Err(r) = hook.on_recorded(&tx, task, &mut notify, at)? {
                 return Ok((Recorded::Refused(r), Notify::new()));
             }
+            let label = task_store::label(&tx, task)?.unwrap_or_else(|| task.own_label());
             tx.commit()?;
             Ok((
                 Recorded::Started {
                     task,
+                    label,
                     branch,
                     agent,
                     summary,
@@ -1215,6 +1218,7 @@ pub(crate) async fn start_when_ready(
         Recorded::DeferredWaiting => Ok(StartOutcome::DeferredWaiting),
         Recorded::Started {
             task,
+            label,
             branch,
             agent,
             summary,
@@ -1233,7 +1237,8 @@ pub(crate) async fn start_when_ready(
             }
             tracing::info!(%task, "task started");
             Ok(StartOutcome::Started(TaskStarted {
-                task,
+                crewmate: task,
+                task: label,
                 branch,
                 routing: summary,
             }))
@@ -1553,17 +1558,24 @@ pub(crate) async fn workplace(svc: &TaskService, task: TaskId) -> Result<Workpla
     Ok(Workplace { dir: agent.home })
 }
 
-/// Why `caller` can't put a new crewmate in `label`: it doesn't exist, or (for a secondmate) holds
-/// none of its crewmates. `None` when it can.
-fn join_refusal(
+/// Why `caller` can't put a crewmate in `label`, named in the argument `field`: it doesn't exist,
+/// or (for a secondmate) holds none of its crewmates. `None` when it can.
+pub(crate) fn join_refusal(
     conn: &Connection,
     caller: &Caller,
     label: TaskLabelId,
+    field: &str,
 ) -> Result<Option<Refusal>, StoreError> {
     let crewmates = qm_store::task_labels::crewmates(conn, label)?;
     if crewmates.is_empty() {
         return Ok(Some(Refusal::new(format!(
-            "{label} doesn't exist; leave join_task out to give the crewmate a task of its own"
+            "{label} doesn't exist; leave {field} out to give the crewmate a task of its own"
+        ))));
+    }
+    if crewmates.iter().all(|(_, open)| !open) {
+        return Ok(Some(Refusal::new(format!(
+            "{label} is finished: its crewmates are closed; leave {field} out to give the \
+             crewmate a task of its own"
         ))));
     }
     if caller.role == Role::Secondmate {
@@ -1576,8 +1588,8 @@ fn join_refusal(
         }
         if !supervised {
             return Ok(Some(Refusal::new(format!(
-                "{label} holds none of your crewmates; join one of your own tasks, or leave \
-                 join_task out"
+                "{label} holds none of your crewmates; name one of your own tasks, or leave \
+                 {field} out"
             ))));
         }
     }

@@ -7,10 +7,10 @@
 use super::conversation::started_by;
 use crate::defs::{
     CloseTaskArgs, CloseTaskTool, FindTasksArgs, FindTasksTool, FoundTasks, LinkTasksArgs,
-    LinkTasksTool, Linked, MessageTaskArgs, MessageTaskTool, SetTaskProjectArgs,
-    SetTaskProjectTool, StartCrewmateArgs, StartCrewmateTool, StopTaskArgs, StopTaskTool,
-    TaskDetail, TaskStarted, TaskStatusArgs, TaskStatusTool, TaskUpdated, UnlinkTasksArgs,
-    UnlinkTasksTool, Unlinked,
+    LinkTasksTool, Linked, MessageTaskArgs, MessageTaskTool, SetTaskLabelArgs, SetTaskLabelTool,
+    SetTaskProjectArgs, SetTaskProjectTool, StartCrewmateArgs, StartCrewmateTool, StopTaskArgs,
+    StopTaskTool, TaskChanged, TaskDetail, TaskStarted, TaskStatusArgs, TaskStatusTool,
+    TaskUpdated, UnlinkTasksArgs, UnlinkTasksTool, Unlinked,
 };
 use crate::handler::{Handle, StartRequest, ToolCx, ToolFailure};
 use qm_policy::names::check_task_title;
@@ -221,6 +221,19 @@ impl Handle for SetTaskProjectTool {
             }
             cx.host
                 .set_task_project(cx.caller, args.task, project, folder)
+                .await
+        })
+    }
+}
+
+impl Handle for SetTaskLabelTool {
+    fn handle<'a>(
+        cx: &'a ToolCx<'a>,
+        args: SetTaskLabelArgs,
+    ) -> BoxFuture<'a, Result<TaskChanged, ToolFailure>> {
+        Box::pin(async move {
+            cx.host
+                .set_task_label(cx.caller, args.crewmate, args.task)
                 .await
         })
     }

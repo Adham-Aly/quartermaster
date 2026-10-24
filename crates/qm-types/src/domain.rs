@@ -725,6 +725,9 @@ string_enum! {
         LandedOutside = "landed_outside",
         /// A tag or release appeared on a task's repository that the app didn't make.
         ReleasedOutside = "released_outside",
+        /// The crewmate's supervisor moved it to another task (`set_task_label`); its folders
+        /// moved with it.
+        TaskChanged = "task_changed",
     }
 }
 

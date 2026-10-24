@@ -265,7 +265,9 @@ pub struct ListCrewmateStartsArgs {}
 /// A task was started.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskStarted {
-    pub task: TaskId,
+    pub crewmate: TaskId,
+    /// The task the crewmate belongs to: its own, or the one it joined.
+    pub task: TaskLabelId,
     /// The task's branch, named after its title (`fix/upload-retry-on-slow-tmp`); folder tasks
     /// have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -333,6 +335,38 @@ pub struct SetTaskProjectArgs {
     pub project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
+}
+
+tool! {
+    /// Moves a direct report to another task, or to a new task of its own. Its name stays; its
+    /// artifacts and scratchpad follow at its next safe point.
+    SetTaskLabelTool {
+        name: "set_task_label",
+        class: Act,
+        roles: [Quartermaster, Secondmate],
+        args: SetTaskLabelArgs,
+        output: TaskChanged,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetTaskLabelArgs {
+    pub crewmate: TaskId,
+    // The task to join; left out, the crewmate gets a new task of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskLabelId>,
+}
+
+/// A crewmate's task after `set_task_label`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskChanged {
+    pub crewmate: TaskId,
+    pub task: TaskLabelId,
+    pub was: TaskLabelId,
+    // The task's other open crewmates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub with: Vec<TaskId>,
 }
 
 tool! {

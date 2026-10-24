@@ -2,4 +2,4 @@ Look up original user requests in your own conversation, including sources older
 
 `query` is an optional case-insensitive literal substring (SQL wildcard characters have no special meaning); omit it to browse. `before` is an optional message ID from these results: return matches older than that source, in creation order, not numeric ID order. Keep the same query and pass the last result's message to page backwards. A missing or foreign cursor returns no results. There is no adjustable limit.
 
-Use `message` as `choice_message` only when the original words explicitly authorize the requested model, tier, effort or premium within their original scope and have not been superseded. Finding a source is not permission by itself. If lookup cannot recover a matching source, ask the user again. Historical messages discarded before sources were retained cannot be recovered.
+Use `message` as `choice_message` only when the original words explicitly authorize the requested model, tier, effort or premium within their original scope and have not been superseded. Finding a source is not permission by itself. If lookup cannot recover a matching source, ask the user again.

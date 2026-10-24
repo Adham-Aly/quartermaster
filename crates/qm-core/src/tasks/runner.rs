@@ -777,6 +777,31 @@ impl CrewRunner {
         self.reopen = Some(mode_changed_note(live));
     }
 
+    /// Before a turn: when the crewmate's supervisor moved it to another task, its folders follow
+    /// now (`relabel::follow_task`), unless a background job is running, which may be writing to
+    /// them. The session closes first and reopens on the new folders, resuming the conversation.
+    async fn follow_task(&mut self) {
+        if self.state.jobs_running.load(Ordering::Relaxed) > 0 {
+            return;
+        }
+        let task = self.task;
+        let moving = self
+            .svc
+            .db()
+            .call(move |conn| {
+                Ok(task_store::load(conn, task)?.is_some_and(|r| r.label != r.folder_label))
+            })
+            .await
+            .unwrap_or(false);
+        if !moving {
+            return;
+        }
+        self.end_session_with(SessionHandle::close).await;
+        if let Err(e) = super::relabel::follow_task(&self.svc, task).await {
+            tracing::warn!(%task, error = %e, "a crewmate's folders couldn't follow it to its new task yet");
+        }
+    }
+
     /// Opens the session if none is open: resuming the stored one unless a new one is needed.
     async fn ensure_session(&mut self) -> Result<(), String> {
         if self.session.is_some() {
@@ -920,6 +945,7 @@ impl CrewRunner {
     /// Runs one turn.
     async fn turn(&mut self, next: NextTurn) {
         self.check_plan_mode().await;
+        self.follow_task().await;
         if let Err(reason) = self.ensure_session().await {
             self.ending = Some(Ending::Failed(format!(
                 "the crewmate's session couldn't be opened: {reason}"
