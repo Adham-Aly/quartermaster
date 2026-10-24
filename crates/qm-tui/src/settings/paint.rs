@@ -165,6 +165,31 @@ impl<'f, 'a> Painter<'f, 'a> {
         self.text(rect.x, bottom, &format!("╰{}╯", "─".repeat(inner)), border);
     }
 
+    /// A slim scrollbar at the viewport's right edge. Each arrow disappears at its end;
+    /// nothing is drawn when all content fits. Draw in screen coordinates, outside the page clip.
+    pub(super) fn scrollbar(&mut self, viewport: Rect, scroll: u16, max: u16) {
+        if max == 0 || viewport.width == 0 || viewport.height < 3 {
+            return;
+        }
+        let x = viewport.right() - 1;
+        if scroll > 0 {
+            self.text(x, viewport.y, "↑", crate::theme::accent());
+        }
+        if scroll < max {
+            self.text(x, viewport.bottom() - 1, "↓", crate::theme::accent());
+        }
+        let track = viewport.height - 2;
+        let thumb = u32::from(scroll) * u32::from(track - 1) / u32::from(max);
+        for i in 0..track {
+            let (symbol, style) = if u32::from(i) == thumb {
+                ("┃", crate::theme::accent())
+            } else {
+                ("│", crate::theme::dim())
+            };
+            self.text(x, viewport.y + 1 + i, symbol, style);
+        }
+    }
+
     /// Blanks `rect` (screen coordinates), for an overlay over the page.
     pub(super) fn clear(&mut self, rect: Rect) {
         if !self.measuring {

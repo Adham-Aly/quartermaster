@@ -23,6 +23,8 @@ mod overlay;
 mod paint;
 mod routing;
 mod sync;
+#[cfg(test)]
+mod tests;
 
 use crate::app::App;
 use crate::hit::{FrameMap, Pane};
@@ -164,7 +166,8 @@ pub(crate) enum SettingsHit {
     /// An overlay: a picker row, and the overlay's box (swallows the click).
     PickerItem(usize),
     FieldSave,
-    FieldCancel,
+    /// Returns from a picker, field or account connection to its parent view.
+    Back,
     Overlay,
     /// Under an open picker or field, everywhere else: a click there closes it.
     Backdrop,
@@ -354,7 +357,13 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
         body,
     );
     let content = if view.connecting {
-        body
+        p.button(body.x, body.y, "← Back", SettingsHit::Back);
+        Rect::new(
+            body.x,
+            body.y + 2,
+            body.width,
+            body.height.saturating_sub(2),
+        )
     } else {
         // System holds the setup check's findings: its tab carries their dot.
         let badged = (!app.snapshot.setup_issues.is_empty()).then_some(Tab::System);
@@ -369,6 +378,14 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
             body.height.saturating_sub(2),
         )
     };
+    // Reserve a separate scrollbar column so indicators never cover a control or its text.
+    let viewport = content;
+    let content = Rect::new(
+        content.x,
+        content.y,
+        content.width.saturating_sub(1),
+        content.height,
+    );
     // The page runs on below the screen; the painter scrolls and clips it.
     let page = Rect::new(
         content.x,
@@ -386,8 +403,9 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
         .selected
         .map(|y| (usize::from(y - content.y), usize::from(content.height)));
     p.view(body, 0, false);
+    p.scrollbar(viewport, scroll, max);
     overlay::draw(&mut p, body, app);
-    map.scroll_areas.push((content, Pane::Settings));
+    map.scroll_areas.push((viewport, Pane::Settings));
     map.scroll_max.push((Pane::Settings, usize::from(max)));
     map.settings_selected = selected;
 }

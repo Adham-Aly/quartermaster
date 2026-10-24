@@ -105,6 +105,18 @@ impl App {
         self.settings_set(|s| &mut s.picker, None);
     }
 
+    /// The visible Back controls and Escape always return by the same path.
+    fn settings_back(&mut self) {
+        if self.view.settings.field.is_some() {
+            self.settings_set(|s| &mut s.field, None);
+        } else if self.view.settings.picker.is_some() {
+            self.settings_set(|s| &mut s.picker, None);
+        } else if self.view.settings.connecting {
+            self.settings_set(|s| &mut s.connecting, false);
+            self.settings_set(|s| &mut s.scroll, 0);
+        }
+    }
+
     /// Where `hit` was drawn in the last frame.
     fn settings_rect(&self, hit: SettingsHit) -> Option<Rect> {
         self.term.drawn.hits.rect_of(Hit::Settings(hit))
@@ -406,7 +418,7 @@ impl App {
             .as_ref()
             .map(|l| l.status.clone());
         match (code, &status) {
-            (KeyCode::Esc, _) => self.settings_set(|s| &mut s.connecting, false),
+            (KeyCode::Esc, _) => self.settings_back(),
             (KeyCode::Char('o'), Some(LoginStatus::Waiting)) => self.open_login_page(),
             (KeyCode::Char('y'), Some(LoginStatus::Waiting)) => self.copy_login_code(now),
             (KeyCode::Char('x'), Some(LoginStatus::Waiting | LoginStatus::Failed { .. })) => {
@@ -439,7 +451,7 @@ impl App {
         let at = visible.iter().position(|&i| i == picker.cursor);
         let finding = picker.query.is_some();
         match code {
-            KeyCode::Esc => self.settings_set(|s| &mut s.picker, None),
+            KeyCode::Esc => self.settings_back(),
             KeyCode::Enter => {
                 if let Some(at) = at {
                     self.choose_pick(visible[at]);
@@ -496,7 +508,7 @@ impl App {
     fn on_field_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Esc => self.settings_set(|s| &mut s.field, None),
+            KeyCode::Esc => self.settings_back(),
             KeyCode::Enter => self.save_field(),
             KeyCode::Backspace => {
                 if let Some(field) = &mut self.view.settings.field {
@@ -557,7 +569,7 @@ impl App {
                 hit,
                 SettingsHit::PickerItem(_)
                     | SettingsHit::FieldSave
-                    | SettingsHit::FieldCancel
+                    | SettingsHit::Back
                     | SettingsHit::Overlay
             )
         {
@@ -638,7 +650,7 @@ impl App {
             SettingsHit::DoneLogin => self.finish_login(false),
             SettingsHit::PickerItem(i) => self.choose_pick(i),
             SettingsHit::FieldSave => self.save_field(),
-            SettingsHit::FieldCancel => self.settings_set(|s| &mut s.field, None),
+            SettingsHit::Back => self.settings_back(),
         }
     }
 
@@ -1037,6 +1049,7 @@ impl App {
     // ---------------------------------------------------------------- connecting
 
     fn open_connect(&mut self) {
+        self.settings_set(|s| &mut s.scroll, 0);
         self.settings_set(|s| &mut s.tab, Tab::Accounts);
         self.settings_set(|s| &mut s.connecting, true);
         // A login already running is the row to show; otherwise the first.

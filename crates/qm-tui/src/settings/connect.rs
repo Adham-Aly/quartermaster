@@ -59,6 +59,19 @@ fn choices_min_width() -> u16 {
 
 pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let view = &app.view.settings;
+    // Keep the login readable in smaller popups by stacking the two boxes.
+    if area.width < choices_min_width() + 43 {
+        let choices_height = cells(view.model.providers.len()) + 5;
+        let choices = Rect::new(area.x, area.y, area.width, choices_height);
+        draw_choices(p, choices, view);
+        let top = area.y + choices_height + 1;
+        draw_login(
+            p,
+            Rect::new(area.x, top, area.width, area.bottom().saturating_sub(top)),
+            view,
+        );
+        return;
+    }
     // Two halves one cell apart (the Bridge's gap), the left never narrower than it needs.
     let half = (area.width.saturating_sub(1) / 2)
         .max(choices_min_width())

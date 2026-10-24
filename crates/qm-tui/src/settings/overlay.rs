@@ -43,25 +43,33 @@ fn draw_picker(p: &mut Painter<'_, '_>, body: Rect, picker: &Picker) {
         .x
         .min(body.right().saturating_sub(box_width))
         .max(body.x);
-    // Under its control, or over it when there's more room there; never away from it.
+    // Prefer below or above the opener; if neither side fits, shift the whole picker into
+    // the popup instead of squeezing away its list or its always-visible Back row.
+    let wanted = cells(shown) + u16::from(find) + 3;
+    let box_height = wanted.min(body.height);
     let below = picker.under.bottom();
-    let room_below = body.bottom().saturating_sub(below);
-    let room_above = picker.under.y.saturating_sub(body.y);
-    let wanted = cells(shown) + u16::from(find) + 2;
-    let (y, room) = if wanted <= room_below || room_below >= room_above {
-        (below, room_below)
+    let y = if below.saturating_add(box_height) <= body.bottom() {
+        below.max(body.y)
     } else {
-        let height = wanted.min(room_above);
-        (picker.under.y - height, room_above)
+        picker
+            .under
+            .y
+            .saturating_sub(box_height)
+            .clamp(body.y, body.bottom().saturating_sub(box_height).max(body.y))
     };
-    let box_height = wanted.min(room).max(3);
-    let shown = usize::from(box_height - 2 - u16::from(find)).max(1);
-    let rows = cells(shown) + u16::from(find);
+    let shown = usize::from(box_height.saturating_sub(3 + u16::from(find))).max(1);
+    let rows = box_height.saturating_sub(2);
     let area = Rect::new(x, y, box_width, box_height);
     p.clear(area);
     p.hit(area, SettingsHit::Overlay);
     let title = if find { "Add model" } else { "Choose" };
     let inner = boxed(p, area, title, rows, theme::accent(), theme::accent());
+    p.button(
+        inner.x,
+        inner.bottom().saturating_sub(1),
+        "← Back",
+        SettingsHit::Back,
+    );
     let room = usize::from(inner.width.saturating_sub(1));
     let mut row = inner.y;
     if let Some(query) = &picker.query {
@@ -83,6 +91,17 @@ fn draw_picker(p: &mut Painter<'_, '_>, body: Rect, picker: &Picker) {
         .position(|&i| i == picker.cursor)
         .unwrap_or(0);
     let first = cursor_at.saturating_sub(shown - 1);
+    if first > 0 {
+        p.text(area.right() - 9, area.y, " ↑ more ", theme::accent());
+    }
+    if first + shown < visible.len() {
+        p.text(
+            area.right() - 9,
+            area.bottom() - 1,
+            " ↓ more ",
+            theme::accent(),
+        );
+    }
     for &i in visible.iter().skip(first).take(shown) {
         let hit = SettingsHit::PickerItem(i);
         let label = truncate(&format!(" {}", picker.options[i].0), room);
@@ -154,5 +173,5 @@ fn draw_field(p: &mut Painter<'_, '_>, body: Rect, field: &Field, app: &App) {
         theme::dim(),
     );
     let end = p.button(inner.x + 1, inner.y + 3, "Save", SettingsHit::FieldSave);
-    p.button(end + 1, inner.y + 3, "Cancel", SettingsHit::FieldCancel);
+    p.button(end + 1, inner.y + 3, "← Back", SettingsHit::Back);
 }
