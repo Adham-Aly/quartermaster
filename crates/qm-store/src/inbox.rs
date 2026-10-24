@@ -1,8 +1,8 @@
 //! Queries over the wake inbox that `wakes.rs` leaves out.
 //!
-//! - [`claim_ids`] delivers named wakes to a running turn: a crewmate's `job_exited` wakes are
-//!   claimed into the turn that is running when they arrive and injected. The same `UPDATE …
-//!   RETURNING` as `wakes::claim_wakes`, so two claimers never take one wake.
+//! - [`claim_ids`] delivers named wakes to a running turn: crewmates take supervisor steering and
+//!   `job_exited` wakes; secondmates take routed requests. They are injected without interrupting
+//!   work. The same `UPDATE … RETURNING` as `wakes::claim_wakes`, so two claimers never take one wake.
 //! - [`pending_count`], [`pending_ids`] and [`exists`] read the inbox. A retired agent's wakes stay
 //!   pending forever and are never counted or claimed.
 

@@ -3,7 +3,8 @@
 //! One Tokio task per open task that has a crewmate. It owns the crewmate's `SessionHandle`
 //! (opened at phase C, or at the first turn after a restart), is the only reader of its events,
 //! and runs one turn at a time. Crewmates have no context block, no action rule and no limits;
-//! two kinds of input slip into a running turn: a `job_exited` wake and your direct message.
+//! three kinds of input slip into a running turn: supervisor steering, a `job_exited` wake and
+//! your direct message.
 //!
 //! Idle, the runner waits on its inputs, the wake window (2 s after the last signal, at most 10 s
 //! after the first), the watchdog deadline and the engine's events (a job can finish, the session
@@ -40,7 +41,7 @@ use qm_tools::handler::{Caller, ToolCx, TurnCx};
 use qm_types::domain::{
     AgentStatus, EngineKind, PlanMode, Role, StartedBy, TaskStatus, TurnStatus, WakeKind,
 };
-use qm_types::ids::{AgentId, MessageId, ModelId, PortBlock, SecondmateId, TaskId, TurnId};
+use qm_types::ids::{AgentId, MessageId, ModelId, PortBlock, SecondmateId, TaskId, TurnId, WakeId};
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
@@ -234,6 +235,8 @@ struct TurnResult {
     final_text: String,
     clear_report: bool,
     end_kind: TurnEndKind,
+    /// Claims whose live injection failed; release only these before consuming the turn's wakes.
+    undelivered_wakes: Vec<WakeId>,
 }
 
 /// A wake window: ready 2 s after the last signal, at most 10 s after the first.
@@ -576,7 +579,7 @@ impl CrewRunner {
                         match ev {
                             None | Some(EngineEvent::SessionClosed { .. }) => break,
                             Some(EngineEvent::JobFinished { job, exit_code, tail, agent_told }) => {
-                                self.on_job_finished(job.to_string(), exit_code, tail, agent_told, None).await;
+                                self.on_job_finished(job.to_string(), exit_code, tail, agent_told).await;
                             }
                             Some(EngineEvent::SessionReady { session, .. }) => {
                                 self.store_session(Some(&session)).await;
@@ -720,7 +723,7 @@ impl CrewRunner {
                 // The wake signals this runner through the inbox; it starts a turn after the
                 // window (the session resumes if it was suspended). A job the agent was told about
                 // posts none: its harness starts that turn itself (`TurnStarted` below).
-                self.on_job_finished(job.to_string(), exit_code, tail, agent_told, None)
+                self.on_job_finished(job.to_string(), exit_code, tail, agent_told)
                     .await;
             }
             Some(EngineEvent::RateLimit { info }) => {
@@ -969,6 +972,7 @@ impl CrewRunner {
                     final_text: String::new(),
                     clear_report: false,
                     end_kind: TurnEndKind::Other,
+                    undelivered_wakes: Vec::new(),
                 },
                 false,
             )
@@ -1000,7 +1004,7 @@ impl CrewRunner {
     }
 
     /// A turn the engine started by itself: recorded as an app-event turn, any pending
-    /// `job_exited` wakes claimed into it.
+    /// live wakes claimed into it.
     async fn turn_in_progress(&mut self) {
         let agent = self.agent;
         let at = self.clock().now();
@@ -1114,24 +1118,44 @@ impl CrewRunner {
 
     /// Reads one turn's events until it ends. `already_started` is a turn the engine began by
     /// itself.
-    #[allow(clippy::too_many_lines)]
     async fn read_turn(
         &mut self,
         turn: TurnId,
         started_by: StartedBy,
         already_started: bool,
     ) -> TurnResult {
+        let mut undelivered = Vec::new();
+        let mut result = self
+            .read_turn_events(turn, started_by, already_started, &mut undelivered)
+            .await;
+        result.undelivered_wakes = undelivered;
+        result
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn read_turn_events(
+        &mut self,
+        turn: TurnId,
+        started_by: StartedBy,
+        already_started: bool,
+        undelivered: &mut Vec<WakeId>,
+    ) -> TurnResult {
         let clock = self.clock();
         let mut turn_started = false;
+        // A resume can fail before TurnStarted: its replacement resends only the original input.
+        // After an interrupt or EndConversation, leave new input for the next turn instead.
+        let mut accepting_input = already_started;
         let mut clear_report = false;
         let mut end_conversation = false;
         let mut interrupted_by_you = false;
         let mut interrupt_deadline: Option<Instant> = None;
         let mut account_reset: Option<Timestamp> = None;
+        let mut inputs_open = true;
         if already_started {
             self.on_turn_started(turn).await;
             turn_started = true;
-            self.claim_job_wakes(turn).await;
+            self.claim_live_wakes(turn, accepting_input, undelivered)
+                .await;
         }
         loop {
             let signs = self.signs().await;
@@ -1156,6 +1180,53 @@ impl CrewRunner {
                 return failed_turn("the crewmate's session is gone");
             };
             tokio::select! {
+                biased;
+                // Buffered builtin activity must not starve steering or an explicit interrupt.
+                input = self.rx.recv(), if inputs_open => {
+                    // A disconnected receiver stays ready forever; still read the engine's end.
+                    inputs_open = input.is_some();
+                    match input {
+                        None | Some(CrewInput::Shutdown) => {
+                            accepting_input = false;
+                            if self.ending.is_none() {
+                                self.ending = Some(Ending::Shutdown);
+                            }
+                            interrupt_deadline.get_or_insert_with(|| {
+                                if let Some(h) = self.session.as_ref() { let _ = h.interrupt(); }
+                                clock.instant() + INTERRUPT_GRACE
+                            });
+                        }
+                        Some(CrewInput::Stop { done }) => {
+                            accepting_input = false;
+                            self.ending = Some(Ending::Stop(done));
+                            self.stopped_mid_turn = true;
+                            interrupt_deadline.get_or_insert_with(|| {
+                                if let Some(h) = self.session.as_ref() { let _ = h.interrupt(); }
+                                clock.instant() + INTERRUPT_GRACE
+                            });
+                        }
+                        Some(CrewInput::Interrupt) => {
+                            accepting_input = false;
+                            interrupted_by_you = true;
+                            interrupt_deadline.get_or_insert_with(|| {
+                                if let Some(h) = self.session.as_ref() { let _ = h.interrupt(); }
+                                clock.instant() + INTERRUPT_GRACE
+                            });
+                        }
+                        Some(CrewInput::Wake) => {
+                            self.wakes.note(clock.instant());
+                            self.claim_live_wakes(turn, accepting_input, undelivered).await;
+                        }
+                        Some(CrewInput::UserMessage { message }) => {
+                            if accepting_input && self.ending.is_none() && !*self.state.cancel.borrow() {
+                                self.inject_message(message).await;
+                            } else {
+                                self.messages.push_back(message);
+                            }
+                        }
+                        Some(CrewInput::SupervisorActed) => self.watch.supervisor_acted(),
+                    }
+                }
                 ev = handle.next_event() => {
                     let Some(ev) = ev else {
                         self.session = None;
@@ -1170,7 +1241,9 @@ impl CrewRunner {
                         }
                         EngineEvent::TurnStarted => {
                             turn_started = true;
+                            accepting_input = interrupt_deadline.is_none() && !end_conversation;
                             self.on_turn_started(turn).await;
+                            self.claim_live_wakes(turn, accepting_input, undelivered).await;
                         }
                         EngineEvent::TextLine { text } => {
                             self.watch.engine_event(&*clock);
@@ -1199,6 +1272,9 @@ impl CrewRunner {
                             self.watch.engine_event(&*clock);
                             let bare = name.strip_prefix(MCP_PREFIX).unwrap_or(&name).to_owned();
                             let result = self.dispatch(turn, started_by, &bare, args).await;
+                            // Dispatch is inline: a signal may still be queued, or arrive while
+                            // the tool awaits. Read durable steering before unblocking the engine.
+                            self.claim_live_wakes(turn, accepting_input, undelivered).await;
                             self.record(Some(turn), || SessionRecordKind::ToolResult {
                                 call: call.clone(),
                                 name: bare.clone(),
@@ -1219,14 +1295,18 @@ impl CrewRunner {
                         }
                         EngineEvent::JobFinished { job, exit_code, tail, agent_told } => {
                             self.watch.engine_event(&*clock);
-                            self.on_job_finished(job.to_string(), exit_code, tail, agent_told, Some(turn)).await;
+                            self.on_job_finished(job.to_string(), exit_code, tail, agent_told).await;
+                            self.claim_live_wakes(turn, accepting_input, undelivered).await;
                         }
                         EngineEvent::RateLimit { info } => {
                             if let Some(at) = self.on_rate_limit(&info, Some(turn)).await {
                                 account_reset = Some(at);
                             }
                         }
-                        EngineEvent::EndConversationCalled => end_conversation = true,
+                        EngineEvent::EndConversationCalled => {
+                            end_conversation = true;
+                            accepting_input = false;
+                        }
                         EngineEvent::TurnEnded { outcome, usage, final_text } => {
                             let mut result = Self::ended(outcome, usage, final_text, clear_report, interrupted_by_you);
                             if end_conversation {
@@ -1267,37 +1347,6 @@ impl CrewRunner {
                             ));
                         }
                         _ => {}
-                    }
-                }
-                input = self.rx.recv() => {
-                    match input {
-                        None | Some(CrewInput::Shutdown) => {
-                            if self.ending.is_none() {
-                                self.ending = Some(Ending::Shutdown);
-                            }
-                            interrupt_deadline.get_or_insert_with(|| {
-                                if let Some(h) = self.session.as_ref() { let _ = h.interrupt(); }
-                                clock.instant() + INTERRUPT_GRACE
-                            });
-                        }
-                        Some(CrewInput::Stop { done }) => {
-                            self.ending = Some(Ending::Stop(done));
-                            self.stopped_mid_turn = true;
-                            interrupt_deadline.get_or_insert_with(|| {
-                                if let Some(h) = self.session.as_ref() { let _ = h.interrupt(); }
-                                clock.instant() + INTERRUPT_GRACE
-                            });
-                        }
-                        Some(CrewInput::Interrupt) => {
-                            interrupted_by_you = true;
-                            interrupt_deadline.get_or_insert_with(|| {
-                                if let Some(h) = self.session.as_ref() { let _ = h.interrupt(); }
-                                clock.instant() + INTERRUPT_GRACE
-                            });
-                        }
-                        Some(CrewInput::Wake) => self.claim_job_wakes(turn).await,
-                        Some(CrewInput::UserMessage { message }) => self.inject_message(message).await,
-                        Some(CrewInput::SupervisorActed) => self.watch.supervisor_acted(),
                     }
                 }
                 () = sleep => {
@@ -1392,6 +1441,7 @@ impl CrewRunner {
             } else {
                 end_kind
             },
+            undelivered_wakes: Vec::new(),
         }
     }
 
@@ -1414,10 +1464,24 @@ impl CrewRunner {
         let model = self.model.clone();
         let final_text = result.final_text.clone();
         let keep = !result.clear_report;
+        let undelivered = result.undelivered_wakes.clone();
         let committed = self
             .svc
             .db()
             .call(move |conn| {
+                // Release only undelivered live inputs, never the original input or earlier live
+                // deliveries. If release fails, don't let finish_crew_turn consume these claims.
+                if !undelivered.is_empty() {
+                    let tx = conn.transaction()?;
+                    for id in undelivered {
+                        tx.execute(
+                            "UPDATE wakes SET delivered_turn_id = NULL, delivered_at = NULL
+                             WHERE id = ?1 AND delivered_turn_id = ?2 AND consumed_at IS NULL",
+                            rusqlite::params![id, turn],
+                        )?;
+                    }
+                    tx.commit()?;
+                }
                 agents::finish_crew_turn(
                     conn,
                     &FinishedCrewTurn {
@@ -1660,33 +1724,65 @@ impl CrewRunner {
             .await;
     }
 
-    /// Claims pending `job_exited` wakes into the running turn and injects them. Every other wake
-    /// waits for the next turn.
-    async fn claim_job_wakes(&mut self, turn: TurnId) {
+    /// Claims supervisor steering and job exits into an accepted, uninterrupted turn. Ordinary
+    /// wakes keep the normal next-turn debounce, and live input keeps its supervisor markers.
+    async fn claim_live_wakes(
+        &mut self,
+        turn: TurnId,
+        accepting_input: bool,
+        undelivered: &mut Vec<WakeId>,
+    ) {
+        if !accepting_input
+            || self.ending.is_some()
+            || *self.state.cancel.borrow()
+            || self.session.is_none()
+        {
+            return;
+        }
         let agent = self.agent;
         let at = self.clock().now();
+        let (attempted_tx, attempted_rx) = oneshot::channel();
         let claimed = self
             .svc
             .db()
             .call(move |conn| {
-                let ids = inbox_store::pending_ids(conn, agent, &[WakeKind::JobExited])?;
+                let ids =
+                    inbox_store::pending_ids(conn, agent, &[WakeKind::Steer, WakeKind::JobExited])?;
+                let _ = attempted_tx.send(ids.clone());
                 inbox_store::claim_ids(conn, &ids, turn, at)
             })
-            .await
-            .unwrap_or_default();
-        if claimed.is_empty() {
-            // Other wakes wait for the next turn: remember them.
-            let now = self.clock().instant();
-            self.wakes.note(now);
-            return;
+            .await;
+        match claimed {
+            Ok(claimed) if !claimed.is_empty() => {
+                let text = render_wakes(&claimed, &self.supervisor_label);
+                // Stop/quit can latch cancellation while the database claim is in flight.
+                if !*self.state.cancel.borrow()
+                    && self
+                        .session
+                        .as_ref()
+                        .is_some_and(|h| h.inject(TurnInput::text(text)).is_ok())
+                {
+                    self.record_wakes(turn, &claimed);
+                } else {
+                    undelivered.extend(claimed.iter().map(|wake| wake.id));
+                    self.wakes.note(self.clock().instant());
+                    tracing::warn!(%turn, "the crewmate's live wakes weren't sent; they will be retried");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                // A mirror flush can fail after the memory claim commits. Retain just this
+                // attempt's pending IDs; release is guarded by this turn and unconsumed state.
+                undelivered.extend(attempted_rx.await.unwrap_or_default());
+                self.wakes.note(self.clock().instant());
+                tracing::warn!(%turn, %error, "couldn't claim the crewmate's live wakes");
+            }
         }
-        self.record_wakes(turn, &claimed);
-        let text = render_wakes(&claimed, &self.supervisor_label);
-        if let Some(h) = self.session.as_ref() {
-            let _ = h.inject(TurnInput::text(text));
+        // Catch up with unrelated durable wakes too, but don't reset their existing window
+        // whenever another tool completes (or invent a window when nothing is pending).
+        if self.wakes.ready_at().is_none() {
+            self.check_pending().await;
         }
-        // Anything else that arrived waits for the next turn.
-        self.check_pending().await;
     }
 
     /// Your message, injected unmarked into the running turn.
@@ -1730,15 +1826,14 @@ impl CrewRunner {
         }
     }
 
-    /// A job finished: recorded with its wake (none when `agent_told`); inside a turn the wake
-    /// is claimed and injected.
+    /// A job finished: recorded with its wake (none when `agent_told`). The caller inside a
+    /// running turn claims live wakes only while that turn still accepts input.
     async fn on_job_finished(
         &mut self,
         label: String,
         exit_code: Option<i32>,
         tail: String,
         agent_told: bool,
-        turn: Option<TurnId>,
     ) {
         saturating_decrement(&self.state.jobs_running);
         let claude = self
@@ -1752,16 +1847,9 @@ impl CrewRunner {
             claude,
             agent_told,
         };
-        match crate::jobs::job_finished(&self.svc, self.task, self.agent, finished).await {
-            Ok(Some(_)) => {
-                if let Some(turn) = turn {
-                    self.claim_job_wakes(turn).await;
-                }
-            }
-            Ok(None) => {}
-            Err(e) => {
-                tracing::warn!(task = %self.task, error = %e, "couldn't record a finished job");
-            }
+        if let Err(e) = crate::jobs::job_finished(&self.svc, self.task, self.agent, finished).await
+        {
+            tracing::warn!(task = %self.task, error = %e, "couldn't record a finished job");
         }
     }
 
@@ -1859,6 +1947,7 @@ fn failed_turn(reason: &str) -> TurnResult {
         final_text: String::new(),
         clear_report: false,
         end_kind: TurnEndKind::Other,
+        undelivered_wakes: Vec::new(),
     }
 }
 
@@ -2027,6 +2116,9 @@ mod forgetting_tests {
 }
 
 #[cfg(test)]
+mod live_wake_tests;
+
+#[cfg(test)]
 mod job_wake_tests {
     use super::*;
     use qm_engine::{EngineSide, SessionCommand, session_channel};
@@ -2040,6 +2132,8 @@ mod job_wake_tests {
         fixture: crate::turns::forget_tests::Fixture,
         runner: CrewRunner,
         side: EngineSide,
+        // Keep the input channel open: dropping it means Shutdown, not an idle test producer.
+        _tx: mpsc::UnboundedSender<CrewInput>,
         scheduler: tokio::task::JoinHandle<()>,
     }
 
@@ -2059,7 +2153,7 @@ mod job_wake_tests {
                 .await
                 .unwrap();
             let (svc, scheduler) = fixture.task_service();
-            let (_tx, rx) = mpsc::unbounded_channel();
+            let (tx, rx) = mpsc::unbounded_channel();
             let (activity, _) = broadcast::channel(64);
             let mut runner = CrewRunner::new(
                 TaskId::new(2).unwrap(),
@@ -2083,6 +2177,7 @@ mod job_wake_tests {
                 fixture,
                 runner,
                 side,
+                _tx: tx,
                 scheduler,
             }
         }

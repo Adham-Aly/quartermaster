@@ -223,9 +223,8 @@ impl Session {
     async fn turn_body(&mut self, totals: &mut Totals) -> TurnEnd {
         let mut final_text = String::new();
         loop {
-            for input in std::mem::take(&mut self.steering) {
-                let message = user_message(&input).await;
-                self.record(message);
+            if let Err(cancel) = self.agent_checkpoint().await {
+                return interrupted(cancel, final_text);
             }
             match self.compact_if_due().await {
                 Ok(()) | Err(CompactError::Nothing) => {}
@@ -293,13 +292,36 @@ impl Session {
                     return interrupted(cancel, final_text);
                 }
             }
-            if calls.is_empty() && self.steering.is_empty() {
-                break;
+            if calls.is_empty() {
+                // A ready response can win a wait against a queued command, just as the last
+                // tool result can. Don't end the turn with steering still in the channel.
+                if let Err(cancel) = self.drain_turn_commands() {
+                    return interrupted(cancel, final_text);
+                }
+                if self.steering.is_empty() {
+                    break;
+                }
             }
         }
         TurnEnd {
             outcome: TurnOutcome::Completed,
             final_text,
+        }
+    }
+
+    /// Intakes queued commands and records steering only at an agent boundary, after the whole
+    /// tool batch has been recorded. Never put a user message between calls and their results.
+    /// Re-check after reading input images, which can yield while more commands arrive.
+    async fn agent_checkpoint(&mut self) -> Result<(), Cancel> {
+        loop {
+            self.drain_turn_commands()?;
+            if self.steering.is_empty() {
+                return Ok(());
+            }
+            for input in std::mem::take(&mut self.steering) {
+                let message = user_message(&input).await;
+                self.record(message);
+            }
         }
     }
 
@@ -600,6 +622,14 @@ impl Session {
         secret: &Secret,
         kind: &CredentialKind,
     ) -> Result<Message, AttemptError> {
+        if mode == CallMode::Agent {
+            // The last chance before the request snapshots context, on every attempt (including
+            // retries). Compaction and credential lookup may have accepted or queued steering
+            // since the loop's checkpoint. Summary prompts stay fixed and never consume it.
+            self.agent_checkpoint()
+                .await
+                .map_err(|cancel| AttemptError::Cancelled(cancel, None))?;
+        }
         let Some(adapter) = self.adapter_for(kind) else {
             return Err(AttemptError::fatal(format!(
                 "the provider engine has no adapter for {} accounts yet",

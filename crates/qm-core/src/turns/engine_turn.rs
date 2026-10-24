@@ -19,7 +19,7 @@ use qm_store::wakes::{self, ClaimedWake};
 use qm_tools::handler::{Caller, ToolCx, ToolFailure, TurnCx};
 use qm_types::domain::StartedBy;
 use qm_types::error::Refusal;
-use qm_types::ids::{AgentId, MessageId, TurnId};
+use qm_types::ids::{AgentId, MessageId, TurnId, WakeId};
 use qm_types::rules::TurnCounters;
 use std::sync::Arc;
 use std::time::Instant;
@@ -82,6 +82,9 @@ pub(crate) struct EngineTurnEnd {
     pub session_lost: Option<OpenReason>,
     /// The input reached the model (`TurnStarted` came).
     pub delivered: bool,
+    /// Mid-turn inputs not sent after a claim or command failure; release these before consuming
+    /// the turn's other wakes, even when its initial input was delivered.
+    pub undelivered_wakes: Vec<WakeId>,
 }
 
 impl EngineTurnEnd {
@@ -98,6 +101,7 @@ impl EngineTurnEnd {
             end_conversation: false,
             session_lost: None,
             delivered: false,
+            undelivered_wakes: Vec::new(),
         }
     }
 
@@ -209,7 +213,9 @@ impl TurnLoop {
                     &claimed,
                     message.as_deref(),
                 );
+                let undelivered_wakes = std::mem::take(&mut end.undelivered_wakes);
                 end = self.drive(&cx, Some(input), Attempt::First).await;
+                end.undelivered_wakes.extend(undelivered_wakes);
             } else {
                 end.outcome = Ended::Failed {
                     reason: format!(
@@ -373,6 +379,7 @@ impl TurnLoop {
         // The turn's clocks run from the moment it was asked for.
         let mut meter = TurnMeter::start(clock.instant());
         let mut stopping: Option<(Interruption, Instant)> = None;
+        let mut inputs_open = true;
 
         loop {
             let now = clock.instant();
@@ -388,13 +395,22 @@ impl TurnLoop {
             };
             let wake = tokio::select! {
                 biased;
+                // A buffered stream of engine events must not starve supervisor requests (or Esc).
+                input = self.inbox.inputs.recv(), if inputs_open => TurnWake::Input(input),
                 ev = live.handle.next_event() => TurnWake::Event(ev),
-                input = self.inbox.inputs.recv() => TurnWake::Input(input),
                 () = sleep => TurnWake::Timer,
             };
             let now = clock.instant();
             match wake {
-                TurnWake::Input(input) => self.input_during_turn(input, &mut stopping, now),
+                TurnWake::Input(input) => {
+                    // recv stays ready forever after disconnection; let the engine finish stopping.
+                    inputs_open = input.is_some();
+                    let wake = input == Some(SeatInput::Wake);
+                    self.input_during_turn(input, &mut stopping, now);
+                    if wake && stopping.is_none() {
+                        self.inject_routed_wakes(cx, &mut end).await;
+                    }
+                }
                 TurnWake::Timer => {
                     if let Some((why, grace)) = stopping
                         && now >= grace
@@ -495,7 +511,7 @@ impl TurnLoop {
                 resumed,
                 init,
             } => self.session_ready(&session, resumed, &init).await,
-            EngineEvent::TurnStarted => end.delivered = true,
+            EngineEvent::TurnStarted => self.accept_turn(cx, end, stopping.is_some()).await,
             EngineEvent::ModelCallStarted { call } => {
                 tracing::debug!(call, "seat model call started");
             }
@@ -505,6 +521,12 @@ impl TurnLoop {
                 let result = self
                     .tool_call(cx, attempt, name, args, end, stopping.is_some())
                     .await;
+                // Tools run inline. A request written while the host was awaited must enter the
+                // command queue before its result lets the engine start another model call, even
+                // when the wake signal hasn't been read yet. Never interrupt the tool itself.
+                if stopping.is_none() {
+                    self.inject_routed_wakes(cx, end).await;
+                }
                 let sent = self
                     .session
                     .as_ref()
@@ -584,6 +606,15 @@ impl TurnLoop {
             other => tracing::debug!(event = other.name(), "seat event ignored"),
         }
         None
+    }
+
+    /// Acceptance makes it safe to inject requests whose signal preceded the initial input (or
+    /// its resume retry). Until now they had to stay pending in case the resume failed.
+    async fn accept_turn(&mut self, cx: &TurnCtx, end: &mut EngineTurnEnd, stopping: bool) {
+        end.delivered = true;
+        if !stopping {
+            self.inject_routed_wakes(cx, end).await;
+        }
     }
 
     /// Runs one of our tools for the turn, with the turn's `StartedBy` in `Caller::turn` (so

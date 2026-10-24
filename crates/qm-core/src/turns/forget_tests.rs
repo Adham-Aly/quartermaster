@@ -75,9 +75,9 @@ impl ChatLog for Services {
 }
 
 pub(crate) struct Fixture {
-    loop_: TurnLoop,
-    side: EngineSide,
-    _inbox: crate::turn_io::SeatInbox,
+    pub(super) loop_: TurnLoop,
+    pub(super) side: EngineSide,
+    pub(super) inbox: crate::turn_io::SeatInbox,
     dir: TempDir,
 }
 /// The fixture's folder, removed when the fixture goes.
@@ -145,9 +145,13 @@ impl Fixture {
         Self {
             loop_,
             side,
-            _inbox: inbox,
+            inbox,
             dir: TempDir(dir),
         }
+    }
+    /// The disk mirror, for tests that fail writes after an in-memory claim commits.
+    pub(crate) fn mirror(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(self.dir.join("state.db")).unwrap()
     }
     /// The fixture's database.
     pub(crate) fn db(&self) -> &Db {
@@ -578,7 +582,7 @@ async fn the_command_that_ends(input: SeatInput) -> Option<SessionCommand> {
     let Fixture {
         loop_,
         mut side,
-        _inbox: inbox,
+        inbox,
         dir: _dir,
     } = Fixture::new().await;
     inbox.send(input).unwrap();
