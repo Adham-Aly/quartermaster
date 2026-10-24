@@ -13,9 +13,14 @@ impl TurnLoop {
     /// Only routed requests bypass the next-turn wake window. Keep the turn's original authority
     /// and leave ordinary wakes (including ride-along interventions) in the inbox.
     pub(super) async fn inject_routed_wakes(&mut self, cx: &TurnCtx, end: &mut EngineTurnEnd) {
-        if self.who.secondmate().is_none() || self.session.is_none() || !end.delivered {
+        if self.who.secondmate().is_none()
+            || self.session.is_none()
+            || !end.delivered
+            || end.end_conversation
+        {
             // Before TurnStarted, a resume can still fail. Its replacement resends only the
             // initial input, so leave new requests pending until the engine accepts the turn.
+            // An ending conversation likewise leaves new requests for its replacement session.
             return;
         }
         let agent = cx.agent;

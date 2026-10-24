@@ -514,6 +514,98 @@ async fn routed_wakes_do_not_inject_into_the_quartermaster_or_a_stopping_turn() 
 }
 
 #[tokio::test]
+async fn routed_after_end_conversation_waits_for_a_replacement_turn() {
+    let mut f = secondmate().await;
+    post(f.db(), WakeKind::Checks, "initial").await;
+    let observed = Arc::new(Notify::new());
+    let tap = observed.clone();
+    let mut live = f.loop_.session.take().unwrap();
+    live.handle = live.handle.observed(Arc::new(move |event| {
+        if matches!(event, EngineEvent::EndConversationCalled) {
+            tap.notify_one();
+        }
+    }));
+    f.loop_.session = Some(live);
+    let db = f.db().clone();
+    let inbox = f.inbox.clone();
+    let side = &mut f.side;
+    let engine = async {
+        assert!(matches!(
+            side.commands.recv().await,
+            Some(SessionCommand::StartTurn { .. })
+        ));
+        side.events.send(EngineEvent::TurnStarted).await.unwrap();
+        side.events
+            .send(EngineEvent::EndConversationCalled)
+            .await
+            .unwrap();
+        observed.notified().await;
+        post(&db, WakeKind::Routed, "routed").await;
+        // The command receiver stays open: a send can succeed even though this session can no
+        // longer run the request. The signal must leave it pending, not claim and consume it.
+        assert!(!side.commands.is_closed());
+        inbox.send(SeatInput::Wake).unwrap();
+        finish(side, TurnOutcome::Completed).await;
+        assert_eq!(
+            side.commands.recv().await,
+            Some(SessionCommand::Forget),
+            "no Inject into the ending conversation"
+        );
+        assert_eq!(state(&db, "routed").await, (None, false));
+        side.events
+            .send(EngineEvent::SessionClosed {
+                reason: CloseReason::EndConversation,
+            })
+            .await
+            .unwrap();
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (ran, ()) = tokio::join!(f.loop_.run_turn(Start::Wakes), engine);
+        ran.unwrap();
+    })
+    .await
+    .unwrap();
+    assert!(state(f.db(), "initial").await.1);
+    assert_eq!(state(f.db(), "routed").await, (None, false));
+    assert!(f.side.commands.try_recv().is_err(), "no late Inject");
+    assert!(f.loop_.session.is_none());
+
+    // This fixture cannot open sessions itself; supply the replacement after the old one closed.
+    let (handle, side) = qm_engine::session_channel();
+    f.loop_.session = Some(Live {
+        agent: SECOND,
+        handle,
+        preamble: None,
+        model: None,
+    });
+    f.side = side;
+    let side = &mut f.side;
+    let engine = async {
+        let Some(SessionCommand::StartTurn { input }) = side.commands.recv().await else {
+            panic!("expected the routed request in the replacement turn");
+        };
+        assert_eq!(
+            input,
+            TurnInput::text(format!(
+                "<qm:supervisor from=\"quartermaster\" corr=\"{CORR}\">{}</qm:supervisor>",
+                qm_policy::markers::neutralise(REQUEST)
+            ))
+        );
+        side.events.send(EngineEvent::TurnStarted).await.unwrap();
+        finish(side, TurnOutcome::Completed).await;
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (ran, ()) = tokio::join!(f.loop_.run_turn(Start::Wakes), engine);
+        ran.unwrap();
+    })
+    .await
+    .unwrap();
+    let (turn, consumed) = state(f.db(), "routed").await;
+    assert!(turn.is_some() && consumed);
+    assert!(f.side.commands.try_recv().is_err(), "no duplicate Inject");
+}
+
+#[tokio::test]
 async fn early_routed_signal_waits_for_turn_acceptance_and_survives_resume_failure() {
     for accepted in [true, false] {
         let mut f = secondmate().await;
