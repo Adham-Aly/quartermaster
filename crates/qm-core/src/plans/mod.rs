@@ -6,9 +6,11 @@
 //!
 //! | File | Written by | What |
 //! |---|---|---|
-//! | `plan.md` | the planner | the plan, the one source of truth |
+//! | `plan.md` | the planner | comprehensive technical implementation handoff |
 //! | `assets/` | the planner | images it shows |
-//! | `plan.html` | the app, normal autonomy only | the user's page, rendered by `qm-plans` |
+//! | `plan.html` | the planner, normal autonomy only | human explanation with app-owned review controls |
+//! | `template.html` | the app, normal autonomy only | starter fragment and shared styling contract |
+//! | `page-source.json` | the app | retained authored fragment and composed-page digest |
 //! | `state.json` | the app | [`PlanState`]: the plan's id, stage, round, card and page key |
 //!
 //! A build that builds on a plan gets its own copy of `plan.md` and `assets/` in its own plan
@@ -105,7 +107,7 @@ pub struct PlanState {
     #[serde(default)]
     pub page_sent: Option<PageSent>,
     /// What the page on disk was rendered from ([`qm_plans::digest`]): the app renders it again
-    /// (for a new port, or once its reply is sent) only while `plan.md` and the assets still match,
+    /// (for a new port, or once its reply is sent) only while both documents and assets still match,
     /// so the user never sees plan text appear that the planner didn't report.
     #[serde(default)]
     pub rendered_digest: Option<String>,
@@ -359,7 +361,82 @@ pub fn check(dir: &Path, mode: PlanMode, state: &PlanState) -> Result<Checked, S
         user_rounds: state.user_rounds,
         take_recommended: state.take_recommended,
     };
-    qm_plans::check(&md, &assets, &rules).map_err(|p| problems(&p))
+    match mode {
+        PlanMode::Internal => {
+            if fs::symlink_metadata(dir.join(PAGE_FILE)).is_ok() {
+                return Err("Auto autonomy has no plan.html: remove it and keep the technical plan in plan.md".to_owned());
+            }
+            qm_plans::check(&md, &assets, &rules).map_err(|p| problems(&p))
+        }
+        PlanMode::Interactive => {
+            qm_plans::check_technical(&md, &assets).map_err(|p| problems(&p))?;
+            let source = authored_source(dir)?;
+            qm_plans::check_html(&source, &assets, &rules).map_err(|p| p.to_string())
+        }
+    }
+}
+
+/// A retained author fragment paired with the exact composed output's fingerprint. A planner
+/// revises by replacing plan.html with a new fragment; untouched runtime output resolves back
+/// to its source. Runtime refreshes never turn the technical Markdown into user-facing prose.
+#[derive(Serialize, Deserialize)]
+struct AuthoredPage {
+    source: String,
+    output: String,
+}
+
+const AUTHOR_FILE: &str = "page-source.json";
+
+fn plain_text(dir: &Path, name: &str, max: u64) -> Result<String, String> {
+    let path = dir.join(name);
+    let meta = fs::symlink_metadata(&path).map_err(|e| format!("{name} can't be read: {e}"))?;
+    if !meta.is_file() || meta.len() > max {
+        return Err(format!(
+            "{name} must be a plain file no larger than {max} bytes"
+        ));
+    }
+    fs::read_to_string(path).map_err(|e| format!("{name} can't be read: {e}"))
+}
+
+fn authored_source(dir: &Path) -> Result<String, String> {
+    // Composed pages include bundled fonts and scripts, so their cap exceeds the source cap.
+    let html = plain_text(dir, PAGE_FILE, 80 * 1024 * 1024)?;
+    if dir.join(AUTHOR_FILE).exists() {
+        let saved = plain_text(dir, AUTHOR_FILE, 8 * qm_plans::MAX_PLAN_BYTES as u64)?;
+        let saved: AuthoredPage = serde_json::from_str(&saved).map_err(|e| e.to_string())?;
+        if saved.output == qm_plans::digest(&html, &Assets::default()) {
+            return Ok(saved.source);
+        }
+    }
+    Ok(html)
+}
+
+fn page_digest(md: &str, source: &str, assets: &Assets) -> String {
+    qm_plans::digest(
+        &format!(
+            "{}{}",
+            qm_plans::digest(md, assets),
+            qm_plans::digest(source, assets)
+        ),
+        &Assets::default(),
+    )
+}
+
+/// Supply only the starter fragment in normal autonomy; never manufacture a plan's prose.
+pub fn prepare_template(dir: &Path, mode: PlanMode) -> io::Result<()> {
+    let template = dir.join("template.html");
+    if mode == PlanMode::Interactive {
+        write_private(&template, qm_plans::authoring_template().as_bytes())
+    } else {
+        for name in ["template.html", PAGE_FILE, AUTHOR_FILE] {
+            match fs::remove_file(dir.join(name)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A page written to the plan folder.
@@ -383,7 +460,7 @@ impl Rendered {
     }
 }
 
-/// Renders the folder's plan as the user's page, for the round and stage in `state`, and writes
+/// Wraps the planner-authored HTML with review controls for `state`, and writes
 /// `plan.html`. With the endpoint's `port`, a page that takes a reply ([`PlanState::takes_page_reply`])
 /// can send it there with the round's key; without one it offers Copy reply only.
 pub fn render(
@@ -446,12 +523,19 @@ fn render_from(
         previous: previous.clone(),
         submit,
     };
-    let rendered = qm_plans::render(md, assets, &meta).map_err(|p| problems(&p))?;
+    let source = authored_source(dir)?;
+    let rendered = qm_plans::compose_html(&source, assets, &meta).map_err(|p| p.to_string())?;
+    let saved = AuthoredPage {
+        source: source.clone(),
+        output: qm_plans::digest(&rendered.html, &Assets::default()),
+    };
+    let saved = serde_json::to_vec(&saved).map_err(|e| e.to_string())?;
+    write_private(&dir.join(AUTHOR_FILE), &saved).map_err(|e| e.to_string())?;
     write_private(&dir.join(PAGE_FILE), rendered.html.as_bytes())
         .map_err(|e| format!("the page couldn't be written: {e}"))?;
     Ok(Rendered {
         checked: rendered.checked,
-        digest: qm_plans::digest(md, assets),
+        digest: page_digest(md, &source, assets),
         port: sends_to,
         previous,
     })
@@ -506,15 +590,12 @@ fn render_again(
         return Ok(false);
     }
     let (md, assets) = read(dir)?;
-    let previous = match previous {
-        Some(previous) => previous(&state),
-        None if state.rendered_digest.as_deref()
-            == Some(qm_plans::digest(&md, &assets).as_str()) =>
-        {
-            state.page_previous.clone()
-        }
-        None => return Ok(false),
-    };
+    let source = authored_source(dir)?;
+    if state.rendered_digest.as_deref() != Some(page_digest(&md, &source, &assets).as_str()) {
+        return Ok(false);
+    }
+    let previous =
+        previous.map_or_else(|| state.page_previous.clone(), |previous| previous(&state));
     let rendered = render_from(dir, &md, &assets, task, project, &state, previous, port)?;
     rendered.record(&mut state);
     save(dir, &state).map_err(|e| e.to_string())?;

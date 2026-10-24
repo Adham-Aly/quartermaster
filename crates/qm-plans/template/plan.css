@@ -100,4 +100,4 @@ body.closed .reply-bar, body.closed .sec-tools, body.closed .q-add-note { displa
   .q { break-inside: avoid; }
   .badge-updated { border: 1px solid #000000; }
 }
-.plan > h1:first-child { display: none; }
+.plan > h1:first-child, .plan > article h1 { display: none; }

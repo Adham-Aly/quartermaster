@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 tool! {
-    /// Checks `plan.md` under normal autonomy and renders the user's page from it.
+    /// Checks technical `plan.md` and planner-authored `plan.html`, adding review controls.
     PlanCheckInteractiveTool {
         name: "plan_check",
         key: "plan_check.interactive",

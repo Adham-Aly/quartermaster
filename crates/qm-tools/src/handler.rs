@@ -183,7 +183,7 @@ pub trait ToolHost: Send + Sync {
     }
 
     /// `plan_check`: checks the caller's `plan.md` under the live plan mode and, under normal
-    /// autonomy, renders its page; one line, or every problem.
+    /// autonomy, checks authored `plan.html` and adds review controls; one line, or every problem.
     fn plan_check<'a>(&'a self, caller: &'a Caller) -> BoxFuture<'a, Result<String, ToolFailure>> {
         let _ = caller;
         Box::pin(async { Err(ToolFailure::not_available("plan_check")) })

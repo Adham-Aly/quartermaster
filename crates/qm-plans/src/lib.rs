@@ -1,26 +1,11 @@
-//! Plan pages. A plan task writes one file, `plan.md`, plus images in `assets/`, all in its plan
-//! folder under the scratch root (`/tmp/quartermaster/…`). This crate checks that file against the
-//! rules of the task's [`PlanMode`] and, for interactive plans, renders it into a standalone
-//! `plan.html` from a template compiled into the binary.
-//!
-//! - **The planner never writes HTML.** Every byte of markup comes from here: Markdown through
-//!   `pulldown-cmark` with raw HTML shown as text, code highlighted by `syntect`, SVG inlined only
-//!   after an allow-list cleaner ([`svg`]), raster images embedded as `data:` URIs, so the page
-//!   stands alone and makes no outside request. The page's scripts are ours, pinned by hash in
-//!   its content security policy.
-//! - **Deterministic.** [`render`] is a pure function of `plan.md`, the assets and [`Meta`]: no
-//!   clock, no randomness, no unordered maps. Rendering twice gives the same bytes.
-//! - **The page mirrors the Markdown.** Question blocks become widgets; everything else is the
-//!   same text. Each h2/h3 section has a fingerprint over its Markdown and the bytes of the assets
-//!   it shows, so a changed section (or a changed image in it) is badged "updated" next round.
-//! - **Questions and replies.** A question is a ```` ```question ```` TOML block ([`question`]).
-//!   The page builds a reply the user sends to the app from the page ([`Submit`]), or copies and
-//!   pastes into a chat; [`reply`] parses it back.
-//! - **Mode rules** ([`check`]): interactive plans must ask in round 1, list `## Assumptions`, and
-//!   go final only after the user answered a round; internal plans may not ask at all and list
-//!   `## Decisions made without the user`.
+//! Planner-authored user-facing HTML, separate from the technical `plan.md`.
+//! [`authoring_template`], [`check_html`] and [`compose_html`] define the authoring contract.
+//! Composition preserves authored markup and adds the trusted runtime and controls.
+//! Legacy Markdown [`check`] and [`render`] remain available for existing callers.
 
+mod authored;
 mod highlight;
+pub use authored::{authoring_template, check_html, compose_html};
 pub mod markdown;
 mod page;
 pub mod question;
@@ -36,9 +21,9 @@ use std::path::Path;
 
 pub use question::{Choice, Question};
 
-/// The plan's source of truth, in the plan folder.
+/// The technical agent plan, in the plan folder.
 pub const PLAN_FILE: &str = "plan.md";
-/// The page the app renders from it (interactive plans only).
+/// The planner-authored user-facing document (interactive plans only).
 pub const PAGE_FILE: &str = "plan.html";
 /// The folder for the plan's images, inside the plan folder.
 pub const ASSETS_DIR: &str = "assets";
@@ -315,10 +300,20 @@ impl Checked {
     }
 }
 
-/// Checks `plan.md` against the format and the mode's rules. Every problem is listed at once.
+/// Checks the technical agent handoff without imposing user-review round rules.
+/// Interactive questions belong in `plan.html`, not this Markdown document.
+/// For internal plans use [`check`] with internal rules to require the decisions record too.
+pub fn check_technical(md: &str, assets: &Assets) -> Result<Checked, Problems> {
+    markdown::parse(md, assets, PlanMode::Internal).map(|parsed| parsed.checked)
+}
+
+/// Checks legacy `plan.md` against the format and the mode's rules.
 pub fn check(md: &str, assets: &Assets, rules: &Rules) -> Result<Checked, Problems> {
     let parsed = markdown::parse(md, assets, rules.mode)?;
-    let checked = parsed.checked;
+    check_rules(parsed.checked, rules)
+}
+
+pub(crate) fn check_rules(checked: Checked, rules: &Rules) -> Result<Checked, Problems> {
     let mut problems = Vec::new();
     let has = |id: &str| checked.sections.iter().any(|s| s.id == id);
     match rules.mode {
