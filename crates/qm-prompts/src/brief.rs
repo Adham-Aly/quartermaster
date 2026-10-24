@@ -590,6 +590,19 @@ fn section_delivery(out: &mut String, f: &BriefFacts) {
 
 fn section_reporting(out: &mut String, f: &BriefFacts) {
     out.push_str("\n## Reporting\n");
+    if matches!(
+        f.kind,
+        TaskKind::Lookup | TaskKind::Research | TaskKind::Reproduce | TaskKind::Teach
+    ) {
+        out.push_str(
+            "Before reporting done, read $QM_REPORT_DIR/SKILL.md. Copy $QM_REPORT_DIR/template.html\n\
+             to $QM_REPORT_DIR/report.html and customize it into your complete static report, with\n\
+             local supporting files in $QM_REPORT_DIR/assets/. Write for human clarity with technical\n\
+             depth and relevant visuals; check the rendered document as the skill requires. These\n\
+             artifacts are outside your working folder: never commit them. The document does not\n\
+             replace the report tool's answer: still put your whole answer in answer.\n",
+        );
+    }
     match f.kind {
         TaskKind::Review => out.push_str(
             "Call report with review: the verdict (pass, findings or blocked); each finding with its\n\
@@ -786,4 +799,90 @@ pub fn crewmate_prompt(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    fn facts(kind: TaskKind) -> BriefFacts {
+        BriefFacts {
+            task: TaskId::new(42).unwrap(),
+            kind,
+            supervisor: BriefSupervisor::Quartermaster,
+            project: "test".to_owned(),
+            delivery: DeliveryMode::Folder,
+            has_remote: false,
+            verification: BriefVerification::None,
+            workspace: BriefWorkspace::Folder {
+                path: "/project".to_owned(),
+            },
+            pr_target: None,
+            ports: PortBlock { base: 41_000 },
+            goal: "answer".to_owned(),
+            user_words: String::new(),
+            instructions: vec![],
+            constraints: vec![],
+            tests_required: false,
+            builds_on: None,
+            repair_attempts: 0,
+        }
+    }
+
+    #[test]
+    fn exactly_four_kinds_require_static_report_artifacts() {
+        for kind in [
+            TaskKind::Lookup,
+            TaskKind::Research,
+            TaskKind::Reproduce,
+            TaskKind::Teach,
+        ] {
+            let text = render_brief(&facts(kind));
+            for required in [
+                "Before reporting done",
+                "$QM_REPORT_DIR/SKILL.md",
+                "$QM_REPORT_DIR/template.html",
+                "$QM_REPORT_DIR/report.html",
+                "$QM_REPORT_DIR/assets/",
+                "human clarity",
+                "technical",
+                "visuals",
+                "whole answer in answer",
+            ] {
+                assert!(text.contains(required), "{kind}: missing {required}");
+            }
+        }
+        for kind in [
+            TaskKind::Build,
+            TaskKind::Fix,
+            TaskKind::Plan,
+            TaskKind::Review,
+            TaskKind::Unclear,
+        ] {
+            let text = render_brief(&facts(kind));
+            assert!(!text.contains("$QM_REPORT_DIR"), "{kind}");
+        }
+    }
+
+    #[test]
+    fn reproduction_and_research_keep_their_tool_contracts() {
+        let reproduce = render_brief(&facts(TaskKind::Reproduce));
+        assert!(reproduce.contains("opening with reproduced: yes or"));
+        assert!(reproduce.contains("reproduced: no, and set reproduced to match"));
+        let research = render_brief(&facts(TaskKind::Research));
+        assert!(research.contains("set diagnosis"));
+    }
+
+    #[test]
+    fn both_system_prompts_explain_artifacts_without_replacing_the_answer() {
+        for engine in [PromptEngine::Claude, PromptEngine::Provider] {
+            let prompt = crewmate_prompt(engine, &[], &[], None);
+            assert!(prompt.contains("For a done lookup, research, reproduce or teach task"));
+            assert!(prompt.contains("$QM_REPORT_DIR/SKILL.md"));
+            assert!(prompt.contains("$QM_REPORT_DIR/template.html"));
+            assert!(prompt.contains("$QM_REPORT_DIR/report.html"));
+            assert!(prompt.contains("whole answer"));
+            assert!(prompt.contains("matching `reproduced` metadata"));
+        }
+    }
 }

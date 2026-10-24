@@ -105,6 +105,10 @@ pub enum Command {
     OpenPlan {
         task: TaskId,
     },
+    /// Open only this task's completed static report in the browser on this Mac.
+    OpenReport {
+        task: TaskId,
+    },
     /// Your Approve on a plan's card: the plan is final and a build may start on it.
     ApprovePlan {
         task: TaskId,
@@ -1071,6 +1075,9 @@ pub struct TaskDetail {
     /// Still running, so the pane offers "Stop".
     #[serde(default)]
     pub running: bool,
+    /// A completed static report is available; offer Open report in the task pane.
+    #[serde(default)]
+    pub report_available: bool,
 }
 
 impl TaskDetail {
@@ -1081,6 +1088,7 @@ impl TaskDetail {
             rows: Vec::new(),
             activity: Vec::new(),
             running: false,
+            report_available: false,
         }
     }
 }

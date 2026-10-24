@@ -2,7 +2,7 @@
 //!
 //! A relative path resolves against the worktree. A write goes anywhere the user's account reaches,
 //! except the app's own scratch folder and data folder, which only a write root inside them reopens
-//! (the worktree, the evidence folder, the scratchpad). Judged on real paths: the target is first
+//! (the worktree, evidence, report, plan and scratchpad). Judged on real paths: the target is first
 //! normalised lexically (`.` and `..` removed), then its nearest existing ancestor is
 //! canonicalised (symlinks resolved) and the rest appended. The path written is that same
 //! resolved path, so neither `..` nor a symlink can lead a write outside.
@@ -93,7 +93,7 @@ impl WritePolicy {
             }
             return Err(format!(
                 "refused: {} is inside the app's own data folder; write in the worktree, the \
-                 evidence folder or your scratchpad",
+                 evidence, report or plan folder, or your scratchpad",
                 path.display()
             ));
         }
@@ -246,6 +246,24 @@ mod tests {
             assert!(refused.contains("data folder"), "{refused}");
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_report_grant_reopens_only_this_tasks_report_subtree() {
+        let home = PathBuf::from("/nonexistent/qm-report-policy-test");
+        let report = home.join("artifacts/T-0042/report");
+        let policy = WritePolicy::new(std::slice::from_ref(&report), std::slice::from_ref(&home));
+        for file in ["report.html", "template.html", "assets/diagram.svg"] {
+            assert!(policy.check(&report.join(file)).is_ok(), "{file}");
+        }
+        for path in [
+            report.join("../evidence/run.log"),
+            report.join("../../T-0043/report/report.html"),
+            home.join("artifacts/T-0042/plan/plan.md"),
+            home.join("auth.json"),
+        ] {
+            assert!(policy.check(&path).is_err(), "{}", path.display());
+        }
     }
 
     #[test]

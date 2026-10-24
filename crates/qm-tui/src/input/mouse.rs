@@ -201,6 +201,7 @@ impl App {
             }
             Hit::ActionButton(i) => self.press_action_button(i, now),
             Hit::TaskButton(TaskButton::OpenSession) => self.open_session(now),
+            Hit::TaskButton(TaskButton::OpenReport) => self.open_selected_report(),
             Hit::TaskButton(TaskButton::Stop) => self.stop_selected(),
             Hit::Status(StatusItem::Approvals) => {
                 self.jump_to_action(qm_types::api::ActionKind::Approval);

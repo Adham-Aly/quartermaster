@@ -7,6 +7,9 @@ pub const QUARTERMASTER_HOME: &str = "QUARTERMASTER_HOME";
 /// Set for a crewmate: its task's evidence folder, outside the worktree.
 pub const QM_EVIDENCE_DIR: &str = "QM_EVIDENCE_DIR";
 
+/// Set for a crewmate: its task's static report folder, outside the worktree.
+pub const QM_REPORT_DIR: &str = "QM_REPORT_DIR";
+
 /// Set for a crewmate: the first of its task's block of ports.
 pub const QM_PORT_BASE: &str = "QM_PORT_BASE";
 

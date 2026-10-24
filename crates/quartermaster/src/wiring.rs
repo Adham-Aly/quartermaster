@@ -303,6 +303,9 @@ pub(crate) async fn start_core(
     parts.push(Arc::new(ContextPart::new(Arc::clone(&monitor))));
     parts.push(Arc::new(updates_part(&dir, &clock, &conversation)));
     parts.push(Arc::new(DraftsPart::new()));
+    parts.push(Arc::new(qm_core::reports::api::ReportPart::new(
+        tasks.clone(),
+    )));
     // After every other part, so it sees the setup findings, the settings and the model notice.
     parts.push(Arc::new(qm_core::actions::ActionsPart::new(
         held.clone(),

@@ -102,6 +102,8 @@ impl Fixture {
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir(&dir).unwrap();
+        // Report opening rejects symlinked ancestors (including macOS's /var alias).
+        let dir = dir.canonicalize().unwrap();
         let db = Db::open(&dir.join("state.db")).unwrap();
         db.call(|conn| {
             conn.execute_batch("INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, merge_method, created_at, seq) VALUES (1, 'p', '/p', 'created', 'main', 'direct_pr', 'merge', 1, 1);

@@ -147,6 +147,21 @@ impl App {
         }
     }
 
+    /// The task pane's Open report (button or `r`); the core rechecks availability.
+    pub(crate) fn open_selected_report(&mut self) {
+        let Some(AgentRef::Crewmate { task }) = self.view.selected_crew else {
+            return;
+        };
+        if self
+            .snapshot
+            .tasks
+            .iter()
+            .any(|d| d.task == task && d.report_available)
+        {
+            self.command(Command::OpenReport { task });
+        }
+    }
+
     /// The task pane's Stop (button or `s`): interrupts the selected crewmate while its task
     /// runs.
     pub(crate) fn stop_selected(&mut self) {
