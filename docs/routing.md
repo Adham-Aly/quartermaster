@@ -136,13 +136,31 @@ named for the task itself replaces the entry entirely. A stronger-model retry
 ignores inherited choices.
 
 A named model must be placed in a tier; a model in none is refused, with a pointer
-to **Settings ▸ Model levels**. If it can't serve the task, normal routing takes
-over and records why. Naming a model does not by itself name an effort: it uses
-the selected entry's effort unless you name one too.
+to **Settings ▸ Model levels**. If it can't serve the task, the task waits for that
+model rather than substituting another. Naming a model does not by itself name an
+effort: it uses the selected entry's effort unless you name one too.
 
-Naming a model placed in Premium asks for premium. If that model can't serve,
-another Premium model runs; if none can, premium runs on High (then Medium, then
-Low), and the routing record names each Premium model skipped and why.
+Naming a model placed in Premium asks for that specific premium model and waits
+if it cannot serve. A premium request without a named model can use another
+Premium model; if none can serve, it tries High, Medium, then Low, recording why.
+
+The app retains original user requests separately from chat, so a requested model,
+effort or premium choice can still be applied on a later turn, including one
+started by an app event or restart. The orchestrator cites the actual user message;
+reports and its own judgment do not grant permission. One-task choices stay scoped
+to that task, and later user corrections take priority. Other overrides, such as
+base branch and verification, still require a user-started turn.
+
+### Deferred crewmate starts
+
+Ask for work after another task commits, reports done or lands, or at a given time.
+The Quartermaster and secondmates can register the full start configuration through
+`schedule_crewmate`, retaining the brief, `builds_on` and authorized model choices.
+No child task, worktree or model session is created before its trigger holds.
+Pending starts survive restart and can be inspected or cancelled. A review still
+requires a real task-owned commit; it reviews the exact SHA captured at launch.
+A triggered task may subsequently queue for its requested model if unavailable.
+The separate `schedule` tool sends only a reminder wake.
 
 For a standing preference, **Settings ▸ Routing ▸ Always use** pins one model,
 with an optional fallback. Task-specific model choices take priority; premium
