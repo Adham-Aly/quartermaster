@@ -19,7 +19,7 @@
 use crate::domain::{
     Autonomy, DeliveryMode, Effort, KindRow, MessageKind, MessageSource, Provider, Tier,
 };
-use crate::ids::{AccountId, HeldActionId, MessageId, ModelId, SecondmateId, TaskId};
+use crate::ids::{AccountId, HeldActionId, MessageId, ModelId, SecondmateId, TaskId, TaskLabelId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -764,16 +764,39 @@ pub struct ProjectRow {
     /// Whether any work is running in it (filled dot).
     #[serde(default)]
     pub active: bool,
+    /// Its open tasks, drawn beneath it in the pane's tree, oldest first. A task with crewmates in
+    /// several projects is listed under each of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<ProjectTask>,
 }
 
 impl ProjectRow {
-    /// A project with no work running.
+    /// A project with no work running and no open tasks.
     pub fn new(name: impl Into<String>, delivery: DeliveryMode, autonomy: Autonomy) -> Self {
         Self {
             name: name.into(),
             delivery,
             autonomy,
             active: false,
+            tasks: Vec::new(),
+        }
+    }
+}
+
+/// An open task beneath its project in the projects pane.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ProjectTask {
+    pub id: TaskLabelId,
+    /// What it works on: its oldest open crewmate's title in this project.
+    pub title: String,
+}
+
+impl ProjectTask {
+    pub fn new(id: TaskLabelId, title: impl Into<String>) -> Self {
+        Self {
+            id,
+            title: title.into(),
         }
     }
 }
@@ -783,7 +806,9 @@ impl ProjectRow {
 #[non_exhaustive]
 pub struct CrewRow {
     pub agent: AgentRef,
-    /// Indent: 0 for the Quartermaster, 1 for its reports, 2 for a secondmate's crewmates.
+    /// The agent's level under the Quartermaster: 0 for the Quartermaster, 1 for its crewmates and
+    /// secondmates, 2 for a secondmate's crewmates. A crewmate with a `task` is drawn one level
+    /// deeper, under its task's heading.
     pub depth: u8,
     /// e.g. "C-0042 fix", "S-02 web-app".
     pub label: String,
@@ -798,6 +823,28 @@ pub struct CrewRow {
     /// The agent is in a turn right now: the row's glyph is the busy indicator.
     #[serde(default)]
     pub busy: bool,
+    /// A crewmate's task: the tree draws a heading for it above the first of its crewmates among
+    /// the rows under one supervisor, which the core keeps together. `None` draws the row as is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<CrewTask>,
+}
+
+/// The task heading a crewmate's row sits under in the crew tree.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CrewTask {
+    pub id: TaskLabelId,
+    /// The heading's words: "T-0042 api-server".
+    pub label: String,
+}
+
+impl CrewTask {
+    pub fn new(id: TaskLabelId, label: impl Into<String>) -> Self {
+        Self {
+            id,
+            label: label.into(),
+        }
+    }
 }
 
 impl CrewRow {
@@ -816,6 +863,7 @@ impl CrewRow {
             needs_you: false,
             waiting: None,
             busy: false,
+            task: None,
         }
     }
 }

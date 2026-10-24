@@ -74,6 +74,12 @@ Map core `Tone`s with `theme::tone`.
   projects hint under its title; `Esc` or any click closes it. A new popup or menu entry: see
   the notes at the top of `popups.rs`. A badge: make `App::entry_badge` true for the entry; the
   menu button follows (Update's comes from the core, `UpdateView::badge`).
+- The left column's trees: Crew is supervisor → task → crewmates (`widgets/crew.rs` `nodes`):
+  a crewmate row with `CrewRow::task` is drawn one level deeper, under a dim `◇ T-0042 project`
+  heading the core keeps its crewmates together for; headings have no status, no hit, and the
+  keys pass over them. Statuses align per supervisor and depth. Projects lists each project's
+  open tasks beneath it (`ProjectRow::tasks`, `├ T-0042 title`); a task line's hit
+  (`Hit::ProjectTask`) acts for its project. Guides (`│`, `├`, `└`) are dim.
 - Settings' nested pickers, text fields and Connect view have a visible `← Back`, equivalent
   to `Esc`: dismiss the picker/field without saving, or return from Connect to Accounts (not cancel
   a running login). The Back row stays visible while content scrolls. Settings uses 48% of the

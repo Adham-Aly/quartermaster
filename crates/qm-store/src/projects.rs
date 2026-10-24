@@ -15,7 +15,7 @@ use qm_types::domain::{
     Autonomy, DeliveryMode, MergeMethod, ProjectOrigin, TaskStatus, VerificationLevel,
 };
 use qm_types::ids::space;
-use qm_types::ids::{ProjectId, TaskId};
+use qm_types::ids::{ProjectId, TaskId, TaskLabelId};
 use rusqlite::{Connection, params};
 use std::path::PathBuf;
 
@@ -338,9 +338,96 @@ pub fn with_work_running(conn: &Connection) -> Result<Vec<ProjectId>, StoreError
         .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// An open task in a project, as the projects pane lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenLabel {
+    pub project: ProjectId,
+    pub task: TaskLabelId,
+    /// Its oldest open crewmate's title in this project.
+    pub title: String,
+}
+
+/// Every project's open tasks: one per project and task that has a crewmate there the crew tree
+/// shows, oldest crewmate first, so a project lists its tasks in the crew tree's order.
+pub fn open_labels(conn: &Connection) -> Result<Vec<OpenLabel>, StoreError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT project_id, COALESCE(label_id, id), title FROM tasks
+         WHERE status NOT IN {}
+         ORDER BY created_at, seq",
+        crate::crew_view::HIDDEN
+    ))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(OpenLabel {
+                project: r.get(0)?,
+                task: r.get(1)?,
+                title: r.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out: Vec<OpenLabel> = Vec::with_capacity(rows.len());
+    for row in rows {
+        if !out
+            .iter()
+            .any(|o| o.project == row.project && o.task == row.task)
+        {
+            out.push(row);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_labels_lists_each_projects_open_tasks_once_oldest_first() {
+        let mut conn = Connection::open_in_memory().expect("open");
+        crate::schema::migrate(&mut conn).expect("migrate");
+        conn.execute_batch(
+            "INSERT INTO agents (id, role, home, status, created_at, seq)
+             VALUES (1, 'quartermaster', '/fixture/seat', 'idle', 0, 1);
+             INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode,
+                                   merge_method, created_at, seq)
+             VALUES (1, 'app', '/fixture/app', 'linked', '', 'folder', 'squash', 0, 1),
+                    (2, 'web', '/fixture/web', 'linked', '', 'folder', 'squash', 0, 2);
+             INSERT INTO task_labels (id, created_at, seq)
+             VALUES (3, 0, 1), (5, 0, 2), (8, 0, 3), (9, 0, 4);
+             INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, delivery_mode,
+                                status, created_at, seq, label_id, folder_label_id,
+                                outcome, closed_at)
+             VALUES (10, 1, 1, 'fix', 'fix(a): newer', 'g', 'folder', 'held', 5, 5, 5, 5,
+                     NULL, NULL),
+                    (11, 1, 1, 'build', 'feat(a): older', 'g', 'folder', 'reported', 2, 2, 3, 3,
+                     NULL, NULL),
+                    (12, 1, 1, 'review', 'review(a): older', 'g', 'folder', 'held', 6, 6, 3, 3,
+                     NULL, NULL),
+                    (13, 2, 1, 'review', 'review(w): newer', 'g', 'folder', 'held', 7, 7, 5, 5,
+                     NULL, NULL),
+                    (14, 2, 1, 'fix', 'fix(w): gone', 'g', 'folder', 'closed', 1, 1, 8, 8,
+                     'answered', 9),
+                    (15, 2, 1, 'fix', 'fix(w): failing', 'g', 'folder', 'failed', 1, 8, 9, 9,
+                     NULL, NULL);",
+        )
+        .expect("seed");
+        let id = ProjectId::new;
+        let label = |n| TaskLabelId::new(n).expect("label");
+        let got: Vec<(ProjectId, TaskLabelId, String)> = open_labels(&conn)
+            .expect("read")
+            .into_iter()
+            .map(|l| (l.project, l.task, l.title))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (id(1), label(3), "feat(a): older".to_owned()),
+                (id(1), label(5), "fix(a): newer".to_owned()),
+                // T-5 has a crewmate in each project, so it is under both.
+                (id(2), label(5), "review(w): newer".to_owned()),
+            ]
+        );
+    }
 
     #[test]
     fn set_autonomy_persists_and_the_context_block_reads_it() {

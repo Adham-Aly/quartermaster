@@ -16,16 +16,18 @@ use jiff::tz::TimeZone;
 use qm_types::api::{
     AccountBadge, ActionItem, ActionKey, ActionKind, ActionOpen, AgentContextView, AgentRef,
     Attention, Card, CardAction, CardButton, CardKind, CardLine, ChatLine, CompactingView,
-    CompactionNote, ContextBasisView, ContextOccupancy, CrewRow, DiffFile, DiffFileStatus,
-    DiffHunk, DiffLine, DiffLineKind, HeldAnswer, HeldChoice, NoteOutcome, PointView, ProjectRow,
-    SessionLine, SessionLineKind, SessionView, Snapshot, Styled, TaskDetail, TaskRow, Tone,
-    TurnTokens, Waiting,
+    CompactionNote, ContextBasisView, ContextOccupancy, CrewRow, CrewTask, DiffFile,
+    DiffFileStatus, DiffHunk, DiffLine, DiffLineKind, HeldAnswer, HeldChoice, NoteOutcome,
+    PointView, ProjectRow, ProjectTask, SessionLine, SessionLineKind, SessionView, Snapshot,
+    Styled, TaskDetail, TaskRow, Tone, TurnTokens, Waiting,
 };
 use qm_types::domain::{
     Autonomy, DeliveryMode, MessageKind, MessageSource, Provider as ProviderId,
 };
 use qm_types::domain::{Effort, Tier};
-use qm_types::ids::{AccountId, HeldActionId, MessageId, ModelId, SecondmateId, TaskId};
+use qm_types::ids::{
+    AccountId, HeldActionId, MessageId, ModelId, SecondmateId, TaskId, TaskLabelId,
+};
 use std::time::Duration;
 
 /// The developer switch: `QM_DEV_SAMPLE=bridge quartermaster`.
@@ -345,14 +347,25 @@ pub fn snapshot() -> Snapshot {
 }
 
 fn projects() -> Vec<ProjectRow> {
+    let task = |n: u32, title: &str| ProjectTask::new(label_id(n), title);
     let mut api = ProjectRow::new("api-server", DeliveryMode::DirectPr, Autonomy::Normal);
     api.active = true;
+    api.tasks = vec![
+        task(42, "fix(auth): token refresh race"),
+        task(39, "feat(billing): prorate plan changes"),
+    ];
     let mut web = ProjectRow::new("web-app", DeliveryMode::DirectPr, Autonomy::Auto);
     web.active = true;
+    web.tasks = vec![
+        task(45, "feat(upload): resumable uploads"),
+        task(47, "fix(ci): flaky upload test"),
+    ];
+    let mut dotfiles = ProjectRow::new("dotfiles", DeliveryMode::BranchOnly, Autonomy::Normal);
+    dotfiles.tasks = vec![task(48, "fix(zsh): slow prompt start")];
     vec![
         api,
         web,
-        ProjectRow::new("dotfiles", DeliveryMode::BranchOnly, Autonomy::Normal),
+        dotfiles,
         ProjectRow::new("personal", DeliveryMode::BranchOnly, Autonomy::Normal),
     ]
 }
@@ -372,15 +385,41 @@ fn crew() -> Vec<CrewRow> {
         row.busy = true;
         row
     };
+    // Each crewmate under its task: C-0046 reviews C-0042's fix in T-0042; S-02 runs two tasks.
+    let under = |mut row: CrewRow, n: u32, project: &str| {
+        row.task = Some(CrewTask::new(label_id(n), format!("T-{n:04} {project}")));
+        row
+    };
     vec![
         CrewRow::new(AgentRef::Quartermaster, 0, "Quartermaster", "ready"),
-        busy(CrewRow::new(task(42), 1, "C-0042 fix", "12m")),
-        CrewRow::new(task(46), 1, "C-0046 review", "2m"),
-        approve,
-        decide,
+        under(
+            busy(CrewRow::new(task(42), 1, "C-0042 fix", "12m")),
+            42,
+            "api-server",
+        ),
+        under(
+            CrewRow::new(task(46), 1, "C-0046 review", "2m"),
+            42,
+            "api-server",
+        ),
+        under(approve, 39, "api-server"),
+        under(decide, 47, "web-app"),
         CrewRow::new(secondmate, 1, "S-02 web-app", "idle"),
-        busy(CrewRow::new(task(45), 2, "C-0045 build", "3m")),
+        under(
+            busy(CrewRow::new(task(45), 2, "C-0045 build", "3m")),
+            45,
+            "web-app",
+        ),
+        under(
+            CrewRow::new(task(48), 2, "C-0048 fix", "waits"),
+            48,
+            "dotfiles",
+        ),
     ]
+}
+
+fn label_id(n: u32) -> TaskLabelId {
+    TaskLabelId::new(n).expect("task ids start at 1")
 }
 
 fn conversation() -> Vec<ChatLine> {

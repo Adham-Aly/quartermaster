@@ -734,19 +734,25 @@ impl ProjectService {
             .await
     }
 
-    /// The projects pane's rows.
+    /// The projects pane's rows, each with its open tasks.
     async fn rows(&self) -> Result<Vec<qm_types::api::ProjectRow>, StoreError> {
         self.inner
             .db
             .call(|conn| {
                 let working: HashSet<ProjectId> =
                     projects::with_work_running(conn)?.into_iter().collect();
+                let labels = projects::open_labels(conn)?;
                 Ok(projects::active(conn)?
                     .into_iter()
                     .map(|p| {
                         let mut row =
                             qm_types::api::ProjectRow::new(p.name, p.delivery, p.autonomy);
                         row.active = working.contains(&p.id);
+                        row.tasks = labels
+                            .iter()
+                            .filter(|l| l.project == p.id)
+                            .map(|l| qm_types::api::ProjectTask::new(l.task, l.title.clone()))
+                            .collect();
                         row
                     })
                     .collect())
