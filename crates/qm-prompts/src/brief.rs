@@ -26,7 +26,7 @@ use std::fmt::Write as _;
 
 use qm_policy::markers::neutralise;
 use qm_types::domain::{DeliveryMode, PlanMode, TaskKind, VerificationLevel, VerificationSource};
-use qm_types::ids::{CommitSha, PortBlock, SecondmateId, TaskId};
+use qm_types::ids::{CommitSha, PortBlock, SecondmateId, TaskId, TaskLabelId};
 
 use crate::index;
 
@@ -117,6 +117,8 @@ pub enum BriefWorkspace {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BriefFacts {
     pub task: TaskId,
+    /// The task (`T-`) the crewmate belongs to when it starts.
+    pub label: TaskLabelId,
     pub kind: TaskKind,
     pub supervisor: BriefSupervisor,
     /// The project's name.
@@ -211,7 +213,7 @@ fn running_level(f: &BriefFacts) -> Option<VerificationLevel> {
 }
 
 fn header(out: &mut String, f: &BriefFacts) {
-    let _ = writeln!(out, "# Brief · {} · {}", f.task, f.kind);
+    let _ = writeln!(out, "# Brief · {} in {} · {}", f.task, f.label, f.kind);
     let verification = match f.verification {
         BriefVerification::None => {
             let why = if is_review(f.kind) {
@@ -848,6 +850,7 @@ mod report_tests {
     fn facts(kind: TaskKind) -> BriefFacts {
         BriefFacts {
             task: TaskId::new(42).unwrap(),
+            label: TaskLabelId::new(42).unwrap(),
             kind,
             supervisor: BriefSupervisor::Quartermaster,
             project: "test".to_owned(),

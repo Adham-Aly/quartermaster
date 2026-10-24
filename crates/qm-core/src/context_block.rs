@@ -270,6 +270,7 @@ fn task_fact(t: &TaskRow) -> TaskFact {
     };
     TaskFact {
         task: t.task,
+        label: t.label,
         project: neutralise(&t.project),
         title: neutralise(&t.title),
         status: t.status,

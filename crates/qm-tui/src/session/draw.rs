@@ -2,12 +2,12 @@
 //! conversation and input (the projects, crew and task columns stay):
 //!
 //! ```text
-//! ╭─ T-0042 · fix(auth): token refresh race ─────────────────────  ← Quartermaster ─╮
+//! ╭─ C-0042 · fix(auth): token refresh race ─────────────────────  ← Quartermaster ─╮
 //! │ api-server · sonnet-5-5 · supervisor: Quartermaster                     (dim)   │
 //! │ Talking to this crewmate directly. You override its supervisor; it will  (warn) │
 //! │ reconcile.                                                                      │
 //! │                                                                                 │
-//! │ [from supervisor] Brief · T-0042 · fix(auth): token refresh race  Expand        │
+//! │ [from supervisor] Brief · C-0042 · fix(auth): token refresh race  Expand        │
 //! │                                                                                 │
 //! │ Reading AGENTS.md and CONTRIBUTING.md, then calling delivery_check before any   │
 //! │ edit.                                                                           │
@@ -66,7 +66,7 @@ pub(crate) fn draw(
     input(frame, input_area, app, agent, view, map);
 }
 
-/// How the agent is named: `T-0042`, `S-02`.
+/// How the agent is named: `C-0042`, `S-02`.
 pub(crate) fn agent_label(agent: AgentRef) -> String {
     match agent {
         AgentRef::Crewmate { task } => task.to_string(),
@@ -75,7 +75,7 @@ pub(crate) fn agent_label(agent: AgentRef) -> String {
     }
 }
 
-/// The box's title: `T-0042 · fix(auth): token refresh race`.
+/// The box's title: `C-0042 · fix(auth): token refresh race`.
 fn title(app: &App, agent: AgentRef, view: Option<&SessionView>) -> String {
     let words = view
         .map(|v| v.title.clone())

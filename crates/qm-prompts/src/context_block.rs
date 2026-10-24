@@ -30,7 +30,7 @@ use jiff::Zoned;
 use qm_types::domain::{
     Autonomy, DeliveryMode, Effort, KindRow, TaskKind, TaskStatus, Tier, VerificationLevel,
 };
-use qm_types::ids::{MessageId, SecondmateId, StandingInstructionId, TaskId, TurnId};
+use qm_types::ids::{MessageId, SecondmateId, StandingInstructionId, TaskId, TaskLabelId, TurnId};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -158,10 +158,13 @@ pub struct SecondmateFact {
     pub base_branch: Option<String>,
 }
 
-/// An open or active task: `T-0042  api-server  fix(auth): token refresh race  running`.
+/// An open crewmate's work, with the task it belongs to:
+/// `C-0042  T-0017  api-server  fix(auth): token refresh race  running`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskFact {
     pub task: TaskId,
+    /// The task (`T-`) the crewmate belongs to.
+    pub label: TaskLabelId,
     pub project: String,
     pub title: String,
     pub status: TaskStatus,
@@ -546,6 +549,7 @@ fn tasks(out: &mut String, facts: &ContextFacts) {
         .map(|t| {
             vec![
                 Cell::left(t.task.to_string()),
+                Cell::left(t.label.to_string()),
                 Cell::left(cut(&t.project, TITLE_CHARS)),
                 Cell::left(cut(&t.title, TITLE_CHARS)),
                 Cell::left(task_line(t)),
@@ -892,6 +896,53 @@ mod tests {
         assert_eq!(
             out,
             format!("<models>\nhigh  {}\n</models>\n", combinations.join(" · "))
+        );
+    }
+}
+
+#[cfg(test)]
+mod task_rows_tests {
+    use super::*;
+
+    #[test]
+    fn each_crewmate_shows_the_task_it_belongs_to() {
+        let fact = |crewmate: u32, label: u32, title: &str| TaskFact {
+            task: TaskId::new(crewmate).unwrap(),
+            label: TaskLabelId::new(label).unwrap(),
+            project: "api-server".to_owned(),
+            title: title.to_owned(),
+            status: TaskStatus::Running,
+            detail: None,
+        };
+        let facts = ContextFacts {
+            turn: TurnId::new(1),
+            at: jiff::Timestamp::UNIX_EPOCH.to_zoned(jiff::tz::TimeZone::UTC),
+            projects: Vec::new(),
+            workers: Vec::new(),
+            workers_total: 0,
+            tasks: vec![
+                fact(43, 17, "test(auth): race"),
+                fact(42, 17, "fix(auth): race"),
+            ],
+            tasks_open: 2,
+            since_turn: None,
+            you: Since::default(),
+            activity: Since::default(),
+            model_changes: Since::default(),
+            recent_outcomes: Vec::new(),
+            standing: Vec::new(),
+            user_message_sources: Vec::new(),
+            models: Vec::new(),
+            kind_tiers: Vec::new(),
+        };
+        let mut out = String::new();
+        tasks(&mut out, &facts);
+        assert_eq!(
+            out,
+            "<tasks open=\"2\" shown=\"2\">\n\
+             C-0042  T-0017  api-server  fix(auth): race   running\n\
+             C-0043  T-0017  api-server  test(auth): race  running\n\
+             </tasks>\n"
         );
     }
 }

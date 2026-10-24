@@ -19,7 +19,7 @@ use qm_types::api::{
 };
 use qm_types::clock::Clock;
 use qm_types::domain::{HeldKind, TaskStatus, VerificationLevel};
-use qm_types::ids::AgentId;
+use qm_types::ids::{AgentId, TaskId};
 use std::fmt;
 use std::sync::Arc;
 
@@ -56,7 +56,7 @@ pub fn build(data: &CrewData, now: Timestamp, started: Option<Timestamp>) -> Cre
     for task in data.tasks.iter().filter(|t| {
         Some(t.supervisor) == data.quartermaster || !secondmate_agents.contains(&t.supervisor)
     }) {
-        push_task(&mut view, task, 1, now, started);
+        push_task(&mut view, data, task, 1, now, started);
     }
     for secondmate in &data.secondmates {
         let status = if secondmate.working {
@@ -76,7 +76,7 @@ pub fn build(data: &CrewData, now: Timestamp, started: Option<Timestamp>) -> Cre
             continue;
         };
         for task in data.tasks.iter().filter(|t| t.supervisor == agent) {
-            push_task(&mut view, task, 2, now, started);
+            push_task(&mut view, data, task, 2, now, started);
         }
     }
     view.attention = attention(data, &view.crew);
@@ -123,6 +123,7 @@ fn attention(data: &CrewData, crew: &[CrewRow]) -> Attention {
 
 fn push_task(
     view: &mut CrewView,
+    data: &CrewData,
     task: &OpenTask,
     depth: u8,
     now: Timestamp,
@@ -139,8 +140,14 @@ fn push_task(
     row.needs_you = waiting.is_some();
     row.busy = task.in_turn;
     view.crew.push(row);
+    let with: Vec<TaskId> = data
+        .tasks
+        .iter()
+        .filter(|t| t.label == task.label && t.task != task.task)
+        .map(|t| t.task)
+        .collect();
     view.tasks
-        .push(detail(task, &status, waiting, now, started));
+        .push(detail(task, &with, &status, waiting, now, started));
 }
 
 /// The status word the tree shows for a task, and the flag it carries.
@@ -184,6 +191,7 @@ pub fn minutes_label(minutes: i64) -> String {
 /// The task pane, rows in display order.
 fn detail(
     task: &OpenTask,
+    with: &[TaskId],
     status: &str,
     waiting: Option<Waiting>,
     now: Timestamp,
@@ -193,6 +201,13 @@ fn detail(
     let mut d = TaskDetail::new(task.task, task.title.clone());
     d.rows
         .push(TaskRow::new(Some("project"), text(task.project.clone())));
+    // The task this crewmate works towards, and who else is in it: project → task → crewmate.
+    let mut in_task = task.label.to_string();
+    if !with.is_empty() {
+        let names: Vec<String> = with.iter().map(ToString::to_string).collect();
+        in_task = format!("{in_task} · with {}", names.join(", "));
+    }
+    d.rows.push(TaskRow::new(Some("task"), text(in_task)));
 
     let agent = task.agent.as_ref();
     let routing = task.routing.as_ref();

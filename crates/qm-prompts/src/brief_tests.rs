@@ -5,6 +5,7 @@ use super::*;
 fn plan_facts() -> BriefFacts {
     BriefFacts {
         task: TaskId::new(42).expect("nonzero task ID"),
+        label: TaskLabelId::new(42).expect("nonzero task ID"),
         kind: TaskKind::Plan,
         supervisor: BriefSupervisor::Quartermaster,
         project: "Example".into(),

@@ -1111,7 +1111,7 @@ mod popup_tests {
         let rows = screen(&mut app, 150, 45);
         assert!(
             rows.iter()
-                .any(|r| r.contains("your guidance for T-0047 fix(ci): flaky upload test")),
+                .any(|r| r.contains("your guidance for C-0047 fix(ci): flaky upload test")),
             "{rows:#?}"
         );
     }

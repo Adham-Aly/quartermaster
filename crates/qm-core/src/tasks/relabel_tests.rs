@@ -267,3 +267,60 @@ async fn a_task_given_for_a_crewmate_names_its_one_crewmate() {
         crewmate(3)
     );
 }
+
+#[tokio::test]
+async fn find_tasks_lists_a_tasks_crewmates_and_each_crewmates_task() {
+    let f = RelabelFixture::new().await;
+    f.svc
+        .set_task_label(&qm(), crewmate(3), Some(label(4)))
+        .await
+        .unwrap();
+    let caller = qm();
+    let find = |key: &str| {
+        let query: FindTasksArgs =
+            serde_json::from_value(serde_json::json!({ "key": key })).unwrap();
+        f.svc.find_tasks(&caller, query)
+    };
+    let found = find("T-0004").await.unwrap();
+    let mut held: Vec<(TaskId, TaskLabelId)> =
+        found.tasks.iter().map(|t| (t.task, t.label)).collect();
+    held.sort();
+    assert_eq!(held, vec![(crewmate(3), label(4)), (crewmate(4), label(4))]);
+    // Each result names the crewmate and its task.
+    let json = serde_json::to_value(&found.tasks[0]).unwrap();
+    assert_eq!(json["task"], "T-0004");
+    assert!(json["crewmate"].as_str().unwrap().starts_with("C-"));
+    // A task nobody is in reads as the crewmate numbered like it.
+    let old = find("T-0003").await.unwrap();
+    assert_eq!(old.tasks.len(), 1);
+    assert_eq!(
+        (old.tasks[0].task, old.tasks[0].label),
+        (crewmate(3), label(4))
+    );
+    // A crewmate is itself.
+    assert_eq!(find("C-0004").await.unwrap().tasks.len(), 1);
+}
+
+#[tokio::test]
+async fn the_task_pane_shows_each_crewmates_task_and_who_shares_it() {
+    let f = RelabelFixture::new().await;
+    f.svc
+        .set_task_label(&qm(), crewmate(3), Some(label(4)))
+        .await
+        .unwrap();
+    let view = crate::crew_view::load(f.fixture.db(), &qm_types::clock::SystemClock, None)
+        .await
+        .unwrap();
+    let task_row = |id: u32| -> String {
+        let pane = view.tasks.iter().find(|d| d.task == crewmate(id)).unwrap();
+        let row = pane
+            .rows
+            .iter()
+            .find(|r| r.label.as_deref() == Some("task"))
+            .unwrap();
+        row.value.iter().map(|s| s.text.as_str()).collect()
+    };
+    assert_eq!(task_row(3), "T-0004 · with C-0004");
+    assert_eq!(task_row(4), "T-0004 · with C-0003");
+    assert_eq!(task_row(5), "T-0005");
+}

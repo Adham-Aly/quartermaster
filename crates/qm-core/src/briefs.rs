@@ -188,6 +188,7 @@ pub fn brief_facts(
         });
     Ok(BriefFacts {
         task,
+        label: inputs.label,
         kind: inputs.kind,
         supervisor,
         project: inputs.project.clone(),

@@ -13,7 +13,7 @@ use qm_types::domain::{
     AgentStatus, DeliveryMode, Effort, ReportOutcome, ReportSource, ReviewVerdict, Role, TaskKind,
     TaskStatus, Tier, VerificationLevel, VerificationSource,
 };
-use qm_types::ids::{AgentId, CommitSha, SecondmateId, TaskId};
+use qm_types::ids::{AgentId, CommitSha, SecondmateId, TaskId, TaskLabelId};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -48,6 +48,8 @@ pub struct Supervisor {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BriefInputs {
     pub task: TaskId,
+    /// The task (`T-`) the crewmate belongs to.
+    pub label: TaskLabelId,
     pub kind: TaskKind,
     pub supervisor: Supervisor,
     pub project: String,
@@ -123,7 +125,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
                     p.github_remote IS NOT NULL, t.delivery_mode, t.verification_level,
                     t.verification_source, t.base_branch, t.base_ref, t.base_commit, t.port_base,
                     t.goal, t.instructions, t.constraints, t.tests_required, t.builds_on,
-                    t.retry_of, p.path, t.branch, p.delivery_mode
+                    t.retry_of, p.path, t.branch, p.delivery_mode, COALESCE(t.label_id, t.id)
              FROM tasks AS t
              JOIN projects AS p ON p.id = t.project_id
              JOIN agents AS a ON a.id = t.supervisor_id
@@ -156,6 +158,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
                     path: r.get(20)?,
                     branch: r.get(21)?,
                     project_delivery: r.get(22)?,
+                    label: r.get(23)?,
                 })
             },
         )
@@ -184,6 +187,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
         })?;
     Ok(Some(BriefInputs {
         task,
+        label: raw.label,
         kind: raw.kind,
         supervisor: raw.supervisor,
         project: raw.project,
@@ -209,6 +213,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
 }
 
 struct RawBrief {
+    label: TaskLabelId,
     kind: TaskKind,
     supervisor: Supervisor,
     project: String,
@@ -431,6 +436,8 @@ pub struct RoutingView {
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpenTask {
     pub task: TaskId,
+    /// The task (`T-`) the crewmate belongs to.
+    pub label: TaskLabelId,
     pub kind: TaskKind,
     pub title: String,
     pub status: TaskStatus,
@@ -510,7 +517,7 @@ pub fn crew_data(conn: &Connection) -> Result<CrewData, StoreError> {
                         WHERE h.task_id = t.id AND h.kind = 'merge' AND h.status = 'pending'),
                 EXISTS (SELECT 1 FROM turns AS u JOIN agents AS a ON a.id = u.agent_id
                         WHERE a.task_id = t.id AND a.role = 'crewmate' AND u.status = 'running'),
-                p.path
+                p.path, COALESCE(t.label_id, t.id)
          FROM tasks AS t JOIN projects AS p ON p.id = t.project_id
          WHERE t.status NOT IN {HIDDEN}
          ORDER BY t.created_at, t.seq"
@@ -532,6 +539,7 @@ pub fn crew_data(conn: &Connection) -> Result<CrewData, StoreError> {
                 pending_merge: r.get(11)?,
                 in_turn: r.get(12)?,
                 path: r.get(13)?,
+                label: r.get(14)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -545,6 +553,7 @@ pub fn crew_data(conn: &Connection) -> Result<CrewData, StoreError> {
         };
         tasks.push(OpenTask {
             task,
+            label: base.label,
             kind: base.kind,
             title: base.title,
             status: base.status,
@@ -591,6 +600,7 @@ struct TaskBase {
     pending_merge: bool,
     in_turn: bool,
     path: String,
+    label: TaskLabelId,
 }
 
 fn pending_holds(conn: &Connection) -> Result<Vec<PendingHold>, StoreError> {
