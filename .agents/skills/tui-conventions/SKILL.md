@@ -79,7 +79,9 @@ Map core `Tone`s with `theme::tone`.
   body's width and height (minimum 72×19, maximum width 149, clamped to the terminal). Overflow
   shows a scrollbar with directional arrows; each arrow disappears at its end. Pickers show
   `↑ more` / `↓ more` on their borders. Routing's Task kinds use two aligned grid columns when
-  whole entries fit, one otherwise; conditional build/fix labels are always written in full.
+  whole entries fit, one otherwise, ordered down each column to match ↑/↓. Conditional build/fix
+  labels are written in full. Default notes stay hidden; changed/empty notes sit beside the tier
+  when they fit, otherwise wrap within the cell.
 - Settings ▸ Model levels shows placed **model + effort** labels, not an effort toggle.
   **Add model…** (`a` or `/`) opens a fixed searchable catalogue of all models × their
   supported efforts (one `(no effort)` entry with `None` when support is empty). Search

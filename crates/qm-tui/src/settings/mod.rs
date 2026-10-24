@@ -358,7 +358,6 @@ pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
     );
     let content = if view.connecting {
         p.button(body.x, body.y, "← Back", SettingsHit::Back);
-        p.text(body.x + 10, body.y, "Connect an account", theme::strong());
         Rect::new(
             body.x,
             body.y + 2,

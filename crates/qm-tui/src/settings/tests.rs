@@ -119,6 +119,9 @@ fn both_grid_columns_keep_full_labels_and_open_the_correct_tier_picker() {
             (KindRow::BuildOnFinishedPlan, "Build on a plan"),
             (KindRow::FixOnConfirmedDiagnosis, "Fix on a diagnosis"),
             (KindRow::Fix, "Fix"),
+            (KindRow::Research, "Research"),
+            (KindRow::Review, "Review"),
+            (KindRow::Unclear, "Unclear"),
         ] {
             let index = KindRow::ALL.iter().position(|&k| k == kind).unwrap();
             app.view.settings.routing_row = KIND_ROWS_FROM + index;
@@ -134,6 +137,114 @@ fn both_grid_columns_keep_full_labels_and_open_the_correct_tier_picker() {
             click(&mut app, SettingsHit::Back);
             assert!(app.view.settings.picker.is_none());
             assert_eq!(app.popup(), Some(Popup::Settings));
+        }
+    }
+}
+
+#[test]
+fn routing_keyboard_walks_down_each_column_and_reveals_every_picker() {
+    for (width, height) in SIZES.into_iter().chain([(300, 100)]) {
+        let mut app = app(Tab::Routing);
+        app.view.settings.routing_row = KIND_ROWS_FROM;
+        app.view.settings.reveal = true;
+        let mut positions = Vec::new();
+        for &kind in KindRow::ALL {
+            draw(&mut app, width, height);
+            let rect = app
+                .term
+                .drawn
+                .hits
+                .rect_of(Hit::Settings(SettingsHit::KindTier(kind)))
+                .unwrap();
+            positions.push((rect.x, usize::from(rect.y) + app.view.settings.scroll));
+            key(&mut app, KeyCode::Enter);
+            assert_eq!(
+                app.view.settings.picker.as_ref().unwrap().purpose,
+                PickFor::KindTier(kind)
+            );
+            key(&mut app, KeyCode::Esc);
+            key(&mut app, KeyCode::Down);
+        }
+        for pair in positions[..6].windows(2).chain(positions[6..].windows(2)) {
+            assert_eq!(pair[0].0, pair[1].0);
+            assert!(pair[1].1 > pair[0].1, "{width}: {positions:?}");
+        }
+        if width == 60 {
+            assert_eq!(positions[5].0, positions[6].0);
+            assert!(positions[6].1 > positions[5].1);
+        } else {
+            assert!(positions[6].0 > positions[5].0);
+            assert_eq!(positions[0].1, positions[6].1);
+        }
+        for &kind in KindRow::ALL.iter().rev() {
+            draw(&mut app, width, height);
+            key(&mut app, KeyCode::Enter);
+            assert_eq!(
+                app.view.settings.picker.as_ref().unwrap().purpose,
+                PickFor::KindTier(kind)
+            );
+            key(&mut app, KeyCode::Esc);
+            key(&mut app, KeyCode::Up);
+        }
+    }
+}
+
+#[test]
+fn routing_explanations_wrap_without_cutting_off_in_the_popup() {
+    for (width, height) in SIZES {
+        let mut app = app(Tab::Routing);
+        draw(&mut app, width, height);
+        let area = app
+            .term
+            .drawn
+            .scroll_areas
+            .iter()
+            .find(|(_, p)| *p == Pane::Settings)
+            .unwrap()
+            .0;
+        let max = app.term.drawn.scroll_max_of(Pane::Settings);
+        let mut lines = Vec::new();
+        // Read the page through the real clipped viewport, one new top row per scroll step.
+        for scroll in 0..=max {
+            app.view.settings.scroll = scroll;
+            let screen = draw(&mut app, width, height);
+            let bottom = if scroll == max {
+                area.bottom()
+            } else {
+                area.y + 1
+            };
+            for y in area.y..bottom {
+                let right = app
+                    .term
+                    .drawn
+                    .hits
+                    .rect_of(Hit::Settings(SettingsHit::PinSwitch))
+                    .filter(|switch| switch.y == y)
+                    .map_or(area.right() - 1, |switch| switch.x - 1);
+                lines.push(
+                    screen[usize::from(y)]
+                        .chars()
+                        .skip(usize::from(area.x + 17))
+                        .take(usize::from(right.saturating_sub(area.x + 17)))
+                        .collect::<String>(),
+                );
+            }
+        }
+        let text = lines
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for copy in [
+            "ignoring tiers",
+            "Auto tries high → medium → premium → low, at the entry's effort.",
+            "Changes apply when it's next idle. Secondmates follow too.",
+            "Every agent, on any model, compacts its conversation a little before this size, or before its model's window if that is smaller. Changes apply at each agent's next idle moment.",
+        ] {
+            assert!(
+                text.contains(copy),
+                "{width}×{height}: missing {copy:?}\n{text}"
+            );
         }
     }
 }
@@ -167,7 +278,12 @@ fn back_and_escape_dismiss_fields_pickers_and_connect_without_saving() {
         app.view.settings.model.login = None;
         draw(&mut app, width, height);
         key(&mut app, KeyCode::Char('c'));
-        draw(&mut app, width, height);
+        let connect = draw(&mut app, width, height).join("\n");
+        assert_eq!(
+            connect.matches("Connect an account").count(),
+            1,
+            "{connect}"
+        );
         click(&mut app, SettingsHit::Back);
         assert!(!app.view.settings.connecting);
         key(&mut app, KeyCode::Char('c'));
