@@ -33,6 +33,8 @@ pub mod session;
 pub mod setup;
 pub mod start;
 pub mod startup;
+#[cfg(test)]
+mod unlink_tests;
 pub mod waits;
 
 use crate::api::{ApiPart, Handled};
@@ -52,7 +54,7 @@ use qm_store::db::Db;
 use qm_store::wakes::NewWake;
 use qm_tools::defs::{
     Ack, DeliveryCheck, FileFollowupArgs, FindTasksArgs, FoundTasks, Linked, ReportArgs,
-    TaskDetail, TaskStarted, TaskUpdated,
+    TaskDetail, TaskStarted, TaskUpdated, Unlinked,
 };
 use qm_tools::handler::{Caller, DeclaredWait, Dispatcher, StartRequest, ToolFailure, ToolHost};
 use qm_types::BoxFuture;
@@ -729,6 +731,15 @@ impl TaskService {
         blocked: TaskId,
     ) -> Result<Linked, ToolFailure> {
         waits::link_tasks(self, caller, blocker, blocked).await
+    }
+
+    pub async fn unlink_tasks(
+        &self,
+        caller: &Caller,
+        blocker: TaskId,
+        blocked: TaskId,
+    ) -> Result<Unlinked, ToolFailure> {
+        waits::unlink_tasks(self, caller, blocker, blocked).await
     }
 
     pub async fn task_detail(

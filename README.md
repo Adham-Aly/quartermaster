@@ -22,6 +22,12 @@ workspace), and delivers the results through GitHub once you approve.
 
 ![A task's life](assets/lifecycle.svg)
 
+The Quartermaster and secondmates can link their own tasks with `link_tasks` when one must land
+before another. If a dependency is no longer needed—for example, a stopped task's work landed
+through another pull request—they can remove that directed link with `unlink_tasks` and retry
+`settle_task`. Stopping or closing a blocker does not silently waive the dependency; a refused
+settlement names the link and how to remove it. Other blockers remain in force.
+
 ## Engines and accounts
 
 ![The two engines](assets/engines.svg)

@@ -314,6 +314,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unlink_deletion_survives_restart_with_both_endpoints_open() {
+        use crate::tasks;
+        use qm_types::ids::TaskId;
+        let dir = std::env::temp_dir().join(format!("qm-unlink-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = Scratch(dir.clone());
+        let path = dir.join("state.db");
+        let db = Db::open(&path).unwrap();
+        db.call(|conn| {
+            seed_two_orchestrators(conn)?;
+            conn.execute(
+                "UPDATE tasks SET status = 'running', outcome = NULL, closed_at = NULL",
+                [],
+            )?;
+            let (a, b) = (TaskId::new(1).unwrap(), TaskId::new(2).unwrap());
+            assert!(tasks::insert_link(conn, a, b, jiff::Timestamp::now())?);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        db.call(|conn| {
+            let (a, b) = (TaskId::new(1).unwrap(), TaskId::new(2).unwrap());
+            assert_eq!(
+                tasks::blockers_of(conn, b)?.len(),
+                1,
+                "insertion was persisted first"
+            );
+            assert!(
+                !tasks::remove_link(conn, b, a)?,
+                "reverse direction is absent"
+            );
+            assert_eq!(tasks::blockers_of(conn, b)?.len(), 1);
+            assert!(tasks::remove_link(conn, a, b)?);
+            assert!(
+                !tasks::remove_link(conn, a, b)?,
+                "already absent is idempotent"
+            );
+            assert_eq!(tasks::blockers_of(conn, b)?, [] as [tasks::Blocker; 0]);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        db.call(|conn| {
+            let (a, b) = (TaskId::new(1).unwrap(), TaskId::new(2).unwrap());
+            for id in [a, b] {
+                assert_eq!(
+                    tasks::load(conn, id)?.unwrap().status,
+                    qm_types::domain::TaskStatus::Running
+                );
+            }
+            assert!(
+                tasks::blockers_of(conn, b)?.is_empty(),
+                "deleted edge must not resurrect"
+            );
+            assert!(!tasks::remove_link(conn, a, b)?);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        drop(db);
+        drop(scratch);
+    }
+
+    #[tokio::test]
     async fn a_restart_orders_new_rows_after_the_loaded_ones_when_the_clock_steps_back() {
         use crate::events::NewEvent;
         use jiff::Timestamp;
