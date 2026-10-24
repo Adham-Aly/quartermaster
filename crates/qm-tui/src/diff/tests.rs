@@ -1,5 +1,7 @@
 //! End-to-end cell and input regressions for the parsed diff, without a core or filesystem.
 
+mod polish;
+
 use super::*;
 use crate::{popups::Popup, sample, theme};
 use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -213,7 +215,7 @@ fn sample_uses_the_approval_action_and_its_counts_and_ranges_are_real() {
 fn split_layout_and_focus_styles_survive_small_sizes_and_the_bridge_fold_boundary() {
     for light in [false, true] {
         for (w, h, tree_width, code_x, code_width) in [
-            (60, 16, 14, 18, 41),
+            (60, 16, 18, 22, 37),
             (100, 30, 23, 27, 72),
             (119, 40, 27, 31, 87),
             (120, 40, 28, 32, 87),
@@ -227,28 +229,49 @@ fn split_layout_and_focus_styles_survive_small_sizes_and_the_bridge_fold_boundar
             let buffer = draw(&mut app, w, h);
             let tree = region(&app, DiffHit::Tree);
             let body = region(&app, DiffHit::Body);
-            assert_eq!(tree, Rect::new(1, 4, tree_width, h - 6), "{w}×{h}");
-            assert_eq!(body, Rect::new(code_x, 6, code_width, h - 8));
-            assert_eq!(text(&buffer, 1, 3, 11), " Files · 6 ");
+            let extra = u16::from(w == 60); // The full badge key wraps onto its own row.
+            let header_y = 3 + extra;
+            assert_eq!(
+                tree,
+                Rect::new(1, 4 + extra, tree_width, h - 6 - extra),
+                "{w}×{h}"
+            );
+            assert_eq!(
+                body,
+                Rect::new(code_x, 6 + extra, code_width, h - 8 - extra)
+            );
+            assert_eq!(text(&buffer, 1, header_y, 11), " Files · 6 ");
             let status = text(&buffer, 0, h - 1, w);
             assert!(
                 status.contains("files") || status.contains("? help"),
                 "{w}×{h}: {status}"
             );
-            if w == 60 {
-                assert!(text(&buffer, 0, 2, w).trim_end().ends_with("D deleted"));
+            let legend = text(&buffer, 0, 2 + extra, w);
+            for label in [
+                "A added",
+                "M modified",
+                "D deleted",
+                "R renamed",
+                "C copied",
+            ] {
+                assert!(legend.contains(label), "{w}×{h}: {legend}");
             }
-            assert_eq!(text(&buffer, body.x, 5, 7), " Before");
+            let side_y = body.y - 1;
+            assert_eq!(text(&buffer, body.x, side_y, 7), " Before");
             let after = body.x + body.width / 2 + 1;
-            assert_eq!(text(&buffer, after, 5, 6), " After");
-            assert_eq!(buffer[(0, 3)].symbol(), "╭");
+            assert_eq!(text(&buffer, after, side_y, 6), " After");
+            assert_eq!(buffer[(0, header_y)].symbol(), "╭");
             assert_eq!(buffer[(w - 1, h - 2)].symbol(), "╯");
-            assert_eq!(buffer[(body.x + body.width / 2, 7)].symbol(), "│");
-            assert_eq!(buffer[(body.x - 1, 3)].fg, app.term.palette.accent);
-            assert_eq!(buffer[(0, 3)].fg, app.term.palette.dim);
-            assert_eq!(buffer[(body.x + 1, 5)].fg, app.term.palette.error);
-            assert_eq!(buffer[(after + 1, 5)].fg, app.term.palette.ok);
-            assert!(buffer[(after + 1, 5)].modifier.contains(Modifier::BOLD));
+            assert_eq!(buffer[(body.x + body.width / 2, body.y + 1)].symbol(), "│");
+            assert_eq!(buffer[(body.x - 1, header_y)].fg, app.term.palette.accent);
+            assert_eq!(buffer[(0, header_y)].fg, app.term.palette.dim);
+            assert_eq!(buffer[(body.x + 1, side_y)].fg, app.term.palette.error);
+            assert_eq!(buffer[(after + 1, side_y)].fg, app.term.palette.ok);
+            assert!(
+                buffer[(after + 1, side_y)]
+                    .modifier
+                    .contains(Modifier::BOLD)
+            );
             assert!(
                 app.term
                     .drawn
@@ -258,8 +281,8 @@ fn split_layout_and_focus_styles_survive_small_sizes_and_the_bridge_fold_boundar
             );
             key(&mut app, KeyCode::Tab);
             let focused = draw(&mut app, w, h);
-            assert_eq!(focused[(0, 3)].fg, app.term.palette.accent);
-            assert_eq!(focused[(body.x - 1, 3)].fg, app.term.palette.dim);
+            assert_eq!(focused[(0, header_y)].fg, app.term.palette.accent);
+            assert_eq!(focused[(body.x - 1, header_y)].fg, app.term.palette.dim);
         }
     }
 }
@@ -324,21 +347,17 @@ fn tree_contains_only_changed_paths_with_leaf_and_aggregate_folder_statuses() {
     let buffer = draw(&mut app, 150, 45);
     let entries = tree::entries(&app.diff_view().unwrap().files);
     let expected = [
-        ("assets/", 0, "A"),
-        ("billing/", 1, "A"),
-        ("preview.png", 2, "A"),
-        ("docs/", 0, "R"),
-        ("billing/", 1, "R"),
-        ("proration.md", 2, "R"),
+        ("assets/billing/", 0, "A"),
+        ("preview.png", 1, "A"),
+        ("docs/billing/", 0, "R"),
+        ("proration.md", 1, "R"),
         ("scripts/", 0, "M"),
         ("check-billing.sh", 1, "M"),
-        ("src/", 0, "M"),
-        ("billing/", 1, "M"),
-        ("legacy.rs", 2, "D"),
-        ("proration.rs", 2, "M"),
-        ("tests/", 0, "A"),
-        ("billing/", 1, "A"),
-        ("proration.rs", 2, "A"),
+        ("src/billing/", 0, "M"),
+        ("legacy.rs", 1, "D"),
+        ("proration.rs", 1, "M"),
+        ("tests/billing/", 0, "A"),
+        ("proration.rs", 1, "A"),
     ];
     assert_eq!(entries.len(), expected.len());
     let area = region(&app, DiffHit::Tree);
@@ -425,14 +444,14 @@ fn keys_clicks_and_wheel_use_the_drawn_panes_and_reveal_the_selected_file() {
     assert_eq!(app.view.diff.file, 24);
     let selected = region(&app, DiffHit::File(24));
     assert!(region(&app, DiffHit::Tree).contains(Position::new(selected.x, selected.y)));
-    assert_eq!(text(&buffer, selected.x + 4, selected.y, 7), "file-2…");
+    assert_eq!(text(&buffer, selected.x + 4, selected.y, 10), "file-24.rs");
     key(&mut app, KeyCode::Char(']'));
     assert_eq!(app.view.diff.file, 24);
     key(&mut app, KeyCode::Home);
     key(&mut app, KeyCode::Char('['));
     assert_eq!(app.view.diff.file, 0);
     key(&mut app, KeyCode::PageDown);
-    assert_eq!(app.view.diff.file, 9); // Ten visible tree rows, one row of overlap.
+    assert_eq!(app.view.diff.file, 8); // Nine visible tree rows, one row of overlap.
     key(&mut app, KeyCode::PageUp);
     key(&mut app, KeyCode::Enter);
     assert!(!app.view.diff.tree_focus);

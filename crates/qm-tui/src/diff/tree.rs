@@ -33,16 +33,26 @@ pub(super) fn entries(files: &[DiffFile]) -> Vec<Entry> {
         .rev()
         .map(|(name, node)| (name, node, 0))
         .collect();
-    while let Some((name, node, depth)) = stack.pop() {
+    while let Some((name, mut node, depth)) = stack.pop() {
+        let mut label = name.clone();
+        // Compress folder-only chains, but keep each file as its own clickable leaf.
+        while node.file.is_none() && node.children.len() == 1 {
+            let (name, child) = node.children.first_key_value().expect("one child");
+            if child.file.is_some() {
+                break;
+            }
+            label.push('/');
+            label.push_str(name);
+            node = child;
+        }
         let status = node
             .file
             .map_or_else(|| folder_status(node), |(_, status)| status);
+        if !node.children.is_empty() {
+            label.push('/');
+        }
         entries.push(Entry {
-            label: if node.children.is_empty() {
-                name.clone()
-            } else {
-                format!("{name}/")
-            },
+            label,
             depth,
             status,
             file: node.file.map(|(index, _)| index),

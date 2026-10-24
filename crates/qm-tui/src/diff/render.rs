@@ -38,34 +38,14 @@ pub(super) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
         back,
     );
     map.hits.add(back, Hit::Diff(DiffHit::Back));
-    let mut summary = Vec::new();
-    if let Some(view) = view {
-        if view.truncated {
-            summary.push(Span::styled(
-                " Partial diff · patch cut/incomplete · ",
-                theme::warn(),
-            ));
-        }
-        summary.push(Span::styled(format!(" {}", view.stat), theme::strong()));
-        let mut used = summary.iter().map(Span::width).sum::<usize>();
-        for (label, style) in [
-            (" · A added", theme::ok()),
-            (" · M modified", theme::accent()),
-            (" · D deleted", theme::error()),
-            (" · R renamed", theme::blue()),
-        ] {
-            if used + width(label) <= usize::from(body.width) {
-                summary.push(Span::styled(label, style));
-                used += width(label);
-            }
-        }
-    }
-    frame.render_widget(
-        Line::from(summary),
-        Rect::new(body.x, body.y + 1, body.width, 1),
+    let heading_rows = 1 + draw_summary(frame, body, view);
+    let tree_width = (body.width / 4).clamp(20, 36);
+    let tree_area = Rect::new(
+        body.x,
+        body.y + heading_rows,
+        tree_width,
+        body.height - heading_rows,
     );
-    let tree_width = (body.width / 4).clamp(16, 36);
-    let tree_area = Rect::new(body.x, body.y + 2, tree_width, body.height - 2);
     let code_area = Rect::new(
         tree_area.right() + 1,
         tree_area.y,
@@ -103,6 +83,43 @@ pub(super) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut Frame
             inner,
         );
     }
+}
+
+/// Wrap the complete badge key onto its own row rather than dropping a file status.
+fn draw_summary(frame: &mut Frame<'_>, body: Rect, view: Option<&qm_types::api::DiffView>) -> u16 {
+    let mut summary = Line::default();
+    let Some(view) = view else {
+        return 1;
+    };
+    if view.truncated {
+        summary.push_span(Span::styled(
+            " Partial diff · patch cut/incomplete · ",
+            theme::warn(),
+        ));
+    }
+    summary.push_span(Span::styled(format!(" {}", view.stat), theme::strong()));
+    let mut legend = Line::default();
+    for (label, style) in [
+        ("A added", theme::ok()),
+        ("M modified", theme::accent()),
+        ("D deleted", theme::error()),
+        ("R renamed", theme::blue()),
+        ("C copied", theme::blue()),
+    ] {
+        if !legend.spans.is_empty() {
+            legend.push_span(Span::styled(" · ", theme::dim()));
+        }
+        legend.push_span(Span::styled(label, style));
+    }
+    let wrap = summary.width() + legend.width() + 3 > usize::from(body.width);
+    if wrap {
+        frame.render_widget(legend, Rect::new(body.x + 1, body.y + 2, body.width - 1, 1));
+    } else {
+        summary.push_span(Span::styled(" · ", theme::dim()));
+        summary.spans.extend(legend.spans);
+    }
+    frame.render_widget(summary, Rect::new(body.x, body.y + 1, body.width, 1));
+    if wrap { 2 } else { 1 }
 }
 
 fn panel(title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
@@ -146,7 +163,7 @@ fn draw_tree(frame: &mut Frame<'_>, area: Rect, app: &App, files: &[DiffFile], m
             theme::text()
         };
         frame.render_widget(Block::new().style(base), row);
-        let indent = "  ".repeat(entry.depth.min(4));
+        let indent = "  ".repeat(entry.depth);
         let marker = if selected {
             "▸"
         } else if entry.file.is_none() {
@@ -156,7 +173,7 @@ fn draw_tree(frame: &mut Frame<'_>, area: Rect, app: &App, files: &[DiffFile], m
         };
         let prefix = format!("{marker} {indent}");
         let (badge, _) = status_label(entry.status);
-        let room = usize::from(inner.width.saturating_sub(cells(width(&prefix)) + 3));
+        let room = usize::from(inner.width).saturating_sub(width(&prefix) + 3);
         let label = truncate(&visible(&entry.label), room);
         let name_style = if entry.file.is_none() {
             theme::dim()
@@ -295,30 +312,11 @@ fn draw_code(
     file: &DiffFile,
     map: &mut FrameMap,
 ) {
-    let side_width = content.width.saturating_sub(1) / 2;
     let rows = rows::rows(file, app.diff_view().is_some_and(|v| v.truncated));
     map.diff_scroll_max = rows.len().saturating_sub(usize::from(content.height));
     let scroll = app.view.diff.scroll.min(map.diff_scroll_max);
-    let digits = file
-        .hunks
-        .iter()
-        .flat_map(|h| &h.lines)
-        .flat_map(|l| [l.old_number, l.new_number])
-        .flatten()
-        .max()
-        .unwrap_or(1)
-        .to_string()
-        .len()
-        .max(3);
-    let gutter = cells(digits + 3).min(side_width.saturating_sub(4));
-    let room = usize::from(side_width.saturating_sub(gutter));
-    map.diff_horizontal_max = file
-        .hunks
-        .iter()
-        .flat_map(|h| &h.lines)
-        .map(|l| width(&visible(&l.text)).saturating_sub(room))
-        .max()
-        .unwrap_or(0);
+    let (gutter, horizontal_max) = code_dimensions(file, content.width);
+    map.diff_horizontal_max = horizontal_max;
     let horizontal = app.view.diff.horizontal.min(map.diff_horizontal_max);
     for (i, row) in rows
         .iter()
@@ -361,6 +359,41 @@ fn draw_code(
     }
 }
 
+/// Reuse the last measured viewport with the newly selected file, even before a redraw.
+pub(super) fn code_limits(file: &DiffFile, viewport: Rect, truncated: bool) -> (usize, usize) {
+    (
+        rows::rows(file, truncated)
+            .len()
+            .saturating_sub(usize::from(viewport.height)),
+        code_dimensions(file, viewport.width).1,
+    )
+}
+
+fn code_dimensions(file: &DiffFile, width: u16) -> (u16, usize) {
+    let side_width = width.saturating_sub(1) / 2;
+    let digits = file
+        .hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .flat_map(|l| [l.old_number, l.new_number])
+        .flatten()
+        .max()
+        .unwrap_or(1)
+        .to_string()
+        .len()
+        .max(3);
+    let gutter = cells(digits + 3).min(side_width.saturating_sub(4));
+    let room = usize::from(side_width.saturating_sub(gutter));
+    let horizontal = file
+        .hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .map(|l| crate::text::width(&visible(&l.text)).saturating_sub(room))
+        .max()
+        .unwrap_or(0);
+    (gutter, horizontal)
+}
+
 fn draw_row(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -371,10 +404,12 @@ fn draw_row(
 ) {
     let left = Rect::new(area.x, area.y, area.width / 2, 1);
     let right = Rect::new(left.right() + 1, area.y, area.width - left.width - 1, 1);
-    frame.render_widget(
-        Span::styled("│", theme::dim()),
-        Rect::new(left.right(), area.y, 1, 1),
-    );
+    if matches!(row, Row::Code { .. } | Row::NoNewline { .. }) {
+        frame.render_widget(
+            Span::styled("│", theme::dim()),
+            Rect::new(left.right(), area.y, 1, 1),
+        );
+    }
     match row {
         Row::Hunk(header) | Row::Message(header) => {
             let style = if matches!(row, Row::Hunk(_)) {

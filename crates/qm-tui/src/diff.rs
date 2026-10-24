@@ -107,8 +107,23 @@ impl App {
             .map_or(1, |r| usize::from(r.height.saturating_sub(1)).max(1))
     }
 
+    fn diff_limits(&self) -> (usize, usize) {
+        let viewport = self.term.drawn.hits.rect_of(Hit::Diff(DiffHit::Body));
+        self.diff_view()
+            .zip(viewport)
+            .and_then(|(view, viewport)| {
+                view.files
+                    .get(self.view.diff.file)
+                    .map(|file| render::code_limits(file, viewport, view.truncated))
+            })
+            .unwrap_or((
+                self.term.drawn.diff_scroll_max,
+                self.term.drawn.diff_horizontal_max,
+            ))
+    }
+
     fn scroll_diff_to(&mut self, to: usize) {
-        let to = to.min(self.term.drawn.diff_scroll_max);
+        let to = to.min(self.diff_limits().0);
         self.change(|app| &mut app.view.diff.scroll, to);
     }
 
@@ -227,7 +242,7 @@ impl App {
                     .diff
                     .horizontal
                     .saturating_add(8)
-                    .min(self.term.drawn.diff_horizontal_max);
+                    .min(self.diff_limits().1);
                 self.change(|app| &mut app.view.diff.horizontal, to);
             }
             KeyCode::Char(c) => {
