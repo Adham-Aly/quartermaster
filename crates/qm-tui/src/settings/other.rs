@@ -194,6 +194,7 @@ mod tests {
     fn system_setup_check_opens_by_key() {
         let mut app = App::new();
         app.open_popup(Popup::Settings);
+        assert_eq!(app.take_commands(), [Command::RefreshQuotas]);
         let now = Instant::now();
         app.on_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE), now);
         assert_eq!(app.view.settings.tab, Tab::System);
@@ -208,6 +209,7 @@ mod tests {
         let mut app = App::new();
         app.view.settings.tab = Tab::System;
         app.open_popup(Popup::Settings);
+        assert_eq!(app.take_commands(), [Command::RefreshQuotas]);
         let before = app.view.settings.model.clone();
         for code in [KeyCode::Char('n'), KeyCode::Char(' ')] {
             app.on_key(KeyEvent::new(code, KeyModifiers::NONE), Instant::now());
@@ -229,6 +231,7 @@ mod tests {
             let mut app = App::new();
             app.view.settings.tab = Tab::System;
             app.open_popup(Popup::Settings);
+            assert_eq!(app.take_commands(), [Command::RefreshQuotas]);
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|frame| app.draw(frame)).unwrap();
             let open = app

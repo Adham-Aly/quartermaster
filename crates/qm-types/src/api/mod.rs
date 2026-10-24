@@ -120,6 +120,8 @@ pub enum Command {
         held: Option<HeldActionId>,
     },
     // ---- Settings and connecting an account. ----
+    /// Refresh provider-reported quotas for connected accounts; results arrive in settings snapshots.
+    RefreshQuotas,
     /// Start the in-app login for a subscription (browser or device code); the core answers with
     /// [`SettingsView::login`]. `account` is set when you asked to reconnect that account (its
     /// login stopped working): the login then replaces its credential in place, keeping the
@@ -1295,6 +1297,11 @@ pub enum AccountStatus {
 /// One connected account.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
+// Independent display flags in an additive wire contract, not mutually exclusive states.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent account display flags"
+)]
 pub struct SettingsAccount {
     pub id: AccountId,
     /// Your label for it ("Claude Max").
@@ -1311,6 +1318,18 @@ pub struct SettingsAccount {
     /// never zero.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<String>,
+    /// Display-ready provider quota windows, balances or allowances; separate from session usage.
+    #[serde(default)]
+    pub quota_lines: Vec<String>,
+    /// Why the latest quota check failed; does not imply that the login is broken.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_problem: Option<String>,
+    /// A provider quota check is in progress; previous results may still be shown.
+    #[serde(default)]
+    pub quota_refreshing: bool,
+    /// Display-ready time of the last successful quota check; `None` means no successful reading yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_checked_at: Option<String>,
     /// Follows the `claude` login on this Mac: paused here, never disconnected.
     #[serde(default)]
     pub follows_cli: bool,
@@ -1336,6 +1355,10 @@ impl SettingsAccount {
             status: AccountStatus::Active,
             preferred: false,
             usage: None,
+            quota_lines: Vec::new(),
+            quota_problem: None,
+            quota_refreshing: false,
+            quota_checked_at: None,
             follows_cli: false,
             provider: None,
             api_key: false,
@@ -1644,5 +1667,43 @@ impl CoreServer {
     /// Sends an update; fails only if the UI is gone.
     pub fn send(&self, update: Update) -> Result<(), LinkClosed> {
         self.updates.send(update).map_err(|_| LinkClosed)
+    }
+}
+
+#[cfg(test)]
+mod quota_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_accounts_default_quota_fields_and_new_fields_round_trip() {
+        let account = SettingsAccount::new(AccountId::new(1), "Work");
+        let mut legacy = serde_json::to_value(&account).unwrap();
+        for field in [
+            "quota_lines",
+            "quota_problem",
+            "quota_refreshing",
+            "quota_checked_at",
+        ] {
+            legacy.as_object_mut().unwrap().remove(field);
+        }
+        assert_eq!(
+            serde_json::from_value::<SettingsAccount>(legacy).unwrap(),
+            account
+        );
+        let mut populated = account;
+        populated.quota_lines = vec!["5-hour window: 41% used".into()];
+        populated.quota_problem = Some("temporarily unavailable".into());
+        populated.quota_refreshing = true;
+        populated.quota_checked_at = Some("today 12:04".into());
+        let encoded = serde_json::to_value(&populated).unwrap();
+        assert_eq!(
+            serde_json::from_value::<SettingsAccount>(encoded).unwrap(),
+            populated
+        );
+        let encoded = serde_json::to_value(Command::RefreshQuotas).unwrap();
+        assert_eq!(
+            serde_json::from_value::<Command>(encoded).unwrap(),
+            Command::RefreshQuotas
+        );
     }
 }
