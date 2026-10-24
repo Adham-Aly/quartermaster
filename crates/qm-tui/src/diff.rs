@@ -1,69 +1,78 @@
-//! The Diff screen.
+//! Side-by-side diff review, opened only from the held action's Diff button.
 //!
-//! Opened by an approval card's Diff button (or its key): the UI sends
-//! `Command::ShowDiff { held: Some(id) }` and the core answers with `Snapshot.diff`. Not a tab.
-//!
-//! ```text
-//! Diff · T-0039 · feat(billing): proration preview · +214 −37 · 12 files            ← Back
-//! ╭──────────────────────────────────────────────────────────────────────────────────────╮
-//! │ diff --git a/src/billing.rs b/src/billing.rs                                (accent) │
-//! │ +    let preview = prorate(plan, at);                                        (ok)    │
-//! ╰──────────────────────────────────────────────────────────────────────────────────────╯
-//!  ⚑ 1 approval · 4 running                                   esc back · a approve · r reject
-//! ```
-//!
-//! The lines scroll with the wheel, `↑`/`↓`, `PgUp`/`PgDn` and `g`/`G`; the app's selection and
-//! copy work as everywhere. The card's keys (`a`, `r`, `1`…) answer the card from here and return
-//! to the Bridge; `Esc` and `← Back` close the screen.
+//! The core owns the parsed patch and approved head; this module owns navigation only.
+//! Tab switches between the changed-file tree and code. Brackets move between files;
+//! arrows/page/home/end scroll the focused pane, and left/right pan long code lines.
+//! The held card's answer keys and Escape/Back retain the Actions overlay's behaviour.
+
+mod render;
+mod rows;
+mod tree;
 
 use crate::app::App;
-use crate::hit::{FrameMap, Hit, TextRow};
+use crate::hit::{FrameMap, Hit};
 use crate::router::Screen;
-use crate::text::{cells, truncate, width};
-use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
-use qm_types::api::{ActionItem, AgentRef, Command};
+use qm_types::api::{ActionItem, AgentRef, Command, DiffView};
 use qm_types::ids::HeldActionId;
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph};
 use std::time::Instant;
 
 /// Something on the Diff screen a click acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DiffHit {
-    /// `← Back`.
     Back,
-    /// The box of lines: the wheel scrolls it.
     Body,
+    Tree,
+    File(usize),
 }
 
-/// The `← Back` button's label.
-const BACK: &str = "← Back";
-/// The keys, on the status bar's right.
-pub(crate) const HINTS: &str = "esc back · a approve · r reject";
-/// Shown while the core reads the diff.
-const LOADING: &str = "Reading the diff…";
-/// The wheel's step, in lines.
+/// Navigation reset on opening a diff; no file selection is saved in UI preferences.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DiffUi {
+    pub(crate) held: Option<HeldActionId>,
+    pub(crate) file: usize,
+    pub(crate) scroll: usize,
+    pub(crate) horizontal: usize,
+    pub(crate) tree_scroll: usize,
+    pub(crate) tree_focus: bool,
+}
+
+const HINTS: &str = "tab files/code · [ ] file · ↑↓ scroll · ←→ pan · a/r answer · esc back";
+
+/// Keep a discoverable navigation hint even when the terminal cannot fit the full key map.
+pub(crate) fn hints(room: usize) -> &'static str {
+    [
+        HINTS,
+        "tab files · [ ] file · a/r answer · esc back",
+        "tab files · ? help",
+        "? help",
+    ]
+    .into_iter()
+    .find(|hint| crate::text::width(hint) <= room)
+    .unwrap_or("")
+}
+
 const WHEEL_LINES: usize = 3;
 
 impl App {
-    /// Opens the Diff screen for `held` (the approval card's Diff button).
     pub(crate) fn show_diff(&mut self, held: Option<HeldActionId>, now: Instant) {
         let Some(held) = held else {
             self.flash(crate::input::NOT_BUILT, now);
             return;
         };
-        self.view.diff_scroll = 0;
+        self.view.diff = DiffUi {
+            held: Some(held),
+            ..DiffUi::default()
+        };
         self.command(Command::ShowDiff { held: Some(held) });
         self.show(Screen::Diff);
     }
 
-    /// Closes the Diff screen and returns to the Bridge, with the Actions overlay its Diff button
-    /// came from open again while that item still waits.
+    /// Escape reopens the originating Actions item only while it still waits.
     pub(crate) fn close_diff(&mut self) {
-        self.view.diff_scroll = 0;
+        self.view.diff = DiffUi::default();
         self.command(Command::ShowDiff { held: None });
         self.show(Screen::Bridge);
         let from = self.view.diff_from.take();
@@ -77,54 +86,166 @@ impl App {
         }
     }
 
-    /// How far the diff can scroll, from the last frame.
-    fn diff_scroll_max(&self) -> usize {
-        let rows = self
-            .term
-            .drawn
-            .hits
-            .rect_of(Hit::Diff(DiffHit::Body))
-            .map_or(0, |r| usize::from(r.height.saturating_sub(2)));
-        let lines = self.snapshot.diff.as_ref().map_or(0, |d| d.lines.len());
-        lines.saturating_sub(rows)
+    /// Do not display or answer an earlier held action while the requested diff is loading.
+    fn diff_view(&self) -> Option<&DiffView> {
+        self.snapshot
+            .diff
+            .as_ref()
+            .filter(|view| Some(view.held) == self.view.diff.held)
     }
 
     fn diff_page(&self) -> usize {
+        let hit = if self.view.diff.tree_focus {
+            DiffHit::Tree
+        } else {
+            DiffHit::Body
+        };
         self.term
             .drawn
             .hits
-            .rect_of(Hit::Diff(DiffHit::Body))
-            .map_or(1, |r| usize::from(r.height.saturating_sub(3)).max(1))
+            .rect_of(Hit::Diff(hit))
+            .map_or(1, |r| usize::from(r.height.saturating_sub(1)).max(1))
+    }
+
+    fn diff_limits(&self) -> (usize, usize) {
+        let viewport = self.term.drawn.hits.rect_of(Hit::Diff(DiffHit::Body));
+        self.diff_view()
+            .zip(viewport)
+            .and_then(|(view, viewport)| {
+                view.files
+                    .get(self.view.diff.file)
+                    .map(|file| render::code_limits(file, viewport, view.truncated))
+            })
+            .unwrap_or((
+                self.term.drawn.diff_scroll_max,
+                self.term.drawn.diff_horizontal_max,
+            ))
     }
 
     fn scroll_diff_to(&mut self, to: usize) {
-        let to = to.min(self.diff_scroll_max());
-        self.change(|app| &mut app.view.diff_scroll, to);
+        let to = to.min(self.diff_limits().0);
+        self.change(|app| &mut app.view.diff.scroll, to);
     }
 
-    /// The Actions item of the diff's held action, while it waits.
+    fn select_diff_file(&mut self, index: usize) {
+        let count = self.diff_view().map_or(0, |view| view.files.len());
+        if count == 0 {
+            return;
+        }
+        let index = index.min(count - 1);
+        if self.view.diff.file != index {
+            self.change(|app| &mut app.view.diff.file, index);
+            self.change(|app| &mut app.view.diff.scroll, 0);
+            self.change(|app| &mut app.view.diff.horizontal, 0);
+            self.change(|app| &mut app.term.selection, None);
+        }
+        // Keep the selected leaf visible, including all of its parent folder rows.
+        let entries = tree::entries(self.diff_view().map_or(&[], |v| v.files.as_slice()));
+        if let Some(row) = entries.iter().position(|e| e.file == Some(index)) {
+            let height = self
+                .term
+                .drawn
+                .hits
+                .rect_of(Hit::Diff(DiffHit::Tree))
+                .map_or(1, |r| usize::from(r.height).max(1));
+            let top = self.view.diff.tree_scroll;
+            let to = top.min(row).max(row.saturating_sub(height - 1));
+            self.change(|app| &mut app.view.diff.tree_scroll, to);
+        }
+    }
+
+    fn diff_file_order(&self) -> Vec<usize> {
+        tree::entries(self.diff_view().map_or(&[], |v| v.files.as_slice()))
+            .into_iter()
+            .filter_map(|entry| entry.file)
+            .collect()
+    }
+
+    /// Follow the visible tree order, which may differ from git's order after a rename.
+    fn select_diff_tree_file(&mut self, position: usize) {
+        let order = self.diff_file_order();
+        if let Some(&index) = order.get(position.min(order.len().saturating_sub(1))) {
+            self.select_diff_file(index);
+        }
+    }
+
+    /// The existing approval keys are resolved against the displayed held action, never a file.
     fn diff_item(&self) -> Option<&ActionItem> {
-        let held = self.snapshot.diff.as_ref()?.held;
+        let held = self.diff_view()?.held;
         self.snapshot
             .actions
             .iter()
             .find(|item| item.card.held == Some(held))
     }
 
-    /// A key on the Diff screen; `false` when it isn't the screen's (the global keys follow).
     pub(crate) fn on_diff_key(&mut self, key: KeyEvent, now: Instant) -> bool {
-        let current = self.view.diff_scroll;
+        if matches!(
+            key.code,
+            KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Home
+                | KeyCode::End
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Enter
+                | KeyCode::Char('[' | ']' | 'j' | 'k' | 'g' | 'G')
+        ) {
+            self.show_selection();
+        }
+        let current = self.view.diff.scroll;
+        let file = self
+            .diff_file_order()
+            .iter()
+            .position(|&i| i == self.view.diff.file)
+            .unwrap_or(0);
+        let tree = self.view.diff.tree_focus;
         match key.code {
             KeyCode::Esc => self.close_diff(),
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.change(|app| &mut app.view.diff.tree_focus, !tree);
+                self.select_diff_file(self.view.diff.file);
+            }
+            KeyCode::Char('[') => self.select_diff_tree_file(file.saturating_sub(1)),
+            KeyCode::Char(']') => self.select_diff_tree_file(file.saturating_add(1)),
+            KeyCode::Up | KeyCode::Char('k') if tree => {
+                self.select_diff_tree_file(file.saturating_sub(1));
+            }
+            KeyCode::Down | KeyCode::Char('j') if tree => {
+                self.select_diff_tree_file(file.saturating_add(1));
+            }
+            KeyCode::PageUp if tree => {
+                self.select_diff_tree_file(file.saturating_sub(self.diff_page()));
+            }
+            KeyCode::PageDown if tree => {
+                self.select_diff_tree_file(file.saturating_add(self.diff_page()));
+            }
+            KeyCode::Home | KeyCode::Char('g') if tree => self.select_diff_tree_file(0),
+            KeyCode::End | KeyCode::Char('G') if tree => self.select_diff_tree_file(usize::MAX),
+            KeyCode::Enter if tree => self.change(|app| &mut app.view.diff.tree_focus, false),
             KeyCode::Up | KeyCode::Char('k') => self.scroll_diff_to(current.saturating_sub(1)),
-            KeyCode::Down | KeyCode::Char('j') => self.scroll_diff_to(current + 1),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_diff_to(current.saturating_add(1)),
             KeyCode::PageUp => self.scroll_diff_to(current.saturating_sub(self.diff_page())),
-            KeyCode::PageDown => self.scroll_diff_to(current + self.diff_page()),
+            KeyCode::PageDown => self.scroll_diff_to(current.saturating_add(self.diff_page())),
             KeyCode::Home | KeyCode::Char('g') => self.scroll_diff_to(0),
             KeyCode::End | KeyCode::Char('G') => self.scroll_diff_to(usize::MAX),
+            KeyCode::Left => {
+                let to = self.view.diff.horizontal.saturating_sub(8);
+                self.change(|app| &mut app.view.diff.horizontal, to);
+            }
+            KeyCode::Right => {
+                let to = self
+                    .view
+                    .diff
+                    .horizontal
+                    .saturating_add(8)
+                    .min(self.diff_limits().1);
+                self.change(|app| &mut app.view.diff.horizontal, to);
+            }
             KeyCode::Char(c) => {
-                // The card's keys answer it from here, and return to the Bridge without
-                // reopening its overlay.
                 let Some(item) = self.diff_item() else {
                     return false;
                 };
@@ -151,97 +272,48 @@ impl App {
         true
     }
 
-    /// The wheel over the Diff screen.
-    pub(crate) fn diff_wheel(&mut self, up: bool) {
-        let current = self.view.diff_scroll;
+    /// Scroll only the pane under the pointer; the tree wheel does not change the selected file.
+    pub(crate) fn diff_wheel(&mut self, at: Position, up: bool) {
+        let hit = self.term.drawn.hits.at(at.x, at.y);
+        let tree = matches!(hit, Some(Hit::Diff(DiffHit::Tree | DiffHit::File(_))));
+        let body = matches!(hit, Some(Hit::Diff(DiffHit::Body)));
+        if !tree && !body {
+            return;
+        }
+        let current = if tree {
+            self.view.diff.tree_scroll
+        } else {
+            self.view.diff.scroll
+        };
         let to = if up {
             current.saturating_sub(WHEEL_LINES)
         } else {
-            current + WHEEL_LINES
+            current.saturating_add(WHEEL_LINES)
         };
-        self.scroll_diff_to(to);
+        if tree {
+            let to = to.min(self.term.drawn.diff_tree_scroll_max);
+            self.change(|app| &mut app.view.diff.tree_scroll, to);
+        } else {
+            self.scroll_diff_to(to);
+        }
     }
 
-    /// A click on the Diff screen.
     pub(crate) fn diff_click(&mut self, hit: DiffHit) {
         match hit {
             DiffHit::Back => self.close_diff(),
-            DiffHit::Body => {}
+            DiffHit::Body => self.change(|app| &mut app.view.diff.tree_focus, false),
+            DiffHit::Tree => self.change(|app| &mut app.view.diff.tree_focus, true),
+            DiffHit::File(index) => {
+                self.change(|app| &mut app.view.diff.tree_focus, true);
+                self.select_diff_file(index);
+            }
         }
     }
 }
 
-/// Draws the Diff screen into `body`.
 pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut FrameMap) {
-    if body.height < 4 || body.width < 10 {
-        return;
-    }
-    let view = app.snapshot.diff.as_ref();
-
-    // The header: "Diff · title · stat", and ← Back on the right.
-    let back_width = cells(width(BACK)) + 2;
-    let header = Rect::new(body.x, body.y, body.width, 1);
-    let back = Rect::new(
-        body.right().saturating_sub(back_width + 1),
-        body.y,
-        back_width,
-        1,
-    );
-    let mut title = vec![Span::styled(" Diff", theme::accent())];
-    if let Some(view) = view {
-        title.push(Span::styled(" · ", theme::dim()));
-        let room = usize::from(header.width.saturating_sub(back_width + 8));
-        let text = if view.stat.is_empty() {
-            view.title.clone()
-        } else {
-            format!("{} · {}", view.title, view.stat)
-        };
-        let note = if view.truncated {
-            " · cut at 20,000 lines"
-        } else {
-            ""
-        };
-        let text = truncate(&text, room.saturating_sub(cells(width(note)).into()));
-        title.push(Span::styled(text, theme::text()));
-        title.push(Span::styled(note, theme::warn()));
-    }
-    frame.render_widget(Line::from(title), header);
-    let hovered = app.term.hover == Some(Hit::Diff(DiffHit::Back));
-    frame.render_widget(
-        Paragraph::new(Span::styled(format!(" {BACK} "), theme::button(hovered))),
-        back,
-    );
-    map.hits.add(back, Hit::Diff(DiffHit::Back));
-
-    // The box of lines.
-    let area = Rect::new(body.x, body.y + 1, body.width, body.height - 1);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(theme::border(true, false));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    map.hits.add(area, Hit::Diff(DiffHit::Body));
-    let rows = usize::from(inner.height);
-    let lines: Vec<(String, ratatui::style::Style)> = match view {
-        Some(view) => view
-            .lines
-            .iter()
-            .map(|s| (s.text.clone(), theme::tone(s.tone)))
-            .collect(),
-        None => vec![(LOADING.to_owned(), theme::dim())],
-    };
-    let max = lines.len().saturating_sub(rows);
-    let scroll = app.view.diff_scroll.min(max);
-    let room = usize::from(inner.width.saturating_sub(1));
-    for (i, (text, style)) in lines.iter().skip(scroll).take(rows).enumerate() {
-        let y = inner.y + cells(i);
-        let shown = truncate(&text.replace('\t', "    "), room);
-        let row = Rect::new(inner.x + 1, y, inner.width.saturating_sub(1), 1);
-        frame.render_widget(Line::from(Span::styled(shown.clone(), *style)), row);
-        map.text.push(TextRow {
-            at: Position::new(row.x, y),
-            text: shown,
-            continues: false,
-        });
-    }
+    render::draw(frame, body, app, map);
 }
+
+#[cfg(test)]
+mod tests;

@@ -375,12 +375,14 @@ impl Repo {
     }
 
     /// Files changed, lines added and removed, from where `head` branched off `base`.
+    /// Rename detection matches [`Self::diff_text`].
     pub fn diff_stat(&self, base: &CommitSha, head: &CommitSha) -> Result<DiffStat, GitError> {
         let range = self.diff_range(base, head)?;
         let out = self.run([
             "diff",
             "--numstat",
-            "--no-renames",
+            "--find-renames",
+            "--no-relative",
             "--no-ext-diff",
             "--no-textconv",
             range.as_str(),
@@ -407,8 +409,17 @@ impl Repo {
         max_lines: usize,
     ) -> Result<(String, bool), GitError> {
         let range = self.diff_range(base, head)?;
+        // Pin the patch grammar for structured consumers, independent of diff.* config.
         let out = self.run([
             "diff",
+            "--find-renames",
+            "--no-relative",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--output-indicator-old=-",
+            "--output-indicator-new=+",
+            "--output-indicator-context= ",
+            "--submodule=short",
             "--no-color",
             "--no-ext-diff",
             "--no-textconv",

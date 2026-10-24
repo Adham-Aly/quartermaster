@@ -32,6 +32,7 @@ tmux's `window-style` and `pane-colours[n]`, which tmux reports as the terminal'
 | `accent()` | `Yellow` | focus, the active input, approvals |
 | `warn()` | `Yellow` | decisions, notices, tier headings |
 | `ok()` | `Green` | running, ready, passed |
+| `diff_addition()` | readable green text, else text on green | diff additions only; never a neutral-colour fallback |
 | `error()` | `Red` | errors |
 | `badge()` | `Red` | the dot on a menu entry, a popup's title and beside the menu button (never on a fill or the accent): something there needs you |
 | `blue()` | `LightBlue` | a supervisor's marker in a session |
@@ -94,6 +95,16 @@ Map core `Tone`s with `theme::tone`.
   Quartermaster effort control overrides the entry effort; with model and effort both Auto,
   the selected entry's effort is used. Board selections and pickers are transient, not
   persisted in `ui.json`.
+- Diff (`diff.rs`): a changed-path-only tree with aggregate folder status badges (`A/M/D/R/C`);
+  single-child folder chains compact into one row. The complete status legend wraps at narrow widths.
+  The selected file's Before/After panes have independent line-number gutters. Consecutive
+  deletion/addition runs are paired; unmatched sides stay empty. Hunk headers/notices span both sides.
+  Tab switches tree/code focus, brackets select files, arrows/pages/Home/End move or scroll,
+  and left/right pan code in cells. Shrinking preserves a visible tree selection, but never
+  undoes deliberate tree-only wheel scrolling. Additions use a contrast-fitted green foreground
+  or a green fill with readable text when neither ANSI green reads on the terminal background.
+  The wheel scrolls only the pane under the pointer. Binary, empty and mode-only files have
+  explicit notices; partial patches warn above the panes. Card approval keys and Back are unchanged.
 - Buttons: `widgets/button.rs` (`" label "`), one space apart. Hints go on the status bar's right.
 - Long labels are cut with `…` so status columns always fit; long problem text wraps instead.
 

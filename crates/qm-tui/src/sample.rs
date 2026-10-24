@@ -1,6 +1,6 @@
 //! Sample data for the Bridge and the other screens, for checking the UI by eye.
 //!
-//! The real binary shows it only when the environment variable [`ENV`] is exactly `bridge`; it is
+//! The real binary shows it only when the environment variable [`ENV`] selects a sample; it is
 //! a developer switch, never mentioned in the UI or `--help`. While it shows, the UI ignores the
 //! core's snapshots, so the picture holds still; every command still goes to the core.
 
@@ -16,9 +16,10 @@ use jiff::tz::TimeZone;
 use qm_types::api::{
     AccountBadge, ActionItem, ActionKey, ActionKind, ActionOpen, AgentContextView, AgentRef,
     Attention, Card, CardAction, CardButton, CardKind, CardLine, ChatLine, CompactingView,
-    CompactionNote, ContextBasisView, ContextOccupancy, CrewRow, HeldAnswer, HeldChoice,
-    NoteOutcome, PointView, ProjectRow, SessionLine, SessionLineKind, SessionView, Snapshot,
-    Styled, TaskDetail, TaskRow, Tone, TurnTokens, Waiting,
+    CompactionNote, ContextBasisView, ContextOccupancy, CrewRow, DiffFile, DiffFileStatus,
+    DiffHunk, DiffLine, DiffLineKind, HeldAnswer, HeldChoice, NoteOutcome, PointView, ProjectRow,
+    SessionLine, SessionLineKind, SessionView, Snapshot, Styled, TaskDetail, TaskRow, Tone,
+    TurnTokens, Waiting,
 };
 use qm_types::domain::{
     Autonomy, DeliveryMode, MessageKind, MessageSource, Provider as ProviderId,
@@ -32,6 +33,9 @@ pub const ENV: &str = "QM_DEV_SAMPLE";
 
 /// The value of [`ENV`] that shows the sample Bridge.
 pub const BRIDGE: &str = "bridge";
+
+/// The value of [`ENV`] that opens the approval's split diff review.
+pub const DIFF: &str = "diff";
 
 /// The value of [`ENV`] that shows the chat sample.
 pub const CHAT: &str = "chat";
@@ -156,6 +160,7 @@ pub(crate) fn install_from_env(app: &mut App) -> bool {
     }
     match std::env::var(ENV).as_deref() {
         Ok(BRIDGE) => install(app),
+        Ok(DIFF) => install_diff(app),
         Ok(MENU_BADGE) => {
             install(app);
             app.view.badges.push(crate::popups::MenuEntry::Settings);
@@ -410,7 +415,10 @@ fn approval_card() -> Card {
         CardLine::new(
             2,
             vec![
-                s("PR #212 @ a1b2c3d · +214 \u{2212}37 · 14/14 ", Tone::Dim),
+                s(
+                    &format!("PR #212 @ a1b2c3d · {} · 14/14 ", diff().stat),
+                    Tone::Dim,
+                ),
                 s("✓", Tone::Ok),
             ],
         ),
@@ -1077,33 +1085,275 @@ pub fn decision() -> Snapshot {
     out
 }
 
-/// A Diff screen's content for the sample's T-0039.
+/// Opens the sample through the approval card's real Diff action, including its held ID and
+/// return-to-Actions state. The Bridge snapshot already carries the matching parsed diff.
+pub(crate) fn install_diff(app: &mut App) {
+    install(app);
+    app.focus = Pane::Actions;
+    let index = app
+        .snapshot
+        .actions
+        .iter()
+        .position(|item| item.card.held == Some(HeldActionId::new(1)))
+        .expect("the sample approval");
+    app.open_action(index);
+    let button = app.snapshot.actions[index]
+        .card
+        .buttons
+        .iter()
+        .position(|button| matches!(button.action, CardAction::ShowDiff))
+        .expect("the approval's Diff button");
+    app.press_action_button(button, std::time::Instant::now());
+}
+
+/// A Diff screen's content for the sample's T-0039. Only changed paths are present; counts and
+/// the compatibility patch are derived from these same files, never an invented summary.
 #[doc(hidden)]
 pub fn diff() -> qm_types::api::DiffView {
+    use DiffLineKind::{Addition as A, Deletion as D};
     let mut view = qm_types::api::DiffView::new(
         HeldActionId::new(1),
         "T-0039 · feat(billing): proration preview",
     );
-    view.stat = String::from("+214 \u{2212}37 · 12 files");
-    view.lines = vec![
-        s(
-            "diff --git a/src/billing/proration.rs b/src/billing/proration.rs",
-            Tone::Accent,
-        ),
-        s("index 3f2a1c0..9b8e7d6 100644", Tone::Accent),
-        s("--- a/src/billing/proration.rs", Tone::Accent),
-        s("+++ b/src/billing/proration.rs", Tone::Accent),
-        s(
-            "@@ -12,6 +12,18 @@ pub fn preview(plan: &Plan, at: Date) -> Preview {",
-            Tone::Accent,
-        ),
-        s("     let days = plan.days_left(at);", Tone::Text),
-        s("-    Preview::flat(plan.price)", Tone::Error),
-        s("+    let credit = plan.unused_credit(at);", Tone::Ok),
-        s("+    Preview::prorated(plan.price, credit, days)", Tone::Ok),
-        s(" }", Tone::Text),
-    ];
+    let proration = diff_proration();
+    let tests = diff_file(
+        DiffFileStatus::Added,
+        None,
+        Some("tests/billing/proration.rs"),
+        vec![diff_hunk(
+            0,
+            1,
+            "",
+            &[
+                (A, "use api_server::billing::{Plan, preview};"),
+                (A, ""),
+                (A, "#[test]"),
+                (A, "fn unused_days_become_credit() {"),
+                (A, "    let plan = Plan::monthly(3000);"),
+                (A, "    let invoice = preview(&plan, plan.midpoint());"),
+                (A, "    assert_eq!(invoice.credit, 1500);"),
+                (A, "    assert_eq!(invoice.days, 15);"),
+                (A, "}"),
+            ],
+        )],
+    );
+    let legacy = diff_file(
+        DiffFileStatus::Deleted,
+        Some("src/billing/legacy.rs"),
+        None,
+        vec![diff_hunk(
+            1,
+            0,
+            "",
+            &[
+                (D, "// Flat previews ignored unused days."),
+                (D, "pub fn flat_preview(price: i64) -> i64 {"),
+                (D, "    price"),
+                (D, "}"),
+            ],
+        )],
+    );
+    let guide = diff_guide();
+    let mut image = diff_file(
+        DiffFileStatus::Added,
+        None,
+        Some("assets/billing/preview.png"),
+        Vec::new(),
+    );
+    image.binary = true;
+    image.metadata.push(String::from(
+        "Binary files /dev/null and b/assets/billing/preview.png differ",
+    ));
+    let mut script = diff_file(
+        DiffFileStatus::Modified,
+        Some("scripts/check-billing.sh"),
+        Some("scripts/check-billing.sh"),
+        Vec::new(),
+    );
+    script.metadata.extend([
+        String::from("old mode 100644"),
+        String::from("new mode 100755"),
+    ]);
+    view.files = vec![proration, tests, legacy, guide, image, script];
+    let mut additions = 0;
+    let mut deletions = 0;
+    for file in &view.files {
+        view.lines
+            .extend(file.metadata.iter().map(|line| s(line, Tone::Accent)));
+        for hunk in &file.hunks {
+            view.lines.push(s(&hunk.header, Tone::Accent));
+            for line in &hunk.lines {
+                let (prefix, tone) = match line.kind {
+                    DiffLineKind::Addition => {
+                        additions += 1;
+                        ("+", Tone::Ok)
+                    }
+                    DiffLineKind::Deletion => {
+                        deletions += 1;
+                        ("-", Tone::Error)
+                    }
+                    _ => (" ", Tone::Text),
+                };
+                view.lines.push(s(&format!("{prefix}{}", line.text), tone));
+                if line.no_newline {
+                    view.lines
+                        .push(s("\\ No newline at end of file", Tone::Dim));
+                }
+            }
+        }
+    }
+    view.stat = format!("+{additions} −{deletions} · {} files", view.files.len());
     view
+}
+
+fn diff_proration() -> DiffFile {
+    use DiffLineKind::{Addition as A, Context as C, Deletion as D};
+    diff_file(
+        DiffFileStatus::Modified,
+        Some("src/billing/proration.rs"),
+        Some("src/billing/proration.rs"),
+        vec![
+            diff_hunk(
+                12,
+                12,
+                "pub fn preview(plan: &Plan, at: Date) -> Preview {",
+                &[
+                    (C, "    let days = plan.days_left(at);"),
+                    (D, "    Preview::flat(plan.price)"),
+                    (A, "    let credit = plan.unused_credit(at);"),
+                    (A, "    let remaining = days.max(0);"),
+                    (A, "    Preview::prorated(plan.price, credit, remaining)"),
+                    (C, "}"),
+                ],
+            ),
+            diff_hunk(
+                40,
+                42,
+                "impl Preview {",
+                &[
+                    (C, "    pub fn label(&self) -> String {"),
+                    (D, "        format!(\"{} due\", self.total)"),
+                    (
+                        A,
+                        "        // Keep the invoice’s currency: € / 円, not a converted estimate.",
+                    ),
+                    (
+                        A,
+                        "\tformat!(\"{} due · credit {} · remaining {} days\", self.total, self.credit, self.days)",
+                    ),
+                    (C, "    }"),
+                    (C, "}"),
+                ],
+            ),
+        ],
+    )
+}
+
+fn diff_guide() -> DiffFile {
+    use DiffLineKind::{Addition as A, Context as C, Deletion as D};
+    let mut guide = diff_file(
+        DiffFileStatus::Renamed,
+        Some("docs/billing/preview.md"),
+        Some("docs/billing/proration.md"),
+        vec![diff_hunk(
+            1,
+            1,
+            "",
+            &[
+                (D, "# Billing preview"),
+                (A, "# Proration preview"),
+                (C, ""),
+                (C, "Review the estimate before changing your plan."),
+                (C, "Amounts are shown in the invoice currency."),
+                (A, "Unused days appear as credit on the next invoice."),
+            ],
+        )],
+    );
+    guide.hunks[0]
+        .lines
+        .last_mut()
+        .expect("guide's final line")
+        .no_newline = true;
+    guide
+}
+
+fn diff_file(
+    status: DiffFileStatus,
+    old: Option<&str>,
+    new: Option<&str>,
+    hunks: Vec<DiffHunk>,
+) -> DiffFile {
+    let mut file = DiffFile::new(old.map(str::to_owned), new.map(str::to_owned));
+    file.status = status;
+    file.metadata.push(format!(
+        "diff --git a/{} b/{}",
+        old.or(new).unwrap_or_default(),
+        new.or(old).unwrap_or_default()
+    ));
+    match status {
+        DiffFileStatus::Added => file.metadata.push(String::from("new file mode 100644")),
+        DiffFileStatus::Deleted => file.metadata.push(String::from("deleted file mode 100644")),
+        DiffFileStatus::Renamed => file.metadata.extend([
+            String::from("similarity index 56%"),
+            format!("rename from {}", old.unwrap_or_default()),
+            format!("rename to {}", new.unwrap_or_default()),
+        ]),
+        _ => {}
+    }
+    if !hunks.is_empty() {
+        file.metadata.push(format!(
+            "--- {}",
+            old.map_or_else(|| String::from("/dev/null"), |p| format!("a/{p}"))
+        ));
+        file.metadata.push(format!(
+            "+++ {}",
+            new.map_or_else(|| String::from("/dev/null"), |p| format!("b/{p}"))
+        ));
+    }
+    file.hunks = hunks;
+    file
+}
+
+fn diff_hunk(
+    old_start: u64,
+    new_start: u64,
+    section: &str,
+    lines: &[(DiffLineKind, &str)],
+) -> DiffHunk {
+    let mut old = old_start;
+    let mut new = new_start;
+    let lines = lines
+        .iter()
+        .map(|&(kind, text)| {
+            let mut line = DiffLine::new(kind, text);
+            if kind != DiffLineKind::Addition {
+                line.old_number = Some(old);
+                old += 1;
+            }
+            if kind != DiffLineKind::Deletion {
+                line.new_number = Some(new);
+                new += 1;
+            }
+            line
+        })
+        .collect();
+    let (old_count, new_count) = (old - old_start, new - new_start);
+    let mut hunk = DiffHunk::new(
+        format!(
+            "@@ -{old_start},{old_count} +{new_start},{new_count} @@{suffix}",
+            suffix = if section.is_empty() {
+                String::new()
+            } else {
+                format!(" {section}")
+            }
+        ),
+        old_start,
+        old_count,
+        new_start,
+        new_count,
+    );
+    hunk.lines = lines;
+    hunk
 }
 
 /// A held action's item, as the core lists it: an approval is titled with its first line, a

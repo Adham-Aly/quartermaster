@@ -134,8 +134,8 @@ pub(crate) struct View {
     /// The sessions' expanded tool-call runs. Shared state, not per window: keyed by the run,
     /// never by screen position, and kept when you leave a session.
     pub(crate) tool_groups: std::collections::HashSet<crate::session::ToolGroupKey>,
-    /// How far the Diff screen is scrolled down from its first line.
-    pub(crate) diff_scroll: usize,
+    /// The diff viewer's transient file, focus and scrolling state.
+    pub(crate) diff: crate::diff::DiffUi,
     /// The popups open over the screen, top last: shareable state with no screen coordinates.
     pub(crate) popups: Vec<crate::popups::OpenPopup>,
     /// The menu entries showing a badge (a red dot): something there needs you.

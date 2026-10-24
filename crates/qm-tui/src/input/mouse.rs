@@ -299,7 +299,7 @@ impl App {
         if self.screen == crate::router::Screen::Diff && self.view.popups.is_empty() {
             self.term.pointer.selecting = false;
             self.change(|app| &mut app.term.selection, None);
-            self.diff_wheel(up);
+            self.diff_wheel(at, up);
             return;
         }
         let Some(pane) = self.term.drawn.scroll_pane_at(at.x, at.y) else {

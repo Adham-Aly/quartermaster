@@ -56,7 +56,7 @@ fn the_shared_state_survives_a_restart() {
     app.view.projects_scroll = 3;
     app.view.crew_scroll = 4;
     app.view.task_scroll = 5;
-    app.view.diff_scroll = 7;
+    app.view.diff.scroll = 7;
     app.view.settings.scroll = 8;
     app.view.settings.tab = Tab::Routing;
     app.view.settings.routing_row = 1;
@@ -80,7 +80,7 @@ fn the_shared_state_survives_a_restart() {
     assert_eq!(back.view.crew_scroll, 4);
     assert_eq!(back.view.task_scroll, 5);
     assert_eq!(back.view.help_scroll, 6);
-    assert_eq!(back.view.diff_scroll, 7);
+    assert_eq!(back.view.diff.scroll, 7);
     assert_eq!(back.view.settings.scroll, 8);
     assert_eq!(back.view.settings.tab, Tab::Routing);
     assert_eq!(back.view.settings.routing_row, 1);

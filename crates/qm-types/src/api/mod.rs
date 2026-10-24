@@ -27,6 +27,7 @@ use tokio::sync::mpsc;
 
 mod actions;
 mod context;
+mod diff;
 mod draft;
 mod image;
 pub use actions::{ActionItem, ActionKey, ActionKind, ActionOpen};
@@ -34,6 +35,7 @@ pub use context::{
     AgentContextView, CompactingView, CompactionNote, ContextBasisView, ContextOccupancy,
     NoteOutcome, PointView, TurnTokens, tokens_short,
 };
+pub use diff::{DiffFile, DiffFileStatus, DiffHunk, DiffLine, DiffLineKind};
 pub use draft::{DraftImage, DraftTarget, SavedDraft};
 pub use image::{
     ImageBytes, ImageFormat, MAX_IMAGE_BYTES, PastedImage, placeholder as image_placeholder,
@@ -530,9 +532,8 @@ impl UpdateButton {
     }
 }
 
-/// What the Diff screen shows for one held merge, push or in-place merge: the stat and the patch
-/// from the merge base to the approved head, each line toned (`+` ok, `-` error, hunk and file
-/// headers accent, the rest text), at most 20,000 lines.
+/// What the Diff screen shows for one held merge or push, from the merge base to the approved
+/// head: summary statistics, structured changed files and hunks, and the capped original patch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct DiffView {
@@ -543,9 +544,13 @@ pub struct DiffView {
     /// "+214 −37 · 12 files".
     #[serde(default)]
     pub stat: String,
+    /// The original capped raw patch (or a read error), retained for older clients and fallback.
     #[serde(default)]
     pub lines: Vec<Styled>,
-    /// The patch was longer than the cap and is cut.
+    /// Structured files from the same patch, in git's order. Empty for old snapshots or read errors.
+    #[serde(default)]
+    pub files: Vec<DiffFile>,
+    /// The patch was cut at the cap, or a text hunk is incomplete.
     #[serde(default)]
     pub truncated: bool,
 }
@@ -557,6 +562,7 @@ impl DiffView {
             title: title.into(),
             stat: String::new(),
             lines: Vec::new(),
+            files: Vec::new(),
             truncated: false,
         }
     }

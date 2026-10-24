@@ -200,7 +200,9 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits
         }
         (None, Screen::Bridge) => BRIDGE_HINTS.to_owned(),
         (None, Screen::Setup) => crate::setup::hints(app),
-        (None, Screen::Diff) => crate::diff::HINTS.to_owned(),
+        (None, Screen::Diff) => {
+            crate::diff::hints(usize::from(area.width.saturating_sub(left_width + 3))).to_owned()
+        }
     };
     let hints = hints.as_str();
     let hints_width = cells(width(hints)) + 1;
