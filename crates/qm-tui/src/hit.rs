@@ -172,6 +172,10 @@ pub(crate) struct FrameMap {
     /// The Settings tab's selected row, as (rows down from the tab's top, rows the tab shows):
     /// what the keys keep in view.
     pub(crate) settings_selected: Option<(usize, usize)>,
+    /// Diff viewport limits, measured by its renderer (including paired rows and gutters).
+    pub(crate) diff_scroll_max: usize,
+    pub(crate) diff_horizontal_max: usize,
+    pub(crate) diff_tree_scroll_max: usize,
     /// Where a worker's session drew its scrolling rows, when one showed.
     pub(crate) session_rows: Option<Rect>,
     /// The prompt field, when one that takes text was drawn.

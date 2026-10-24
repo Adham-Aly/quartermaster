@@ -107,7 +107,7 @@ impl State {
                 projects: app.view.projects_scroll,
                 crew: app.view.crew_scroll,
                 task: app.view.task_scroll,
-                diff: app.view.diff_scroll,
+                diff: app.view.diff.scroll,
                 help: app.view.help_scroll,
                 settings: app.view.settings.scroll,
             },
@@ -222,7 +222,7 @@ impl Restored {
         app.view.projects_scroll = self.scroll.projects;
         app.view.crew_scroll = self.scroll.crew;
         app.view.task_scroll = self.scroll.task;
-        app.view.diff_scroll = self.scroll.diff;
+        app.view.diff.scroll = self.scroll.diff;
         app.view.help_scroll = self.scroll.help;
         app.view.settings.scroll = self.scroll.settings;
         app.view.settings.tab = self.settings_tab;

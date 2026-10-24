@@ -173,7 +173,13 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         "Diff",
         &[
             ("d", "in an approval's detail: open its diff"),
-            ("↑ ↓ · pgup pgdn · g G", "scroll"),
+            ("tab · shift+tab", "focus the changed-file tree or code"),
+            ("[ ] · click file", "previous or next changed file"),
+            (
+                "↑ ↓ · pgup pgdn · g G",
+                "move through files, or scroll code",
+            ),
+            ("← →", "pan long code lines, keeping both gutters visible"),
             ("a · r", "approve or reject from the diff"),
             ("esc · ← Back", "back to the Bridge, the detail open again"),
         ],
