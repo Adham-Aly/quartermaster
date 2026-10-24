@@ -295,6 +295,7 @@ fn forget_tasks(tx: &Transaction<'_>) -> Result<(), StoreError> {
         format!("DELETE FROM block_watermarks WHERE agent_id IN ({AGENTS})"),
         format!("DELETE FROM turns WHERE agent_id IN ({AGENTS})"),
         format!("DELETE FROM messages WHERE agent_id IN ({AGENTS})"),
+        format!("DELETE FROM user_message_sources WHERE agent_id IN ({AGENTS})"),
         format!("DELETE FROM agents WHERE id IN ({AGENTS})"),
         format!("DELETE FROM tasks WHERE id IN ({TASKS})"),
     ] {

@@ -421,6 +421,8 @@ pub struct RequestOverrides {
     pub effort: Option<Effort>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub premium: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice_message: Option<qm_types::ids::MessageId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub later_steps: Vec<StoredLaterStep>,
 }
@@ -455,7 +457,8 @@ pub struct NewRequest<'a> {
 pub struct RequestRow {
     pub id: CorrelationId,
     pub secondmate: SecondmateId,
-    pub turn: TurnId,
+    /// Chat retention may forget the routing turn; choice provenance is kept separately.
+    pub turn: Option<TurnId>,
     pub request: String,
     pub user_words: String,
     pub instructions: Vec<String>,
@@ -507,7 +510,7 @@ const REQUEST_COLUMNS: &str = "id, secondmate_id, turn_id, request, user_words, 
 type RawRequest = (
     CorrelationId,
     SecondmateId,
-    TurnId,
+    Option<TurnId>,
     String,
     String,
     String,
@@ -600,8 +603,11 @@ pub fn open_requests(conn: &Connection, id: SecondmateId) -> Result<Vec<RequestR
 /// applied with the routing turn's authority).
 pub fn turn_message(
     conn: &Connection,
-    turn: TurnId,
+    turn: Option<TurnId>,
 ) -> Result<Option<qm_types::ids::MessageId>, StoreError> {
+    let Some(turn) = turn else {
+        return Ok(None);
+    };
     Ok(conn
         .query_row(
             "SELECT message_id FROM turns WHERE id = ?1 AND started_by = 'user'",

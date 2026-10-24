@@ -81,6 +81,11 @@ pub static TOOLS: &[ToolDef] = &[
     ToolDef::of::<defs::ReleaseStatusTool>(),
     // Supervisors: removing obsolete task dependencies.
     ToolDef::of::<defs::UnlinkTasksTool>(),
+    ToolDef::of::<defs::ScheduleCrewmateTool>(),
+    ToolDef::of::<defs::SecondmateScheduleCrewmateTool>(),
+    ToolDef::of::<defs::CancelCrewmateStartTool>(),
+    ToolDef::of::<defs::ListCrewmateStartsTool>(),
+    ToolDef::of::<defs::FindUserRequestsTool>(),
 ];
 
 /// The tools one role is offered on one engine, in registry order. `plan` is the plan mode a plan
@@ -132,6 +137,58 @@ mod tests {
                 assert!(text.contains("memory-only"));
                 assert!(text.contains("lost after restart"));
             }
+        }
+    }
+
+    #[test]
+    fn deferred_tools_are_supervisor_only_with_role_specific_start_schemas() {
+        for (role, key) in [
+            (Role::Quartermaster, "schedule_crewmate"),
+            (Role::Secondmate, "schedule_crewmate.secondmate"),
+        ] {
+            assert_eq!(find(role, None, "schedule_crewmate").unwrap().key, key);
+            for name in ["cancel_crewmate_start", "list_crewmate_starts"] {
+                assert!(find(role, None, name).is_some());
+            }
+        }
+        for name in [
+            "schedule_crewmate",
+            "cancel_crewmate_start",
+            "list_crewmate_starts",
+        ] {
+            for plan in PLAN_CASES {
+                assert!(find(Role::Crewmate, plan, name).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn orchestrator_prompt_and_description_budgets_hold() {
+        for tool in TOOLS {
+            assert!(tool.description.chars().count() <= 1_900, "{}", tool.key);
+        }
+        for (role, prompt) in [
+            (
+                Role::Quartermaster,
+                include_str!("../../../prompts/quartermaster.md"),
+            ),
+            (
+                Role::Secondmate,
+                include_str!("../../../prompts/secondmate.md"),
+            ),
+        ] {
+            let prompt_chars = prompt.chars().count();
+            let total = prompt_chars
+                + TOOLS
+                    .iter()
+                    .filter(|t| t.offered(role, None))
+                    .map(|t| t.description.chars().count())
+                    .sum::<usize>();
+            assert!(
+                prompt_chars <= 12_000,
+                "{role}: {prompt_chars} prompt characters"
+            );
+            assert!(total <= 30_000, "{role}: {total} total characters");
         }
     }
 

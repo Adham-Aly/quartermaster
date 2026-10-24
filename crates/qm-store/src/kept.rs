@@ -86,12 +86,18 @@ pub const KEPT: &[Kept] = &[
                     OR id IN (SELECT agent_id FROM reports \
                               WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed')) \
                     OR id IN (SELECT owner_agent_id FROM schedules WHERE status = 'pending') \
+                    OR id IN (SELECT owner_agent_id FROM deferred_starts WHERE status = 'pending') \
                     OR id IN (SELECT asked_by FROM held_actions WHERE status = 'pending') \
                     OR id IN (SELECT agent_id FROM routing_decisions \
                               WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed')) \
                     OR id IN (SELECT agent_id FROM jobs \
                               WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed'))"
         ),
+    },
+    // User authority outlives chat clearing and engine-owned chat, but not its owner.
+    Kept {
+        table: "user_message_sources",
+        predicate: "agent_id IN (SELECT id FROM agents)",
     },
     // The current chat of each live in-house agent: after `agents`, which they read.
     Kept {
@@ -160,6 +166,11 @@ pub const KEPT: &[Kept] = &[
         table: "wakes",
         predicate: "consumed_at IS NULL \
                     OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed')",
+    },
+    // Terminal rows remain queryable too; a cancelled/started schedule can never replay.
+    Kept {
+        table: "deferred_starts",
+        predicate: "1",
     },
     Kept {
         table: "schedules",

@@ -1,7 +1,7 @@
-//! `reply`, `ask_user` and `acknowledge`: the only ways an orchestrator speaks to you.
+//! `reply`, `ask_user`, `acknowledge` and read-only `find_user_requests`.
 //!
-//! Every check runs before anything is written, and each refusal is one plain sentence the model
-//! can act on. A successful call is shown to you, so it counts as an effective action.
+//! Checks run before anything is written; refusals are plain sentences the model can act on.
+//! Speaking tools count as effective actions; looking up original sources changes nothing.
 
 use crate::defs::{
     AcknowledgeArgs, AcknowledgeTool, AskUserArgs, AskUserTool, MessageShown, ReplyArgs, ReplyTool,
@@ -122,5 +122,14 @@ impl Handle for AcknowledgeTool {
                 .await?;
             Ok(MessageShown { message })
         })
+    }
+}
+
+impl Handle for crate::defs::FindUserRequestsTool {
+    fn handle<'a>(
+        cx: &'a ToolCx<'a>,
+        args: crate::defs::FindUserRequestsArgs,
+    ) -> BoxFuture<'a, Result<crate::defs::FoundUserRequests, ToolFailure>> {
+        Box::pin(async move { cx.host.find_user_requests(cx.caller, args).await })
     }
 }

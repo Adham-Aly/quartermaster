@@ -1,0 +1,2 @@
+List your deferred crewmate starts and their outcomes. Takes no arguments.
+Each entry has schedule (numeric ID), trigger, status, task (when a child was started) and note (when present). Use this before scheduling to avoid duplicates and to inspect pending, started or failed requests. A pending entry is not a child task. Use cancel_crewmate_start to cancel a pending entry; task_status inspects a child once it exists.

@@ -169,7 +169,13 @@ pub fn apply_request_overrides(
     if !applied {
         return Ok(Ok(None));
     }
-    let started_by = match secondmates::turn_message(conn, row.turn)? {
+    let turn_message = secondmates::turn_message(conn, row.turn)?;
+    if start.choice_message.is_none() {
+        start.choice_message = asked.choice_message.or(turn_message);
+    }
+    // A later app-event routing turn has no turn message. Keep its checked citation rather than
+    // trying to recover authority from a turn row that chat retention may already have forgotten.
+    let started_by = match turn_message {
         Some(message) => StartedBy::User { message },
         None => StartedBy::AppEvent,
     };

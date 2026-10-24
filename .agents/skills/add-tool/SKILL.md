@@ -48,7 +48,7 @@ guidance, all in one place.
 
 ## 3. Register it: `crates/qm-tools/src/registry.rs`
 
-Add `ToolDef::of::<defs::FooTool>()` to `TOOLS` in its group. `for_role` decides who is offered
+Append `ToolDef::of::<defs::FooTool>()` to `TOOLS`; never reorder existing entries. `for_role` decides who is offered
 what; `descriptors(role)` is what goes into a session's `SessionSpec.tools`.
 
 ## 4. The handler: `crates/qm-tools/src/handlers/<group>.rs`
@@ -66,9 +66,17 @@ without a binding answers "isn't available in this build yet".
 
 - Check what you can without the core (lengths, times on `cx.clock`), and refuse with
   `Refusal::new("one plain sentence")`: say what to do instead.
-- Any override (a named model, effort, premium, base branch, verification level, standing
-  instruction) calls `qm_policy::overrides::check_override` first: it works only on a turn the
-  user's own message started (`cx.caller.turn`).
+- Overrides call `qm_policy::overrides::check_override` first and need a user-started turn.
+  Model/effort/premium use `check_choice_override` instead: an earlier `choice_message` is allowed,
+  but the core must verify its actual user authorship and conversation (or checked delegation)
+  through `qm_store::user_message_sources`, never trust the tool's citation by itself. This is an
+  actual user-message numeric ID, not a turn/task/correlation ID. The prompt must still require
+  matching the user's requested fields and scope; source/ownership checks do not parse that intent.
+- Deferred starts (`schedule_crewmate`, role-specific secondmate variant, `cancel_crewmate_start`,
+  `list_crewmate_starts`) live in `defs/crew.rs` and `handlers/deferred.rs`. Reuse nested normal
+  start args and `prepare_start` / `prepare_secondmate_start`; don't copy bulky schemas or bypass
+  shape, authority or correlation rules. `StartRequest` is serialized for persistence. No child
+  task, worker or worktree exists until its `StartTrigger` fires; `schedule` is only a wake.
 
 ## 5. The core service
 

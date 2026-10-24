@@ -1,8 +1,8 @@
 //! The secondmate tools: `start_secondmate`, `route_to_secondmate`, `configure_secondmate`,
-//! `close_secondmate` (the Quartermaster's) and `start_crewmate.secondmate` (a secondmate's).
+//! `close_secondmate` (the Quartermaster's), and shared secondmate start preparation.
 //!
-//! Each handler checks the shape of its arguments and every override it carries against the turn
-//! that made the call, then calls one host method; the host (`qm_core::secondmates`) checks the
+//! Each handler checks shape and override authority (including model-choice citations), then
+//! calls one host method; the host (`qm_core::secondmates`) checks the
 //! facts: the projects, the name, whose secondmate it is, the correlation, the scope.
 
 use super::conversation::started_by;
@@ -18,7 +18,7 @@ use crate::handler::{
 };
 use qm_policy::base_branch::check_standing_branch;
 use qm_policy::names::{check_branch_name, check_display_name};
-use qm_policy::overrides::{Authority, OverrideKind, check_override};
+use qm_policy::overrides::{Authority, OverrideKind, check_choice_override};
 use qm_types::BoxFuture;
 use qm_types::error::Refusal;
 
@@ -127,7 +127,7 @@ impl Handle for RouteToSecondmateTool {
                 (!args.later_steps.is_empty(), OverrideKind::LaterSteps),
             ];
             for (_, kind) in present.iter().filter(|(on, _)| *on) {
-                check_override(authority, *kind)?;
+                check_choice_override(authority, args.choice_message, *kind)?;
             }
             if let Some(branch) = &base_branch {
                 check_branch_name(branch)?;
@@ -143,6 +143,7 @@ impl Handle for RouteToSecondmateTool {
                         model: args.model,
                         effort: args.effort,
                         premium: args.premium,
+                        choice_message: args.choice_message,
                         later_steps: args.later_steps,
                     },
                 )
@@ -199,49 +200,59 @@ impl Handle for CloseSecondmateTool {
     }
 }
 
+/// Normalises and checks immediate and deferred secondmate starts identically.
+pub(crate) fn prepare_secondmate_start(
+    cx: &ToolCx<'_>,
+    args: SecondmateStartCrewmateArgs,
+) -> Result<StartRequest, Refusal> {
+    let request = StartRequest {
+        folder: args
+            .folder
+            .map(|f| f.trim().to_owned())
+            .filter(|f| !f.is_empty()),
+        project: args
+            .project
+            .map(|p| p.trim().to_owned())
+            .filter(|p| !p.is_empty()),
+        in_place: args.in_place,
+        kind: args.kind,
+        title: args.title.trim().to_owned(),
+        goal: args.goal,
+        constraints: args.constraints,
+        tests_required: args.tests_required,
+        builds_on: args.builds_on,
+        instructions: args.instructions,
+        later_steps: args.later_steps,
+        model: args.model,
+        effort: args.effort,
+        premium: args.premium,
+        choice_message: args.choice_message,
+        base_branch: args
+            .base_branch
+            .map(|b| b.trim().to_owned())
+            .filter(|b| !b.is_empty()),
+        verification: args.verification,
+        stronger_retry_of: args.stronger_retry_of,
+        correlation: args.correlation,
+    };
+    check_start_shape(&request)?;
+    // A secondmate's base branch isn't an override: the app fills it in and refuses one
+    // that doesn't match, so it is left out of the override check.
+    let overrides = StartRequest {
+        base_branch: None,
+        ..request.clone()
+    };
+    check_overrides(cx, &overrides)?;
+    Ok(request)
+}
+
 impl Handle for SecondmateStartCrewmateTool {
     fn handle<'a>(
         cx: &'a ToolCx<'a>,
         args: SecondmateStartCrewmateArgs,
     ) -> BoxFuture<'a, Result<TaskStarted, ToolFailure>> {
         Box::pin(async move {
-            let request = StartRequest {
-                folder: args
-                    .folder
-                    .map(|f| f.trim().to_owned())
-                    .filter(|f| !f.is_empty()),
-                project: args
-                    .project
-                    .map(|p| p.trim().to_owned())
-                    .filter(|p| !p.is_empty()),
-                in_place: args.in_place,
-                kind: args.kind,
-                title: args.title.trim().to_owned(),
-                goal: args.goal,
-                constraints: args.constraints,
-                tests_required: args.tests_required,
-                builds_on: args.builds_on,
-                instructions: args.instructions,
-                later_steps: args.later_steps,
-                model: args.model,
-                effort: args.effort,
-                premium: args.premium,
-                base_branch: args
-                    .base_branch
-                    .map(|b| b.trim().to_owned())
-                    .filter(|b| !b.is_empty()),
-                verification: args.verification,
-                stronger_retry_of: args.stronger_retry_of,
-                correlation: args.correlation,
-            };
-            check_start_shape(&request)?;
-            // A secondmate's base branch isn't an override: the app fills it in and refuses one
-            // that doesn't match, so it is left out of the override check.
-            let overrides = StartRequest {
-                base_branch: None,
-                ..request.clone()
-            };
-            check_overrides(cx, &overrides)?;
+            let request = prepare_secondmate_start(cx, args)?;
             cx.host.start_crewmate(cx.caller, request).await
         })
     }

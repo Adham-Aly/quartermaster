@@ -111,6 +111,9 @@ pub(crate) struct StartAs {
     pub retry_tier: Option<Tier>,
     /// The user's words for the new task, replacing those inherited.
     pub user_words: Option<String>,
+    pub user_words_message: Option<MessageId>,
+    /// Consumed atomically with the task record, never before.
+    pub deferred: Option<i64>,
 }
 
 /// What routing needs again when a queued task is routed later, kept on its `task.started`
@@ -120,6 +123,8 @@ pub(crate) struct RouteInputs {
     pub named_model: Option<ModelId>,
     pub named_effort: Option<Effort>,
     pub premium: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice_message: Option<MessageId>,
     pub stronger_retry: Option<Tier>,
     /// `user` (with `message`), `app_event` or `card`.
     pub authority: String,
@@ -211,6 +216,7 @@ fn validate(
     req: &StartRequest,
     authority: Authority,
     found: (Place, &Path, Timestamp),
+    frozen_base: Option<BaseRequest>,
 ) -> Result<Result<Validated, Refusal>, StoreError> {
     // Later steps: each names a model, an effort or premium, no kind twice, and a named model is
     // placed in some tier (premium in premium).
@@ -275,11 +281,18 @@ fn validate(
                 _ => BuildsOnFact::Nothing,
             };
             if req.kind == TaskKind::Review {
-                if row.head_commit.is_none() {
+                if row.project != project.id {
+                    return Ok(Err(Refusal::new(format!(
+                        "a review must use the same repository as {target}; start it in that task's project"
+                    ))));
+                }
+                if !row.kind.can_change_code() || row.base_commit.is_none() {
                     return Ok(Err(Refusal::new(format!(
                         "a review builds on code work with a commit to review, and {target} has none"
                     ))));
                 }
+                // A local commit can precede report (and hence head_commit). Phase B reads
+                // the actual task-owned commit; never substitute an inherited branch tip.
                 review_of = Some(row);
             }
             Some(BuildsOn { task: target, fact })
@@ -360,44 +373,16 @@ fn validate(
         .map(|r| RecordedBase {
             typed: r.base_branch.clone(),
         });
-    let starter = if caller.role == Role::Secondmate {
-        let request = match req.correlation {
-            Some(c) => request_branch(conn, i64::from(c.get()))?,
-            None => None,
-        };
-        let standing = match caller.secondmate {
-            Some(sm) => standing_branch(conn, sm)?,
-            None => None,
-        };
-        (request, standing)
-    } else {
-        (None, None)
-    };
-    // In-place work has no branches, so there's no base to settle.
-    let request = if in_place {
-        if req.base_branch.is_some() {
+    let request = if let Some(base) = frozen_base {
+        if in_place && req.base_branch.is_some() {
             return Ok(Err(Refusal::new(
                 "a task working in place has no branches, so a base branch can't be named",
             )));
         }
-        None
+        if in_place { None } else { Some(base) }
     } else {
-        match base_request(
-            if caller.role == Role::Secondmate {
-                Starter::Secondmate {
-                    request: starter.0.as_deref(),
-                    standing: starter.1.as_deref(),
-                    typed: req.base_branch.as_deref(),
-                }
-            } else {
-                Starter::Quartermaster {
-                    authority,
-                    typed: req.base_branch.as_deref(),
-                }
-            },
-            inherited.as_ref(),
-        ) {
-            Ok(r) => Some(r),
+        match select_base(conn, caller, req, authority, in_place, inherited.as_ref())? {
+            Ok(base) => base,
             Err(r) => return Ok(Err(r)),
         }
     };
@@ -433,6 +418,86 @@ fn validate(
         secondmate_request: req.correlation.map(|c| i64::from(c.get())),
         builder_provider,
     }))
+}
+
+/// Freeze a secondmate's authorized base at deferred registration, using the ordinary selector.
+pub(crate) fn freeze_base(
+    conn: &Connection,
+    caller: &Caller,
+    req: &StartRequest,
+    authority: Authority,
+) -> Result<Result<Option<BaseRequest>, Refusal>, StoreError> {
+    let source = req.stronger_retry_of.or_else(|| {
+        (req.kind == TaskKind::Review)
+            .then_some(req.builds_on)
+            .flatten()
+    });
+    let inherited = match source {
+        Some(task) => task_store::load(conn, task)?.map(|row| RecordedBase {
+            typed: row.base_branch,
+        }),
+        None => None,
+    };
+    select_base(
+        conn,
+        caller,
+        req,
+        authority,
+        req.in_place,
+        inherited.as_ref(),
+    )
+}
+
+/// Select and validate a scoped base without settling git or allocating a task.
+fn select_base(
+    conn: &Connection,
+    caller: &Caller,
+    req: &StartRequest,
+    authority: Authority,
+    in_place: bool,
+    inherited: Option<&RecordedBase>,
+) -> Result<Result<Option<BaseRequest>, Refusal>, StoreError> {
+    let starter = if caller.role == Role::Secondmate {
+        let request = match req.correlation {
+            Some(c) => request_branch(conn, i64::from(c.get()))?,
+            None => None,
+        };
+        let standing = match caller.secondmate {
+            Some(sm) => standing_branch(conn, sm)?,
+            None => None,
+        };
+        (request, standing)
+    } else {
+        (None, None)
+    };
+    // In-place work has no branches, so there's no base to settle.
+    if in_place {
+        if req.base_branch.is_some() {
+            return Ok(Err(Refusal::new(
+                "a task working in place has no branches, so a base branch can't be named",
+            )));
+        }
+        Ok(Ok(None))
+    } else {
+        match base_request(
+            if caller.role == Role::Secondmate {
+                Starter::Secondmate {
+                    request: starter.0.as_deref(),
+                    standing: starter.1.as_deref(),
+                    typed: req.base_branch.as_deref(),
+                }
+            } else {
+                Starter::Quartermaster {
+                    authority,
+                    typed: req.base_branch.as_deref(),
+                }
+            },
+            inherited,
+        ) {
+            Ok(r) => Ok(Ok(Some(r))),
+            Err(r) => Ok(Err(r)),
+        }
+    }
 }
 
 /// One task up the `builds_on` chain: its ID, its later steps and the message they came from.
@@ -615,6 +680,13 @@ enum Recorded {
         routed: bool,
     },
     Refused(Refusal),
+    DeferredWaiting,
+}
+
+/// An unsatisfied deferred trigger is not a tool failure.
+pub(crate) enum StartOutcome {
+    Started(TaskStarted),
+    DeferredWaiting,
 }
 
 /// The place `req` names: a listed project's folder, a folder (its project found by the git-root
@@ -703,37 +775,74 @@ pub async fn start(
         authority: caller_authority(caller),
         retry_tier: None,
         user_words: None,
+        user_words_message: None,
+        deferred: None,
     };
     start_as(svc, caller, req, how).await
 }
 
-/// [`start`] with its authority, retry tier and words given.
-#[allow(clippy::too_many_lines)]
+/// [`start`] with its authority, retry tier and words given (non-deferred callers).
 pub(crate) async fn start_as(
     svc: &TaskService,
     caller: &Caller,
     req: StartRequest,
     how: StartAs,
 ) -> Result<TaskStarted, ToolFailure> {
+    assert!(
+        how.deferred.is_none(),
+        "use start_when_ready for deferred starts"
+    );
+    match start_when_ready(svc, caller, req, how).await? {
+        StartOutcome::Started(started) => Ok(started),
+        StartOutcome::DeferredWaiting => unreachable!("only deferred starts wait"),
+    }
+}
+
+/// The ordinary start path, allowing deferred intent to remain pending after settlement.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn start_when_ready(
+    svc: &TaskService,
+    caller: &Caller,
+    req: StartRequest,
+    how: StartAs,
+) -> Result<StartOutcome, ToolFailure> {
     if svc.is_shutting_down() {
         return Err(refuse(
             "The app is quitting; start the task after it restarts",
         ));
     }
-    // A routed request's overrides, applied with the routing turn's authority; otherwise the
-    // authority this start was given (the caller's, or a retry's).
+    // Check typed choices before inheritance: a routed source cannot authorize arbitrary fields
+    // the secondmate supplies. Citations never replace this turn's authority for other overrides.
     let caller_copy = *caller;
-    let (req, routed_authority) = svc
+    let (req, frozen_base) = svc
         .db()
         .call(move |conn| {
             let mut req = req;
+            if let Some(id) = how.deferred
+                && let Some(base) = crate::deferred_starts::frozen_request(conn, id, &caller_copy, &req)?
+            {
+                return Ok(Ok((req, base.base)));
+            }
+            if req.model.is_some() || req.effort.is_some() || req.premium {
+                req.choice_message = req.choice_message.or(match how.authority {
+                    Authority::Turn(StartedBy::User { message }) => Some(message),
+                    _ => None,
+                });
+                if let Some(message) = req.choice_message {
+                    if let Err(r) = qm_store::user_message_sources::verify(conn, caller_copy.agent, message)? {
+                        return Ok(Err(r.into()));
+                    }
+                } else if how.authority != Authority::CardChoice {
+                    return Ok(Err(refuse("model, effort and premium choices need the user's message; cite it with choice_message")));
+                }
+            }
             let authority =
                 crate::secondmates::scope::apply_request_overrides(conn, &caller_copy, &mut req)?;
-            Ok(authority.map(|a| (req, a)))
+            Ok(authority.map(|_| (req, None)).map_err(ToolFailure::from))
         })
         .await
         .map_err(|e| failed(&e))??;
-    let authority = routed_authority.unwrap_or(how.authority);
+    let authority = how.authority;
     let place = find_place(svc, req.project.clone(), req.folder.clone()).await?;
     let req_copy = req.clone();
     let home = svc.deps().home.clone();
@@ -747,6 +856,7 @@ pub(crate) async fn start_as(
                 &req_copy,
                 authority,
                 (place, &home, now),
+                frozen_base,
             )
         })
         .await
@@ -762,7 +872,7 @@ pub(crate) async fn start_as(
     }
     if let Some(words) = how.user_words {
         validated.user_words = words;
-        validated.user_words_message = None;
+        validated.user_words_message = how.user_words_message;
     }
 
     // Code work on a plan waits for the plan: approved by the user, or finished under auto.
@@ -778,13 +888,25 @@ pub(crate) async fn start_as(
         Some(validated.project.verification),
     );
 
+    // Freeze the observed source before any asynchronous base settlement. This deliberately
+    // does not write the builder's reported head: a local commit is not a report.
+    let review_head = if let Some(reviewed) = &validated.review_of {
+        Some(crate::deferred_starts::committed(svc, reviewed.id).await?.ok_or_else(|| {
+            refuse(format!(
+                "{} has no task-owned commit to review; commit the code locally, then start its review",
+                reviewed.id
+            ))
+        })?)
+    } else {
+        None
+    };
     // Phase B: settle the base (network), check delivery.
     let mut base = match &validated.request {
         Some(request) => Some(settle(svc, &validated.project, request.clone()).await?),
         None => None,
     };
     if let (Some(reviewed), Some(base)) = (&validated.review_of, base.as_mut())
-        && let Some(head) = &reviewed.head_commit
+        && let Some(head) = &review_head
     {
         // A review starts at the reviewed task's head, on its base ref.
         base.commit = head.clone();
@@ -826,6 +948,7 @@ pub(crate) async fn start_as(
             named_model: req.model.clone(),
             named_effort: req.effort,
             premium: req.premium,
+            choice_message: req.choice_message,
             stronger_retry: validated.retry.as_ref().map(|(_, t)| *t),
             authority: words.to_owned(),
             message,
@@ -841,16 +964,44 @@ pub(crate) async fn start_as(
         }
     };
     let hook = Arc::clone(&svc.deps().start_hook);
+    let deferred = how.deferred;
+    let shutting_down = svc.inner.shutting_down.subscribe();
     let recorded = svc
         .db()
         .call(move |conn| {
             let tx = conn.transaction()?;
             let mut notify = Notify::new();
+            if deferred.is_some() && *shutting_down.borrow() {
+                return Ok((
+                    Recorded::Refused(Refusal::new(
+                        "the app is quitting; deferred intent remains pending",
+                    )),
+                    notify,
+                ));
+            }
+            if let Some(id) = deferred {
+                use crate::deferred_starts::RecordReadiness;
+                match crate::deferred_starts::check_record(&tx, id, &caller, at)? {
+                    Err(r) => return Ok((Recorded::Refused(r), notify)),
+                    Ok(RecordReadiness::Waiting) => return Ok((Recorded::DeferredWaiting, notify)),
+                    Ok(RecordReadiness::Ready) => {}
+                }
+            }
             // In-place work shares its folder, so one code-kind task at a time may work there.
             if let Err(r) = check_writer_slot(&tx, in_place, &validated.place.folder, req.kind)? {
                 return Ok((Recorded::Refused(r), notify));
             }
             let project = places::register(&tx, &validated.place, &home, at)?;
+            // Recheck the repository binding after asynchronous settlement; keep the frozen
+            // SHA, but never launch it in a project the source no longer belongs to.
+            if let Some(reviewed) = &validated.review_of
+                && task_store::load(&tx, reviewed.id)?.is_none_or(|source| {
+                    source.project != project.id || source.created_at != reviewed.created_at
+                }) {
+                return Ok((Recorded::Refused(Refusal::new(
+                    "the reviewed task changed repository or identity; start its review again in the same repository"
+                )), notify));
+            }
             let branch = match &branch_names {
                 None => None,
                 Some(names) => match task_store::first_free_branch(&tx, names)? {
@@ -910,6 +1061,16 @@ pub(crate) async fn start_as(
             // A secondmate's projects are its open crewmates'.
             if let Some(sm) = caller.secondmate {
                 qm_store::secondmates::sync_projects(&tx, sm)?;
+            }
+            if let Some(id) = deferred
+                && !crate::deferred_starts::record_started(&tx, id, task, at)?
+            {
+                return Ok((
+                    Recorded::Refused(Refusal::new(
+                        "the deferred start was cancelled or already started",
+                    )),
+                    Notify::new(),
+                ));
             }
             let facts = facts_for(task, Some(agent), req.kind, &route_inputs, quick);
             let outcome = route_crewmate(&tx, &config, &facts, &health, at)?;
@@ -1004,6 +1165,7 @@ pub(crate) async fn start_as(
     svc.deps().inbox.notify(&notify);
     match recorded {
         Recorded::Refused(r) => Err(ToolFailure::Refused(r)),
+        Recorded::DeferredWaiting => Ok(StartOutcome::DeferredWaiting),
         Recorded::Started {
             task,
             branch,
@@ -1017,12 +1179,17 @@ pub(crate) async fn start_as(
             } else {
                 svc.schedule_reroute();
             }
+            if let Some(id) = deferred {
+                crate::deferred_starts::acknowledge_launch(svc, id)
+                    .await
+                    .map_err(|e| failed(&e))?;
+            }
             tracing::info!(%task, "task started");
-            Ok(TaskStarted {
+            Ok(StartOutcome::Started(TaskStarted {
                 task,
                 branch,
                 routing: summary,
-            })
+            }))
         }
     }
 }
@@ -1050,6 +1217,7 @@ fn facts_for(
         named_model: inputs.named_model.clone(),
         named_effort: inputs.named_effort,
         premium: inputs.premium,
+        choice_message: inputs.choice_message,
         stronger_retry: inputs.stronger_retry,
         later_step: inputs.later_step(),
         prefer_provider_other_than: inputs.prefer_provider_other_than,
@@ -1174,6 +1342,18 @@ async fn reroute_one(svc: &TaskService, row: TaskRow) -> Result<bool, String> {
             return Ok(true);
         }
     };
+    // Re-routing refreshes ordinary bases, never a review's frozen source snapshot.
+    let mut base = base;
+    if row.kind == TaskKind::Review {
+        base.commit = row
+            .base_commit
+            .clone()
+            .ok_or_else(|| format!("{task}'s reviewed SHA is gone"))?;
+        base.base_ref = row
+            .base_ref
+            .clone()
+            .ok_or_else(|| format!("{task}'s reviewed base is gone"))?;
+    }
     let at = svc.clock().now();
     let health = Arc::clone(&svc.deps().health);
     let config = svc.deps().config.borrow().clone();
@@ -1736,6 +1916,7 @@ pub(crate) async fn start_retry(
         model: None,
         effort: None,
         premium: false,
+        choice_message: None,
         base_branch: None,
         verification,
         stronger_retry_of: Some(retried),
@@ -1745,6 +1926,8 @@ pub(crate) async fn start_retry(
         authority: Authority::CardChoice,
         retry_tier: Some(tier),
         user_words: Some(user_words),
+        user_words_message: None,
+        deferred: None,
     };
     start_as(svc, &caller, req, how).await
 }

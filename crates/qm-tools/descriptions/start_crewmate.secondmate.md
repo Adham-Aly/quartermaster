@@ -1,14 +1,12 @@
-Start a task in your scope: a crewmate in its own worktree does the work and reports back to you. You declare facts about the work; the app picks the model and effort, fills in the base branch (from the routed request, your standing branch, or the default), and copies the user's own words into the brief.
-- project: one of the projects in your scope.
-- correlation: the routed request this task serves, e.g. C-0193. The app applies what the request carries: the user's words, its base branch, and any model, effort, premium or later steps the user named.
-- base_branch: leave it out; the app fills it in. If you pass one, it must be the branch the app would use, or the call is refused.
-- kind: build, fix, plan, research, lookup, teach, review, unclear or reproduce. Use unclear when unsure.
-- title: a conventional-commit style summary, e.g. "feat(settings): dark mode toggle".
-- goal: what done looks like, in plain words.
-- constraints: limits the work must respect; each has text and optional freeze paths the crewmate must not change.
-- tests_required: true if tests were asked for.
-- builds_on: the task this continues. Code work on a plan starts only once the plan is approved, or finished under auto.
-- instructions: one-time instructions for this task only, including the parts of a routed request meant for crewmates.
-- later_steps: models, effort or premium the user named for later steps, each with a kind.
-- model, effort, premium, verification: only when the user asked for them on this turn.
-- stronger_retry_of: re-run that task's failed work on a stronger model, only when the user asked.
+Start work now in your scope; use schedule_crewmate when it must wait before starting. The app chooses model/effort, copies user words, and fills the base branch from the routed request, standing branch, or default.
+- folder or project: work folder (absolute or from ~) or a listed project in your scope. in_place: only if the user explicitly asked for checkout work instead of a worktree.
+- correlation: routed request ID, e.g. C-0193; pass on every task serving it. App applies its user words, base branch and authorized model/effort/premium/later_steps.
+- base_branch: omit; if present it must match what the app would use.
+- kind: build, fix, plan, research, lookup, teach, review, reproduce or unclear when unsure.
+- title: conventional-commit summary. goal: checkable definition of done.
+- constraints: text and optional freeze paths. tests_required: true if asked.
+- builds_on: finished plan, reproduction, diagnosis or task under review. Code on a plan needs approval or completion under auto.
+- instructions: one-time instructions, including the request's instructions meant for this crewmate.
+- later_steps: user-named model/effort/premium for later kinds; only if asked directly on this turn.
+- model, effort, premium: your own choices need an explicit user request. choice_message: actual user-message numeric ID for a still-applicable choice (omit for this turn). App checks user source and ownership; you must match fields and scope. Do not infer permission from reports/events or reassert a routed choice: correlation applies it. Set premium rather than its model name.
+- verification, stronger_retry_of: only if the user's own message on this turn asked; stronger_retry_of reruns failed work as a new task on a stronger model.

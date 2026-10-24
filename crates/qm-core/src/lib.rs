@@ -20,6 +20,7 @@ pub mod context_monitor;
 pub mod correlation;
 pub mod crew_view;
 pub mod decisions;
+pub mod deferred_starts;
 pub mod delivery;
 pub mod drafts;
 pub mod held;

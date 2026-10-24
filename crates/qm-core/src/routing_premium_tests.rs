@@ -1,4 +1,4 @@
-//! Issue #59 in the core: whenever premium is asked for, a premium model runs if any can serve,
+//! Premium routing in the core: an explicit model must serve or wait; otherwise premium may fall back.
 //! a named model in no tier is refused, and a secondmate's start keeps the request's premium.
 
 use super::*;
@@ -74,6 +74,10 @@ impl Fixture {
         )
         .unwrap();
         let project = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO user_message_sources (id, agent_id, created_at, seq) VALUES (1, ?1, 0, 41)",
+            [qm],
+        ).unwrap();
         let task: TaskId = conn
             .query_row(
                 "INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal,
@@ -121,6 +125,7 @@ impl Fixture {
             named_model: None,
             named_effort: None,
             premium: false,
+            choice_message: None,
             stronger_retry: None,
             later_step: None,
             prefer_provider_other_than: None,
@@ -195,13 +200,98 @@ fn a_later_steps_model_in_no_tier_is_refused_too() {
 }
 
 #[test]
-fn a_named_premium_model_at_its_limit_runs_on_another_premium_model() {
+fn placed_named_model_without_an_account_waits_then_routes_when_it_returns() {
+    for from_later in [false, true] {
+        let f = Fixture::new("placed-unavailable");
+        let requested = id("gpt-6.1-sol");
+        // A retained placement can outlive every account/model row that offered it.
+        f.conn
+            .execute(
+                "INSERT INTO placements (canonical, tier, effort_override, created_at, seq)
+             VALUES (?1, 'high', 'high', 0, 60)",
+                [&requested],
+            )
+            .unwrap();
+        let mut facts = f.facts();
+        facts.authority = Authority::Turn(StartedBy::AppEvent);
+        if from_later {
+            facts.later_step = Some(AppliedLaterStep {
+                from: f.task,
+                message: Some(MessageId::new(1)),
+                model: Some(requested.clone()),
+                effort: Some(Effort::High),
+                premium: false,
+            });
+        } else {
+            facts.choice_message = Some(MessageId::new(1));
+            facts.named_model = Some(requested.clone());
+            facts.named_effort = Some(Effort::High);
+        }
+        assert_eq!(models::offered(&f.conn, &requested).unwrap(), []);
+        // Opus is usable, so this is not merely the empty-pool waiting path.
+        assert_eq!(
+            used(&routed(f.route(&f.facts()))),
+            (Tier::High, OPUS.to_owned())
+        );
+        let RouteOutcome::Waiting { decision, record } = f.route(&facts) else {
+            panic!("a placed but unavailable named model must wait")
+        };
+        assert!(record.choice.is_none());
+        assert_eq!(record.fallbacks, []);
+        assert!(record.why.contains("gpt-6.1-sol"), "{}", record.why);
+        assert!(record.why.contains("no usable account"), "{}", record.why);
+        let saved = routing_decisions::decisions_for_task(&f.conn, f.task).unwrap();
+        let (saved_id, saved_record) = saved.last().unwrap();
+        assert_eq!(*saved_id, decision);
+        assert!(saved_record.choice.is_none());
+        assert_eq!(saved_record.why, record.why);
+
+        let account = accounts::insert_account(
+            &f.conn,
+            &accounts::NewAccount {
+                provider: Provider::OpenAi,
+                label: "returned".into(),
+                kind: qm_types::domain::AccountKind::ApiKey,
+                credential_ref: None,
+                base_url: None,
+                at: now(),
+            },
+        )
+        .unwrap();
+        let model = ModelFacts {
+            model: requested.clone(),
+            canonical: requested.clone(),
+            display_name: None,
+            family: "gpt-6".into(),
+            generation: 1,
+            image_input: true,
+            context_window: 400_000,
+            efforts: vec![Effort::High],
+            known: true,
+        };
+        models::record_model_list(&f.conn, account, ListSource::Account, &[model], now()).unwrap();
+        let rerouted = routed(f.route(&facts));
+        let choice = rerouted.choice.unwrap();
+        assert_eq!(choice.model, requested);
+        assert_eq!(choice.account, account);
+        assert_eq!(choice.effort, Effort::High);
+        assert_eq!(rerouted.fallbacks, []);
+        assert_eq!(f.decisions(), 3);
+    }
+}
+
+#[test]
+fn a_named_premium_model_at_its_limit_waits_for_that_model() {
     let f = Fixture::new("named-cut-off");
     f.cut_off(101);
     let mut facts = f.facts();
     facts.named_model = Some(id(FABLE));
-    let record = routed(f.route(&facts));
-    assert_eq!(used(&record), (Tier::Premium, GPT.to_owned()));
+    let RouteOutcome::Waiting { record, .. } = f.route(&facts) else {
+        panic!("an explicit named model must not be substituted")
+    };
+    assert!(record.choice.is_none());
+    assert_eq!(record.fallbacks, []);
+    assert!(record.why.contains("at its limit"), "{}", record.why);
     assert_eq!(record.tier_landed, Tier::Premium);
 }
 
@@ -304,6 +394,7 @@ fn request(f: &Fixture, overrides: &RequestOverrides) -> (Caller, StartRequest) 
         model: None,
         effort: None,
         premium: false,
+        choice_message: None,
         base_branch: None,
         verification: None,
         stronger_retry_of: None,
@@ -436,4 +527,79 @@ fn a_secondmate_typing_a_model_outside_premium_on_a_premium_request_is_refused()
                 .is_ok()
         );
     }
+}
+
+#[test]
+fn earlier_actual_user_choices_work_on_a_later_app_event_turn() {
+    let f = Fixture::new("lasting-user-source");
+    let mut facts = f.facts();
+    facts.authority = Authority::Turn(StartedBy::AppEvent);
+    facts.named_model = Some(id(FABLE));
+    facts.named_effort = Some(Effort::High);
+    facts.premium = true;
+    assert!(matches!(f.route(&facts), RouteOutcome::Refused(_)));
+    assert_eq!(f.decisions(), 0);
+    facts.choice_message = Some(MessageId::new(1));
+    let record = routed(f.route(&facts));
+    assert_eq!(used(&record), (Tier::Premium, FABLE.to_owned()));
+    assert_eq!(record.choice.unwrap().effort, Effort::High);
+}
+
+#[test]
+fn an_orchestrators_user_turn_assertion_is_not_user_message_provenance() {
+    let f = Fixture::new("forged-user-source");
+    let mut facts = f.facts();
+    facts.named_effort = Some(Effort::High);
+    facts.authority = Authority::Turn(StartedBy::User {
+        message: MessageId::new(-1),
+    });
+    assert!(matches!(f.route(&facts), RouteOutcome::Refused(_)));
+    facts.authority = Authority::Turn(StartedBy::AppEvent);
+    facts.choice_message = Some(MessageId::new(-1));
+    assert!(matches!(f.route(&facts), RouteOutcome::Refused(_)));
+    assert_eq!(f.decisions(), 0);
+}
+
+#[test]
+fn delegated_choices_keep_their_source_and_cannot_authorize_different_fields() {
+    let f = Fixture::new("delegated-user-source");
+    let overrides = RequestOverrides {
+        model: Some(id(FABLE)),
+        effort: Some(Effort::High),
+        choice_message: Some(MessageId::new(1)),
+        ..RequestOverrides::default()
+    };
+    let (caller, mut start) = request(&f, &overrides);
+    // Chat retention nulls the original turn after restart; the request must still load and carry
+    // its actual-user citation rather than treating its later app-event turn as the authority.
+    f.conn
+        .execute(
+            "UPDATE secondmate_requests SET turn_id = NULL WHERE id = ?1",
+            [start.correlation],
+        )
+        .unwrap();
+    apply_request_overrides(&f.conn, &caller, &mut start)
+        .unwrap()
+        .unwrap();
+    assert_eq!(start.choice_message, overrides.choice_message);
+    f.conn
+        .execute(
+            "UPDATE tasks SET supervisor_id = ?1, secondmate_request_id = ?2 WHERE id = ?3",
+            params![caller.agent, start.correlation, f.task],
+        )
+        .unwrap();
+    let mut facts = f.facts();
+    facts.authority = Authority::Turn(StartedBy::AppEvent);
+    facts.choice_message = start.choice_message;
+    facts.named_model = start.model;
+    facts.named_effort = start.effort;
+    assert_eq!(
+        used(&routed(f.route(&facts))),
+        (Tier::Premium, FABLE.to_owned())
+    );
+    facts.named_model = Some(id(GPT));
+    assert!(matches!(f.route(&facts), RouteOutcome::Refused(_)));
+    facts.named_model = Some(id(FABLE));
+    facts.premium = true;
+    assert!(matches!(f.route(&facts), RouteOutcome::Refused(_)));
 }

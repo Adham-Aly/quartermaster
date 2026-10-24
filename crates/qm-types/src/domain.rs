@@ -761,8 +761,8 @@ string_enum! {
 /// Who started a turn.
 ///
 /// A turn is started either by your own message or by an app event (a wake, a schedule, a
-/// restart). Every typed override is accepted only on a turn you started; the check is one
-/// function in `qm-policy`. For a crewmate's engine turns, a direct message from you is `User`
+/// restart). Overrides need a user-started turn, except model/effort/premium choices may cite
+/// an earlier verified user message (`qm-policy`). For a crewmate's engine turns, a direct message from you is `User`
 /// and everything else (its brief, a steer, a job finishing) is `AppEvent`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "by", rename_all = "snake_case")]

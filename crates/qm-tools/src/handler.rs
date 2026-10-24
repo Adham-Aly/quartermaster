@@ -24,6 +24,7 @@ use qm_types::domain::{MessageKind, Role, StartedBy};
 use qm_types::error::Refusal;
 use qm_types::ids::{AgentId, MessageId, SecondmateId, StandingInstructionId, TaskId, TurnId};
 use qm_types::ids::{CorrelationId, ModelId};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// The core's services, as tool handlers need them.
@@ -95,6 +96,36 @@ pub trait ToolHost: Send + Sync {
     ) -> BoxFuture<'a, Result<TaskStarted, ToolFailure>> {
         let _ = (caller, request);
         Box::pin(async { Err(ToolFailure::not_available("start_crewmate")) })
+    }
+
+    /// Persists a checked start until its trigger fires; no task or worker is created yet.
+    fn schedule_crewmate<'a>(
+        &'a self,
+        caller: &'a Caller,
+        request: StartRequest,
+        trigger: crate::defs::StartTrigger,
+    ) -> BoxFuture<'a, Result<crate::defs::DeferredStart, ToolFailure>> {
+        let _ = (caller, request, trigger);
+        Box::pin(async { Err(ToolFailure::not_available("schedule_crewmate")) })
+    }
+
+    /// Cancels one of the caller's pending deferred starts.
+    fn cancel_crewmate_start<'a>(
+        &'a self,
+        caller: &'a Caller,
+        schedule: i64,
+    ) -> BoxFuture<'a, Result<Ack, ToolFailure>> {
+        let _ = (caller, schedule);
+        Box::pin(async { Err(ToolFailure::not_available("cancel_crewmate_start")) })
+    }
+
+    /// Lists deferred starts owned by this caller.
+    fn list_crewmate_starts<'a>(
+        &'a self,
+        caller: &'a Caller,
+    ) -> BoxFuture<'a, Result<Vec<crate::defs::DeferredStart>, ToolFailure>> {
+        let _ = caller;
+        Box::pin(async { Err(ToolFailure::not_available("list_crewmate_starts")) })
     }
 
     /// Steers a direct report's task with a message marked as from its supervisor.
@@ -484,11 +515,21 @@ pub trait ToolHost: Send + Sync {
         let _ = (caller, schedule);
         Box::pin(async { Err(ToolFailure::not_available("cancel_schedule")) })
     }
+
+    /// Original user requests in the caller's conversation, latest first, at most twelve.
+    fn find_user_requests<'a>(
+        &'a self,
+        caller: &'a Caller,
+        args: crate::defs::FindUserRequestsArgs,
+    ) -> BoxFuture<'a, Result<crate::defs::FoundUserRequests, ToolFailure>> {
+        let _ = (caller, args);
+        Box::pin(async { Err(ToolFailure::not_available("find_user_requests")) })
+    }
 }
 
 /// Everything `start_crewmate` carries, for both the Quartermaster's and a secondmate's variant. A
 /// secondmate's variant sets `correlation`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartRequest {
     /// The folder to work in, as written (absolute or from `~`).
     pub folder: Option<String>,
@@ -507,6 +548,8 @@ pub struct StartRequest {
     pub model: Option<ModelId>,
     pub effort: Option<Effort>,
     pub premium: bool,
+    /// Actual user-message provenance for model/effort/premium, checked by the host.
+    pub choice_message: Option<MessageId>,
     pub base_branch: Option<String>,
     pub verification: Option<VerificationLevel>,
     pub stronger_retry_of: Option<TaskId>,
@@ -531,6 +574,8 @@ pub struct RouteRequest {
     pub model: Option<ModelId>,
     pub effort: Option<Effort>,
     pub premium: bool,
+    /// Actual user-message provenance for model/effort/premium, checked by the host.
+    pub choice_message: Option<MessageId>,
     pub later_steps: Vec<LaterStep>,
 }
 

@@ -101,6 +101,62 @@ fn shipped(kind: TaskKind, fact: BuildsOnFact) -> (Tier, String) {
 }
 
 #[test]
+fn unavailable_named_models_wait_instead_of_using_the_pin_or_another_tier() {
+    let tiers = TierEfforts::default();
+    let pin = AlwaysUse {
+        model: model(Tier::Medium),
+        fallback: Some(model(Tier::Low)),
+    };
+    for from_later in [false, true] {
+        for tier in EVERY_TIER {
+            let mut req = request(TaskKind::Review, BuildsOnFact::Nothing, &tiers);
+            if from_later {
+                req.later_step = Some(AppliedLaterStep {
+                    from: task(7),
+                    message: None,
+                    model: Some(model(tier)),
+                    effort: Some(Effort::High),
+                    premium: false,
+                });
+            } else {
+                req.user.model = Some(model(tier));
+                req.user.effort = Some(Effort::High);
+            }
+            req.always_use = Some(&pin);
+            let pinned = pool(&[Tier::Medium, Tier::Low]);
+            for missing in [false, true] {
+                let mut placed = pool(&EVERY_TIER);
+                if missing {
+                    placed.retain(|c| c.model != model(tier));
+                } else {
+                    placed
+                        .iter_mut()
+                        .find(|c| c.model == model(tier))
+                        .unwrap()
+                        .cut_off = true;
+                }
+                let record = route(
+                    &RuleTable::from_kinds(&KindTiers::default()),
+                    &req,
+                    Pool {
+                        placed: &placed,
+                        pinned: &pinned,
+                    },
+                );
+                assert!(record.choice.is_none(), "{}", record.why);
+                assert_eq!(record.fallbacks, []);
+                assert!(record.why.contains(model(tier).as_str()), "{}", record.why);
+                assert!(record.why.contains("wait"), "{}", record.why);
+                if !missing {
+                    assert!(record.why.contains("at its limit"), "{}", record.why);
+                }
+                assert_eq!(record.facts.later_step_from, from_later.then(|| task(7)));
+            }
+        }
+    }
+}
+
+#[test]
 fn the_defaults_route_as_the_shipped_table_did() {
     let tiers = TierEfforts::default();
     let placed = pool(&EVERY_TIER);

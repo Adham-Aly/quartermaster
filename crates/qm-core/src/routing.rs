@@ -33,8 +33,8 @@
 //! card choice), anything you named (model, effort, premium, a stronger-model retry), an applicable
 //! `later_steps` entry, and what the task needs. It returns:
 //!
-//! - [`RouteOutcome::Refused`] when an override arrives on a turn that can't carry it (a named
-//!   model on an app-event turn: "a named model needs a turn started by the user's own message"),
+//! - [`RouteOutcome::Refused`] when an override lacks its required authority (model choices can
+//!   cite an earlier actual user message; unrelated overrides still need a user-started turn),
 //!   or a model named for the task or by its later step is placed in no tier ("… isn't in any
 //!   model level; place it in Settings ▸ Model levels or name another model"). Nothing is
 //!   recorded; the refusal goes back to the agent as the tool's answer.
@@ -102,7 +102,7 @@
 use jiff::Timestamp;
 use qm_auth::{CredentialRef, LoginHealth};
 use qm_engine::{AccountRef, DetectedModel, Engine, UsageReading};
-use qm_policy::overrides::{Authority, OverrideKind, check_override};
+use qm_policy::overrides::{Authority, OverrideKind, check_choice_override};
 use qm_routing::choose::{Pool, RouteRequest, route};
 use qm_routing::decider::{Decided, DecidedBy};
 use qm_routing::later_steps::{AppliedLaterStep, not_in_any_tier};
@@ -521,6 +521,8 @@ pub struct CrewmateFacts {
     pub named_effort: Option<qm_types::domain::Effort>,
     /// You asked for premium.
     pub premium: bool,
+    /// The actual user message authorizing model/effort/premium, independent of this turn.
+    pub choice_message: Option<qm_types::ids::MessageId>,
     /// A stronger-model retry you chose, with its target tier from `qm_policy::holds`.
     pub stronger_retry: Option<Tier>,
     /// The applicable `later_steps` entry (`qm_routing::later_steps::applicable`), applied whatever
@@ -569,9 +571,77 @@ fn check_overrides(facts: &CrewmateFacts) -> Result<(), Refusal> {
         ),
     ];
     for (_, kind) in present.iter().filter(|(on, _)| *on) {
-        check_override(facts.authority, *kind)?;
+        check_choice_override(facts.authority, facts.choice_message, *kind)?;
     }
     Ok(())
+}
+
+/// A routed source can authorize only the choices actually stored on that request, never other
+/// fields supplied by the secondmate. Own-conversation citations need no delegation.
+fn verify_choice_source(
+    conn: &Connection,
+    facts: &CrewmateFacts,
+    message: qm_types::ids::MessageId,
+) -> Result<Result<(), Refusal>, StoreError> {
+    let Some(task) = qm_store::tasks::load(conn, facts.task)? else {
+        return Ok(Err(Refusal::new(
+            "the task's user-message authority is unavailable",
+        )));
+    };
+    let own = qm_store::user_message_sources::verify(conn, task.supervisor, message)?;
+    if own.is_ok() {
+        return Ok(Ok(()));
+    }
+    if crate::deferred_starts::verifies_delegated_choice(conn, facts, message)? {
+        return Ok(Ok(()));
+    }
+    if let Some(id) = task
+        .secondmate_request
+        .and_then(|n| u32::try_from(n).ok())
+        .and_then(qm_types::ids::CorrelationId::new)
+        && let Some(request) = qm_store::secondmates::load_request(conn, id)?
+        && let Some(secondmate) = qm_store::secondmates::load(conn, request.secondmate)?
+    {
+        let asked = request.overrides;
+        let source = asked
+            .choice_message
+            .or(qm_store::secondmates::turn_message(conn, request.turn)?);
+        if secondmate.agent == task.supervisor
+            && source == Some(message)
+            && facts
+                .named_model
+                .as_ref()
+                .is_none_or(|m| asked.model.as_ref() == Some(m))
+            && facts.named_effort.is_none_or(|e| asked.effort == Some(e))
+            && (!facts.premium || asked.premium)
+        {
+            return qm_store::user_message_sources::verify(conn, secondmate.parent, message);
+        }
+    }
+    Ok(own)
+}
+
+fn check_choice_sources(
+    conn: &Connection,
+    facts: &CrewmateFacts,
+) -> Result<Result<(), Refusal>, StoreError> {
+    if facts.named_model.is_none() && facts.named_effort.is_none() && !facts.premium {
+        return Ok(Ok(()));
+    }
+    let source = facts.choice_message.or(match facts.authority {
+        Authority::Turn(qm_types::domain::StartedBy::User { message }) => Some(message),
+        _ => None,
+    });
+    if let Some(message) = source {
+        return verify_choice_source(conn, facts, message);
+    }
+    Ok(if facts.authority == Authority::CardChoice {
+        Ok(())
+    } else {
+        Err(Refusal::new(
+            "model, effort and premium choices need an actual user message; cite it with choice_message",
+        ))
+    })
 }
 
 /// The note an unknown model's routing record carries.
@@ -643,7 +713,7 @@ pub fn route_crewmate(
     health: &LoginHealth,
     at: Timestamp,
 ) -> Result<RouteOutcome, StoreError> {
-    if let Err(refusal) = check_overrides(facts) {
+    if let Err(refusal) = check_overrides(facts).and(check_choice_sources(conn, facts)?) {
         return Ok(RouteOutcome::Refused(refusal));
     }
 
@@ -997,6 +1067,7 @@ mod tests {
                     named_model: None,
                     named_effort: None,
                     premium: false,
+                    choice_message: None,
                     stronger_retry: None,
                     later_step: None,
                     prefer_provider_other_than: None,
@@ -1075,6 +1146,7 @@ mod tests {
                 named_model: None,
                 named_effort: None,
                 premium: false,
+                choice_message: None,
                 stronger_retry: None,
                 later_step: None,
                 prefer_provider_other_than: None,
