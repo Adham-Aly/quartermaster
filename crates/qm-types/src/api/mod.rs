@@ -1327,7 +1327,7 @@ pub struct SettingsAccount {
     /// A provider quota check is in progress; previous results may still be shown.
     #[serde(default)]
     pub quota_refreshing: bool,
-    /// Display-ready time of the last quota check; `None` means not checked yet.
+    /// Display-ready time of the last successful quota check; `None` means no successful reading yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_checked_at: Option<String>,
     /// Follows the `claude` login on this Mac: paused here, never disconnected.
