@@ -1,7 +1,7 @@
 //! The durable wake inbox.
 //!
 //! - A wake is written with [`insert_wake`] **in the same transaction as the fact that caused it**,
-//!   with a dedupe key (`checks:T-0042:9c0d2e4:failed`), so the same news never wakes anyone twice.
+//!   with a dedupe key (`checks:C-0042:9c0d2e4:failed`), so the same news never wakes anyone twice.
 //! - A turn takes its wakes with [`claim_wakes`]: `BEGIN IMMEDIATE`, then one `UPDATE … RETURNING`
 //!   that marks pending wakes delivered to that turn, so two claimers can never take the same wake,
 //!   even on separate connections.

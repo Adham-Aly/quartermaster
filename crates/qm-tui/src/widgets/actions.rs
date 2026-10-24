@@ -88,7 +88,7 @@ pub(crate) fn glyph(item: &ActionItem) -> (&'static str, Style) {
     }
 }
 
-/// Who asked, as a short label: the task, `QM`, `SM-n`, or nothing for the app's own prompts.
+/// Who asked, as a short label: the task, `QM`, `S-n`, or nothing for the app's own prompts.
 pub(crate) fn source(item: &ActionItem) -> Option<String> {
     if let Some(task) = item.task {
         return Some(task.to_string());

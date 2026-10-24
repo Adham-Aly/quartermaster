@@ -102,7 +102,7 @@ pub fn stuck_choices(
     }
 }
 
-/// The card's title line: "Decision · T-0047 fix(ci): flaky upload test · api-server · high ·
+/// The card's title line: "Decision · C-0047 fix(ci): flaky upload test · api-server · high ·
 /// opus-5-5".
 pub fn card_title(task: TaskId, title: &str, project: &str, tier: Tier, model: &str) -> String {
     format!("Decision · {task} {title} · {project} · {tier} · {model}")

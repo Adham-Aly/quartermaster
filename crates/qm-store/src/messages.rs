@@ -328,7 +328,7 @@ pub fn latest_acknowledgements(
 pub struct TurnOrigin {
     /// Your message started the turn.
     pub by_you: bool,
-    /// For a wake turn: the first claimed wake's `payload.short` ("T-0043 reported").
+    /// For a wake turn: the first claimed wake's `payload.short` ("C-0043 reported").
     pub short: Option<String>,
 }
 

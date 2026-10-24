@@ -4,7 +4,7 @@ use super::{Ack, Constraint, Held, LaterStep, RoutingSummary, TaskSummary};
 use crate::{Tool, ToolClass};
 use jiff::Timestamp;
 use qm_types::domain::{Effort, Role, TaskKind, TaskStatus, Tier, VerificationLevel};
-use qm_types::ids::{CommitSha, CorrelationId, HeldActionId, ModelId, TaskId};
+use qm_types::ids::{CommitSha, CorrelationId, HeldActionId, ModelId, TaskId, TaskLabelId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,10 @@ tool! {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent yes/no facts about the work, in a tool's argument schema"
+)]
 pub struct StartCrewmateArgs {
     // The folder to work in, absolute or from `~`; its project is found or added. Or name a listed
     // project instead. Neither: your home folder.
@@ -35,6 +39,12 @@ pub struct StartCrewmateArgs {
     // words ask for it. A plain folder is always worked in place.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub in_place: bool,
+    // The folder doesn't exist yet and the user asked for a new one: the app makes it first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub create_folder: bool,
+    // An open task (T-n) the new crewmate joins. Leave it out: the crewmate gets a task of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join_task: Option<TaskLabelId>,
     pub kind: TaskKind,
     // Conventional-commit style, e.g. "fix(auth): token refresh race".
     pub title: String,
@@ -104,6 +114,10 @@ impl Tool for SecondmateStartCrewmateTool {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent yes/no facts about the work, in a tool's argument schema"
+)]
 pub struct SecondmateStartCrewmateArgs {
     // The folder to work in, absolute or from `~`; or name a listed project instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,6 +127,12 @@ pub struct SecondmateStartCrewmateArgs {
     // Work in the folder itself rather than a worktree: only when the user's own words ask for it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub in_place: bool,
+    // The folder doesn't exist yet and the user asked for a new one: the app makes it first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub create_folder: bool,
+    // An open task (T-n) the new crewmate joins. Leave it out: the crewmate gets a task of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join_task: Option<TaskLabelId>,
     // The routed request this task serves, whose stored fields the app applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation: Option<CorrelationId>,
@@ -245,7 +265,9 @@ pub struct ListCrewmateStartsArgs {}
 /// A task was started.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskStarted {
-    pub task: TaskId,
+    pub crewmate: TaskId,
+    /// The task the crewmate belongs to: its own, or the one it joined.
+    pub task: TaskLabelId,
     /// The task's branch, named after its title (`fix/upload-retry-on-slow-tmp`); folder tasks
     /// have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -313,6 +335,38 @@ pub struct SetTaskProjectArgs {
     pub project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
+}
+
+tool! {
+    /// Moves a direct report to another task, or to a new task of its own. Its name stays; its
+    /// artifacts and scratchpad follow at its next safe point.
+    SetTaskLabelTool {
+        name: "set_task_label",
+        class: Act,
+        roles: [Quartermaster, Secondmate],
+        args: SetTaskLabelArgs,
+        output: TaskChanged,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetTaskLabelArgs {
+    pub crewmate: TaskId,
+    // The task to join; left out, the crewmate gets a new task of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskLabelId>,
+}
+
+/// A crewmate's task after `set_task_label`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskChanged {
+    pub crewmate: TaskId,
+    pub task: TaskLabelId,
+    pub was: TaskLabelId,
+    // The task's other open crewmates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub with: Vec<TaskId>,
 }
 
 tool! {

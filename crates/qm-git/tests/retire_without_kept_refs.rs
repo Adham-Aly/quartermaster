@@ -115,7 +115,7 @@ fn retiring_removes_the_worktree_and_branch_and_writes_no_kept_ref() {
     let data = DataDir::new(scratch.0.join("data"));
     checkout_with_two_commits(&checkout);
     let task = TaskId::new(42).expect("a task number");
-    let paths = data.task(task);
+    let paths = data.task(task, task.own_label());
     let branch = "fix/upload-retry-on-slow-tmp";
 
     git(
@@ -170,7 +170,7 @@ fn reconcile_reads_recorded_branches_and_still_knows_legacy_ones() {
     let wrong_branch = TaskId::new(43).expect("43");
     let missing = TaskId::new(44).expect("44");
     let worktree = |task: TaskId, branch: &str| {
-        let path = data.task(task).worktree;
+        let path = data.task(task, task.own_label()).worktree;
         fs::create_dir_all(path.parent().expect("parent")).expect("task folder");
         git(
             &checkout,

@@ -11,7 +11,8 @@
 //! - [`registry`]: [`registry::TOOLS`], the one list of tool definitions, and lookups by role.
 //! - [`handler`]: how a call runs. A handler implements [`handler::Handle`] for a tool and is
 //!   bound in [`handlers::HANDLERS`]; the core dispatches every call through
-//!   [`handler::Dispatcher`], which parses the arguments, runs the handler and reports whether the
+//!   [`handler::Dispatcher`], which reads a task given where a crewmate is asked for as that
+//!   task's crewmate (`task_refs`), parses the arguments, runs the handler and reports whether the
 //!   call counted.
 //!
 //! Argument types document their fields with `//` comments, never `///`: a doc comment would
@@ -23,5 +24,6 @@ pub mod handler;
 pub mod handlers;
 pub mod registry;
 mod spec;
+mod task_refs;
 
 pub use spec::{EngineScope, PlanGate, Tool, ToolClass, ToolDef, input_schema};

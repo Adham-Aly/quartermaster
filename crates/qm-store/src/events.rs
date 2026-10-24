@@ -3,7 +3,7 @@
 //!
 //! **The convention to follow** when recording something the Quartermaster should see:
 //! `events.summary` is the line exactly as the context block shows it, in the app's voice ("you
-//! approved the merge of T-0038 at 77d1e0a"), and `events.kind` starts with the section's prefix
+//! approved the merge of C-0038 at 77d1e0a"), and `events.kind` starts with the section's prefix
 //! (`you.`, `task.`, `pr.`, `checks.`, `secondmate.`, `model.`, `outcome.`). `seat.*` events are
 //! the seat's own bookkeeping and never appear in the block.
 //!

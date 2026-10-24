@@ -1,7 +1,8 @@
 //! What a counted call did, for the effective-action rule.
 //!
-//! Facts from code only: the tool's name, its arguments and its result. The app never judges
-//! whether an action fits the turn.
+//! Facts from code only: the tool's name, its arguments (a task given for a crewmate already
+//! replaced with the crewmate) and its result. The app never judges whether an action fits the
+//! turn.
 
 use qm_engine::ToolResult;
 use qm_policy::action_rule::{Effect, app_acknowledgement};
@@ -17,11 +18,12 @@ use qm_types::ids::TaskId;
 /// | Call | Effect |
 /// |---|---|
 /// | `reply`, `ask_user`, `acknowledge`, `present_hold`, `propose_project`, `start_secondmate`, a held `settle_task` | `Shown` |
-/// | `start_crewmate` | `Started(result.task)` |
+/// | `start_crewmate` | `Started(result.crewmate)` |
 /// | `message_task` | `Steered(args.task)` |
 /// | `stop_task`, `close_task` | `Stopped(args.task)` |
 /// | `settle_task` (merged, delivered, landed, closed) | `Settled(args.task)` |
-/// | `set_verification` / `link_tasks`, `unlink_tasks` | `TaskChanged(args.task)` / `TaskChanged(args.blocked)` |
+/// | `set_verification`, `set_task_project` / `set_task_label` | `TaskChanged(args.task)` / `TaskChanged(args.crewmate)` |
+/// | `link_tasks`, `unlink_tasks` | `TaskChanged(args.blocked)` |
 /// | `schedule` / `cancel_schedule` | `ScheduleAdded` / `ScheduleCancelled` |
 /// | anything else that counts, including tools added later | `SettingChanged` |
 pub fn effect_of(tool: &str, args: &serde_json::Value, result: &ToolResult) -> Option<Effect> {
@@ -42,7 +44,7 @@ pub fn effect_of(tool: &str, args: &serde_json::Value, result: &ToolResult) -> O
             Some(Effect::Shown)
         }
         t if t == defs::StartCrewmateTool::NAME => output()
-            .and_then(|o| task_at(&o, "task"))
+            .and_then(|o| task_at(&o, "crewmate"))
             .map(Effect::Started),
         t if t == defs::MessageTaskTool::NAME => task_at(args, "task").map(Effect::Steered),
         t if t == defs::StopTaskTool::NAME || t == defs::CloseTaskTool::NAME => {
@@ -58,7 +60,12 @@ pub fn effect_of(tool: &str, args: &serde_json::Value, result: &ToolResult) -> O
                 task_at(args, "task").map(Effect::Settled)
             }
         }
-        t if t == defs::SetVerificationTool::NAME => task_at(args, "task").map(Effect::TaskChanged),
+        t if t == defs::SetVerificationTool::NAME || t == defs::SetTaskProjectTool::NAME => {
+            task_at(args, "task").map(Effect::TaskChanged)
+        }
+        t if t == defs::SetTaskLabelTool::NAME => {
+            task_at(args, "crewmate").map(Effect::TaskChanged)
+        }
         t if t == defs::LinkTasksTool::NAME || t == defs::UnlinkTasksTool::NAME => {
             task_at(args, "blocked").map(Effect::TaskChanged)
         }
@@ -99,6 +106,19 @@ mod tests {
         assert_eq!(
             effect_of("unlink_tasks", &args, &ToolResult::error("refused")),
             None
+        );
+    }
+
+    #[test]
+    fn a_start_acknowledges_the_crewmate_not_the_task_it_joined() {
+        let output = r#"{"crewmate":"C-0048","task":"T-0017"}"#;
+        assert_eq!(
+            effect_of(
+                "start_crewmate",
+                &serde_json::json!({}),
+                &ToolResult::ok(output)
+            ),
+            Some(Effect::Started(TaskId::new(48).unwrap()))
         );
     }
 }

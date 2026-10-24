@@ -2,7 +2,7 @@
 //!
 //! Every change the app makes runs the real `git` behind a typed Rust wrapper. The app's own
 //! commands strip inherited `GIT_*` variables and skip hooks; a crewmate's commits run the
-//! project's hooks as usual. This crate creates a task's worktree at `tasks/T-0042/worktree` on
+//! project's hooks as usual. This crate creates a task's worktree at `tasks/C-0042/worktree` on
 //! the branch recorded with the task, named after its work (`fix/upload-retry-on-slow-tmp`),
 //! resolves base branches (the remote's default branch freshly fetched, or a typed base branch
 //! that traces back to you), removes a retired task's worktree and branch (unmerged commits are

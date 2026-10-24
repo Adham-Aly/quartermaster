@@ -40,9 +40,9 @@ pub(crate) struct PlanReport {
 }
 
 impl TaskService {
-    /// The plan folder of `task`.
-    pub(crate) fn plan_dir(&self, task: TaskId) -> PathBuf {
-        self.deps().data_dir.task(task).plan
+    /// The plan folder of `row`'s crewmate.
+    pub(crate) fn plan_dir(&self, row: &TaskRow) -> PathBuf {
+        self.paths_of(row).plan
     }
 
     /// The plan mode `row`'s project's autonomy gives now; `None` for a task that isn't a plan.
@@ -119,7 +119,7 @@ async fn planner_task(
              your turn and your session restarts in the new mode"
         )));
     }
-    let dir = svc.plan_dir(row.id);
+    let dir = svc.plan_dir(&row);
     let state = load_state(&dir)?;
     Ok((row, live, state, dir))
 }
@@ -263,7 +263,13 @@ pub(crate) fn local_time(at: jiff::Timestamp) -> String {
 /// After a plan task's report is recorded: saves the plan's state. A round that goes to the user
 /// is listed in the Actions panel from that state; nothing is posted in the chat.
 pub(crate) async fn after_report(svc: &TaskService, task: TaskId, report: PlanReport) {
-    let dir = svc.plan_dir(task);
+    let dir = match svc.paths(task).await {
+        Ok(paths) => paths.plan,
+        Err(e) => {
+            tracing::error!(%task, error = %e, "couldn't find the plan's folder");
+            return;
+        }
+    };
     let saved = report.state;
     let result = tokio::task::spawn_blocking(move || plans::update(&dir, |s| *s = saved)).await;
     if !matches!(result, Ok(Ok(Some(_)))) {
@@ -322,7 +328,7 @@ pub(crate) async fn approve(
             "{task} is planned under auto autonomy; its plan needs no approval"
         )));
     }
-    let dir = svc.plan_dir(task);
+    let dir = svc.plan_dir(&row);
     let state = load_state(&dir)?;
     match state.stage {
         Stage::Approved => return Ok(format!("{task}'s plan is already approved.")),
@@ -533,10 +539,10 @@ pub(crate) async fn record_replies(
         ));
     };
     let user_text = user_text.replace("\r\n", "\n");
-    let dir = svc.plan_dir(task);
+    let dir = svc.plan_dir(row);
     let state = load_state(&dir)?;
     for reply in replies {
-        if reply.task != task.to_string() {
+        if reply.task.parse::<TaskId>().ok() != Some(task) {
             return Err(refuse(format!(
                 "that plan reply is for {}, not {task}; pass it to {} instead",
                 reply.task, reply.task
@@ -611,8 +617,9 @@ pub(crate) async fn approve_plan(
 }
 
 /// Whether a build may start on `plan`: its plan is approved (or finished under auto).
-pub(crate) fn ready_to_build(svc: &TaskService, plan: TaskId) -> Result<(), String> {
+pub(crate) fn ready_to_build(svc: &TaskService, plan: &TaskRow) -> Result<(), String> {
     let dir = svc.plan_dir(plan);
+    let plan = plan.id;
     match plans::load(&dir) {
         Ok(Some(state)) if state.stage == Stage::Approved => Ok(()),
         Ok(Some(state)) => Err(match state.stage {
@@ -665,7 +672,7 @@ async fn plan_autonomy_changed(svc: &TaskService, row: &TaskRow) -> Result<(), T
     let Some(mode) = svc.live_plan_mode(row).await? else {
         return Ok(());
     };
-    let dir = svc.plan_dir(row.id);
+    let dir = svc.plan_dir(row);
     let project = svc.project_name(row).await;
     let task = row.id;
     let port = svc.plan_port();

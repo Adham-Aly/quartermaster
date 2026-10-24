@@ -21,7 +21,7 @@ use qm_types::rules::TurnCounters;
 pub const INTERRUPTED_TICK: &str = "Interrupted";
 
 /// Fits the app's acknowledgement into `max` characters: when the joined effects run longer, keep
-/// the leading items that fit and add ` +N` for the rest ("Started: T-0048 · Steered: T-0042 +1"),
+/// the leading items that fit and add ` +N` for the rest ("Started: C-0048 · Steered: C-0042 +1"),
 /// so the tick always fits the header rule.
 pub fn fit_acknowledgement(text: &str, max: usize) -> String {
     if text.chars().count() <= max {

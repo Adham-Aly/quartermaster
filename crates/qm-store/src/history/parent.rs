@@ -108,7 +108,8 @@ pub(super) fn deliver_and_forget(tx: &Transaction<'_>) -> Result<(), StoreError>
     let sources: Vec<(i64, Option<i64>)> = tx
         .prepare(
             "SELECT json_extract(p.facts, '$.source_event'), w.id FROM parent_channel p
-         LEFT JOIN wakes w ON w.dedupe_key = printf('parent:C-%04d:%d', p.correlation_id, p.id)
+         LEFT JOIN wakes w ON w.dedupe_key IN (printf('parent:R-%04d:%d', p.correlation_id, p.id),
+                                              printf('parent:C-%04d:%d', p.correlation_id, p.id))
          WHERE p.id IN (SELECT id FROM temp.forgetting_parent_rows)
          AND json_extract(p.facts, '$.source_event') IS NOT NULL",
         )?
@@ -179,16 +180,20 @@ fn deliver_unpumped(tx: &Transaction<'_>) -> Result<(), StoreError> {
 }
 
 fn forget_parent_rows(tx: &Transaction<'_>) -> Result<(), StoreError> {
+    // Correlation IDs read `R-`; rows written before that read `C-`.
     tx.execute_batch(
-        "UPDATE wakes SET task_id = NULL WHERE id IN
+        "CREATE TEMP TABLE correlation_prefixes(prefix TEXT NOT NULL);
+         INSERT INTO correlation_prefixes VALUES ('R-'), ('C-');
+         UPDATE wakes SET task_id = NULL WHERE id IN
              (SELECT wake_id FROM forgotten_parent_facts WHERE wake_id IS NOT NULL);
          DELETE FROM wakes WHERE
-             (dedupe_key IN (SELECT printf('parent:C-%04d:%d', correlation_id, id)
-                             FROM parent_channel WHERE id IN (SELECT id FROM temp.forgetting_parent_rows))
+             (dedupe_key IN (SELECT printf('parent:' || prefix || '%04d:%d', correlation_id, id)
+                             FROM parent_channel, temp.correlation_prefixes
+                             WHERE id IN (SELECT id FROM temp.forgetting_parent_rows))
               OR (json_extract(payload, '$.correlation') IN
-                      (SELECT printf('C-%04d', id) FROM temp.forgetting_requests)
+                      (SELECT printf(prefix || '%04d', id) FROM temp.forgetting_requests, temp.correlation_prefixes)
                   AND json_extract(payload, '$.correlation') NOT IN
-                      (SELECT printf('C-%04d', secondmate_request_id) FROM tasks
+                      (SELECT printf(prefix || '%04d', secondmate_request_id) FROM tasks, temp.correlation_prefixes
                        WHERE secondmate_request_id IS NOT NULL
                        AND id NOT IN (SELECT id FROM temp.forgetting_tasks))))
              AND id NOT IN (SELECT wake_id FROM forgotten_parent_facts WHERE wake_id IS NOT NULL);
@@ -198,15 +203,16 @@ fn forget_parent_rows(tx: &Transaction<'_>) -> Result<(), StoreError> {
          DELETE FROM parent_channel WHERE id IN (SELECT id FROM temp.forgetting_parent_rows);
          DELETE FROM events WHERE kind LIKE 'secondmate.%'
              AND json_extract(payload, '$.correlation') IN
-                 (SELECT printf('C-%04d', id) FROM temp.forgetting_requests)
+                 (SELECT printf(prefix || '%04d', id) FROM temp.forgetting_requests, temp.correlation_prefixes)
              AND json_extract(payload, '$.correlation') NOT IN
-                 (SELECT printf('C-%04d', secondmate_request_id) FROM tasks WHERE secondmate_request_id IS NOT NULL
+                 (SELECT printf(prefix || '%04d', secondmate_request_id) FROM tasks, temp.correlation_prefixes WHERE secondmate_request_id IS NOT NULL
                   AND id NOT IN (SELECT id FROM temp.forgetting_tasks));
          DELETE FROM secondmate_requests WHERE id IN (SELECT id FROM temp.forgetting_requests)
              AND id NOT IN (SELECT secondmate_request_id FROM tasks WHERE secondmate_request_id IS NOT NULL
                             AND id NOT IN (SELECT id FROM temp.forgetting_tasks));
          DROP TABLE temp.forgetting_parent_rows;
-         DROP TABLE temp.forgetting_requests;",
+         DROP TABLE temp.forgetting_requests;
+         DROP TABLE temp.correlation_prefixes;",
     )?;
     Ok(())
 }

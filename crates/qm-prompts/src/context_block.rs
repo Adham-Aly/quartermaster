@@ -30,7 +30,7 @@ use jiff::Zoned;
 use qm_types::domain::{
     Autonomy, DeliveryMode, Effort, KindRow, TaskKind, TaskStatus, Tier, VerificationLevel,
 };
-use qm_types::ids::{MessageId, SecondmateId, StandingInstructionId, TaskId, TurnId};
+use qm_types::ids::{MessageId, SecondmateId, StandingInstructionId, TaskId, TaskLabelId, TurnId};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -65,7 +65,7 @@ const OUTCOMES_PER_ROW: usize = 3;
 const TIERS_PER_ROW: usize = 2;
 /// The gap between the cells of a multi-column row (`<recent_outcomes>`, `<models>`).
 const GUTTER: &str = "     ";
-/// The gap before a worker's note ("reviews T-0040").
+/// The gap before a worker's note ("reviews C-0040").
 const NOTE_GAP: &str = "   ";
 /// The gap between columns.
 const GAP: &str = "  ";
@@ -113,11 +113,11 @@ pub struct UserMessageFact {
     pub text: String,
 }
 
-/// A registered project, or the built-in workspace.
+/// A listed project: a folder open work runs in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectFact {
     pub name: String,
-    /// With `~` for your home folder; `(built-in workspace)` for the workspace.
+    /// With `~` for your home folder.
     pub path: String,
     pub delivery: DeliveryMode,
     pub autonomy: Autonomy,
@@ -131,11 +131,11 @@ pub enum WorkerFact {
     Secondmate(SecondmateFact),
 }
 
-/// A crewmate at work: `T-0042  crewmate  api-server  fix  running  12m  medium · sonnet-5-5`.
+/// A crewmate at work: `C-0042  crewmate  api-server  fix  running  12m  medium · sonnet-5-5`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CrewmateFact {
     pub task: TaskId,
-    /// The secondmate it works under: shown indented, as "crew of SM-02".
+    /// The secondmate it works under: shown indented, as "crew of S-02".
     pub under: Option<SecondmateId>,
     pub project: String,
     pub kind: TaskKind,
@@ -145,11 +145,11 @@ pub struct CrewmateFact {
     pub minutes: u64,
     pub effort: Option<Effort>,
     pub model: Option<String>,
-    /// A few words after the model: "reviews T-0040".
+    /// A few words after the model: "reviews C-0040".
     pub note: Option<String>,
 }
 
-/// A secondmate: `SM-02  secondmate  scope="web-app frontend"  idle  base=release/2.4`.
+/// A secondmate: `S-02  secondmate  scope="web-app frontend"  idle  base=release/2.4`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SecondmateFact {
     pub id: SecondmateId,
@@ -158,10 +158,13 @@ pub struct SecondmateFact {
     pub base_branch: Option<String>,
 }
 
-/// An open or active task: `T-0042  api-server  fix(auth): token refresh race  running`.
+/// An open crewmate's work, with the task it belongs to:
+/// `C-0042  T-0017  api-server  fix(auth): token refresh race  running`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskFact {
     pub task: TaskId,
+    /// The task (`T-`) the crewmate belongs to.
+    pub label: TaskLabelId,
     pub project: String,
     pub title: String,
     pub status: TaskStatus,
@@ -170,7 +173,7 @@ pub struct TaskFact {
     pub detail: Option<String>,
 }
 
-/// One line of a since-section or of the recent outcomes: `14:01  T-0043 reported (plan)`.
+/// One line of a since-section or of the recent outcomes: `14:01  C-0043 reported (plan)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventLine {
     pub at: Zoned,
@@ -486,7 +489,7 @@ fn worker_role(w: &WorkerFact) -> &'static str {
     }
 }
 
-/// A crewmate's aligned columns: for a secondmate's crew, ID, "crew of SM-02", project, kind,
+/// A crewmate's aligned columns: for a secondmate's crew, ID, "crew of S-02", project, kind,
 /// status, time; for the Quartermaster's own, the same with the role in place of "crew of …"
 /// (the ID and role columns are then aligned with the other top-level rows instead).
 fn crew_cells(c: &CrewmateFact) -> Vec<Cell> {
@@ -546,6 +549,7 @@ fn tasks(out: &mut String, facts: &ContextFacts) {
         .map(|t| {
             vec![
                 Cell::left(t.task.to_string()),
+                Cell::left(t.label.to_string()),
                 Cell::left(cut(&t.project, TITLE_CHARS)),
                 Cell::left(cut(&t.title, TITLE_CHARS)),
                 Cell::left(task_line(t)),
@@ -892,6 +896,53 @@ mod tests {
         assert_eq!(
             out,
             format!("<models>\nhigh  {}\n</models>\n", combinations.join(" · "))
+        );
+    }
+}
+
+#[cfg(test)]
+mod task_rows_tests {
+    use super::*;
+
+    #[test]
+    fn each_crewmate_shows_the_task_it_belongs_to() {
+        let fact = |crewmate: u32, label: u32, title: &str| TaskFact {
+            task: TaskId::new(crewmate).unwrap(),
+            label: TaskLabelId::new(label).unwrap(),
+            project: "api-server".to_owned(),
+            title: title.to_owned(),
+            status: TaskStatus::Running,
+            detail: None,
+        };
+        let facts = ContextFacts {
+            turn: TurnId::new(1),
+            at: jiff::Timestamp::UNIX_EPOCH.to_zoned(jiff::tz::TimeZone::UTC),
+            projects: Vec::new(),
+            workers: Vec::new(),
+            workers_total: 0,
+            tasks: vec![
+                fact(43, 17, "test(auth): race"),
+                fact(42, 17, "fix(auth): race"),
+            ],
+            tasks_open: 2,
+            since_turn: None,
+            you: Since::default(),
+            activity: Since::default(),
+            model_changes: Since::default(),
+            recent_outcomes: Vec::new(),
+            standing: Vec::new(),
+            user_message_sources: Vec::new(),
+            models: Vec::new(),
+            kind_tiers: Vec::new(),
+        };
+        let mut out = String::new();
+        tasks(&mut out, &facts);
+        assert_eq!(
+            out,
+            "<tasks open=\"2\" shown=\"2\">\n\
+             C-0042  T-0017  api-server  fix(auth): race   running\n\
+             C-0043  T-0017  api-server  test(auth): race  running\n\
+             </tasks>\n"
         );
     }
 }

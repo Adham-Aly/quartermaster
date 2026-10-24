@@ -8,7 +8,7 @@
 //!   precondition, the read-back, no blind retries.
 //! - [`push`]: branch-only: a push with a lease, never a merge; delivered when the checks on the
 //!   pushed branch allow it.
-//! - [`in_place`]: build in place, and the personal workspace.
+//! - [`in_place`]: build in place, into a local repository's checkout.
 //! - [`facts`]: the fact, the supervisor's `settled` wake, the parent channel.
 //! - [`performers`]: carrying out your Approve or Reject, and GitHub writes.
 //! - [`cards`]: the approval cards.

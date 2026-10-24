@@ -60,7 +60,7 @@ makes `pr_open`, `propose_release_tag` and `github_write` the default path, and 
 GitHub directly only when the user's own words ask for exactly that. The app records what happens
 outside it: `outside.rs` watches a task's PR (at report, at settle, every 5 minutes) and a merge
 made on GitHub lands the task (`landed_outside`, wake `LandedOutside`); tags new since the task
-started (`tasks/T-n/tags-at-start`) that the app didn't push are recorded (`released_outside`,
+started (`tasks/C-n/tags-at-start`) that the app didn't push are recorded (`released_outside`,
 wake `ReleasedOutside`). The app's own pushes and merges keep every check below.
 
 ## The merge gate

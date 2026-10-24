@@ -1,7 +1,7 @@
 //! Pieces several tools share.
 
 use qm_types::domain::{Effort, TaskKind, TaskStatus, Tier};
-use qm_types::ids::{HeldActionId, MessageId, ModelId, TaskId};
+use qm_types::ids::{HeldActionId, MessageId, ModelId, TaskId, TaskLabelId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -52,10 +52,15 @@ pub struct Ack {
     pub note: String,
 }
 
-/// One task in a list, as the context block shows it.
+/// One crewmate's work in a list, with the task it belongs to, as the context block shows it:
+/// `{"crewmate": "C-0042", "task": "T-0017", "project": …}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSummary {
+    #[serde(rename = "crewmate")]
     pub task: TaskId,
+    /// The task (`T-`) the crewmate belongs to.
+    #[serde(rename = "task")]
+    pub label: TaskLabelId,
     pub project: String,
     pub kind: TaskKind,
     pub title: String,

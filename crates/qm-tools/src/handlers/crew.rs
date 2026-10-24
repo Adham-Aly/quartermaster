@@ -7,10 +7,10 @@
 use super::conversation::started_by;
 use crate::defs::{
     CloseTaskArgs, CloseTaskTool, FindTasksArgs, FindTasksTool, FoundTasks, LinkTasksArgs,
-    LinkTasksTool, Linked, MessageTaskArgs, MessageTaskTool, SetTaskProjectArgs,
-    SetTaskProjectTool, StartCrewmateArgs, StartCrewmateTool, StopTaskArgs, StopTaskTool,
-    TaskDetail, TaskStarted, TaskStatusArgs, TaskStatusTool, TaskUpdated, UnlinkTasksArgs,
-    UnlinkTasksTool, Unlinked,
+    LinkTasksTool, Linked, MessageTaskArgs, MessageTaskTool, SetTaskLabelArgs, SetTaskLabelTool,
+    SetTaskProjectArgs, SetTaskProjectTool, StartCrewmateArgs, StartCrewmateTool, StopTaskArgs,
+    StopTaskTool, TaskChanged, TaskDetail, TaskStarted, TaskStatusArgs, TaskStatusTool,
+    TaskUpdated, UnlinkTasksArgs, UnlinkTasksTool, Unlinked,
 };
 use crate::handler::{Handle, StartRequest, ToolCx, ToolFailure};
 use qm_policy::names::check_task_title;
@@ -126,6 +126,8 @@ pub(crate) fn prepare_start(
             .map(|p| p.trim().to_owned())
             .filter(|p| !p.is_empty()),
         in_place: args.in_place,
+        create_folder: args.create_folder,
+        label: args.join_task,
         kind: args.kind,
         title: args.title.trim().to_owned(),
         goal: args.goal,
@@ -224,6 +226,19 @@ impl Handle for SetTaskProjectTool {
     }
 }
 
+impl Handle for SetTaskLabelTool {
+    fn handle<'a>(
+        cx: &'a ToolCx<'a>,
+        args: SetTaskLabelArgs,
+    ) -> BoxFuture<'a, Result<TaskChanged, ToolFailure>> {
+        Box::pin(async move {
+            cx.host
+                .set_task_label(cx.caller, args.crewmate, args.task)
+                .await
+        })
+    }
+}
+
 impl Handle for CloseTaskTool {
     fn handle<'a>(
         cx: &'a ToolCx<'a>,
@@ -316,6 +331,8 @@ mod tests {
             folder: None,
             project: None,
             in_place: false,
+            create_folder: false,
+            label: None,
             kind: TaskKind::Research,
             title: "research(x): inspect".into(),
             goal: "inspect".into(),

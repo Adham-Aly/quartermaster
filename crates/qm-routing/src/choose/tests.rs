@@ -87,11 +87,9 @@ fn shipped(kind: TaskKind, fact: BuildsOnFact) -> (Tier, String) {
         _ => Tier::High,
     };
     let why = match (fact, tier) {
-        (BuildsOnFact::FinishedPlan, Tier::Medium) => {
-            "Building from the plan in task T-0244".into()
-        }
+        (BuildsOnFact::FinishedPlan, Tier::Medium) => "Building from C-0244's plan".into(),
         (BuildsOnFact::ConfirmedDiagnosis, Tier::Medium) => {
-            "Building on the confirmed diagnosis in task T-0244".into()
+            "Building on C-0244's confirmed diagnosis".into()
         }
         _ => match kind {
             TaskKind::Lookup => "Lookups run on low".into(),
@@ -236,7 +234,7 @@ fn a_builds_on_row_may_be_stronger_than_its_kind() {
         &placed,
     );
     assert_eq!(on_plan.tier_landed, Tier::High);
-    assert_eq!(on_plan.why, "Building from the plan in task T-0244");
+    assert_eq!(on_plan.why, "Building from C-0244's plan");
     let plain = run(
         &kinds,
         &request(TaskKind::Build, BuildsOnFact::Nothing, &tiers),

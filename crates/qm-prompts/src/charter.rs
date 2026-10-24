@@ -4,8 +4,9 @@
 //! its scope words, its project list, and its standing base branch if it has one. The plan:
 //! "Its charter, which persists: scope words, project list, and its standing base branch if it has
 //! one", and the standing branch is "a typed field on the secondmate's record, not just prose in
-//! its charter … and the charter text shows it". [`render_charter`] is that text. The app enforces
-//! the project list and fills the base branch in itself; the charter only tells the secondmate.
+//! its charter … and the charter text shows it". [`render_charter`] is that text. The project list
+//! is derived from the folders its open crewmates work in and restricts nothing; the app fills the
+//! base branch in itself; the charter only tells the secondmate.
 //!
 //! **The system prompt** ([`secondmate_prompt`]) is the static `prompts/secondmate.md` with the
 //! charter added after it ("As the Quartermaster, with its charter added to the prompt"). It is
@@ -50,7 +51,7 @@ pub struct CharterFacts<'a> {
 /// The charter as the secondmate reads it: a `# Your charter` section, for example
 ///
 /// ```text
-/// # Your charter · SM-02 · web-app
+/// # Your charter · S-02 · web-app
 ///
 /// - Scope: web-app frontend
 /// - Projects: web-app, design-system, where your crewmates work now. They may work in any folder.

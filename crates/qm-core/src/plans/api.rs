@@ -34,7 +34,14 @@ impl PlanPart {
 
     /// Every plan with a card: the card's message, the task, its state and its folder.
     async fn open(&self, task: TaskId) {
-        let page = self.svc.deps().data_dir.task(task).plan.join(PAGE_FILE);
+        let page = match self.svc.paths(task).await {
+            Ok(paths) => paths.plan.join(PAGE_FILE),
+            Err(e) => {
+                self.note(&format!("couldn't find {task}'s plan: {e}"))
+                    .await;
+                return;
+            }
+        };
         let problem = match std::fs::symlink_metadata(&page) {
             Ok(meta) if meta.is_file() => match open_page(&page).await {
                 Ok(()) => return,
@@ -62,17 +69,13 @@ impl PlanPart {
     }
 }
 
-/// Every task's plan folder (`artifacts/T-n/plan`) with a readable state: its task, state and
-/// folder.
+/// Every crewmate's plan folder (`artifacts/T-n/C-n/plan`) with a readable state: its crewmate,
+/// state and folder.
 pub(crate) fn live(data: &DataDir) -> Vec<(TaskId, PlanState, PathBuf)> {
-    let Ok(entries) = std::fs::read_dir(data.artifacts_dir()) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter_map(|e| {
-            let task = e.file_name().to_str()?.parse::<TaskId>().ok()?;
-            let dir = data.task(task).plan;
+    data.filed_artifacts()
+        .into_iter()
+        .filter_map(|(_, task, artifacts)| {
+            let dir = artifacts.join(qm_types::data_dir::PLAN);
             let state = super::load(&dir).ok()??;
             Some((task, state, dir))
         })

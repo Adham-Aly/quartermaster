@@ -5,7 +5,7 @@
 //! quit with everything else, and found by the startup leftover check.
 //!
 //! - `/bin/sh -c <command>` in the worktree, with `env::setup_env`; stdin closed at once.
-//! - stdout and stderr appended to `tasks/T-0042/jobs/setup.log`.
+//! - stdout and stderr appended to `tasks/C-0042/jobs/setup.log`.
 //! - Limited to `qm_git::DEFAULT_SETUP_TIMEOUT` on the clock; past it, stopped.
 //! - Quitting (or the task being stopped) stops it; the next launch runs it again.
 

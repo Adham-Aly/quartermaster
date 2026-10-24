@@ -777,6 +777,31 @@ impl CrewRunner {
         self.reopen = Some(mode_changed_note(live));
     }
 
+    /// Before a turn: when the crewmate's supervisor moved it to another task, its folders follow
+    /// now (`relabel::follow_task`), unless a background job is running, which may be writing to
+    /// them. The session closes first and reopens on the new folders, resuming the conversation.
+    async fn follow_task(&mut self) {
+        if self.state.jobs_running.load(Ordering::Relaxed) > 0 {
+            return;
+        }
+        let task = self.task;
+        let moving = self
+            .svc
+            .db()
+            .call(move |conn| {
+                Ok(task_store::load(conn, task)?.is_some_and(|r| r.label != r.folder_label))
+            })
+            .await
+            .unwrap_or(false);
+        if !moving {
+            return;
+        }
+        self.end_session_with(SessionHandle::close).await;
+        if let Err(e) = super::relabel::follow_task(&self.svc, task).await {
+            tracing::warn!(%task, error = %e, "a crewmate's folders couldn't follow it to its new task yet");
+        }
+    }
+
     /// Opens the session if none is open: resuming the stored one unless a new one is needed.
     async fn ensure_session(&mut self) -> Result<(), String> {
         if self.session.is_some() {
@@ -806,8 +831,9 @@ impl CrewRunner {
         // A plan task's session runs in the mode the project's autonomy gives now; a session
         // started in another mode (the app was down when it changed) is not resumed.
         let plan = self.live_plan_mode().await?;
+        let paths = self.svc.paths(self.task).await.map_err(|e| e.to_string())?;
         if let Some(mode) = plan {
-            let dir = self.svc.plan_dir(self.task);
+            let dir = paths.plan.clone();
             let before = tokio::task::spawn_blocking(move || {
                 plans::update(&dir, |s| s.session_mode.replace(mode))
             })
@@ -834,7 +860,6 @@ impl CrewRunner {
         let (Some((routed, ports)), Some(gathered)) = (&self.routed, &self.gathered) else {
             return Err("the crewmate's session can't be described".to_owned());
         };
-        let paths = self.svc.deps().data_dir.task(self.task);
         let place = workplace(&self.svc, self.task)
             .await
             .map_err(|e| e.to_string())?;
@@ -867,7 +892,12 @@ impl CrewRunner {
 
     /// The brief as saved, for a reopened session after a restart.
     async fn saved_brief(&self) -> String {
-        let path = self.svc.deps().data_dir.task(self.task).brief;
+        let path = self
+            .svc
+            .deps()
+            .data_dir
+            .crewmate_root(self.task)
+            .join(qm_types::data_dir::BRIEF);
         tokio::fs::read_to_string(&path).await.unwrap_or_default()
     }
 
@@ -915,6 +945,7 @@ impl CrewRunner {
     /// Runs one turn.
     async fn turn(&mut self, next: NextTurn) {
         self.check_plan_mode().await;
+        self.follow_task().await;
         if let Err(reason) = self.ensure_session().await {
             self.ending = Some(Ending::Failed(format!(
                 "the crewmate's session couldn't be opened: {reason}"

@@ -526,7 +526,7 @@ pub(crate) async fn committed(
     let Some(base) = row.base_commit else {
         return Ok(None);
     };
-    let worktree = svc.deps().data_dir.task(task).worktree;
+    let worktree = svc.deps().data_dir.worktree(task);
     if row.status != TaskStatus::Closed && !worktree.exists() {
         return Ok(None);
     }

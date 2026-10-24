@@ -31,7 +31,7 @@ use qm_store::standing_instructions;
 use qm_types::BoxFuture;
 use qm_types::clock::Clock;
 use qm_types::config::Config;
-use qm_types::domain::{KindRow, ProjectOrigin, TaskKind, TaskStatus, Tier};
+use qm_types::domain::{KindRow, TaskKind, TaskStatus, Tier};
 use qm_types::ids::{AgentId, StandingInstructionId, TurnId};
 use rusqlite::Connection;
 use std::path::PathBuf;
@@ -148,11 +148,7 @@ impl ContextBuilder {
     }
 
     fn project_fact(&self, p: &ProjectRow) -> ProjectFact {
-        let path = if p.origin == ProjectOrigin::Workspace {
-            format!("{} (personal workspace)", self.tilde(&p.path))
-        } else {
-            self.tilde(&p.path)
-        };
+        let path = self.tilde(&p.path);
         ProjectFact {
             name: neutralise(&p.name),
             path: neutralise(&path),
@@ -274,6 +270,7 @@ fn task_fact(t: &TaskRow) -> TaskFact {
     };
     TaskFact {
         task: t.task,
+        label: t.label,
         project: neutralise(&t.project),
         title: neutralise(&t.title),
         status: t.status,

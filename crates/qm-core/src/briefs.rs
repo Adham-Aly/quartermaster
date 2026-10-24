@@ -3,7 +3,7 @@
 //! [`write_brief`] gathers the facts the core recorded when the task started (the task row, its
 //! project, its supervisor, the user's words as the stored message holds them, and what it builds
 //! on), renders them with `qm_prompts::brief::render_brief`, and saves the text as
-//! `tasks/T-0042/brief.md` atomically, mode 0600, exactly as the runner then sends it.
+//! `tasks/C-0042/brief.md` atomically, mode 0600, exactly as the runner then sends it.
 //!
 //! [`crewmate_system_prompt`] wraps `qm_prompts::brief::crewmate_prompt` for the engine the
 //! crewmate runs on: appended to Claude Code's own preset on Claude, the whole prompt elsewhere.
@@ -65,7 +65,7 @@ pub enum BriefError {
 /// The file, in a task's folder, that holds the whole of the task it builds on.
 const BUILDS_ON_FILE: &str = "builds-on.md";
 
-/// Renders the brief of `task` from the store and saves it as `tasks/T-0042/brief.md`
+/// Renders the brief of `task` from the store and saves it as `tasks/C-0042/brief.md`
 /// (atomically: a temporary file in the task folder, then a rename), mode 0600.
 pub async fn write_brief(
     db: &Db,
@@ -82,9 +82,8 @@ pub async fn write_brief(
     let whole_builds_on = builds_on.as_ref().map(|on| on.body.clone());
     let facts = brief_facts(&inputs, builds_on)?;
     let text = render_brief(&facts);
-    let paths = data_dir.task(task);
-    let path = paths.brief.clone();
-    let root = paths.root.clone();
+    let root = data_dir.crewmate_root(task);
+    let path = root.join(qm_types::data_dir::BRIEF);
     let written = text.clone();
     let target = path.clone();
     tokio::task::spawn_blocking(move || -> Result<(), BriefError> {
@@ -150,6 +149,7 @@ pub fn brief_facts(
     let workspace = if inputs.delivery == DeliveryMode::Folder {
         BriefWorkspace::Folder {
             path: inputs.folder.clone(),
+            repository: inputs.project_delivery != DeliveryMode::Folder,
         }
     } else {
         BriefWorkspace::Branch {
@@ -188,6 +188,7 @@ pub fn brief_facts(
         });
     Ok(BriefFacts {
         task,
+        label: inputs.label,
         kind: inputs.kind,
         supervisor,
         project: inputs.project.clone(),

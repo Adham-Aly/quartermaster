@@ -129,10 +129,10 @@ fn rule_line(kind: TaskKind, builds_on: Option<&BuildsOn>, matched: Matched) -> 
     let tier = matched.tier;
     match (matched.row, builds_on) {
         (KindRow::BuildOnFinishedPlan, Some(b)) => {
-            format!("Building from the plan in task {}", b.task)
+            format!("Building from {}'s plan", b.task)
         }
         (KindRow::FixOnConfirmedDiagnosis, Some(b)) => {
-            format!("Building on the confirmed diagnosis in task {}", b.task)
+            format!("Building on {}'s confirmed diagnosis", b.task)
         }
         _ if matched.yours => format!("You set {kind} work to route {tier}"),
         _ => match kind {
@@ -304,7 +304,7 @@ impl<'r, 'a> Router<'r, 'a> {
             (None, None) => return Ok(None),
         };
         let why = match later_from {
-            Some(t) => format!("You asked for this model for later steps in task {t}"),
+            Some(t) => format!("You asked for this model for {t}'s later steps"),
             None => "You asked for this model".to_owned(),
         };
         let premium = self.premium_asked && is_premium_model(self.req, self.pool, &model);

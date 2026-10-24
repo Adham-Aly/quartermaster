@@ -44,6 +44,7 @@ fn id(n: u32) -> TaskId {
 fn open(n: u32, kind: TaskKind, builds_on: Option<u32>, retry_of: Option<u32>) -> OpenTask {
     OpenTask {
         id: id(n),
+        folder_label: id(n).own_label(),
         kind,
         builds_on: builds_on.map(id),
         retry_of: retry_of.map(id),
@@ -63,8 +64,8 @@ fn a_plan_stays_until_its_build_has_its_copy_and_evidence_until_no_one_reads_it(
     let home = Home::new("plans");
     let data = &home.data;
     for n in [1, 2, 3, 4] {
-        touch(&data.task(id(n)).plan.join("plan.md"));
-        touch(&data.task(id(n)).evidence.join("run.log"));
+        touch(&data.task(id(n), id(n).own_label()).plan.join("plan.md"));
+        touch(&data.task(id(n), id(n).own_label()).evidence.join("run.log"));
     }
     // T-1 is a closed plan a build (T-5) hasn't copied yet; T-2 a closed plan T-6 has copied;
     // T-3 a closed task T-7 retries; T-4 closed and read by no one.
@@ -77,24 +78,42 @@ fn a_plan_stays_until_its_build_has_its_copy_and_evidence_until_no_one_reads_it(
         ],
         sessions: vec![],
     };
-    touch(&data.task(id(6)).plan.join("plan.md"));
+    touch(&data.task(id(6), id(6).own_label()).plan.join("plan.md"));
     apply(data, &facts, SystemTime::now(), When::Running);
 
     assert!(
-        data.task(id(1)).plan.join("plan.md").is_file(),
+        data.task(id(1), id(1).own_label())
+            .plan
+            .join("plan.md")
+            .is_file(),
         "T-5 still needs it"
     );
-    assert!(data.task(id(1)).evidence.is_dir(), "T-5 builds on T-1");
-    assert!(!data.task(id(2)).plan.exists(), "T-6 has its copy");
-    assert!(data.task(id(2)).evidence.is_dir(), "T-6 builds on T-2");
-    assert!(!data.task(id(3)).plan.exists());
-    assert!(data.task(id(3)).evidence.is_dir(), "T-7 retries T-3");
     assert!(
-        !data.task(id(4)).artifacts.exists(),
+        data.task(id(1), id(1).own_label()).evidence.is_dir(),
+        "T-5 builds on T-1"
+    );
+    assert!(
+        !data.task(id(2), id(2).own_label()).plan.exists(),
+        "T-6 has its copy"
+    );
+    assert!(
+        data.task(id(2), id(2).own_label()).evidence.is_dir(),
+        "T-6 builds on T-2"
+    );
+    assert!(!data.task(id(3), id(3).own_label()).plan.exists());
+    assert!(
+        data.task(id(3), id(3).own_label()).evidence.is_dir(),
+        "T-7 retries T-3"
+    );
+    assert!(
+        !data.task(id(4), id(4).own_label()).artifacts.exists(),
         "nothing reads T-4: its folder goes"
     );
     assert!(
-        data.task(id(6)).plan.join("plan.md").is_file(),
+        data.task(id(6), id(6).own_label())
+            .plan
+            .join("plan.md")
+            .is_file(),
         "an open task keeps its own"
     );
 
@@ -109,7 +128,7 @@ fn transcripts_keep_the_named_session_and_unnamed_ones_wait_an_hour_unless_at_st
     let data = &home.data;
     let seat = data.seat().transcript;
     let mate = data.secondmate(SecondmateId::new(3).unwrap()).transcript;
-    let task = data.task(id(8)).transcript;
+    let task = data.task(id(8), id(8).own_label()).transcript;
     for dir in [&seat, &mate, &task] {
         touch(&dir.join("current.jsonl"));
         touch(&dir.join("superseded.jsonl"));
@@ -162,7 +181,7 @@ fn the_sweep_never_follows_a_link() {
     touch(&outside.join("precious"));
     private_folder(&data.artifacts_dir()).unwrap();
     std::os::unix::fs::symlink(&outside, data.artifacts_dir().join("T-0009")).unwrap();
-    let evidence = data.task(id(10)).evidence;
+    let evidence = data.task(id(10), id(10).own_label()).evidence;
     private_folder(evidence.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&outside, &evidence).unwrap();
     let transcript = data.seat().transcript;
@@ -189,7 +208,12 @@ fn an_older_layouts_scratch_plans_and_evidence_move_in_or_go() {
     touch(&data.legacy_evidence(id(11)).join("run.log"));
     touch(&data.legacy_plan(id(12)).join("plan.md"));
     touch(&data.legacy_evidence(id(12)).join("run.log"));
-    touch(&data.task(id(11)).root.join("evidence/old.log"));
+    touch(
+        &data
+            .task(id(11), id(11).own_label())
+            .root
+            .join("evidence/old.log"),
+    );
     touch(&data.scratch().join("scratchpad/T-0012/notes"));
     touch(&data.scratch().join("scratchpad/T-0011/notes"));
     let facts = Facts {
@@ -199,7 +223,7 @@ fn an_older_layouts_scratch_plans_and_evidence_move_in_or_go() {
     };
     apply(data, &facts, SystemTime::now(), When::Startup);
 
-    let paths = data.task(id(11));
+    let paths = data.task(id(11), id(11).own_label());
     assert!(paths.plan.join("plan.md").is_file());
     assert!(paths.evidence.join("run.log").is_file());
     assert!(
@@ -220,7 +244,12 @@ fn an_older_layouts_scratch_plans_and_evidence_move_in_or_go() {
     assert!(fs::symlink_metadata(data.legacy_plan(id(12))).is_err());
     assert!(fs::symlink_metadata(data.legacy_evidence(id(12))).is_err());
     assert!(!data.scratch().join("scratchpad/T-0012").exists());
-    assert!(data.scratch().join("scratchpad/T-0011/notes").is_file());
+    assert!(
+        data.scratch()
+            .join("scratchpad/T-0011/C-0011/notes")
+            .is_file(),
+        "an open crewmate's old scratchpad is filed under its task"
+    );
 
     // Once T-11 closes, its files and the old links go.
     apply(data, &Facts::default(), SystemTime::now(), When::Running);
@@ -228,11 +257,102 @@ fn an_older_layouts_scratch_plans_and_evidence_move_in_or_go() {
     assert!(!paths.artifacts.exists());
 }
 
+fn label(n: u32) -> TaskLabelId {
+    id(n).own_label()
+}
+
+#[test]
+fn an_older_versions_artifacts_are_filed_under_their_task() {
+    let home = Home::new("filing");
+    let data = &home.data;
+    let flat = |n: u32| data.artifacts_dir().join(label(n).to_string());
+    touch(&flat(15).join("plan/plan.md"));
+    touch(&flat(15).join("evidence/run.log"));
+    touch(&flat(15).join("report/report.html"));
+    touch(&flat(16).join("report/report.html"));
+    touch(&flat(17).join("plan/plan.md"));
+    // C-15 is open, C-16 closed but kept, C-17 forgotten.
+    let facts = Facts {
+        retained_tasks: vec![id(15), id(16)],
+        open: vec![open(15, TaskKind::Plan, None, None)],
+        sessions: vec![],
+    };
+    apply(data, &facts, SystemTime::now(), When::Startup);
+
+    let c15 = data.task(id(15), label(15));
+    assert!(c15.plan.join("plan.md").is_file());
+    assert!(c15.evidence.join("run.log").is_file());
+    assert!(c15.artifacts.join("report/report.html").is_file());
+    assert!(
+        is_link(&flat(15).join("plan")) && flat(15).join("plan/plan.md").is_file(),
+        "an open crewmate keeps a link at each path it was given"
+    );
+    let c16 = data.task(id(16), label(16));
+    assert!(c16.artifacts.join("report/report.html").is_file());
+    assert!(
+        fs::symlink_metadata(flat(16).join("report")).is_err(),
+        "a closed crewmate's files move without a link"
+    );
+    assert!(fs::symlink_metadata(flat(17)).is_err());
+
+    // Once C-15 closes, the links and everything but its report go.
+    let closed = Facts {
+        retained_tasks: vec![id(15), id(16)],
+        ..Facts::default()
+    };
+    apply(data, &closed, SystemTime::now(), When::Running);
+    assert!(fs::symlink_metadata(flat(15).join("plan")).is_err());
+    assert!(!c15.plan.exists());
+    assert!(!c15.evidence.exists());
+    assert!(c15.artifacts.join("report/report.html").is_file());
+    assert!(c16.artifacts.join("report/report.html").is_file());
+}
+
+#[test]
+fn a_crewmate_moved_to_another_task_keeps_links_at_its_old_folders_until_it_closes() {
+    let home = Home::new("relabel");
+    let data = &home.data;
+    let before = data.task(id(21), label(21));
+    let after = data.task(id(21), label(20));
+    touch(&before.plan.join("plan.md"));
+    touch(&before.scratchpad.join("notes"));
+    qm_types::data_dir::migrate_directory(&before.artifacts, &after.artifacts).unwrap();
+    qm_types::data_dir::migrate_directory(&before.scratchpad, &after.scratchpad).unwrap();
+    let mut moved = open(21, TaskKind::Plan, None, None);
+    moved.folder_label = label(20);
+    let facts = Facts {
+        retained_tasks: vec![id(21)],
+        open: vec![moved],
+        sessions: vec![],
+    };
+    for when in [When::Startup, When::Running] {
+        apply(data, &facts, SystemTime::now(), when);
+        assert!(after.plan.join("plan.md").is_file());
+        assert!(after.scratchpad.join("notes").is_file());
+        assert!(
+            before.plan.join("plan.md").is_file() && before.scratchpad.join("notes").is_file(),
+            "the old paths still open through their links"
+        );
+    }
+
+    apply(data, &Facts::default(), SystemTime::now(), When::Running);
+    for gone in [
+        before.artifacts,
+        before.scratchpad,
+        after.artifacts,
+        after.scratchpad,
+    ] {
+        assert!(fs::symlink_metadata(&gone).is_err(), "{}", gone.display());
+    }
+    assert!(fs::symlink_metadata(data.artifacts_dir().join("T-0021")).is_err());
+    assert!(fs::symlink_metadata(data.scratchpads_dir().join("T-0021")).is_err());
+}
+
 #[test]
 fn plan_staging_and_temporaries_go_after_an_hour() {
     let home = Home::new("staging");
     let data = &home.data;
-    let paths = data.task(id(13));
+    let paths = data.task(id(13), id(13).own_label());
     touch(&paths.artifacts.join(format!("{PLAN_STAGING}1-0/plan.md")));
     touch(&paths.plan.join(".plan.md.tmp-1-0"));
     touch(&paths.plan.join("plan.md"));
@@ -254,7 +374,7 @@ fn plan_staging_and_temporaries_go_after_an_hour() {
 fn a_report_survives_a_closed_retained_task_but_goes_when_forgotten() {
     let home = Home::new("reports");
     let data = &home.data;
-    let paths = data.task(id(14));
+    let paths = data.task(id(14), id(14).own_label());
     let report = paths.artifacts.join("report");
     touch(&report.join("report.html"));
     touch(&report.join("assets/chart.svg"));

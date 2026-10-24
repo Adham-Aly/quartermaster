@@ -12,7 +12,7 @@ fn plan(extra: &str) -> String {
 
 fn meta(state: PageState) -> Meta {
     Meta {
-        task: "T-0042".into(),
+        task: "C-0042".into(),
         plan_uid: "0123456789abcdef01234567".into(),
         round: 1,
         project: "demo".into(),
@@ -263,7 +263,7 @@ fn the_page_script_builds_a_reply_the_parser_reads() {
     assert!(malformed.is_empty(), "{text}");
     assert_eq!(replies.len(), 1, "{text}");
     let r = &replies[0];
-    assert_eq!((r.task.as_str(), r.round), ("T-0042", 1));
+    assert_eq!((r.task.as_str(), r.round), ("C-0042", 1));
     assert_eq!(r.counts(), (1, 0, 1));
     assert!(r.items.iter().any(|i| matches!(i,
         reply::Item::Question { id, fields, .. } if id == "store"
@@ -381,4 +381,21 @@ fn the_digest_follows_the_plan_and_its_assets() {
     renamed.insert("assets/other.png", PNG.to_vec());
     assert_ne!(with_image, digest(&md, &renamed));
     assert_ne!(bare, digest(&plan("More.\n"), &Assets::new()));
+}
+
+#[test]
+fn a_reply_from_a_page_made_before_crewmates_had_names_still_reads() {
+    for task in ["C-0042", "T-0042"] {
+        let text = format!(
+            "<plan-reply task=\"{task}\" plan=\"b81f0c3a9e7d2f4c6a1e5d08\" round=\"2\">\n</plan-reply>"
+        );
+        let (replies, malformed) = reply::find(&text);
+        assert!(malformed.is_empty(), "{text}");
+        assert_eq!(replies.len(), 1, "{text}");
+        assert_eq!(replies[0].task, task);
+    }
+    let (replies, _) = reply::find(
+        "<plan-reply task=\"R-0042\" plan=\"b81f0c3a9e7d2f4c6a1e5d08\" round=\"2\">\n</plan-reply>",
+    );
+    assert!(replies.is_empty(), "only a crewmate's name opens a reply");
 }

@@ -106,7 +106,7 @@ impl LoopRole {
         }
     }
 
-    /// Whose, as messages say it: "the Quartermaster's" or "SM-01's".
+    /// Whose, as messages say it: "the Quartermaster's" or "S-01's".
     pub fn possessive(self) -> String {
         match self {
             Self::Quartermaster => "the Quartermaster's".to_owned(),
@@ -123,7 +123,7 @@ impl LoopRole {
     }
 }
 
-/// As the log names it: `Quartermaster` or the secondmate's ID (`SM-01`).
+/// As the log names it: `Quartermaster` or the secondmate's ID (`S-01`).
 impl fmt::Display for LoopRole {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

@@ -27,6 +27,8 @@ pub mod lookup;
 pub mod plan;
 pub mod ports;
 pub mod relabel;
+#[cfg(test)]
+mod relabel_tests;
 pub mod report;
 pub mod runner;
 pub mod session;
@@ -54,17 +56,17 @@ use qm_store::db::Db;
 use qm_store::wakes::NewWake;
 use qm_tools::defs::{
     Ack, DeliveryCheck, FileFollowupArgs, FindTasksArgs, FoundTasks, Linked, ReportArgs,
-    TaskDetail, TaskStarted, TaskUpdated, Unlinked,
+    TaskChanged, TaskDetail, TaskStarted, TaskUpdated, Unlinked,
 };
 use qm_tools::handler::{Caller, DeclaredWait, Dispatcher, StartRequest, ToolFailure, ToolHost};
 use qm_types::BoxFuture;
 use qm_types::api::{AgentRef, Command, Snapshot};
 use qm_types::clock::Clock;
 use qm_types::config::Config;
-use qm_types::data_dir::DataDir;
+use qm_types::data_dir::{DataDir, TaskPaths};
 use qm_types::domain::{EngineKind, Role, WakeKind};
 use qm_types::error::Refusal;
-use qm_types::ids::{AgentId, MessageId, TaskId};
+use qm_types::ids::{AgentId, MessageId, TaskId, TaskLabelId};
 use report::ReportGate;
 use runner::{CrewActivity, CrewInput, RunnerState, StopReport};
 use rusqlite::Transaction;
@@ -444,6 +446,22 @@ impl TaskService {
         &self.inner.deps.db
     }
 
+    /// `row`'s folders, its artifacts and scratchpad under the task they are filed under now.
+    pub(crate) fn paths_of(&self, row: &qm_store::tasks::TaskRow) -> TaskPaths {
+        self.deps().data_dir.task(row.id, row.folder_label)
+    }
+
+    /// `task`'s folders, read from its row; a crewmate the store no longer holds is filed under
+    /// its own number, as every crewmate was before tasks became labels.
+    pub(crate) async fn paths(&self, task: TaskId) -> Result<TaskPaths, StoreError> {
+        let folders = self
+            .db()
+            .call(move |conn| qm_store::tasks::folder_label(conn, task))
+            .await?
+            .unwrap_or_else(|| task.own_label());
+        Ok(self.deps().data_dir.task(task, folders))
+    }
+
     pub(crate) fn clock(&self) -> &dyn Clock {
         &*self.inner.deps.clock
     }
@@ -526,7 +544,7 @@ impl TaskService {
         }
     }
 
-    /// The supervisor's name as markers carry it: `quartermaster` or `SM-02`.
+    /// The supervisor's name as markers carry it: `quartermaster` or `S-02`.
     pub(crate) async fn supervisor_label(&self, supervisor: AgentId) -> String {
         let role = self
             .db()
@@ -583,6 +601,11 @@ impl TaskService {
             self.inner.deps.inbox.unregister(entry.agent);
         }
         self.changed();
+    }
+
+    /// Whether `task`'s crewmate has a runner.
+    pub(crate) fn has_runner(&self, task: TaskId) -> bool {
+        self.runners().contains_key(&task)
     }
 
     pub(crate) fn send_to(&self, task: TaskId, input: CrewInput) -> bool {
@@ -750,6 +773,20 @@ impl TaskService {
         folder: Option<String>,
     ) -> Result<TaskUpdated, ToolFailure> {
         relabel::set_task_project(self, caller, task, project, folder).await
+    }
+
+    pub async fn set_task_label(
+        &self,
+        caller: &Caller,
+        crewmate: TaskId,
+        task: Option<TaskLabelId>,
+    ) -> Result<TaskChanged, ToolFailure> {
+        relabel::set_task_label(self, caller, crewmate, task).await
+    }
+
+    /// The crewmate a task names where a crewmate is asked for.
+    pub async fn resolve_task_label(&self, task: TaskLabelId) -> Result<TaskId, ToolFailure> {
+        relabel::resolve_task_label(self, task).await
     }
 
     pub async fn close_task(

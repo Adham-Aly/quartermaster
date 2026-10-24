@@ -22,7 +22,7 @@
 //!   compare-and-swap, so a double click, two TUIs or a replayed command can't carry out the same
 //!   card twice. A performer that fails gives the claim back (the card is pending again).
 //! - **The outcome's `you` line and supersession.** A performer may name the `<you>` line of the
-//!   answer ([`YouLine`]: "you approved the merge of T-0038 at 77d1e0a"), which is then the
+//!   answer ([`YouLine`]: "you approved the merge of C-0038 at 77d1e0a"), which is then the
 //!   answer's one `you.` event, and may say the card no longer applies (`superseded`). A rejection
 //!   runs the kind's [`HeldPerformer::on_reject`] (a settle hold puts its task back to reported).
 //! - **Card builders per kind** ([`HeldService::register_card`]), given the facts the hold's
@@ -127,7 +127,7 @@ impl HeldOutcome {
 }
 
 /// A `<you>` line: the event's kind and summary (`you.approved_merge`, "you approved the merge of
-/// T-0038 at 77d1e0a").
+/// C-0038 at 77d1e0a").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct YouLine {
     pub kind: &'static str,

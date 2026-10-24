@@ -5,9 +5,10 @@
 //! argument types and descriptions live in `qm_tools::defs::files`; this module runs them inside
 //! the engine (they never go back to the core). Results are plain text.
 //!
-//! - **Paths**: a relative path resolves against the worktree. Reads are allowed anywhere; writes
-//!   only under a write root (the worktree, the evidence folder) or the system temporary folder,
-//!   checked after resolving symlinks and `..` (`paths`).
+//! - **Paths**: a relative path resolves against the worktree. Reads are allowed anywhere, and so
+//!   are writes, except into the app's own state (its data and scratch folders, where only the
+//!   caller's write roots and any task's worktree are open), checked after resolving symlinks and
+//!   `..` (`paths`).
 //! - **Read before overwrite**: `write` over an existing file and `edit` need a `read` of that file
 //!   in this session, and refuse if it changed since.
 //! - **`grep` and `find`** walk with ripgrep's own libraries, so `.gitignore` is respected.

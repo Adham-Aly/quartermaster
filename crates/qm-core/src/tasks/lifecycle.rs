@@ -125,7 +125,7 @@ pub fn next(from: TaskStatus, event: TaskEvent) -> Result<TaskStatus, Refusal> {
     })
 }
 
-/// [`next`] with the task named in the refusal ("T-0042 is reported; it can't go to held from
+/// [`next`] with the task named in the refusal ("C-0042 is reported; it can't go to held from
 /// there").
 pub fn next_for(
     task: qm_types::ids::TaskId,

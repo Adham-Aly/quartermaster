@@ -36,7 +36,7 @@ pub enum Fact {
     },
     /// A branch pushed and its checks passed. Never merged by the app.
     Delivered { branch: String, head: CommitSha },
-    /// The personal workspace: the branch is kept locally.
+    /// A branch-only project with no remote: the branch is kept in its repository.
     DeliveredLocal { branch: String, head: CommitSha },
     /// A folder task: its changes are already in `folder`. There is no head or branch.
     DoneInFolder { folder: String },
@@ -210,9 +210,9 @@ fn record(
         ),
         Fact::DeliveredLocal { branch, .. } => (
             OUTCOME_DELIVERED,
-            format!("{task} delivered {branch}, kept in the workspace"),
+            format!("{task} delivered {branch}, kept in its repository"),
             format!(
-                "{task} delivered: {branch} at {short} is kept in the workspace for the user to merge. Close it with close_task."
+                "{task} delivered: {branch} at {short} is kept in its repository for the user to merge. Close it with close_task."
             ),
         ),
         Fact::DoneInFolder { folder } => (

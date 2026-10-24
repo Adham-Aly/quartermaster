@@ -1,7 +1,8 @@
 //! The project registry's rows.
 //!
-//! A project is a local git repository with settings. Rows are never deleted: removing a project
-//! sets `removed_at` and leaves its folder alone, so tasks and events that name it still resolve
+//! A project is a folder with settings: a plain folder, a local git repository or a GitHub one.
+//! Nobody adds or removes one by hand: it is listed while open work runs in it. Rows are never
+//! deleted: retiring a project sets `removed_at` and leaves its folder alone, so tasks and events that name it still resolve
 //! ([`load`] returns removed projects too). Names are matched case-insensitively among the
 //! projects not removed ([`active_by_name`]); the table's own unique index is a backstop.
 
@@ -273,16 +274,23 @@ pub fn set_autonomy(
     )? == 1)
 }
 
-/// Points an active project at another folder: the personal workspace's, when you change it.
-/// Returns whether a row changed.
-pub fn set_path(
-    conn: &Connection,
-    id: ProjectId,
-    path: &std::path::Path,
-) -> Result<bool, StoreError> {
+/// What a project's folder is now, as found when work starts there: a plain folder, a local
+/// repository, or one with a (GitHub) remote. [`set_kind`] stores it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KindChange {
+    pub delivery: DeliveryMode,
+    pub default_branch: String,
+    pub github_remote: Option<String>,
+}
+
+/// Records that a project's folder changed kind (a plain folder became a repository, a repository
+/// gained or lost its GitHub remote): its delivery mode, default branch and GitHub remote. Retired
+/// rows too, since they come back with it. Returns whether a row changed.
+pub fn set_kind(conn: &Connection, id: ProjectId, kind: &KindChange) -> Result<bool, StoreError> {
     Ok(conn.execute(
-        "UPDATE projects SET path = ?2 WHERE id = ?1 AND removed_at IS NULL",
-        params![id, path_text(path)?],
+        "UPDATE projects SET delivery_mode = ?2, default_branch = ?3, github_remote = ?4
+         WHERE id = ?1",
+        params![id, kind.delivery, kind.default_branch, kind.github_remote],
     )? == 1)
 }
 

@@ -1,8 +1,8 @@
 //! The evidence folder.
 //!
-//! `<data>/artifacts/T-0042/evidence/` is the crewmate's `QM_EVIDENCE_DIR`: kept on disk while
-//! the task, or a task building on or retrying it, is open (`crate::retention`). [`manifest`]
-//! lists what is in it
+//! `<data>/artifacts/T-0017/C-0042/evidence/` is the crewmate's `QM_EVIDENCE_DIR`: kept on disk
+//! while the task, or a task building on or retrying it, is open (`crate::retention`).
+//! [`manifest`] lists what is in it
 //! (relative paths, sizes and times, at most [`MAX_ENTRIES`], symlinks not followed); every clear
 //! done report records it as a `task.evidence` event, and the review brief lists it so the
 //! reviewer can scrutinise it.
