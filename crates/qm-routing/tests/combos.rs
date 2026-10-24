@@ -34,6 +34,7 @@ fn candidate(tier: Tier, effort: Option<Effort>) -> Candidate {
         image_input: true,
         context_window: Some(200_000),
         usage: Usage::Unknown,
+        reserve_at: None,
         cut_off: false,
     }
 }

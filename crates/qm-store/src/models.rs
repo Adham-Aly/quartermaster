@@ -569,6 +569,10 @@ pub struct PoolRow {
     pub account_kind: AccountKind,
     /// `accounts.usage` (JSON of `qm_engine::UsageReading`).
     pub usage: Option<String>,
+    /// `accounts.quota` (JSON of the provider quota pools).
+    pub quota: Option<String>,
+    /// `accounts.reserve_at`: your reserve mark, in percent used.
+    pub reserve_at: Option<u8>,
     pub facts: ModelFacts,
     /// `None` for a pair outside any tier (see [`offered`]).
     pub tier: Option<Tier>,
@@ -576,7 +580,8 @@ pub struct PoolRow {
 }
 
 const POOL_SELECT: &str = "SELECT a.id, a.provider, a.kind, a.usage,
-        m.model, m.canonical, m.family, m.display_name, m.capabilities, m.efforts";
+        m.model, m.canonical, m.family, m.display_name, m.capabilities, m.efforts,
+        a.quota, a.reserve_at";
 
 fn pool_rows(
     conn: &Connection,
@@ -602,8 +607,12 @@ fn pool_rows(
                     r.get::<_, String>(9)?,
                 ),
                 (
-                    r.get::<_, Option<Tier>>(10)?,
-                    r.get::<_, Option<Effort>>(11)?,
+                    r.get::<_, Option<String>>(10)?,
+                    r.get::<_, Option<i64>>(11)?,
+                ),
+                (
+                    r.get::<_, Option<Tier>>(12)?,
+                    r.get::<_, Option<Effort>>(13)?,
                 ),
             ))
         })?
@@ -613,6 +622,7 @@ fn pool_rows(
             |(
                 (account, provider, account_kind, usage),
                 (model, canonical, family, display_name, caps, efforts),
+                (quota, reserve_at),
                 (tier, effort_override),
             )| {
                 let caps: Capabilities = from_json("models.capabilities", &caps)?;
@@ -621,6 +631,8 @@ fn pool_rows(
                     provider,
                     account_kind,
                     usage,
+                    quota,
+                    reserve_at: reserve_at.and_then(|p| u8::try_from(p).ok()),
                     facts: ModelFacts {
                         family: family.unwrap_or_else(|| canonical.as_str().to_owned()),
                         model,

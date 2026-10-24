@@ -34,7 +34,7 @@ use crate::decider::{Decided, DecidedBy};
 use crate::effort::{EffortInput, choose_effort, tier_default};
 use crate::fallback;
 use crate::later_steps::AppliedLaterStep;
-use crate::rank::{Candidate, Needs, placement_skip_reason, rank, skip_reason};
+use crate::rank::{Candidate, Needs, Standing, placement_skip_reason, rank, skip_reason};
 use crate::record::{
     BuildsOn, BuildsOnFact, DeclaredFacts, FallbackStep, RoutedChoice, RoutingRecord, SkippedModel,
     UserChoices,
@@ -93,6 +93,29 @@ pub struct Pool<'a> {
 
 struct Picked<'a> {
     candidate: &'a Candidate,
+    /// Why quota decided between accounts, when it did.
+    quota_note: Option<String>,
+}
+
+/// The routing record's line when quota, not your preferred account or placement order, chose
+/// between two accounts: the winner against the runner-up on another account.
+fn quota_note(ranked: &[&Candidate], preferred: Option<AccountId>) -> Option<String> {
+    let first = ranked.first()?;
+    let next = ranked[1..].iter().find(|c| c.account != first.account)?;
+    if preferred == Some(first.account) {
+        return None;
+    }
+    let standing = |c: &Candidate| Standing::of(c.usage, c.account_kind, c.reserve_at);
+    if standing(first).cmp_best_first(standing(next)) != std::cmp::Ordering::Less {
+        return None;
+    }
+    Some(format!(
+        "Quota chose its {} account ({}) over {} ({})",
+        first.provider,
+        standing(first).describe(first.reserve_at),
+        next.provider,
+        standing(next).describe(next.reserve_at)
+    ))
 }
 
 fn pick<'a>(
@@ -121,7 +144,11 @@ fn pick<'a>(
         }
     }
     rank(&mut ok, preferred);
-    ok.first().map(|c| Picked { candidate: c })
+    let quota_note = quota_note(&ok, preferred);
+    ok.first().map(|c| Picked {
+        candidate: c,
+        quota_note,
+    })
 }
 
 /// The one plain-language line for the row the rule table read.
@@ -255,7 +282,10 @@ impl<'r, 'a> Router<'r, 'a> {
             &mut self.skipped,
             check,
         )
-        .map(|p| p.candidate)
+        .map(|p| {
+            self.notes.extend(p.quota_note);
+            p.candidate
+        })
     }
 
     fn effort_for(

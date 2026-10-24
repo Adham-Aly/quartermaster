@@ -35,6 +35,7 @@ const REMOVE_FROM_LOW: &str = "Remove from Low";
 const REMOVE_FROM_ALL: &str = "Remove from all tiers";
 const ALWAYS_USE: &str = "Always use this model";
 const LABEL: &str = "Label…";
+const RESERVE_MARK: &str = "Reserve mark…";
 const PAUSE: &str = "Pause";
 const RESUME: &str = "Resume";
 const PREFER: &str = "Prefer for crew work";
@@ -44,6 +45,9 @@ const RECONNECT: &str = "Reconnect";
 
 /// Shown when you try to disconnect the account that follows your `claude` login.
 const FOLLOWS_CLI: &str = "This account follows your claude login on this Mac; pause it instead.";
+/// Shown when a reserve mark isn't a whole percent used from 1 to 99.
+const RESERVE_MARK_RANGE: &str =
+    "A reserve mark is a percent used from 1 to 99; leave it empty for none.";
 /// Shown for Connect on Claude before `claude` is logged in.
 const LOG_IN_CLAUDE: &str = "Log in with claude in a terminal first; Quartermaster finds it.";
 
@@ -68,6 +72,7 @@ pub(crate) fn menu_items(target: MenuTarget) -> Vec<&'static str> {
                 items.push(RECONNECT);
             }
             items.push(LABEL);
+            items.push(RESERVE_MARK);
             items.push(if account.paused { RESUME } else { PAUSE });
             items.push(if account.preferred { UNPREFER } else { PREFER });
             if !account.follows_cli {
@@ -242,6 +247,7 @@ impl App {
             KeyCode::Char('p') => self.toggle_pause(i),
             KeyCode::Char('*') => self.toggle_preferred(i),
             KeyCode::Char('l') => self.open_label(i),
+            KeyCode::Char('m') => self.open_reserve_mark(i),
             KeyCode::Char('d') => self.disconnect(i, now),
             KeyCode::Char('r') => self.reconnect(i),
             _ => return false,
@@ -817,6 +823,7 @@ impl App {
             }
             MenuTarget::Account(account) => match item {
                 LABEL => self.open_label(account.index),
+                RESERVE_MARK => self.open_reserve_mark(account.index),
                 PAUSE | RESUME => self.toggle_pause(account.index),
                 PREFER | UNPREFER => self.toggle_preferred(account.index),
                 DISCONNECT => self.disconnect(account.index, now),
@@ -950,16 +957,52 @@ impl App {
         self.settings_set(|s| &mut s.field, Some(field));
     }
 
+    /// Opens account `i`'s reserve mark: the percent used past which routing serves its tier from
+    /// other accounts first.
+    fn open_reserve_mark(&mut self, i: usize) {
+        let Some(account) = self.view.settings.model.accounts.get(i) else {
+            return;
+        };
+        let field = Field {
+            purpose: FieldFor::ReserveMark(i),
+            text: account
+                .reserve_at
+                .map(|m| m.to_string())
+                .unwrap_or_default(),
+            base_url: None,
+        };
+        self.settings_set(|s| &mut s.account, Some(i));
+        self.settings_set(|s| &mut s.field, Some(field));
+    }
+
+    /// Saves account `i`'s reserve mark from `text` (empty clears it). Anything but a whole percent
+    /// from 1 to 99 keeps the field open and says so.
+    fn save_reserve_mark(&mut self, i: usize, field: Field, now: Instant) {
+        let text = field.text.trim().trim_end_matches('%').trim();
+        let percent = match text.parse::<u8>() {
+            _ if text.is_empty() => None,
+            Ok(p @ 1..=99) => Some(p),
+            _ => {
+                self.flash(RESERVE_MARK_RANGE, now);
+                self.settings_set(|s| &mut s.field, Some(field));
+                return;
+            }
+        };
+        if let Some(account) = self.account_id(i) {
+            self.intend(Command::SetReserveMark { account, percent });
+        }
+    }
+
     fn save_field(&mut self) {
         let Some(field) = self.view.settings.field.take() else {
             return;
         };
         self.redraw();
         let text = field.text.trim().to_owned();
-        if text.is_empty() {
-            return;
-        }
         match field.purpose {
+            // An empty reserve mark clears it; every other field needs text.
+            FieldFor::ReserveMark(i) => self.save_reserve_mark(i, field, Instant::now()),
+            _ if text.is_empty() => {}
             FieldFor::Label(i) => {
                 if let Some(account) = self.account_id(i) {
                     self.intend(Command::SetAccountLabel {

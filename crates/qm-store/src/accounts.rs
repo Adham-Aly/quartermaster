@@ -1,8 +1,8 @@
 //! Connected accounts.
 //!
 //! One row per account: provider, label, kind (subscription or key), the engine it runs on (which
-//! follows the provider), paused, preferred, the last usage reading and the key of its
-//! credentials in `auth.json` (never the secret). Accounts are never deleted: removing one sets
+//! follows the provider), paused, preferred, the last usage reading, the last provider quota
+//! reading, your reserve mark and the key of its credentials in `auth.json` (never the secret). Accounts are never deleted: removing one sets
 //! `removed_at`.
 //!
 //! Reconnecting an account whose login broke keeps its row: the new credential goes in under its
@@ -48,6 +48,10 @@ pub struct AccountRow {
     /// The last usage reading, as JSON (`qm_engine::UsageReading`), if any.
     pub usage: Option<String>,
     pub usage_read_at: Option<Timestamp>,
+    /// The last provider quota reading's pools, as JSON (`qm_core`'s stored pools), if any.
+    pub quota: Option<String>,
+    /// Your reserve mark, in percent used (1 to 99); `None`: no mark.
+    pub reserve_at: Option<u8>,
     pub credential_ref: Option<String>,
     pub base_url: Option<String>,
     pub created_at: Timestamp,
@@ -55,7 +59,7 @@ pub struct AccountRow {
 }
 
 const COLUMNS: &str = "id, provider, label, kind, engine, paused, preferred, usage, usage_read_at, \
-                       credential_ref, base_url, created_at, removed_at";
+                       credential_ref, base_url, created_at, removed_at, quota, reserve_at";
 
 fn row_to_account(r: &Row<'_>) -> rusqlite::Result<RawAccount> {
     Ok(RawAccount {
@@ -72,6 +76,8 @@ fn row_to_account(r: &Row<'_>) -> rusqlite::Result<RawAccount> {
         base_url: r.get(10)?,
         created_at: r.get(11)?,
         removed_at: r.get(12)?,
+        quota: r.get(13)?,
+        reserve_at: r.get(14)?,
     })
 }
 
@@ -89,6 +95,8 @@ struct RawAccount {
     base_url: Option<String>,
     created_at: i64,
     removed_at: Option<i64>,
+    quota: Option<String>,
+    reserve_at: Option<i64>,
 }
 
 impl RawAccount {
@@ -102,6 +110,9 @@ impl RawAccount {
             paused: self.paused,
             preferred: self.preferred,
             usage: self.usage,
+            quota: self.quota,
+            // The schema holds it to 1–99; anything else reads as no mark.
+            reserve_at: self.reserve_at.and_then(|p| u8::try_from(p).ok()),
             usage_read_at: self
                 .usage_read_at
                 .map(|ms| from_millis("accounts.usage_read_at", ms))
@@ -185,6 +196,39 @@ pub fn record_usage(
     conn.execute(
         "UPDATE accounts SET usage = ?2, usage_read_at = ?3 WHERE id = ?1",
         params![id, usage_json, to_millis(at)],
+    )?;
+    Ok(())
+}
+
+/// Stores an account's latest provider quota pools (JSON), from a successful quota check.
+pub fn record_quota(
+    conn: &Connection,
+    id: AccountId,
+    quota_json: &str,
+    at: Timestamp,
+) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE accounts SET quota = ?2, quota_read_at = ?3 WHERE id = ?1",
+        params![id, quota_json, to_millis(at)],
+    )?;
+    Ok(())
+}
+
+/// Sets or clears an active account's reserve mark (percent used, 1 to 99).
+pub fn set_reserve_at(
+    conn: &Connection,
+    id: AccountId,
+    percent: Option<u8>,
+) -> Result<(), ChangeError> {
+    if percent.is_some_and(|p| !(1..=99).contains(&p)) {
+        return Err(ChangeError::Refused(
+            "A reserve mark is a percent used from 1 to 99".to_owned(),
+        ));
+    }
+    active_account(conn, id)?;
+    conn.execute(
+        "UPDATE accounts SET reserve_at = ?2 WHERE id = ?1",
+        params![id, percent],
     )?;
     Ok(())
 }

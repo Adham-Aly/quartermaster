@@ -96,6 +96,23 @@ pub struct QuotaBucket {
     pub window_seconds: Option<u64>,
 }
 
+impl QuotaBucket {
+    /// A bucket of this kind with nothing known yet.
+    pub fn new(kind: QuotaKind) -> Self {
+        Self {
+            kind,
+            remaining_percent: None,
+            remaining: None,
+            entitlement: None,
+            remaining_usd: None,
+            unlimited: false,
+            resets_at: None,
+            resets_on: None,
+            window_seconds: None,
+        }
+    }
+}
+
 impl fmt::Display for QuotaBucket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if matches!(self.kind, QuotaKind::Primary | QuotaKind::Secondary)
@@ -139,6 +156,12 @@ impl fmt::Display for QuotaBucket {
 #[non_exhaustive]
 pub struct QuotaSummary {
     pub buckets: Vec<QuotaBucket>,
+}
+
+impl QuotaSummary {
+    pub fn new(buckets: Vec<QuotaBucket>) -> Self {
+        Self { buckets }
+    }
 }
 
 /// Fetches quotas using the same keeper (and refresh locks) as inference.
@@ -309,17 +332,7 @@ fn percent(value: &Value) -> Option<f64> {
 }
 
 fn bucket(kind: QuotaKind) -> QuotaBucket {
-    QuotaBucket {
-        kind,
-        remaining_percent: None,
-        remaining: None,
-        entitlement: None,
-        remaining_usd: None,
-        unlimited: false,
-        resets_at: None,
-        resets_on: None,
-        window_seconds: None,
-    }
+    QuotaBucket::new(kind)
 }
 
 fn parse_chatgpt(value: &Value) -> Result<QuotaSummary, QuotaError> {
