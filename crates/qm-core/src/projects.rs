@@ -10,7 +10,8 @@
 //!   ([`find_folders`]).
 //! - **`configure_project` can't change autonomy or the verification level** (its arguments have no
 //!   field for either), and checks what it can change against the facts: a direct-PR project needs
-//!   a GitHub remote, a branch-only one a remote, and a plain folder stays a plain folder.
+//!   a GitHub remote, a branch-only one a remote, and a plain folder stays a plain folder until it
+//!   becomes a repository (its kind is read again first, as when work starts there).
 //!
 //! [`ProjectsPart`] fills the Bridge's projects pane.
 
@@ -50,6 +51,9 @@ pub mod event_kind {
     pub const CONFIGURED: &str = "project.configured";
     pub const REMOVED: &str = "project.removed";
     pub const ADDED: &str = "project.added";
+    /// A project's folder changed kind: a plain folder became a repository, or a repository
+    /// gained or lost its GitHub remote. New tasks follow; running ones keep how they started.
+    pub const KIND: &str = "project.kind";
     /// You set a project's autonomy to normal or auto (never an agent).
     pub const AUTONOMY: &str = "project.autonomy";
 }
@@ -238,7 +242,7 @@ pub fn default_delivery(github_remote: Option<&str>, has_remote: bool) -> Delive
     }
 }
 
-fn delivery_words(mode: DeliveryMode) -> &'static str {
+pub(crate) fn delivery_words(mode: DeliveryMode) -> &'static str {
     match mode {
         DeliveryMode::DirectPr => "direct pull requests",
         DeliveryMode::BranchOnly => "branch only",
@@ -576,6 +580,44 @@ impl ProjectService {
         .map_err(|e| ToolFailure::Failed(format!("the project check stopped: {e}")))
     }
 
+    /// `project` with its folder's kind read again and any change recorded
+    /// ([`crate::places::kind_change`]): a plain folder may have become a repository since.
+    async fn refresh_kind(&self, project: ProjectRow) -> Result<ProjectRow, ToolFailure> {
+        let Some(home) = self.home() else {
+            return Ok(project);
+        };
+        let program = self.git_program();
+        let env = self.inner.env.clone();
+        let data = self.inner.data_dir.root().to_owned();
+        let root = project.path.clone();
+        let place = tokio::task::spawn_blocking(move || {
+            crate::places::Resolver {
+                home: &home,
+                data_dir: &data,
+                git: &program,
+                env: &env,
+            }
+            .at_root(root)
+        })
+        .await
+        .map_err(|e| ToolFailure::Failed(format!("the project check stopped: {e}")))?;
+        if crate::places::kind_change(&project, &place).is_none() {
+            return Ok(project);
+        }
+        let home = self.home().unwrap_or_default();
+        let at = self.inner.clock.now();
+        self.inner
+            .db
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                let row = crate::places::register(&tx, &place, &home, at)?;
+                tx.commit()?;
+                Ok(row)
+            })
+            .await
+            .map_err(|e| failed(&e))
+    }
+
     /// `configure_project`: never autonomy or the verification level.
     pub async fn configure(
         &self,
@@ -583,6 +625,7 @@ impl ProjectService {
         args: &ConfigureProjectArgs,
     ) -> Result<Ack, ToolFailure> {
         let project = self.named(&args.project).await?;
+        let project = self.refresh_kind(project).await?;
         let (remotes, branch_known) = self
             .repo_facts(&project, args.default_branch.clone())
             .await?;
@@ -723,7 +766,9 @@ fn check_change(
     if let Some(delivery) = args.delivery {
         if project.delivery == DeliveryMode::Folder && delivery != DeliveryMode::Folder {
             return Err(refused(format!(
-                "{} is a plain folder: its changes go straight into it, with no branches or remote",
+                "{} is a plain folder: its changes go straight into it, with no branches or \
+                 remote. When the user asks, a crewmate can make it a git or GitHub repository; \
+                 tasks started after that use worktrees",
                 project.name
             )));
         }

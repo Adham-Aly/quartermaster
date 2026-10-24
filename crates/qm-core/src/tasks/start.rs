@@ -713,11 +713,24 @@ pub(crate) async fn find_place(
                 "There's no listed project called {name}; name its folder instead"
             )));
         };
-        return Ok(Place {
-            root: row.path.clone(),
-            folder: row.path,
-            repo: None,
-        });
+        // Its folder is read again: it may have changed kind since it was registered.
+        let (home, git, env) = (
+            svc.deps().home.clone(),
+            svc.deps().git.clone(),
+            svc.deps().inherited_env.clone(),
+        );
+        let data = svc.deps().data_dir.root().to_owned();
+        return tokio::task::spawn_blocking(move || {
+            Resolver {
+                home: &home,
+                data_dir: &data,
+                git: git.program(),
+                env: &env,
+            }
+            .at_root(row.path)
+        })
+        .await
+        .map_err(|e| ToolFailure::Failed(e.to_string()));
     }
     let text = folder.unwrap_or_else(|| "~".to_owned());
     let plain = svc
