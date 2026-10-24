@@ -33,18 +33,16 @@ pub struct ActionsPart {
     data_dir: DataDir,
     /// The Quartermaster's agent row.
     seat_agent: AgentId,
-    /// Plans are listed only with the task service (crewmates on).
-    tasks: Option<TaskService>,
+    /// For the plans waiting on you.
+    tasks: TaskService,
 }
 
 impl ActionsPart {
-    /// Wired whether or not crewmates are on, so held approvals always have a place to be
-    /// answered; `tasks` adds the plans.
     pub fn new(
         held: HeldService,
         (db, clock, data_dir): (Db, Arc<dyn Clock>, DataDir),
         seat_agent: AgentId,
-        tasks: Option<TaskService>,
+        tasks: TaskService,
     ) -> Self {
         Self {
             held,
@@ -112,9 +110,6 @@ impl ActionsPart {
 
     /// Plans open for you: an interactive plan whose round waits on your reply or approval.
     async fn plans(&self) -> Vec<ActionItem> {
-        let Some(tasks) = &self.tasks else {
-            return Vec::new();
-        };
         let plans: Vec<_> = plan_api::live(&self.data_dir)
             .into_iter()
             .filter(|(_, s, _)| {
@@ -144,7 +139,7 @@ impl ActionsPart {
                 continue;
             }
             if !matches!(
-                tasks.live_plan_mode(&row).await,
+                self.tasks.live_plan_mode(&row).await,
                 Ok(Some(PlanMode::Interactive))
             ) {
                 continue;

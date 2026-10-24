@@ -26,7 +26,7 @@ pub struct SessionsPart {
     db: Db,
     clock: Arc<dyn Clock>,
     reconcile: ReconcileService,
-    recorder: Option<Recorder>,
+    recorder: Recorder,
     /// Where the images pasted into your messages to a crewmate are saved.
     attachments: Attachments,
     /// For a secondmate's session.
@@ -48,7 +48,7 @@ impl SessionsPart {
         db: Db,
         clock: Arc<dyn Clock>,
         reconcile: ReconcileService,
-        recorder: Option<Recorder>,
+        recorder: Recorder,
         attachments: Attachments,
     ) -> Self {
         Self {
@@ -125,7 +125,7 @@ impl ApiPart for SessionsPart {
                 }
                 return;
             }
-            match view::load(&self.db, self.recorder.as_ref(), agent, &*self.clock).await {
+            match view::load(&self.db, &self.recorder, agent, &*self.clock).await {
                 Ok(view) => snapshot.session = view,
                 Err(e) => tracing::error!(error = %e, "couldn't read the worker's session"),
             }

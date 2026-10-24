@@ -299,7 +299,7 @@ pub(crate) async fn start_core(
             db.clone(),
             Arc::clone(&clock),
             ReconcileService::new(tasks.clone()),
-            Some(recorder),
+            recorder,
             attachments.clone(),
         )
         .with_secondmates(secondmates.clone()),
@@ -319,7 +319,7 @@ pub(crate) async fn start_core(
         held.clone(),
         (db.clone(), Arc::clone(&clock), dir.clone()),
         agent,
-        Some(tasks.clone()),
+        tasks.clone(),
     )));
     api::serve(
         server,
