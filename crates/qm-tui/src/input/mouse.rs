@@ -329,6 +329,7 @@ impl App {
             Pane::Task => |app| &mut app.view.task_scroll,
             Pane::Settings => |app| &mut app.view.settings.scroll,
             Pane::Help => |app| &mut app.view.help_scroll,
+            Pane::TaskKinds => |app| &mut app.view.kind_help_scroll,
             Pane::Actions => |app| &mut app.view.actions_scroll,
             Pane::ActionOverlay => |app| &mut app.view.action_scroll,
             Pane::Conversation | Pane::Input | Pane::Session => return,

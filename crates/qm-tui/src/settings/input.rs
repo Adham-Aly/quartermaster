@@ -279,6 +279,10 @@ impl App {
     }
 
     fn on_routing_key(&mut self, code: KeyCode) -> bool {
+        if code == KeyCode::Char('?') {
+            self.open_popup(Popup::TaskKinds);
+            return true;
+        }
         let row = self.view.settings.routing_row;
         if let Some(at) = list_move(code, Some(row), ROUTING_ROWS) {
             self.settings_set(|s| &mut s.routing_row, at);
@@ -626,6 +630,7 @@ impl App {
                 }
                 self.open_picker(PickFor::KindTier(kind), hit);
             }
+            SettingsHit::KindHelp => self.open_popup(Popup::TaskKinds),
             SettingsHit::ResetKinds => self.ask_reset_kinds(),
             SettingsHit::Provider(i) => {
                 self.settings_set(|s| &mut s.provider, Some(i));
