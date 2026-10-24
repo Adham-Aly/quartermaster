@@ -7,30 +7,34 @@
 >
 > Then run `quartermaster`. To update later, run the same command again.
 
-## What's new in 0.5.0
+## What's new in 0.6.0
 
-Changes since [0.4.0](https://github.com/Adham-Aly/quartermaster/releases/tag/v0.4.0):
+Changes since [0.5.0](https://github.com/Adham-Aly/quartermaster/releases/tag/v0.5.0):
 
-- **Choose a model level for each kind of task.** **Settings ▸ Routing** has a new **Task kinds**
-  section: set build, fix, plan, research and the other kinds to Premium, High, Medium or Low.
-  Changes apply at once and survive restarts; `r` resets a row and `R` resets them all. The
-  [routing guide](https://github.com/Adham-Aly/quartermaster/blob/v0.5.0/docs/routing.md) explains
-  the defaults.
-- **Model levels hold model and effort pairs.** Each entry in **Settings ▸ Model levels** is now a
-  fixed pairing such as `model (high)`, chosen from a searchable list, and the same model can sit
-  in several levels at different efforts. Levels you saved before are kept and converted for you.
-- **Premium means premium.** Asking for premium, or naming a premium model, now always tries the
-  premium models first. If none can serve, the task falls back to High, then Medium, then Low,
-  instead of waiting or quietly running a lower model, and the task card says why.
-- **Cards open from Actions.** Approvals, decisions and questions no longer appear inside the chat.
-  Each one is listed in **Actions**; click it or press Enter to answer it in a popup with the same
-  buttons and keys.
-- **Projects are folders.** A folder becomes a project when work starts in it, and you can ask the
-  Quartermaster to clone a repository. The separate personal workspace is gone. Crewmates can use
-  your GitHub login, and merges or tags made on GitHub outside the app are recorded.
-- **Branches named after the work.** A task titled `fix(upload): retry on slow tmp` now works on
-  the branch `fix/upload-retry-on-slow-tmp`, and its pull request reads like an ordinary one.
-- **Desktop notifications removed.** Quartermaster no longer sends macOS notifications or rings the
-  terminal bell; everything waiting on you is in **Actions**.
-- **Fixes.** Helper agents started by a Claude crewmate are no longer stopped when another one
-  finishes, and the quit dialog now reads correctly for one crewmate and for several.
+- **Review changes file by file.** Approval cards now show a tree of changed files beside a
+  side-by-side Before/After view with line numbers. Pick a file with the mouse or keys, page and
+  scroll each pane, and pan sideways through long lines. Additions stay readable in light and dark
+  terminals.
+- **Reports and plans you can open.** Lookup, research, reproduce and teach tasks now finish with
+  a written HTML report; open it from the task with **Open report** or `r`. Plans come as two
+  documents: a full technical plan for the crew, and a readable page for you with the same
+  questions, replies and review controls as before.
+- **Account quotas in Settings.** **Settings ▸ Accounts** shows the remaining quota for connected
+  ChatGPT, GitHub Copilot and OpenRouter accounts, refreshed in the background and when Settings
+  opens.
+- **Ask for a model, a level or an effort, and get it.** Ask for a particular model, for a level
+  such as Medium, or for an effort, and the Quartermaster sticks to it, even for crewmates started
+  later or after a restart. A model you name that isn't available waits instead of being swapped
+  for another. A `?` beside **Settings ▸ Routing ▸ Task kinds** explains each kind of task.
+- **Start work later.** The Quartermaster and secondmates can schedule a crewmate to start when
+  another task finishes, lands or reaches a set time, and can drop a dependency that no longer
+  applies instead of leaving work stuck behind it.
+- **Tasks hold several crewmates.** Crewmates are now named `C-n` and grouped in tasks `T-n`; a
+  task can hold any number of them and goes away when its last one finishes. Folders can be
+  anywhere, the Quartermaster can create a new one when you ask, and plain folders are worked in
+  place without git.
+- **Steering arrives sooner.** Messages to a running crewmate or secondmate now reach it between
+  tool calls, instead of waiting for its turn to end.
+- **Fixes.** Settings' Task kinds grid moves with the arrow keys in the order you see it and long
+  notes wrap instead of being cut off; a scheduled start no longer fails after its chat message
+  was cleared.
