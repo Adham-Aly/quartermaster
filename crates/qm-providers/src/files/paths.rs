@@ -112,10 +112,7 @@ fn in_a_worktree(root: &Path, target: &Path) -> bool {
     let Ok(rest) = target.strip_prefix(root) else {
         return false;
     };
-    let parts: Vec<&std::ffi::OsStr> = rest
-        .components()
-        .map(std::path::Component::as_os_str)
-        .collect();
+    let parts: Vec<&std::ffi::OsStr> = rest.components().map(Component::as_os_str).collect();
     parts.len() > 3 && parts[0] == TASKS && parts[2] == WORKTREE
 }
 

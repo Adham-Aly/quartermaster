@@ -530,6 +530,10 @@ pub trait ToolHost: Send + Sync {
 /// Everything `start_crewmate` carries, for both the Quartermaster's and a secondmate's variant. A
 /// secondmate's variant sets `correlation`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent yes/no facts about the work, as the tool call gave them"
+)]
 pub struct StartRequest {
     /// The folder to work in, as written (absolute or from `~`).
     pub folder: Option<String>,

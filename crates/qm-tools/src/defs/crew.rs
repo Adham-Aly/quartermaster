@@ -23,6 +23,10 @@ tool! {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent yes/no facts about the work, in a tool's argument schema"
+)]
 pub struct StartCrewmateArgs {
     // The folder to work in, absolute or from `~`; its project is found or added. Or name a listed
     // project instead. Neither: your home folder.
@@ -107,6 +111,10 @@ impl Tool for SecondmateStartCrewmateTool {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent yes/no facts about the work, in a tool's argument schema"
+)]
 pub struct SecondmateStartCrewmateArgs {
     // The folder to work in, absolute or from `~`; or name a listed project instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
