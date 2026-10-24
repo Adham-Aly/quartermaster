@@ -177,7 +177,12 @@ base branch and verification, still require a user-started turn.
 
 Ask for work after another task commits, reports done or lands, or at a given time.
 The Quartermaster and secondmates can register the full start configuration through
-`schedule_crewmate`, retaining the brief, `builds_on` and authorized model choices.
+`schedule_crewmate`, retaining the brief, `builds_on`, authorized model/tier/effort/premium
+choices and structured within-tier `preference`. A secondmate passes `correlation`;
+the app carries the routed request's choices and guidance without the secondmate
+reasserting them. Delegated citations remain tied to the routed request's original
+user source and owning conversation, not the secondmate's conversation; the app
+validates that source and owner when replaying the saved start.
 No child task, worktree or model session is created before its trigger holds.
 Pending starts survive restart and can be inspected or cancelled. A review still
 requires a real task-owned commit; it reviews the exact SHA captured at launch.
@@ -216,8 +221,11 @@ including effort. A missing, stale, out-of-tier or otherwise ineligible match
 falls back to ordinary routing with a note. A preference never escapes its tier
 or asks for Premium; only ordinary fallback rules can move between levels.
 
-Preferences may be supplied on later or app-event turns to carry the user's
-constraints forward. They do **not** replace the authority of `model`, `tier` and
+Preferences are authority-free guidance and may be supplied on later or app-event
+turns, including routed requests and deferred starts. A `choice_message` citation
+is optional for preference alone, but any cited source must be a genuine original
+user message validated against its owning conversation (including checked delegation).
+Preferences do **not** replace the authority of `model`, `tier` and
 `effort`: these require an explicit user request, on this turn or a still-applicable
 earlier message cited with `choice_message`. The app checks source ownership or
 checked delegation; the orchestrator must match fields and scope. A named model can

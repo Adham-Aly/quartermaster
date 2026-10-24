@@ -653,6 +653,8 @@ fn verify_choice_source(
                 .named_model
                 .as_ref()
                 .is_none_or(|m| asked.model.as_ref() == Some(m))
+            && facts.named_tier.is_none_or(|tier| asked.tier == Some(tier))
+            // Preference is authority-free guidance, including when supplied by the child.
             && facts.named_effort.is_none_or(|e| asked.effort == Some(e))
             && (!facts.premium || asked.premium)
         {
@@ -666,7 +668,12 @@ fn check_choice_sources(
     conn: &Connection,
     facts: &CrewmateFacts,
 ) -> Result<Result<(), Refusal>, StoreError> {
-    if facts.named_model.is_none() && facts.named_effort.is_none() && !facts.premium {
+    let explicit_choice = facts.named_model.is_some()
+        || facts.named_tier.is_some()
+        || facts.named_effort.is_some()
+        || facts.premium;
+    // Guidance needs no override authority, but an attached citation must be genuine.
+    if !explicit_choice && (facts.preference.is_none() || facts.choice_message.is_none()) {
         return Ok(Ok(()));
     }
     let source = facts.choice_message.or(match facts.authority {
@@ -680,7 +687,7 @@ fn check_choice_sources(
         Ok(())
     } else {
         Err(Refusal::new(
-            "model, effort and premium choices need an actual user message; cite it with choice_message",
+            "model, tier, effort and premium choices need an actual user message; cite it with choice_message",
         ))
     })
 }

@@ -828,7 +828,8 @@ pub(crate) async fn start_when_ready(
             {
                 return Ok(Ok((req, base.base)));
             }
-            if req.model.is_some() || req.effort.is_some() || req.premium {
+            let explicit_choice = req.model.is_some() || req.tier.is_some() || req.effort.is_some() || req.premium;
+            if explicit_choice || req.preference.is_some() {
                 req.choice_message = req.choice_message.or(match how.authority {
                     Authority::Turn(StartedBy::User { message }) => Some(message),
                     _ => None,
@@ -837,8 +838,8 @@ pub(crate) async fn start_when_ready(
                     if let Err(r) = qm_store::user_message_sources::verify(conn, caller_copy.agent, message)? {
                         return Ok(Err(r.into()));
                     }
-                } else if how.authority != Authority::CardChoice {
-                    return Ok(Err(refuse("model, effort and premium choices need the user's message; cite it with choice_message")));
+                } else if explicit_choice && how.authority != Authority::CardChoice {
+                    return Ok(Err(refuse("model, tier, effort and premium choices need the user's message; cite it with choice_message")));
                 }
             }
             let authority =
@@ -2012,6 +2013,12 @@ mod tier_tests {
         let (conn, task) = route_store();
         let inputs = RouteInputs {
             named_tier: Some(Tier::Medium),
+            preference: Some(qm_types::model_preference::ModelPreference {
+                selection: ModelId::new("preferred").unwrap(),
+                provider: None,
+                model: None,
+                effort: Some(Effort::High),
+            }),
             named_effort: Some(Effort::High),
             authority: "user".into(),
             message: Some(MessageId::new(1)),
@@ -2041,6 +2048,7 @@ mod tier_tests {
             assert_eq!(restored, expected);
             let facts = facts_for(task, None, TaskKind::Lookup, &restored, false);
             assert_eq!(facts.named_tier, expected.named_tier);
+            assert_eq!(facts.preference, expected.preference);
             assert_eq!(facts.named_effort, Some(Effort::High));
             assert_eq!(facts.authority, inputs.authority());
         }

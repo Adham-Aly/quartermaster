@@ -122,6 +122,7 @@ impl Handle for RouteToSecondmateTool {
             let present = [
                 (base_branch.is_some(), OverrideKind::BaseBranch),
                 (args.model.is_some(), OverrideKind::NamedModel),
+                (args.tier.is_some(), OverrideKind::Tier),
                 (args.effort.is_some(), OverrideKind::Effort),
                 (args.premium, OverrideKind::Premium),
                 (!args.later_steps.is_empty(), OverrideKind::LaterSteps),
@@ -141,6 +142,8 @@ impl Handle for RouteToSecondmateTool {
                         instructions,
                         base_branch,
                         model: args.model,
+                        preference: args.preference,
+                        tier: args.tier,
                         effort: args.effort,
                         premium: args.premium,
                         choice_message: args.choice_message,
@@ -257,5 +260,82 @@ impl Handle for SecondmateStartCrewmateTool {
             let request = prepare_secondmate_start(cx, args)?;
             cx.host.start_crewmate(cx.caller, request).await
         })
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+    use crate::handler::{Caller, ToolHost};
+    use qm_types::clock::SystemClock;
+    use qm_types::domain::{Role, Tier};
+    use qm_types::ids::{AgentId, CorrelationId, MessageId, SecondmateId};
+    use serde_json::json;
+    use std::future::Future;
+    use std::sync::Mutex;
+    use std::task::{Context, Poll, Waker};
+
+    #[derive(Default)]
+    struct Host(Mutex<Vec<RouteRequest>>);
+
+    impl ToolHost for Host {
+        fn route_to_secondmate<'a>(
+            &'a self,
+            _caller: &'a Caller,
+            request: RouteRequest,
+        ) -> BoxFuture<'a, Result<Routed, ToolFailure>> {
+            self.0.lock().unwrap().push(request);
+            Box::pin(async {
+                Ok(Routed {
+                    correlation: CorrelationId::new(1).unwrap(),
+                })
+            })
+        }
+    }
+
+    fn ready<F: Future>(future: F) -> F::Output {
+        match std::pin::pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("fake host must not wait"),
+        }
+    }
+
+    #[test]
+    fn tier_needs_choice_authority_while_preference_is_an_app_decision() {
+        let host = Host::default();
+        let caller = Caller {
+            agent: AgentId::new(1),
+            role: Role::Quartermaster,
+            turn: None,
+            task: None,
+            secondmate: None,
+            plan: None,
+        };
+        let cx = ToolCx {
+            caller: &caller,
+            clock: &SystemClock,
+            host: &host,
+        };
+        let mut args: RouteToSecondmateArgs = serde_json::from_value(json!({
+            "secondmate": SecondmateId::new(2).unwrap(),
+            "request": " implement this ",
+            "preference": {"selection": "test-model"}
+        }))
+        .unwrap();
+        ready(RouteToSecondmateTool::handle(&cx, args.clone())).unwrap();
+        assert_eq!(host.0.lock().unwrap()[0].preference, args.preference);
+        args.tier = Some(Tier::High);
+        assert!(matches!(
+            ready(RouteToSecondmateTool::handle(&cx, args.clone())),
+            Err(ToolFailure::Refused(_))
+        ));
+        assert_eq!(host.0.lock().unwrap().len(), 1);
+        args.choice_message = Some(MessageId::new(7));
+        ready(RouteToSecondmateTool::handle(&cx, args.clone())).unwrap();
+        let routed = host.0.lock().unwrap();
+        assert_eq!(routed[1].tier, args.tier);
+        assert_eq!(routed[1].preference, args.preference);
+        assert_eq!(routed[1].choice_message, args.choice_message);
+        assert_eq!(routed[1].request, "implement this");
     }
 }

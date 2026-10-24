@@ -26,6 +26,8 @@ fn request() -> StartRequest {
         instructions: vec!["Keep it narrow".into()],
         later_steps: vec![],
         model: None,
+        preference: None,
+        tier: None,
         effort: None,
         premium: false,
         choice_message: None,
@@ -35,6 +37,15 @@ fn request() -> StartRequest {
         correlation: None,
     }
 }
+fn preference() -> qm_types::model_preference::ModelPreference {
+    qm_types::model_preference::ModelPreference {
+        selection: qm_types::ids::ModelId::new("frozen-model").unwrap(),
+        provider: None,
+        model: None,
+        effort: Some(qm_types::domain::Effort::High),
+    }
+}
+
 fn future() -> StartTrigger {
     StartTrigger::At {
         due: "2099-01-01T00:00:00Z".parse().unwrap(),
@@ -80,6 +91,155 @@ async fn registering_and_pulsing_before_due_allocates_nothing_and_cancel_is_fina
     );
     assert!(
         svc.cancel_crewmate_start(&caller(), scheduled.schedule)
+            .await
+            .is_err()
+    );
+    drop(svc);
+    scheduler.abort();
+    let _ = scheduler.await;
+}
+
+async fn fire_choice_after_restart(
+    svc: &TaskService,
+    message: MessageId,
+    use_tier: bool,
+) -> TaskService {
+    let mut req = request();
+    req.project = Some("p".into());
+    req.choice_message = Some(message);
+    if use_tier {
+        req.tier = Some(qm_types::domain::Tier::High);
+    } else {
+        req.preference = Some(preference());
+    }
+    let mut foreign = caller();
+    foreign.agent = AgentId::new(2);
+    assert!(
+        svc.schedule_crewmate(&foreign, req.clone(), future())
+            .await
+            .is_err()
+    );
+    assert!(svc.start_crewmate(&foreign, req.clone()).await.is_err());
+    let expected = req.clone();
+    let scheduled = svc
+        .schedule_crewmate(
+            &caller(),
+            req,
+            StartTrigger::At {
+                due: Timestamp::UNIX_EPOCH,
+            },
+        )
+        .await
+        .unwrap();
+    let id = scheduled.schedule;
+    svc.db()
+        .call(move |conn| {
+            let row = deferred::get(conn, id)?.unwrap();
+            let saved: Saved = decode("deferred_starts.payload", &row.payload)?;
+            assert_eq!(saved.request, expected);
+            assert_eq!(saved.authority(), Authority::Turn(StartedBy::AppEvent));
+            conn.execute("DELETE FROM messages WHERE id = ?1", [message])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let restarted = reopened_service(svc);
+    pulse(&restarted).await.unwrap();
+    let row = restarted
+        .list_crewmate_starts(&caller())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.schedule == id)
+        .unwrap();
+    assert_eq!(row.status, "started", "{row:?}");
+    let task = row.task.unwrap();
+    restarted
+        .db()
+        .call(move |conn| {
+            let (_, event) =
+                qm_store::tasks::last_event(conn, task, start::STARTED_EVENT)?.unwrap();
+            assert_eq!(
+                event["route"]["choice_message"],
+                serde_json::to_value(message).unwrap()
+            );
+            if use_tier {
+                assert_eq!(event["route"]["named_tier"], "high");
+            } else {
+                assert_eq!(
+                    event["route"]["preference"],
+                    serde_json::to_value(preference()).unwrap()
+                );
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    restarted
+}
+
+#[tokio::test]
+async fn tier_and_preference_keep_original_sources_and_fire_after_chat_deletion() {
+    let f = Fixture::new().await;
+    let (mut svc, scheduler) = f.task_service();
+    prepare_scoped_repo(&f, &svc).await;
+    let message = svc
+        .db()
+        .call(|conn| {
+            qm_store::messages::insert(
+                conn,
+                &qm_store::messages::NewMessage {
+                    agent: caller().agent,
+                    source: qm_types::domain::MessageSource::You,
+                    kind: qm_types::domain::MessageKind::Message,
+                    text: "Use the large tier and prefer the frozen model",
+                    options: &[],
+                    replies_to: None,
+                    turn: None,
+                    at: Timestamp::UNIX_EPOCH,
+                },
+            )
+        })
+        .await
+        .unwrap();
+    svc.db()
+        .call(move |conn| {
+            for _ in 0..=qm_store::user_message_sources::RECENT_SOURCES {
+                qm_store::messages::insert(
+                    conn,
+                    &qm_store::messages::NewMessage {
+                        agent: caller().agent,
+                        source: qm_types::domain::MessageSource::You,
+                        kind: qm_types::domain::MessageKind::Message,
+                        text: "A later unrelated request",
+                        options: &[],
+                        replies_to: None,
+                        turn: None,
+                        at: Timestamp::UNIX_EPOCH,
+                    },
+                )?;
+            }
+            assert!(
+                !qm_store::user_message_sources::recent(conn, caller().agent)?
+                    .iter()
+                    .any(|s| s.id == message)
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for use_tier in [true, false] {
+        svc = fire_choice_after_restart(&svc, message, use_tier).await;
+    }
+    // Guidance alone is allowed on an app-event turn; a tier without a source is not.
+    let mut req = request();
+    req.preference = Some(preference());
+    svc.schedule_crewmate(&caller(), req.clone(), future())
+        .await
+        .unwrap();
+    req.tier = Some(qm_types::domain::Tier::High);
+    assert!(
+        svc.schedule_crewmate(&caller(), req, future())
             .await
             .is_err()
     );
@@ -659,6 +819,8 @@ async fn secondmate(f: &Fixture, svc: &TaskService) -> (Caller, qm_types::ids::C
         let overrides = secondmates::RequestOverrides {
             model: Some(qm_types::ids::ModelId::new("frozen-model").unwrap()), effort: Some(Effort::High), premium: true,
             choice_message: None,
+            tier: Some(qm_types::domain::Tier::Premium),
+            preference: Some(preference()),
             later_steps: vec![secondmates::StoredLaterStep {
                 kind: TaskKind::Review, model: None, effort: Some(Effort::High), premium: true,
             }],
@@ -703,6 +865,110 @@ fn reopened_service(svc: &TaskService) -> TaskService {
     let mut deps = service_deps(svc);
     deps.db = qm_store::db::Db::open(&deps.home.join("state.db")).unwrap();
     TaskService::new(deps)
+}
+
+#[tokio::test]
+async fn child_guidance_preserves_inherited_authority_for_immediate_and_deferred_starts() {
+    let f = Fixture::new().await;
+    let (svc, scheduler) = f.task_service();
+    prepare_scoped_repo(&f, &svc).await;
+    let (sm, correlation) = secondmate(&f, &svc).await;
+    let mut req = request();
+    req.project = Some("p".into());
+    req.correlation = Some(correlation);
+    let guidance = qm_types::model_preference::ModelPreference {
+        selection: qm_types::ids::ModelId::new("child-guidance").unwrap(),
+        ..preference()
+    };
+    req.preference = Some(guidance.clone());
+    let immediate = svc.start_crewmate(&sm, req.clone()).await.unwrap();
+    let scheduled = svc
+        .schedule_crewmate(
+            &sm,
+            req,
+            StartTrigger::At {
+                due: Timestamp::UNIX_EPOCH,
+            },
+        )
+        .await
+        .unwrap();
+    let id = scheduled.schedule;
+    let frozen = svc
+        .db()
+        .call(move |conn| {
+            let row = deferred::get(conn, id)?.unwrap();
+            let saved: Saved = decode("deferred_starts.payload", &row.payload)?;
+            assert!(frozen_request(conn, id, &sm, &saved.request)?.is_some());
+            let mut changed = saved.request.clone();
+            changed.preference = None;
+            assert!(
+                frozen_request(conn, id, &sm, &changed)?.is_none(),
+                "full replay equality still includes guidance"
+            );
+            // Force routing to rely on the frozen delegation rather than the live request.
+            conn.execute(
+                "UPDATE secondmate_requests SET overrides = '{}' WHERE id = ?1",
+                [correlation],
+            )?;
+            Ok(saved.request)
+        })
+        .await
+        .unwrap();
+    pulse(&svc).await.unwrap();
+    let row = svc.list_crewmate_starts(&sm).await.unwrap().remove(0);
+    assert_eq!(row.status, "started", "{row:?}");
+    svc.db()
+        .call(move |conn| {
+            for task in [immediate.task, row.task.unwrap()] {
+                assert_eq!(
+                    qm_store::tasks::load(conn, task)?.unwrap().status,
+                    TaskStatus::Queued
+                );
+                let (_, event) =
+                    qm_store::tasks::last_event(conn, task, start::STARTED_EVENT)?.unwrap();
+                assert_eq!(event["route"]["named_model"], "frozen-model");
+                assert_eq!(event["route"]["named_tier"], "premium");
+                assert_eq!(
+                    event["route"]["preference"],
+                    serde_json::to_value(&guidance).unwrap()
+                );
+            }
+            let mut facts = crate::routing::CrewmateFacts {
+                task: row.task.unwrap(),
+                agent: None,
+                authority: Authority::Turn(StartedBy::AppEvent),
+                kind: qm_routing::decider::Decided::Answer {
+                    value: TaskKind::Research,
+                    by: qm_routing::decider::DecidedBy::Declared,
+                },
+                decider: qm_routing::decider::DecidedBy::Declared,
+                builds_on: None,
+                needs: qm_routing::rank::Needs::default(),
+                quick_verification: false,
+                named_model: frozen.model,
+                named_tier: frozen.tier,
+                named_effort: frozen.effort,
+                premium: frozen.premium,
+                choice_message: frozen.choice_message,
+                preference: None,
+                stronger_retry: None,
+                later_step: None,
+                prefer_provider_other_than: None,
+            };
+            let message = facts.choice_message.unwrap();
+            assert!(verifies_delegated_choice(conn, &facts, message)?);
+            facts.named_model = None;
+            assert!(!verifies_delegated_choice(conn, &facts, message)?);
+            facts.named_model = Some(qm_types::ids::ModelId::new("frozen-model").unwrap());
+            facts.named_tier = Some(qm_types::domain::Tier::High);
+            assert!(!verifies_delegated_choice(conn, &facts, message)?);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    drop(svc);
+    scheduler.abort();
+    let _ = scheduler.await;
 }
 
 #[tokio::test]
@@ -770,6 +1036,11 @@ async fn delegated_config_and_source_survive_routing_turn_deletion_and_restart()
             let (_, event) =
                 qm_store::tasks::last_event(conn, task, start::STARTED_EVENT)?.unwrap();
             assert_eq!(event["route"]["named_model"], "frozen-model");
+            assert_eq!(event["route"]["named_tier"], "premium");
+            assert_eq!(
+                event["route"]["preference"],
+                serde_json::to_value(preference()).unwrap()
+            );
             assert_eq!(event["route"]["named_effort"], "high");
             assert_eq!(event["route"]["premium"], true);
             assert_eq!(

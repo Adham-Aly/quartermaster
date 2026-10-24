@@ -140,7 +140,7 @@ fn model_and_tier_filter_to_matching_placement_without_implying_premium() {
 }
 
 #[test]
-fn named_model_in_wrong_tier_falls_back_to_requested_tiers_placement() {
+fn named_model_in_wrong_tier_waits_without_substitution() {
     let efforts = TierEfforts::default();
     let mut req = request(&efforts);
     req.user.model = Some(id("named"));
@@ -151,10 +151,12 @@ fn named_model_in_wrong_tier_falls_back_to_requested_tiers_placement() {
     ];
     let record = run(&req, &placed);
     assert_eq!(record.tier_landed, Tier::Medium);
-    let choice = record.choice.unwrap();
-    assert_eq!(choice.model, id("medium"));
-    assert_eq!(choice.effort, Effort::Low);
-    assert!(record.why.contains("couldn't serve"));
+    assert!(record.choice.is_none());
+    assert!(
+        record
+            .why
+            .contains("the task waits for it instead of using another model")
+    );
 }
 
 #[test]

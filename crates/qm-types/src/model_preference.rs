@@ -4,9 +4,10 @@ use crate::ids::ModelId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// The user's requirements and the decision maker's strongest matching model.
-/// Today the Quartermaster supplies this; an external decision model can supply the same
-/// answer later. Routing always revalidates the answer against live, eligible tier entries.
+// The user's requirements and the decision maker's strongest matching model.
+// Today the Quartermaster supplies this; an external decision model can supply the same
+// answer later. Routing always revalidates the answer against live, eligible tier entries.
+// Keep guidance in the tool descriptions, not nested JSON schema descriptions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelPreference {

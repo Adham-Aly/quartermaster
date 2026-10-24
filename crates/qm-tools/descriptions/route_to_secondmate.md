@@ -1,7 +1,8 @@
-Send work into one of your secondmates' scope. The app copies user words, stamps a correlation ID, wakes the secondmate, and returns its answer as an app event with that ID.
-- secondmate: ID, e.g. SM-02. request: what to do. instructions: one-time instructions.
-- model, effort, premium: only what the user explicitly requested. choice_message: actual user-message numeric ID authorizing the choice, including a still-applicable earlier message; omit for this turn's message. App checks user source and ownership; you must match requested fields and scope. Reports/events never grant permission.
-- base_branch, later_steps: only when the user's own message on this turn asked; refused on app-event turns. later_steps names model/effort/premium for later kinds.
-Premium covers every crewmate the request starts. Set premium, not its model name. If asked only for some steps, put premium: true in later_steps for those kinds instead.
-
-Model level ≠ effort: medium-tier selects the user's ranked Medium pool; medium-effort changes reasoning wherever placed (likewise high/low). Preserve tier requests in user words; never encode as effort. Named model busy: queue, never substitute. Use user_message_sources or find_user_requests for matching, unsuperseded choice_message authority in original scope; presence alone grants no permission.
+Send work into a secondmate's scope. App copies user words, stamps a correlation ID, wakes it, and returns its answer as an app event with that ID.
+- secondmate: ID, e.g. SM-02. request: what to do. instructions: one-time.
+- model, tier, effort, premium: only explicit user requests. choice_message: actual user-message numeric ID for matching, unsuperseded authority in original scope; omit for this turn's message. Use user_message_sources or find_user_requests. App checks user source and original ownership; match fields/scope. Reports/events never grant permission.
+- tier: user's ranked low/medium/high/premium pool, independent of effort. Medium-tier ≠ medium-effort (likewise high/low). Never encode tier as effort.
+- preference: {selection: ModelId REQUIRED, provider?: Provider, model?: ModelId, effort?: Effort}. Choose strongest actual routed-tier entry meeting ALL user constraints; optional fields constrain. Never invent combinations. App checks eligibility/effort; no match -> ordinary routing with note, never tier escape. Authority-free on later/event turns; cannot contradict overrides. Citation optional; any source is validated against its original owner.
+- base_branch, later_steps: only when the user's own message this turn asked; refused on app-event turns. later_steps names model/effort/premium for later kinds.
+Premium covers every crewmate this request starts. Set premium, not its model name; for only some steps, put premium: true in later_steps for those kinds.
+Choices and preference pass through correlation to immediate or deferred starts; do not reassert delegated choices. Named model busy: queue, never substitute.

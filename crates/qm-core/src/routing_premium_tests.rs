@@ -1016,3 +1016,113 @@ fn delegated_choices_keep_their_source_and_cannot_authorize_different_fields() {
     facts.premium = true;
     assert!(matches!(f.route(&facts), RouteOutcome::Refused(_)));
 }
+
+fn delegated_preference(model: &str) -> qm_types::model_preference::ModelPreference {
+    qm_types::model_preference::ModelPreference {
+        selection: id(model),
+        provider: None,
+        model: None,
+        effort: Some(Effort::High),
+    }
+}
+
+#[test]
+fn delegated_tier_and_preference_reach_every_start_after_chat_retention() {
+    let f = Fixture::new("sm-tier-preference");
+    let overrides = RequestOverrides {
+        tier: Some(Tier::Premium),
+        preference: Some(delegated_preference(FABLE)),
+        choice_message: Some(MessageId::new(1)),
+        ..RequestOverrides::default()
+    };
+    let (caller, start) = request(&f, &overrides);
+    f.conn
+        .execute(
+            "UPDATE secondmate_requests SET turn_id = NULL WHERE id = ?1",
+            [start.correlation],
+        )
+        .unwrap();
+    for kind in [TaskKind::Plan, TaskKind::Build, TaskKind::Review] {
+        let mut child = start.clone();
+        child.kind = kind;
+        assert!(
+            apply_request_overrides(&f.conn, &caller, &mut child)
+                .unwrap()
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(child.tier, overrides.tier);
+        assert_eq!(child.preference, overrides.preference);
+        assert_eq!(child.choice_message, overrides.choice_message);
+        // Reapplying cannot mutate a fully inherited start or claim more authority.
+        let inherited = child.clone();
+        assert!(
+            apply_request_overrides(&f.conn, &caller, &mut child)
+                .unwrap()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(child, inherited);
+    }
+}
+
+#[test]
+fn delegated_tier_and_preference_preserve_child_fields_and_source() {
+    let f = Fixture::new("sm-child-choices");
+    let overrides = RequestOverrides {
+        tier: Some(Tier::High),
+        preference: Some(delegated_preference(OPUS)),
+        effort: Some(Effort::Low),
+        ..RequestOverrides::default()
+    };
+    let (caller, mut start) = request(&f, &overrides);
+    start.tier = Some(Tier::Premium);
+    start.preference = Some(delegated_preference(GPT));
+    start.model = Some(id(FABLE));
+    start.effort = Some(Effort::High);
+    start.premium = true;
+    start.choice_message = Some(MessageId::new(42));
+    let typed = start.clone();
+    assert!(
+        apply_request_overrides(&f.conn, &caller, &mut start)
+            .unwrap()
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(start, typed);
+    // Inheriting just one field must not replace the child's provenance or named model.
+    start.preference = None;
+    assert!(
+        apply_request_overrides(&f.conn, &caller, &mut start)
+            .unwrap()
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(start.preference, overrides.preference);
+    assert_eq!(start.choice_message, typed.choice_message);
+    assert_eq!(start.model, typed.model);
+    assert_eq!(start.tier, typed.tier);
+    assert_eq!(start.effort, typed.effort);
+    assert!(start.premium);
+}
+
+#[test]
+fn tier_choices_require_an_actual_user_source_but_preferences_do_not() {
+    let f = Fixture::new("tier-source");
+    let mut facts = f.facts();
+    facts.authority = Authority::Turn(StartedBy::AppEvent);
+    facts.named_tier = Some(Tier::Premium);
+    assert!(matches!(f.route(&facts), RouteOutcome::Refused(_)));
+    facts.choice_message = Some(MessageId::new(-1));
+    assert!(matches!(f.route(&facts), RouteOutcome::Refused(_)));
+    assert_eq!(f.decisions(), 0);
+    facts.choice_message = Some(MessageId::new(1));
+    assert_eq!(used(&routed(f.route(&facts))).0, Tier::Premium);
+    facts.named_tier = None;
+    facts.choice_message = None;
+    facts.preference = Some(delegated_preference(OPUS));
+    assert_eq!(
+        used(&routed(f.route(&facts))),
+        (Tier::High, OPUS.to_owned())
+    );
+}
