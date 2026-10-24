@@ -216,7 +216,7 @@ fn stale_preference_is_not_refused_and_never_enables_premium() {
         });
         let record = routed(f.route(&facts));
         assert_eq!(used(&record), (Tier::High, OPUS.to_owned()));
-        assert!(record.why.contains("normal review routing was used"));
+        assert!(record.why.contains("normal routing was used"));
         assert!(!record.facts.user.premium);
     }
     assert_eq!(f.decisions(), 2);
