@@ -960,16 +960,15 @@ pub(crate) fn settings_broken() -> Settings {
         key.status = AccountStatus::Active;
         key.api_key = true;
         key.provider = Some(ProviderId::Anthropic);
-        key.quota_problem = Some(String::from(
-            "Provider quota unavailable for API-key accounts; see the provider billing dashboard.",
-        ));
-        key.quota_checked_at = Some(String::from("today 12:04"));
         key.problem = Some(String::from(
             "the key was refused (401); routing skips this account until you reconnect it",
         ));
     }
     settings
 }
+
+/// What the core says for a Claude account, which has no provider quota check.
+const CLAUDE_QUOTA_NOTE: &str = "not offered; Claude reports its usage during turns";
 
 /// The settings sample with `login` in progress.
 pub(crate) fn settings_with(login: SampleLogin) -> Settings {
@@ -979,12 +978,10 @@ pub(crate) fn settings_with(login: SampleLogin) -> Settings {
     claude.usage = Some(String::from(
         "today: 18 turns · 142k input · 24k output tokens",
     ));
-    claude.quota_problem = Some(String::from(
-        "Quota lookup is not supported for this provider or credential type.",
-    ));
+    claude.quota_note = Some(String::from(CLAUDE_QUOTA_NOTE));
     claude.reserve_at = Some(80);
-    claude.routing = Some(String::from("7-day window 35% used · reserve at 80% used"));
-    let mut chatgpt = sample_account(2, "ChatGPT Pro", "Sign in with ChatGPT · provider engine");
+    claude.routing = Some(String::from("7-day window 35% used"));
+    let mut chatgpt = sample_account(2, "ChatGPT Pro", "signed in here · provider engine");
     chatgpt.usage = Some(String::from(
         "today: 9 turns · 63k input · 8k output tokens",
     ));
@@ -996,12 +993,13 @@ pub(crate) fn settings_with(login: SampleLogin) -> Settings {
     chatgpt.quota_refreshing = true;
     chatgpt.reserve_at = Some(5);
     chatgpt.routing = Some(String::from(
-        "7-day window 6% used · reserve at 5% used · held in reserve",
+        "7-day window 6% used · past its soft limit: others serve first",
     ));
     let mut key = sample_account(3, "Anthropic key", "API key · pay per token");
     key.status = AccountStatus::Paused;
+    key.quota_note = Some(String::from("not offered by this provider"));
     key.routing = Some(String::from(
-        "quota unknown (pay-per-token keys serve last) · no reserve mark",
+        "quota unknown (pay-per-token keys serve last)",
     ));
 
     let mut claude_login = sample_provider(ProviderId::Claude, "Claude", LoginMethod::Detected);

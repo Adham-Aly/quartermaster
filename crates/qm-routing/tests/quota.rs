@@ -1,5 +1,5 @@
 //! Quota-aware routing within a tier: the account with the most quota left on its largest pool
-//! serves, accounts past their reserve mark are held back, and your explicit choices still win.
+//! serves, accounts past their soft limit are held back, and your explicit choices still win.
 use qm_routing::choose::{Pool, RouteRequest, route};
 use qm_routing::decider::{Decided, DecidedBy};
 use qm_routing::rank::{Candidate, Needs, Standing, Usage, rank, rank_steady};
@@ -70,7 +70,7 @@ fn chosen(record: &RoutingRecord) -> AccountId {
 }
 
 // The worked example: Anthropic 60% used (mark 55%), GPT 40% (mark 30%), DeepSeek 80% (mark
-// 75%). All three are in reserve; Anthropic and DeepSeek are both 5 points past, GPT 10, and the
+// 75%). All three are past their soft limits; Anthropic and DeepSeek are both 5 points past, GPT 10, and the
 // tie goes to the one with less used overall: Anthropic. DeepSeek is a custom endpoint.
 #[test]
 fn worked_example_picks_the_account_least_past_its_mark() {
@@ -84,8 +84,8 @@ fn worked_example_picks_the_account_least_past_its_mark() {
     assert_eq!(chosen(&record), AccountId::new(1), "{}", record.why);
     assert!(
         record.why.contains(
-            "Quota chose its claude account (60% used, past its 55% reserve mark) over custom \
-             (80% used, past its 75% reserve mark)"
+            "Quota chose its claude account (60% used, past its 55% soft limit) over custom \
+             (80% used, past its 75% soft limit)"
         ),
         "{}",
         record.why
@@ -176,14 +176,14 @@ fn unknown_quota_ranks_between_known_open_and_nearly_used_up_or_reserved() {
         "{}",
         record.why
     );
-    // Unknown beats nearly used up and in reserve: unknown is never read as all left, nor as gone.
+    // Unknown beats nearly used up and past a soft limit: unknown is never read as all left, nor as gone.
     let placed = [
         on(Provider::ChatGpt, 2, Some(95.0), None),
         on(Provider::Custom, 3, Some(40.0), Some(30)),
         on(Provider::Claude, 1, None, Some(10)),
     ];
     assert_eq!(chosen(&run(&request(&efforts), &placed)), AccountId::new(1));
-    // Nearly used up but under its mark still beats one in reserve.
+    // Nearly used up but under its mark still beats one past its soft limit.
     let placed = [
         on(Provider::Custom, 3, Some(40.0), Some(30)),
         on(Provider::ChatGpt, 2, Some(95.0), None),
@@ -199,8 +199,8 @@ fn keys_with_known_quota_compete_but_unknown_keys_serve_last() {
     // A key with a known budget competes on quota left.
     let placed = [on(Provider::Claude, 1, Some(50.0), None), key.clone()];
     assert_eq!(chosen(&run(&request(&efforts), &placed)), AccountId::new(4));
-    // A pay-per-token key with no reading serves only when no subscription is ranked, even one in
-    // reserve.
+    // A pay-per-token key with no reading serves only when no subscription is ranked, even one
+    // past its soft limit.
     key.usage = Usage::Unknown;
     let placed = [key.clone(), on(Provider::Claude, 1, Some(70.0), Some(50))];
     let record = run(&request(&efforts), &placed);

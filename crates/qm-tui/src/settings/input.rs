@@ -35,7 +35,7 @@ const REMOVE_FROM_LOW: &str = "Remove from Low";
 const REMOVE_FROM_ALL: &str = "Remove from all tiers";
 const ALWAYS_USE: &str = "Always use this model";
 const LABEL: &str = "Label…";
-const RESERVE_MARK: &str = "Reserve mark…";
+const SOFT_LIMIT: &str = "Soft limit…";
 const PAUSE: &str = "Pause";
 const RESUME: &str = "Resume";
 const PREFER: &str = "Prefer for crew work";
@@ -45,9 +45,9 @@ const RECONNECT: &str = "Reconnect";
 
 /// Shown when you try to disconnect the account that follows your `claude` login.
 const FOLLOWS_CLI: &str = "This account follows your claude login on this Mac; pause it instead.";
-/// Shown when a reserve mark isn't a whole percent used from 1 to 99.
-const RESERVE_MARK_RANGE: &str =
-    "A reserve mark is a percent used from 1 to 99; leave it empty for none.";
+/// Shown when a soft limit isn't a whole percent used from 1 to 99.
+const SOFT_LIMIT_RANGE: &str =
+    "A soft limit is a percent used from 1 to 99; leave it empty for none.";
 /// Shown for Connect on Claude before `claude` is logged in.
 const LOG_IN_CLAUDE: &str = "Log in with claude in a terminal first; Quartermaster finds it.";
 
@@ -72,7 +72,7 @@ pub(crate) fn menu_items(target: MenuTarget) -> Vec<&'static str> {
                 items.push(RECONNECT);
             }
             items.push(LABEL);
-            items.push(RESERVE_MARK);
+            items.push(SOFT_LIMIT);
             items.push(if account.paused { RESUME } else { PAUSE });
             items.push(if account.preferred { UNPREFER } else { PREFER });
             if !account.follows_cli {
@@ -247,7 +247,8 @@ impl App {
             KeyCode::Char('p') => self.toggle_pause(i),
             KeyCode::Char('*') => self.toggle_preferred(i),
             KeyCode::Char('l') => self.open_label(i),
-            KeyCode::Char('m') => self.open_reserve_mark(i),
+            // `m` is kept for people used to 0.7.0, which named this a reserve mark.
+            KeyCode::Char('s' | 'm') => self.open_soft_limit(i),
             KeyCode::Char('d') => self.disconnect(i, now),
             KeyCode::Char('r') => self.reconnect(i),
             _ => return false,
@@ -597,6 +598,7 @@ impl App {
                 }
             }
             SettingsHit::AccountLabel(i) => self.open_label(i),
+            SettingsHit::AccountSoftLimit(i) => self.open_soft_limit(i),
             SettingsHit::AccountPause(i) => self.toggle_pause(i),
             SettingsHit::AccountDisconnect(i) => self.disconnect(i, now),
             SettingsHit::AccountReconnect(i) => self.reconnect(i),
@@ -676,6 +678,7 @@ impl App {
             }
             SettingsHit::Account(i)
             | SettingsHit::AccountLabel(i)
+            | SettingsHit::AccountSoftLimit(i)
             | SettingsHit::AccountPause(i)
             | SettingsHit::AccountDisconnect(i)
             | SettingsHit::AccountReconnect(i) => self.open_account_menu(i, Some(at)),
@@ -823,7 +826,7 @@ impl App {
             }
             MenuTarget::Account(account) => match item {
                 LABEL => self.open_label(account.index),
-                RESERVE_MARK => self.open_reserve_mark(account.index),
+                SOFT_LIMIT => self.open_soft_limit(account.index),
                 PAUSE | RESUME => self.toggle_pause(account.index),
                 PREFER | UNPREFER => self.toggle_preferred(account.index),
                 DISCONNECT => self.disconnect(account.index, now),
@@ -957,14 +960,14 @@ impl App {
         self.settings_set(|s| &mut s.field, Some(field));
     }
 
-    /// Opens account `i`'s reserve mark: the percent used past which routing serves its tier from
+    /// Opens account `i`'s soft limit: the percent used past which routing serves its tier from
     /// other accounts first.
-    fn open_reserve_mark(&mut self, i: usize) {
+    fn open_soft_limit(&mut self, i: usize) {
         let Some(account) = self.view.settings.model.accounts.get(i) else {
             return;
         };
         let field = Field {
-            purpose: FieldFor::ReserveMark(i),
+            purpose: FieldFor::SoftLimit(i),
             text: account
                 .reserve_at
                 .map(|m| m.to_string())
@@ -975,15 +978,15 @@ impl App {
         self.settings_set(|s| &mut s.field, Some(field));
     }
 
-    /// Saves account `i`'s reserve mark from `text` (empty clears it). Anything but a whole percent
+    /// Saves account `i`'s soft limit from `text` (empty clears it). Anything but a whole percent
     /// from 1 to 99 keeps the field open and says so.
-    fn save_reserve_mark(&mut self, i: usize, field: Field, now: Instant) {
+    fn save_soft_limit(&mut self, i: usize, field: Field, now: Instant) {
         let text = field.text.trim().trim_end_matches('%').trim();
         let percent = match text.parse::<u8>() {
             _ if text.is_empty() => None,
             Ok(p @ 1..=99) => Some(p),
             _ => {
-                self.flash(RESERVE_MARK_RANGE, now);
+                self.flash(SOFT_LIMIT_RANGE, now);
                 self.settings_set(|s| &mut s.field, Some(field));
                 return;
             }
@@ -1000,8 +1003,8 @@ impl App {
         self.redraw();
         let text = field.text.trim().to_owned();
         match field.purpose {
-            // An empty reserve mark clears it; every other field needs text.
-            FieldFor::ReserveMark(i) => self.save_reserve_mark(i, field, Instant::now()),
+            // An empty soft limit clears it; every other field needs text.
+            FieldFor::SoftLimit(i) => self.save_soft_limit(i, field, Instant::now()),
             _ if text.is_empty() => {}
             FieldFor::Label(i) => {
                 if let Some(account) = self.account_id(i) {

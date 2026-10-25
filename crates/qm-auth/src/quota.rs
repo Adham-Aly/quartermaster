@@ -11,11 +11,14 @@
 //! OpenAI and Gemini have none, and OpenRouter's account credits and xAI's prepaid balance need a
 //! separate management key, so OpenRouter reports only the key's own budget.
 //!
-//! No Claude credential is ever accessed. Other providers explicitly return
-//! [`QuotaError::Unsupported`]; inference rate-limit headers are not account quota APIs.
+//! No Claude credential is ever accessed. Accounts with no quota source return
+//! [`QuotaError::NoCheck`] with the reason ([`no_check_for`] decides, with no I/O); a Sign in with
+//! ChatGPT login is one, since `wham/usage` takes only the Codex login, so a quota check never
+//! sends or refreshes its token. Inference rate-limit headers are not account quota APIs.
 //! Only allow-listed numeric fields and parsed timestamps escape this module, never provider
 //! strings, response bodies, identifiers, tokens, or underlying authentication errors.
 
+use crate::chatgpt::ChatGptFlow;
 use crate::{Credential, CredentialRef, Secret, TokenKeeper};
 use jiff::Timestamp;
 use qm_types::domain::Provider;
@@ -71,8 +74,9 @@ impl Default for QuotaEndpoints {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum QuotaError {
-    #[error("Quota lookup is not supported for this provider or credential type.")]
-    Unsupported,
+    /// The account has no quota check: a neutral fact, not a failure.
+    #[error("{0}")]
+    NoCheck(NoQuotaCheck),
     #[error("Credentials are unavailable; check the account in Settings.")]
     Credentials,
     #[error("Quota access was refused; check the account in Settings.")]
@@ -83,6 +87,42 @@ pub enum QuotaError {
     Unavailable,
     #[error("Quota service returned an unrecognized response.")]
     InvalidResponse,
+}
+
+/// Why an account has no provider quota check. Not a failure: nothing to fix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NoQuotaCheck {
+    /// The app never reads Claude's login; Claude reports usage during its turns.
+    Claude,
+    /// A Sign in with ChatGPT token is for the OpenAI API; ChatGPT's usage endpoint takes only
+    /// the Codex login.
+    SignInWithChatGpt,
+    /// The provider (or this kind of credential) has no quota API.
+    NoSource,
+}
+
+/// Written to follow "Provider quota: ".
+impl fmt::Display for NoQuotaCheck {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Claude => "not offered; Claude reports its usage during turns",
+            Self::SignInWithChatGpt => "not offered for Sign in with ChatGPT",
+            Self::NoSource => "not offered by this provider",
+        })
+    }
+}
+
+/// Why an account with this provider and base URL has no quota check, or `None` when
+/// [`Quotas::fetch`] would ask one. Reads no credential and makes no request. A ChatGPT account
+/// gets `None` here; its stored login decides ([`NoQuotaCheck::SignInWithChatGpt`]).
+pub fn no_check_for(provider: Provider, base_url: Option<&str>) -> Option<NoQuotaCheck> {
+    match provider {
+        Provider::Claude => Some(NoQuotaCheck::Claude),
+        Provider::ChatGpt | Provider::Copilot | Provider::OpenRouter => None,
+        _ if BalanceSource::of(provider, base_url).is_some() => None,
+        _ => Some(NoQuotaCheck::NoSource),
+    }
 }
 
 /// An allow-listed quota category, never a provider-supplied display string.
@@ -274,10 +314,12 @@ impl Quotas {
         }
     }
 
-    /// Unsupported providers (especially Claude) return before even reading the store. An
-    /// API key's prepaid balance is read where [`BalanceSource::of`] finds one for its
-    /// `base_url`.
-    /// A ChatGPT 401 retries once via `TokenKeeper::fresh`; Copilot uses the stored GitHub
+    /// Accounts with no quota check ([`no_check_for`], especially Claude) return
+    /// [`QuotaError::NoCheck`] before even reading the store. An API key's prepaid balance is
+    /// read where [`BalanceSource::of`] finds one for its `base_url`.
+    /// A Sign in with ChatGPT login returns [`NoQuotaCheck::SignInWithChatGpt`] after reading
+    /// the stored credential, never refreshing or sending it. A Codex login's 401 retries once
+    /// via `TokenKeeper::fresh`; Copilot uses the stored GitHub
     /// refresh token, not its inference token, so re-exchanging the latter cannot fix a 401.
     /// Quota-only failures do not mark inference credentials unhealthy.
     pub async fn fetch(
@@ -286,22 +328,35 @@ impl Quotas {
         key: &CredentialRef,
         base_url: Option<&str>,
     ) -> Result<QuotaSummary, QuotaError> {
+        if let Some(why) = no_check_for(provider, base_url) {
+            return Err(QuotaError::NoCheck(why));
+        }
         let balance = BalanceSource::of(provider, base_url);
         let endpoint = match (provider, balance) {
             (_, Some(source)) => source.endpoint(&self.endpoints),
             (Provider::ChatGpt, _) => &self.endpoints.chatgpt,
             (Provider::Copilot, _) => &self.endpoints.copilot,
             (Provider::OpenRouter, _) => &self.endpoints.openrouter,
-            _ => return Err(QuotaError::Unsupported),
+            _ => return Err(QuotaError::NoCheck(NoQuotaCheck::NoSource)),
         };
         validate_endpoint(endpoint)?;
-        // Copilot quota uses the long-lived GitHub token, independently of whether the
-        // short-lived inference token can still be exchanged successfully.
-        let mut credential = if provider == Provider::Copilot {
+        let stored = || {
             self.tokens
                 .stored(key)
                 .map_err(|_| QuotaError::Credentials)?
-                .ok_or(QuotaError::Credentials)?
+                .ok_or(QuotaError::Credentials)
+        };
+        // `wham/usage` takes only the Codex login. A Sign in with ChatGPT token is for the
+        // OpenAI API: sending it only earns a 401 and a forced refresh, so it is never sent.
+        if provider == Provider::ChatGpt
+            && ChatGptFlow::of(&stored()?) == Some(ChatGptFlow::SignInWithChatGpt)
+        {
+            return Err(QuotaError::NoCheck(NoQuotaCheck::SignInWithChatGpt));
+        }
+        // Copilot quota uses the long-lived GitHub token, independently of whether the
+        // short-lived inference token can still be exchanged successfully.
+        let mut credential = if provider == Provider::Copilot {
+            stored()?
         } else {
             self.tokens
                 .fresh(provider, key, None)
@@ -323,7 +378,7 @@ impl Quotas {
                 (Credential::OAuth { refresh_token, .. }, Provider::Copilot) => {
                     (refresh_token.as_ref().ok_or(QuotaError::Credentials)?, None)
                 }
-                _ => return Err(QuotaError::Unsupported),
+                _ => return Err(QuotaError::NoCheck(NoQuotaCheck::NoSource)),
             };
             let response = self.request(provider, endpoint, token, account_id).await?;
             if response.status() == reqwest::StatusCode::UNAUTHORIZED
@@ -337,7 +392,12 @@ impl Quotas {
                     .map_err(|_| QuotaError::Credentials)?;
                 continue;
             }
-            match response.status().as_u16() {
+            let status = response.status().as_u16();
+            if !(200..=299).contains(&status) {
+                // Only the provider and the numeric status: never a URL, token, body or ID.
+                tracing::info!(%provider, status, "a quota check was refused or failed");
+            }
+            match status {
                 200..=299 => {}
                 401 | 403 => return Err(QuotaError::Refused),
                 429 => return Err(QuotaError::RateLimited),
@@ -349,7 +409,7 @@ impl Quotas {
                 (Provider::ChatGpt, _) => parse_chatgpt(&value),
                 (Provider::Copilot, _) => parse_copilot(&value),
                 (Provider::OpenRouter, _) => parse_openrouter(&value),
-                _ => Err(QuotaError::Unsupported),
+                _ => Err(QuotaError::NoCheck(NoQuotaCheck::NoSource)),
             };
         }
         Err(QuotaError::Refused)

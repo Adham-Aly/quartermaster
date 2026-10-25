@@ -2,8 +2,13 @@
 //! check's numbers and reset times are also stored on the account (`accounts.quota`, through
 //! `crate::quota_pools`) for quota-aware routing. The new pools are worked out on the database
 //! thread from the reading stored there, so a balance keeps its last top-up between checks.
+//! An account with no quota check (Claude, keys without a quota API, a Sign in with ChatGPT
+//! login) gets a neutral note instead, and makes no request.
 use super::{Inner, accounts};
-use qm_auth::{CredentialRef, quota::Quotas};
+use qm_auth::{
+    CredentialRef,
+    quota::{NoQuotaCheck, QuotaError, Quotas},
+};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -16,6 +21,8 @@ const OPEN_COOLDOWN: Duration = Duration::from_secs(30);
 pub(super) struct CachedQuota {
     pub lines: Vec<String>,
     pub problem: Option<String>,
+    /// Why the account has no quota check; never a problem.
+    pub note: Option<String>,
     pub refreshing: bool,
     pub checked_at: Option<String>,
     attempted: Option<Instant>,
@@ -29,6 +36,15 @@ impl CachedQuota {
         account.quota_problem.clone_from(&self.problem);
         account.quota_refreshing = self.refreshing;
         account.quota_checked_at.clone_from(&self.checked_at);
+        account.quota_note.clone_from(&self.note);
+    }
+
+    /// The account has no quota check: say why, and drop anything an earlier check left.
+    fn no_check(&mut self, why: NoQuotaCheck) {
+        self.note = Some(why.to_string());
+        self.problem = None;
+        self.lines.clear();
+        self.checked_at = None;
     }
 }
 
@@ -78,6 +94,13 @@ async fn refresh_with(inner: &Arc<Inner>, opened: bool, quotas: Option<Arc<Quota
             .retain(|id, _| accounts.iter().any(|a| a.id == *id));
         for account in accounts {
             let cached = state.quotas.entry(account.id).or_default();
+            // Decided from the provider alone, with no request and no credential read.
+            if let Some(why) =
+                qm_auth::quota::no_check_for(account.provider, account.base_url.as_deref())
+            {
+                cached.no_check(why);
+                continue;
+            }
             if cached.refreshing || !due(cached.attempted, now, interval) {
                 continue;
             }
@@ -109,7 +132,7 @@ async fn refresh_with(inner: &Arc<Inner>, opened: bool, quotas: Option<Arc<Quota
                         .fetch(account.provider, &key, account.base_url.as_deref())
                         .await
                 }
-                None => Err(qm_auth::quota::QuotaError::Unsupported),
+                None => Err(QuotaError::NoCheck(NoQuotaCheck::NoSource)),
             };
             let mut pools = None;
             {
@@ -124,9 +147,11 @@ async fn refresh_with(inner: &Arc<Inner>, opened: bool, quotas: Option<Arc<Quota
                             cached.lines =
                                 summary.buckets.iter().map(ToString::to_string).collect();
                             cached.problem = None;
+                            cached.note = None;
                             cached.checked_at = Some(inner.clock.now().to_string());
                             pools = Some(summary);
                         }
+                        Err(QuotaError::NoCheck(why)) => cached.no_check(why),
                         Err(error) => cached.problem = Some(error.to_string()),
                     }
                 }
@@ -163,7 +188,7 @@ mod tests {
     use crate::api::{ApiPart, Conversation, Handled};
     use crate::routing::{ModelCatalog, StarterTiers};
     use crate::settings_api::{SettingsDeps, SettingsPart};
-    use qm_auth::quota::{QuotaEndpoints, QuotaError};
+    use qm_auth::quota::QuotaEndpoints;
     use qm_auth::{
         AuthError, Credential, CredentialStore, LoginEndpoints, LoginHealth, Secret, TokenKeeper,
     };
@@ -494,19 +519,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_quota_check_feeds_routing_and_the_reserve_mark_holds_the_account_back() {
+    async fn a_quota_check_feeds_routing_and_the_soft_limit_holds_the_account_back() {
         let mut f = Fixture::new().await;
         let view = f.fill().await;
         assert_eq!(
             view.accounts[0].routing.as_deref(),
-            Some("quota unknown (pay-per-token keys serve last) · no reserve mark")
+            Some("quota unknown (pay-per-token keys serve last)")
         );
         // $3 of a $10 budget spent: routing reads 30% used.
         f.success().await;
         let view = f.fill().await;
         assert_eq!(
             view.accounts[0].routing.as_deref(),
-            Some("prepaid budget 30% used · no reserve mark")
+            Some("prepaid budget 30% used")
         );
         f.command(Command::SetReserveMark {
             account: f.account,
@@ -517,7 +542,7 @@ mod tests {
         assert_eq!(view.accounts[0].reserve_at, Some(25));
         assert_eq!(
             view.accounts[0].routing.as_deref(),
-            Some("prepaid budget 30% used · reserve at 25% used · held in reserve")
+            Some("prepaid budget 30% used · past its soft limit: others serve first")
         );
         f.command(Command::SetReserveMark {
             account: f.account,
@@ -538,10 +563,7 @@ mod tests {
         .await;
         let view = f.fill().await;
         assert_eq!(view.accounts[0].quota_lines, ["Balance: $10.00"]);
-        assert_eq!(
-            routing(&view),
-            "balance 0% used since the last top-up · no reserve mark"
-        );
+        assert_eq!(routing(&view), "balance 0% used since the last top-up");
         f.command(Command::SetReserveMark {
             account: f.account,
             percent: Some(25),
@@ -556,7 +578,7 @@ mod tests {
         .await;
         assert_eq!(
             routing(&f.fill().await),
-            "balance 30% used since the last top-up · reserve at 25% used · held in reserve"
+            "balance 30% used since the last top-up · past its soft limit: others serve first"
         );
         // A top-up to $8 is a new reference, though it is less than the first.
         f.clock.advance(OPEN_COOLDOWN);
@@ -567,7 +589,7 @@ mod tests {
         .await;
         assert_eq!(
             routing(&f.fill().await),
-            "balance 0% used since the last top-up · reserve at 25% used"
+            "balance 0% used since the last top-up"
         );
         f.clock.advance(OPEN_COOLDOWN);
         f.command(Command::RefreshQuotas).await;
@@ -577,8 +599,8 @@ mod tests {
         .await;
         assert_eq!(
             routing(&f.fill().await),
-            "balance 100% used since the last top-up · reserve at 25% used · at its limit: \
-             skipped until a check finds money left"
+            "balance 100% used since the last top-up · at its limit: skipped until a check finds \
+             money left"
         );
     }
 
@@ -593,18 +615,92 @@ mod tests {
         .await;
         let view = f.fill().await;
         assert_eq!(view.accounts[0].quota_lines, ["Balance: CN¥20.00"]);
-        assert_eq!(
-            routing(&view),
-            "balance 0% used since the last top-up · no reserve mark"
-        );
+        assert_eq!(routing(&view), "balance 0% used since the last top-up");
         f.clock.advance(OPEN_COOLDOWN);
         f.command(Command::RefreshQuotas).await;
         f.reply(r#"{"code":0,"data":{"available_balance":5.0,"cash_balance":5.0},"status":true}"#)
             .await;
         assert_eq!(
             routing(&f.fill().await),
-            "balance 75% used since the last top-up · no reserve mark"
+            "balance 75% used since the last top-up"
         );
+    }
+
+    #[tokio::test]
+    async fn a_claude_or_keyless_account_gets_a_note_and_no_request() {
+        for base_url in [None, Some("https://api.example.com/v1")] {
+            let provider = if base_url.is_some() {
+                Provider::Custom
+            } else {
+                Provider::Anthropic
+            };
+            let f = Fixture::with(provider, base_url).await;
+            // Claude has no credential here at all: the app never reads its login.
+            let at = f.clock.now();
+            let claude = f
+                .part
+                .inner
+                .db
+                .call(move |conn| {
+                    accounts::insert_account(
+                        conn,
+                        &accounts::NewAccount {
+                            provider: Provider::Claude,
+                            label: "Claude".into(),
+                            kind: AccountKind::Subscription,
+                            credential_ref: None,
+                            base_url: None,
+                            at,
+                        },
+                    )
+                })
+                .await
+                .unwrap();
+            for _ in 0..2 {
+                let view = f.fill().await;
+                for account in &view.accounts {
+                    let note = if account.id == claude {
+                        "not offered; Claude reports its usage during turns"
+                    } else {
+                        "not offered by this provider"
+                    };
+                    assert_eq!(account.quota_note.as_deref(), Some(note));
+                    assert_eq!(account.quota_problem, None);
+                    assert!(!account.quota_refreshing);
+                    assert_eq!(account.quota_lines, [] as [String; 0]);
+                    assert_eq!(account.quota_checked_at, None);
+                }
+                assert_eq!(view.accounts.len(), 2);
+                // Neither the periodic worker nor the open cooldown ever asks.
+                f.clock.advance(PERIOD);
+                f.command(Command::RefreshQuotas).await;
+            }
+            assert_eq!(f.count.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_with_chatgpt_account_gets_a_note_not_a_problem() {
+        let f = Fixture::with(Provider::ChatGpt, None).await;
+        // Sign in with ChatGPT's login has no account ID; `wham/usage` takes only the Codex one.
+        *f.store.0.lock().unwrap() = Some(Credential::OAuth {
+            access_token: Secret::new("synthetic-access"),
+            refresh_token: Some(Secret::new("synthetic-refresh")),
+            expires_at: None,
+            account_id: None,
+            client_id: Some("synthetic-client".into()),
+        });
+        f.fill().await;
+        f.settled().await;
+        let account = f.fill().await.accounts.remove(0);
+        assert_eq!(
+            account.quota_note.as_deref(),
+            Some("not offered for Sign in with ChatGPT")
+        );
+        assert_eq!(account.quota_problem, None);
+        assert!(!account.quota_refreshing);
+        assert_eq!(account.quota_lines, [] as [String; 0]);
+        assert_eq!(f.count.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

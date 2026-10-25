@@ -77,10 +77,13 @@ Supported sources are ChatGPT's usage windows, GitHub Copilot's chat/completions
 request quotas, OpenRouter's **per-key spending budget** (not wallet credit), and the
 **prepaid balance** of every API key whose provider lets that same key read it.
 ChatGPT and Copilot use private provider endpoints and may refuse access or change their
-response formats. Other providers, other custom endpoints and other credential types
-explicitly show that quota lookup is unsupported. In particular, the app never reads
-Claude's subscription credentials. An unlimited OpenRouter key budget does not mean
-unlimited account credit.
+response formats. ChatGPT's usage windows need the Codex login: a **Sign in with ChatGPT**
+login's token is for the OpenAI API, so a quota check never sends or refreshes it.
+Accounts without a quota check (Claude, Sign in with ChatGPT, and API keys or custom
+endpoints with no quota API) show a neutral, dim note such as *Provider quota: not offered
+by this provider*. They make no request and never show a problem. In particular, the app
+never reads Claude's subscription credentials; Claude's usage comes from its engine. An
+unlimited OpenRouter key budget does not mean unlimited account credit.
 
 Prepaid (top-up) balances, by API-key provider:
 
@@ -100,7 +103,8 @@ serves, never to a URL built from the endpoint. Subscriptions (Kimi's included) 
 top-up balance; their quota comes from their windows or, for Claude, its engine.
 
 Lookups use the connected account's stored token and the existing refresh mechanism;
-provider response bodies and credentials never appear in quota errors. The display
+provider response bodies and credentials never appear in quota errors. A refused or failed
+check is logged with only its provider and numeric HTTP status. The display
 readings live only in memory and are forgotten on disconnect. Each successful check
 also stores, on the account, just the percent used of each pool and when it resets (for
 a balance, also the amount left and the balance at the last top-up), which routing reads
@@ -136,35 +140,38 @@ any limit (a window at 100% that hasn't reset, or a spent budget or balance) is 
 until it resets or a check finds money again; Copilot's monthly premium requests rank but
 never cut an account off, since Copilot keeps serving included models.
 
-**Reserve marks.** In **Settings ▸ Accounts**, select an account and press `m` (or
-right-click ▸ *Reserve mark…*) to set its reserve mark: a **percent used**, 1 to 99.
-Once its largest pool reaches that mark, the account is *held in reserve*: other accounts
-in the tier serve first. Leave the field empty for no mark. Each account's *Routing* line
-shows what routing reads ("7-day window 60% used · reserve at 55% used · held in
-reserve"). Marks are per account, so two keys on the same provider can differ.
+**Soft limits.** In **Settings ▸ Accounts**, each account has a *Soft limit* line under its
+*Routing* line. Click its **Set** (or **Change**) button, select the account and press `s`,
+or right-click ▸ *Soft limit…* to set it: a **percent used**, 1 to 99. Once its largest
+pool reaches its soft limit, the tier's other accounts serve first; the account still
+serves when every account is past its own. Leave the field empty for no soft limit. Each
+account's *Routing* line shows what routing reads ("7-day window 60% used · past its soft
+limit: others serve first"). Soft limits are per account, so two keys on the same
+provider can differ.
 
 **The order within a tier**, best first:
 
-1. Under its mark (and under 90% used): the least used serves.
+1. Under its soft limit (and under 90% used): the least used serves.
 2. Subscriptions whose quota is unknown.
-3. Nearly used up (90% or more) but under its mark.
-4. In reserve: the one **least far past its mark**, ties going to the least used overall.
+3. Nearly used up (90% or more) but under its soft limit.
+4. Past its soft limit: the one **least far past it**, ties going to the least used
+   overall.
 5. Pay-per-token API keys whose quota is unknown.
 
 Then subscriptions before keys, newer models in the same family, and placement order.
-With no marks set this is a plain comparison of quota left. For example, with Claude at
-60% used (mark 55%), ChatGPT at 40% (mark 30%) and a DeepSeek key at 80% (mark 75%), all
-three are in reserve; Claude and DeepSeek are 5 points past and ChatGPT 10, and Claude
-wins the tie by being less used. The routing record says when quota made the choice
-("Quota chose its claude account (60% used, past its 55% reserve mark) over custom (80%
-used, past its 75% reserve mark)").
+With no soft limits set this is a plain comparison of quota left. For example, with Claude
+at 60% used (soft limit 55%), ChatGPT at 40% (soft limit 30%) and a DeepSeek key at 80%
+(soft limit 75%), all three are past their soft limits; Claude and DeepSeek are 5 points
+past and ChatGPT 10, and Claude wins the tie by being less used. The routing record says
+when quota made the choice ("Quota chose its claude account (60% used, past its 55% soft
+limit) over custom (80% used, past its 75% soft limit)").
 
 **Unknown quota** is never read as all left, nor as used up. Claude reports usage only
 through its engine, so a Claude account shows *quota unknown* until its first turn;
 API keys with no quota source (Anthropic, OpenAI, Gemini, xAI, an OpenRouter key with no
 limit, and custom endpoints without a balance API) serve after every subscription; a key
 with a known budget or balance (an OpenRouter key's limit, DeepSeek, Moonshot) competes on
-quota and its reserve mark like any other account.
+quota and its soft limit like any other account.
 
 ## Effort belongs to the entry
 
@@ -334,7 +341,7 @@ routing never changes those settings. Secondmates follow the same settings.
   rather than a crew entry's effort, adjusted to the model's supported efforts.
   An explicitly selected model may use an API key as well as a subscription.
 
-Changes apply at the next idle moment, never mid-turn. Quota and reserve marks do not
+Changes apply at the next idle moment, never mid-turn. Quota and soft limits do not
 move the Quartermaster's own seat between accounts, since it would switch engines at
 every idle moment; they rank crewmates only. An account with no quota left is still
 skipped.

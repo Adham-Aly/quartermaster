@@ -199,8 +199,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "the selected row's menu, or what its control does",
             ),
             (
-                "c p * l d r",
-                "accounts: connect, pause, preferred, label, disconnect, reconnect",
+                "c p * l s d r",
+                "accounts: connect, pause, preferred, label, soft limit, disconnect, reconnect",
             ),
             (
                 "a / m x",

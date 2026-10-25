@@ -1,5 +1,5 @@
 //! Quota-aware routing through the store: the readings on each account's row (engine windows and
-//! quota checks) and its reserve mark decide which account in the tier serves.
+//! quota checks) and its soft limit decide which account in the tier serves.
 
 use super::*;
 use qm_policy::overrides::Authority;
@@ -146,7 +146,7 @@ fn the_worked_example_routes_to_claude() {
     assert!(
         record
             .why
-            .contains("Quota chose its claude account (60% used, past its 55% reserve mark)"),
+            .contains("Quota chose its claude account (60% used, past its 55% soft limit)"),
         "{}",
         record.why
     );
@@ -181,7 +181,7 @@ fn a_named_model_still_overrides_quota() {
 }
 
 #[test]
-fn a_reserve_mark_outside_one_to_ninety_nine_is_refused() {
+fn a_soft_limit_outside_one_to_ninety_nine_is_refused() {
     let (conn, _) = fixture();
     for bad in [0, 100] {
         assert!(accounts::set_reserve_at(&conn, AccountId::new(CLAUDE), Some(bad)).is_err());
@@ -213,7 +213,7 @@ fn balance_check(conn: &Connection, account: i64, usd: f64) {
 }
 
 #[test]
-fn a_deepseek_balance_competes_on_quota_and_its_reserve_mark() {
+fn a_deepseek_balance_competes_on_quota_and_its_soft_limit() {
     let (conn, task) = fixture();
     engine(&conn, CLAUDE, 5.0, 60.0);
     engine(&conn, CHATGPT, 10.0, 40.0);
@@ -227,7 +227,7 @@ fn a_deepseek_balance_competes_on_quota_and_its_reserve_mark() {
     // A top-up to $6 resets the reference: 0% used again.
     balance_check(&conn, DEEPSEEK, 6.0);
     assert_eq!(account(&route(&conn, &facts(task))), DEEPSEEK);
-    // $4.50 of $6 is 25% used: past a 20% mark, it is held in reserve.
+    // $4.50 of $6 is 25% used: past a 20% soft limit, others serve first.
     balance_check(&conn, DEEPSEEK, 4.5);
     mark(&conn, DEEPSEEK, Some(20));
     mark(&conn, CHATGPT, Some(50));
