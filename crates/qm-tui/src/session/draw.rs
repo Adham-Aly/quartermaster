@@ -166,7 +166,7 @@ fn session_pane(
         };
         let mut rows = conversation::rows(chats, &notes, rows_area.width, &voices);
         if compacting.is_none() && view.is_some_and(|v| v.thinking) {
-            rows.extend(conversation::thinking_rows(chats, app));
+            rows.extend(conversation::thinking_rows(chats, app, agent));
         }
         rows
     };
@@ -403,7 +403,20 @@ pub(crate) fn rows(
         &mut notes, None, max, first,
     ));
     if busy_row && running && !writing {
-        out.rows.push(Row::plain(spinner::line(app, "working")));
+        let spinner = app
+            .session_view()
+            .map_or(spinner::Spinner::Helm, |v| spinner::Spinner::of(v.agent));
+        // The turn's prompt: the last line the worker didn't write.
+        let since = lines
+            .iter()
+            .rev()
+            .find(|l| !matches!(l.kind, SessionLineKind::Agent | SessionLineKind::Tool))
+            .map(|l| l.at);
+        out.rows.push(Row::plain(spinner::line(
+            app,
+            spinner,
+            &spinner::verb(spinner, since),
+        )));
     }
     out.rows
 }

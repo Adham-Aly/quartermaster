@@ -185,9 +185,12 @@ with `theme::tone`. Tool names are coloured by family in `widgets/tools.rs`.
 ## Text and terminal
 
 - Streaming text shows whole lines only (`widgets/stream.rs::committed`), so nothing reflows.
-- An agent thinking or busy shows the one busy indicator, `widgets/spinner.rs` (`⣾ thinking`, or
-  the glyph alone in the crew tree), never a widget's own. It redraws only while drawn: one cell,
-  8 steps a second, nothing when none is on screen. An age or running seconds count sets
+- An agent thinking or busy shows a busy indicator from `widgets/spinner.rs`, never a widget's
+  own: one `Spinner` per role (`Spinner::of`: Lookout `ө` for the Quartermaster, Insignia `✩` for
+  secondmates, Helm `⎈` for crewmates), the same in its conversation and its crew-tree row, plus
+  Asterism `⁂` for compacting and Compass Card `⊕` for a login. Conversations add the turn's
+  nautical verb (`ө Charting a course…`, `spinner::verb`, fixed for the turn). Each kind steps at
+  its own pace and redraws only while drawn (`App::spinning` bits), nothing when none is on screen. An age or running seconds count sets
   `App::ages_shown` when drawn, so ticks redraw once a second while one is on screen.
 - The context strip (`widgets/context_strip.rs`) is one line in the middle column box's bottom
   border, right-aligned (after a session's status): a bar, the shown agent's context against its

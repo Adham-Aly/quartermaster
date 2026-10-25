@@ -120,7 +120,8 @@ pub(crate) fn rows(app: &App, inner_width: u16) -> Vec<ListRow> {
                 (app.view.selected_crew == Some(row.agent)).then_some(!app.view.pointer_picked);
             let hovered = selected != Some(true) && app.term.hover == Some(hit);
             // A flag wins over the busy indicator, which then isn't drawn at all.
-            let busy = (row.busy && waiting(row).is_none()).then(|| spinner::glyph(app));
+            let busy = (row.busy && waiting(row).is_none())
+                .then(|| spinner::glyph(app, spinner::Spinner::of(row.agent)));
             ListRow {
                 line: line(&tree, i, columns[i], hovered, busy),
                 hit: Some(hit),

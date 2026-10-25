@@ -153,7 +153,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
         rows.push(Row::plain(Line::default()));
         rows.push(row);
     } else if thinking {
-        rows.extend(thinking_rows(&app.snapshot.conversation, app));
+        rows.extend(thinking_rows(&app.snapshot.conversation, app, agent));
     }
     let visible = usize::from(inner.height);
     let max = rows.len().saturating_sub(visible);
@@ -209,7 +209,8 @@ pub(crate) fn rows(
 /// The busy indicator under a conversation whose agent is in a turn and hasn't written yet: right
 /// under your message, on the row the reply's header will take; after a blank row otherwise, as
 /// any other message would be.
-pub(crate) fn thinking_rows(chats: &[ChatLine], app: &App) -> Vec<Row> {
+pub(crate) fn thinking_rows(chats: &[ChatLine], app: &App, agent: AgentRef) -> Vec<Row> {
+    let spinner = spinner::Spinner::of(agent);
     let answering = chats
         .last()
         .is_none_or(|c| c.source == MessageSource::You && !c.queued);
@@ -217,7 +218,11 @@ pub(crate) fn thinking_rows(chats: &[ChatLine], app: &App) -> Vec<Row> {
     if !answering {
         out.push(Row::plain(Line::default()));
     }
-    out.push(Row::plain(spinner::line(app, "thinking")));
+    out.push(Row::plain(spinner::line(
+        app,
+        spinner,
+        &spinner::verb(spinner, chats.last().map(|c| c.at)),
+    )));
     out
 }
 

@@ -9,11 +9,12 @@ use super::{SettingsHit, SettingsView, boxed};
 use crate::app::App;
 use crate::text::{cells, truncate, width};
 use crate::theme;
+use crate::widgets::spinner::Spinner;
 use ratatui::layout::Rect;
 use std::time::Duration;
 
-/// The spinner's frames, a tenth of a second each.
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// The busy indicator while a login waits on the browser.
+const SPINNER: Spinner = Spinner::CompassCard;
 
 /// The hint row.
 pub(super) fn hints(view: &SettingsView) -> (&'static str, &'static str) {
@@ -47,7 +48,7 @@ pub(super) fn spinner_frame(login: &Login, view: &SettingsView) -> usize {
         (Some(at), Some(now)) => now.saturating_duration_since(at),
         _ => Duration::ZERO,
     };
-    usize::try_from(elapsed.as_millis() / 100).unwrap_or(0) % SPINNER.len()
+    SPINNER.frame_at(elapsed)
 }
 
 /// The left box's least width: the API-key row (its names, a cell, `Add key`) inside its
@@ -277,7 +278,12 @@ fn draw_waiting(
         p.button(end + 1, y + 1, "Cancel", SettingsHit::CancelLogin);
         return;
     }
-    let mut end = p.text(x, y, SPINNER[spinner_frame(login, view)], theme::accent());
+    let mut end = p.text(
+        x,
+        y,
+        SPINNER.frames()[spinner_frame(login, view)],
+        theme::accent(),
+    );
     end = p.text(
         end + 1,
         y,

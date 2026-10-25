@@ -80,10 +80,11 @@ pub(crate) struct App {
     pub(crate) setup: crate::setup::SetupState,
     /// When the UI started: the busy indicator's steps count from here.
     started: Instant,
-    /// The busy indicator's step (`widgets::spinner`).
-    pub(crate) spin: usize,
-    /// The frame being drawn, or the last one, shows a busy indicator, so ticks advance it.
-    pub(crate) spinning: Cell<bool>,
+    /// Each busy indicator's frame, by `Spinner::index` (`widgets::spinner`).
+    pub(crate) spin: [usize; crate::widgets::spinner::Spinner::ALL.len()],
+    /// The busy indicators the frame being drawn, or the last one, shows (`Spinner::bit`), so
+    /// ticks advance them.
+    pub(crate) spinning: Cell<u8>,
     /// The frame shows an age or a running count of seconds, so ticks redraw it once a second.
     pub(crate) ages_shown: Cell<bool>,
     /// The second (since `started`) the last age redraw was for.
@@ -111,8 +112,8 @@ impl App {
             dirty: true,
             setup: crate::setup::SetupState::default(),
             started: Instant::now(),
-            spin: 0,
-            spinning: Cell::new(false),
+            spin: [0; crate::widgets::spinner::Spinner::ALL.len()],
+            spinning: Cell::new(0),
             ages_shown: Cell::new(false),
             ages_second: 0,
         }
@@ -182,7 +183,7 @@ impl App {
     fn draw_frame(&mut self, frame: &mut Frame<'_>) {
         let area = frame.area();
         self.term.size = (area.width, area.height);
-        self.spinning.set(false);
+        self.spinning.set(0);
         self.ages_shown.set(false);
         let mut map = FrameMap::default();
         if let Some(body) = chrome::draw(frame, self, &mut map) {
@@ -296,10 +297,16 @@ impl App {
     /// Time-driven changes: the quit window closing, a flash running out, the busy indicator's
     /// next step (only while one is on screen).
     pub(crate) fn tick(&mut self, now: Instant) {
-        if self.spinning.get() {
-            let step =
-                crate::widgets::spinner::step_at(now.saturating_duration_since(self.started));
-            self.change(|app| &mut app.spin, step);
+        let shown = self.spinning.get();
+        if shown != 0 {
+            let elapsed = now.saturating_duration_since(self.started);
+            let mut spin = self.spin;
+            for spinner in crate::widgets::spinner::Spinner::ALL {
+                if shown & spinner.bit() != 0 {
+                    spin[spinner.index()] = spinner.frame_at(elapsed);
+                }
+            }
+            self.change(|app| &mut app.spin, spin);
         }
         if self.ages_shown.get() {
             let second = now.saturating_duration_since(self.started).as_secs();

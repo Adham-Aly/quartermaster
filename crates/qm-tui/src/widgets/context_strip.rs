@@ -94,7 +94,12 @@ fn border_runs(app: &App, agent: AgentRef, max: usize) -> Vec<Run> {
             let since = view.compacting.map_or(now, |c| c.since);
             let secs = now.duration_since(since).as_secs().max(0);
             app.ages_shown.set(true);
-            lead.push((spinner::glyph(app).content.into_owned(), theme::ok()));
+            lead.push((
+                spinner::glyph(app, spinner::Spinner::Asterism)
+                    .content
+                    .into_owned(),
+                theme::ok(),
+            ));
             lead.push((format!(" compacting context… {secs}s"), theme::accent()));
         }
         Some(view) => {
@@ -493,7 +498,7 @@ pub(crate) fn note_rows(note: &CompactionNote, width: u16) -> Vec<Row> {
         .collect()
 }
 
-/// The busy row while the agent's context is being compacted: `⣯ Compacting context… 12s`.
+/// The busy row while the agent's context is being compacted: `⁂ Compacting context… 12s`.
 pub(crate) fn compacting_row(app: &App, agent: AgentRef) -> Option<Row> {
     let compacting = view_for(app, agent)?.compacting?;
     let secs = Timestamp::now()
@@ -503,6 +508,7 @@ pub(crate) fn compacting_row(app: &App, agent: AgentRef) -> Option<Row> {
     app.ages_shown.set(true);
     Some(Row::plain(spinner::line(
         app,
+        spinner::Spinner::Asterism,
         &format!("Compacting context… {secs}s"),
     )))
 }
