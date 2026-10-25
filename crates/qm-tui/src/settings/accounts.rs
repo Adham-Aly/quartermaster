@@ -3,9 +3,11 @@
 //! account whose login stopped working shows why, with a Reconnect button that replaces its
 //! credential in place.
 //!
-//! Each account also shows what routing reads for it: its largest quota pool's percent used and
-//! its reserve mark (`m`, or "Reserve mark…" on its menu), the percent used past which routing
-//! serves its tier from your other accounts first. A note under the list says how that works.
+//! Each account also shows what routing reads for it: its largest quota pool's percent used, and
+//! its soft limit (the `Set`/`Change` button beside it, `s`, or "Soft limit…" on its menu), the
+//! percent used past which routing serves its tier from your other accounts first. A note under
+//! the list says how that works. An account with no provider quota check says so in a dim note,
+//! never as a problem.
 
 use super::model::{Account, AccountStatus};
 use super::paint::Painter;
@@ -23,7 +25,7 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     // inside the right border.
     let line_room = usize::from(area.width.saturating_sub(8)).max(1);
     let note_room = usize::from(area.width.saturating_sub(3)).max(1);
-    let note = wrap(RESERVE_NOTE, note_room);
+    let note = wrap(LIMIT_NOTE, note_room);
     let rows: u16 = accounts.iter().map(|a| rows_of(a, line_room)).sum::<u16>()
         + if accounts.is_empty() { 3 } else { 1 }
         + if accounts.is_empty() {
@@ -77,8 +79,12 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
             p.text(end + 2, y, &star, theme::accent());
         }
         // Login health, local session usage and provider quotas are independent facts.
-        for (row, (line, style)) in (y + 1..).zip(detail_lines(account, line_room)) {
-            p.text(x + 4, row, &line, style);
+        for (row, detail) in (y + 1..).zip(detail_lines(account, line_room)) {
+            let end = p.text(x + 4, row, &detail.text, detail.style);
+            if let Some(label) = detail.button {
+                // Drawn after the row's own hit, so the button takes the click.
+                p.button(end + 1, row, label, SettingsHit::AccountSoftLimit(i));
+            }
         }
         if selected {
             p.select_row(inner, y);
@@ -101,51 +107,83 @@ pub(super) fn draw(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     }
 }
 
-/// How quota and reserve marks steer routing, under the account list.
-const RESERVE_NOTE: &str = "When a tier has several accounts and you name no model, the one with the most \
-    quota left serves. A reserve mark (m) is a percent USED: past it, the account is held in \
-    reserve and the others serve first; if all are past theirs, the one least far past serves. \
-    An account with no quota left is never used.";
+/// How quota and soft limits steer routing, under the account list.
+const LIMIT_NOTE: &str = "When a tier has several accounts and you name no model, the one with the most \
+    quota left serves. A soft limit (s) is a percent USED: past it, the tier's other accounts \
+    serve first; if all are past theirs, the one least far past serves. An account with no quota \
+    left is never used.";
+
+/// One row under an account's name, and the button drawn one cell after its text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Detail {
+    text: String,
+    style: Style,
+    button: Option<&'static str>,
+}
 
 /// The same wrapped lines drive drawing and geometry, including stale data during refresh/errors.
-fn detail_lines(account: &Account, room: usize) -> Vec<(String, Style)> {
+fn detail_lines(account: &Account, room: usize) -> Vec<Detail> {
     let mut lines = Vec::new();
-    let mut add = |text: String, style| {
-        lines.extend(wrap(&text, room).into_iter().map(|line| (line, style)));
+    let add = |lines: &mut Vec<Detail>, text: String, style: Style| {
+        lines.extend(wrap(&text, room).into_iter().map(|text| Detail {
+            text,
+            style,
+            button: None,
+        }));
     };
     if let Some(problem) = &account.problem {
-        add(format!("Login problem: {problem}"), theme::error());
-    }
-    if account.status == AccountStatus::Active || account.usage.is_some() {
         add(
-            format!(
-                "Session usage: {}",
-                account.usage.as_deref().unwrap_or("unknown")
-            ),
-            theme::dim(),
+            &mut lines,
+            format!("Login problem: {problem}"),
+            theme::error(),
         );
     }
-    if let Some(routing) = &account.routing {
-        let style = if routing.contains("held in reserve") || routing.contains("at its limit") {
-            theme::warn()
-        } else {
-            theme::text()
-        };
-        add(format!("Routing: {routing}"), style);
+    if account.status == AccountStatus::Active || account.usage.is_some() {
+        let usage = account.usage.as_deref().unwrap_or("unknown");
+        add(&mut lines, format!("Session usage: {usage}"), theme::dim());
     }
+    if let Some(routing) = &account.routing {
+        let held = routing.contains("past its soft limit") || routing.contains("at its limit");
+        let style = if held { theme::warn() } else { theme::text() };
+        add(&mut lines, format!("Routing: {routing}"), style);
+    }
+    // At most 21 cells, so never wrapped: the button stays beside the value it changes.
+    let (limit, button) = match account.reserve_at {
+        Some(mark) => (format!("Soft limit: {mark}% used"), "Change"),
+        None => ("Soft limit: none".to_owned(), "Set"),
+    };
+    lines.push(Detail {
+        text: truncate(&limit, room),
+        style: theme::text(),
+        button: Some(button),
+    });
     for line in &account.quota_lines {
-        add(format!("Provider quota: {line}"), theme::text());
+        add(&mut lines, format!("Provider quota: {line}"), theme::text());
     }
     if account.quota_refreshing {
-        add("Provider quota: refreshing…".into(), theme::accent());
+        add(
+            &mut lines,
+            "Provider quota: refreshing…".into(),
+            theme::accent(),
+        );
     } else if account.quota_lines.is_empty() && account.quota_problem.is_none() {
-        add("Provider quota: unknown".into(), theme::dim());
+        // No check at all is a neutral fact, not an unknown reading.
+        let note = account.quota_note.as_deref().unwrap_or("unknown");
+        add(&mut lines, format!("Provider quota: {note}"), theme::dim());
     }
     if let Some(problem) = &account.quota_problem {
-        add(format!("Quota check problem: {problem}"), theme::error());
+        add(
+            &mut lines,
+            format!("Quota check problem: {problem}"),
+            theme::error(),
+        );
     }
     if let Some(checked) = &account.quota_checked_at {
-        add(format!("Quota checked: {checked}"), theme::dim());
+        add(
+            &mut lines,
+            format!("Quota checked: {checked}"),
+            theme::dim(),
+        );
     }
     lines
 }
@@ -198,7 +236,7 @@ mod tests {
             let lines = detail_lines(&account, room);
             let text = lines
                 .iter()
-                .map(|(line, _)| line.as_str())
+                .map(|d| d.text.as_str())
                 .collect::<Vec<_>>()
                 .join(" ");
             for expected in [
@@ -211,14 +249,14 @@ mod tests {
             ] {
                 assert!(text.contains(expected), "missing {expected}: {text}");
             }
-            assert!(lines.iter().all(|(line, _)| width(line) <= room));
+            assert!(lines.iter().all(|d| width(&d.text) <= room));
             assert_eq!(usize::from(rows_of(&account, room)), lines.len() + 2);
         }
         account.status = AccountStatus::Paused;
         assert!(
             detail_lines(&account, 92)
                 .iter()
-                .any(|(line, _)| line.contains("Session usage:"))
+                .any(|d| d.text.contains("Session usage:"))
         );
     }
 
@@ -242,7 +280,8 @@ mod tests {
                 account.quota_refreshing = true;
                 account.quota_checked_at = Some("today 12:04".into());
                 account.routing =
-                    Some("7-day window 60% used · reserve at 55% used · held in reserve".into());
+                    Some("7-day window 60% used · past its soft limit: others serve first".into());
+                account.reserve_at = Some(55);
                 let mut view = qm_types::api::SettingsView::default();
                 view.accounts.push(account);
                 app.view.settings.model = super::super::model::Settings::from_view(&view);
@@ -282,6 +321,7 @@ mod tests {
                     "Quota check problem:",
                     "today 12:04",
                     "Routing: 7-day window 60% used",
+                    "Soft limit: 55% used  Change ",
                     "+ Connect an account",
                     "When a tier has several accounts",
                 ] {
@@ -300,45 +340,103 @@ mod tests {
         assert!(
             detail_lines(&account, 100)
                 .iter()
-                .any(|(line, _)| line == "Provider quota: unknown")
+                .any(|d| d.text == "Provider quota: unknown")
         );
         account.quota_problem =
             Some("a long provider error that should wrap without truncation".into());
         let lines = detail_lines(&account, 20);
         assert!(lines.len() > 3);
-        assert!(lines.iter().all(|(line, _)| width(line) <= 20));
+        assert!(lines.iter().all(|d| width(&d.text) <= 20));
         assert_eq!(usize::from(rows_of(&account, 20)), lines.len() + 2);
     }
 
     #[test]
     fn the_routing_line_warns_when_held_back_and_wraps() {
         let mut account = Account::new(AccountId::new(1), "Work");
-        account.routing = Some("7-day window 30% used · reserve at 80% used".into());
+        account.routing = Some("7-day window 30% used".into());
         let routing = |a: &Account, room| {
             detail_lines(a, room)
                 .into_iter()
-                .filter(|(line, _)| {
-                    !line.starts_with("Session usage") && !line.starts_with("Provider quota")
+                .filter(|d| {
+                    !d.text.starts_with("Session usage")
+                        && !d.text.starts_with("Provider quota")
+                        && !d.text.starts_with("Soft limit")
                 })
+                .map(|d| (d.text, d.style))
                 .collect::<Vec<_>>()
         };
         assert_eq!(
             routing(&account, 100),
-            [(
-                "Routing: 7-day window 30% used · reserve at 80% used".to_owned(),
-                theme::text()
-            )]
+            [("Routing: 7-day window 30% used".to_owned(), theme::text())]
         );
-        for state in ["held in reserve", "at its limit: skipped until it resets"] {
-            account.routing = Some(format!(
-                "7-day window 90% used · reserve at 80% used · {state}"
-            ));
+        for state in [
+            "past its soft limit: others serve first",
+            "at its limit: skipped until it resets",
+        ] {
+            account.routing = Some(format!("7-day window 90% used · {state}"));
             let lines = routing(&account, 30);
             assert!(lines.len() > 1);
             assert!(
                 lines
                     .iter()
                     .all(|(line, style)| width(line) <= 30 && *style == theme::warn())
+            );
+        }
+    }
+
+    #[test]
+    fn the_soft_limit_line_sits_under_routing_with_its_button() {
+        let mut account = Account::new(AccountId::new(1), "Work");
+        account.routing = Some("7-day window 30% used".into());
+        let lines = detail_lines(&account, 100);
+        let at = lines
+            .iter()
+            .position(|d| d.text.starts_with("Routing:"))
+            .unwrap();
+        assert_eq!(
+            lines[at + 1],
+            Detail {
+                text: "Soft limit: none".into(),
+                style: theme::text(),
+                button: Some("Set"),
+            }
+        );
+        account.reserve_at = Some(55);
+        account.status = AccountStatus::Paused;
+        let lines = detail_lines(&account, 100);
+        let limit = lines
+            .iter()
+            .find(|d| d.text.starts_with("Soft limit"))
+            .unwrap();
+        assert_eq!(limit.text, "Soft limit: 55% used");
+        assert_eq!(limit.button, Some("Change"));
+        // The only line with a button.
+        assert_eq!(lines.iter().filter(|d| d.button.is_some()).count(), 1);
+    }
+
+    #[test]
+    fn a_quota_note_is_dim_and_replaces_unknown() {
+        let mut account = Account::new(AccountId::new(1), "Claude Max");
+        account.quota_note = Some("not offered; Claude reports its usage during turns".into());
+        let lines = detail_lines(&account, 100);
+        let quota = lines
+            .iter()
+            .filter(|d| d.text.starts_with("Provider quota"))
+            .collect::<Vec<_>>();
+        assert_eq!(quota.len(), 1);
+        assert_eq!(
+            quota[0].text,
+            "Provider quota: not offered; Claude reports its usage during turns"
+        );
+        assert_eq!(quota[0].style, theme::dim());
+        for absent in [
+            "Provider quota: unknown",
+            "Quota check problem",
+            "refreshing",
+        ] {
+            assert!(
+                !lines.iter().any(|d| d.text.contains(absent)),
+                "{absent}: {lines:?}"
             );
         }
     }

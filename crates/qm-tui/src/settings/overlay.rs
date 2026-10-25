@@ -1,6 +1,6 @@
 //! The Settings overlays: the fixed model + effort catalogue, add/move destinations, Routing
 //! model and Quartermaster effort pickers under their controls, and one-line text fields
-//! (an account's label or reserve mark, an API key). Model levels has no separate placement-effort picker.
+//! (an account's label or soft limit, an API key). Model levels has no separate placement-effort picker.
 
 use super::paint::Painter;
 use super::{Field, FieldFor, PickFor, Picker, SettingsHit, boxed};
@@ -138,16 +138,16 @@ fn draw_field(p: &mut Painter<'_, '_>, body: Rect, field: &Field, app: &App) {
                 .map_or("the account", |a| a.label.as_str());
             (format!("Label {name}"), field.text.clone(), "")
         }
-        FieldFor::ReserveMark(i) => {
+        FieldFor::SoftLimit(i) => {
             let name = view
                 .model
                 .accounts
                 .get(i)
                 .map_or("the account", |a| a.label.as_str());
             (
-                format!("Reserve mark for {name}"),
+                format!("Soft limit for {name}"),
                 field.text.clone(),
-                "Percent USED, 1 to 99. Empty for no mark.",
+                "Percent USED, 1 to 99. Empty for no limit.",
             )
         }
         FieldFor::BaseUrl => (
@@ -176,7 +176,7 @@ fn draw_field(p: &mut Painter<'_, '_>, body: Rect, field: &Field, app: &App) {
     let inner = boxed(p, area, &title, 4, theme::accent(), theme::accent());
     let room = usize::from(inner.width.saturating_sub(2));
     let end = p.text(inner.x + 1, inner.y, "› ", theme::accent());
-    let unit = if matches!(field.purpose, FieldFor::ReserveMark(_)) {
+    let unit = if matches!(field.purpose, FieldFor::SoftLimit(_)) {
         "% used"
     } else {
         ""

@@ -571,7 +571,7 @@ pub struct PoolRow {
     pub usage: Option<String>,
     /// `accounts.quota` (JSON of the provider quota pools).
     pub quota: Option<String>,
-    /// `accounts.reserve_at`: your reserve mark, in percent used.
+    /// `accounts.reserve_at`: your soft limit, in percent used.
     pub reserve_at: Option<u8>,
     pub facts: ModelFacts,
     /// `None` for a pair outside any tier (see [`offered`]).

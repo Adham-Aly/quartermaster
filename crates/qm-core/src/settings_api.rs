@@ -192,7 +192,7 @@ fn store_change(command: &Command) -> Option<(&'static str, StoreChange)> {
             Box::new(move |c, _| accounts::set_paused(c, account, false)),
         ),
         &Command::SetReserveMark { account, percent } => (
-            "change the reserve mark",
+            "change the soft limit",
             Box::new(move |c, _| accounts::set_reserve_at(c, account, percent)),
         ),
         &Command::SetPreferredAccount { account } => (
@@ -1260,16 +1260,13 @@ fn account_view(a: &AccountRow, now: Timestamp) -> SettingsAccount {
     v
 }
 
-/// What quota-aware routing reads for the account: its largest pool, its reserve mark, and
-/// whether that holds it back. Percentages are always used, never left.
+/// What quota-aware routing reads for the account: its largest pool, and whether it is at its
+/// limit or past its soft limit (`reserve_at`, shown on its own line). Percentages are always
+/// used, never left.
 fn routing_line(a: &AccountRow, now: Timestamp) -> String {
     use qm_routing::rank::{Standing, Usage};
     let (usage, quota) = (a.usage.as_deref(), a.quota.as_deref());
     let (reading, _) = crate::quota_pools::read(usage, quota, now);
-    let mark = a.reserve_at.map_or_else(
-        || "no reserve mark".to_owned(),
-        |m| format!("reserve at {m}% used"),
-    );
     let held = Standing::of(reading, a.kind, a.reserve_at).in_reserve();
     let quota = match reading {
         Usage::Known { used_percent } => crate::quota_pools::largest_line(usage, quota, now)
@@ -1281,10 +1278,10 @@ fn routing_line(a: &AccountRow, now: Timestamp) -> String {
     };
     let state = match crate::quota_pools::cut_off_until(usage, a.quota.as_deref(), now) {
         Some(until) => format!(" · at its limit: skipped until {until}"),
-        None if held => " · held in reserve".to_owned(),
+        None if held => " · past its soft limit: others serve first".to_owned(),
         None => String::new(),
     };
-    format!("{quota} · {mark}{state}")
+    format!("{quota}{state}")
 }
 
 /// "5-hour window 41% · 7-day 35%"; `None` when unknown (never shown as zero).

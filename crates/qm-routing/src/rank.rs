@@ -8,14 +8,14 @@
 //! 1. "Your preferred account for crew work, if one is set and it can serve."
 //! 2. Quota left ([`Standing`]), read on the account's largest pool (its weekly window, a monthly
 //!    allowance, a prepaid or key budget: whichever runs longest), in this order:
-//!    1. accounts under their reserve mark (or with none) and under 90% used: least used first;
+//!    1. accounts under their soft limit (or with none) and under 90% used: least used first;
 //!    2. subscriptions whose quota is unknown ("Unknown is never read as 'all left'");
 //!    3. accounts under their mark but at 90% used or more: least used first;
-//!    4. accounts at or past their reserve mark: the least far past it first, then the least used;
+//!    4. accounts at or past their soft limit: the least far past it first, then the least used;
 //!    5. pay-per-token keys whose quota is unknown: "An API key has no included allowance to
 //!       waste, so it serves only when no subscription can."
 //!
-//!    With no reserve marks set, the known accounts are a plain comparison of quota used.
+//!    With no soft limits set, the known accounts are a plain comparison of quota used.
 //!    Percentages are compared to a hundredth of a point, so 60 − 55 and 80 − 75 tie.
 //! 3. Subscriptions before pay-per-token keys.
 //! 4. "The newest model in the same family."
@@ -52,8 +52,8 @@ pub struct Candidate {
     /// Context window in tokens, if known.
     pub context_window: Option<u64>,
     pub usage: Usage,
-    /// Your reserve mark for its account, in percent used: at or past it, the account is held in
-    /// reserve. `None`: no mark.
+    /// Your soft limit for its account, in percent used: at or past it, the tier's other
+    /// accounts serve first. `None`: no soft limit.
     pub reserve_at: Option<u8>,
     /// The account has hit its limit and hasn't reset yet.
     pub cut_off: bool,
@@ -77,20 +77,20 @@ pub const NEARLY_USED_UP: f64 = 90.0;
 /// Where an account's quota puts it within a tier (module docs, step 2), best first.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Standing {
-    /// Under its reserve mark, or with none, and under [`NEARLY_USED_UP`].
+    /// Under its soft limit, or with none, and under [`NEARLY_USED_UP`].
     Open { used: f64 },
     /// A subscription with no reading.
     Unknown,
-    /// Under its reserve mark, or with none, but at or over [`NEARLY_USED_UP`].
+    /// Under its soft limit, or with none, but at or over [`NEARLY_USED_UP`].
     NearlyUsedUp { used: f64 },
-    /// At or past its reserve mark, by `past` points.
+    /// At or past its soft limit, by `past` points.
     Reserve { past: f64, used: f64 },
     /// A pay-per-token key with no reading.
     UnknownKey,
 }
 
 impl Standing {
-    /// The standing of an account with this usage, kind and reserve mark.
+    /// The standing of an account with this usage, kind and soft limit.
     pub fn of(usage: Usage, kind: AccountKind, reserve_at: Option<u8>) -> Self {
         let Usage::Known { used_percent } = usage else {
             return match kind {
@@ -109,11 +109,11 @@ impl Standing {
         }
     }
 
-    /// "60% used", "60% used, past its 55% reserve mark", "quota unknown": for the routing record.
+    /// "60% used", "60% used, past its 55% soft limit", "quota unknown": for the routing record.
     pub fn describe(self, reserve_at: Option<u8>) -> String {
         match (self, reserve_at) {
             (Self::Reserve { used, .. }, Some(mark)) => {
-                format!("{:.0}% used, past its {mark}% reserve mark", used / 100.0)
+                format!("{:.0}% used, past its {mark}% soft limit", used / 100.0)
             }
             (Self::Open { used } | Self::NearlyUsedUp { used } | Self::Reserve { used, .. }, _) => {
                 format!("{:.0}% used", used / 100.0)
@@ -123,7 +123,7 @@ impl Standing {
         }
     }
 
-    /// Whether the account is at or past its reserve mark.
+    /// Whether the account is at or past its soft limit.
     pub fn in_reserve(self) -> bool {
         matches!(self, Self::Reserve { .. })
     }

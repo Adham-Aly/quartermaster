@@ -429,7 +429,7 @@ fn back_and_escape_dismiss_fields_pickers_and_connect_without_saving() {
         assert!(!app.view.settings.connecting);
         for purpose in [
             FieldFor::Label(0),
-            FieldFor::ReserveMark(0),
+            FieldFor::SoftLimit(0),
             FieldFor::ApiKey("OpenAI"),
             FieldFor::BaseUrl,
             FieldFor::ReconnectKey(2),
@@ -479,7 +479,7 @@ fn device_code_copy_stays_visible_on_both_sides_of_the_connection_layout_break()
 }
 
 #[test]
-fn the_reserve_mark_field_sets_clears_and_refuses_what_is_not_a_percent_used() {
+fn the_soft_limit_field_sets_clears_and_refuses_what_is_not_a_percent_used() {
     for (width, height) in SIZES {
         let mut app = app(Tab::Accounts);
         app.view.settings.model.login = None;
@@ -487,11 +487,14 @@ fn the_reserve_mark_field_sets_clears_and_refuses_what_is_not_a_percent_used() {
         let claude = app.view.settings.model.accounts[0].id;
         draw(&mut app, width, height);
         key(&mut app, KeyCode::Down);
-        key(&mut app, KeyCode::Char('m'));
+        key(&mut app, KeyCode::Char('s'));
         let screen = draw(&mut app, width, height).join("\n");
-        assert!(screen.contains("Reserve mark for Claude Max"), "{screen}");
+        assert!(screen.contains("Soft limit for Claude Max"), "{screen}");
         assert!(screen.contains("› 80▏% used"), "{screen}");
-        assert!(screen.contains("Percent USED, 1 to 99."), "{screen}");
+        assert!(
+            screen.contains("Percent USED, 1 to 99. Empty for no limit."),
+            "{screen}"
+        );
 
         // A new mark; a trailing % is fine.
         app.on_key(
@@ -508,9 +511,14 @@ fn the_reserve_mark_field_sets_clears_and_refuses_what_is_not_a_percent_used() {
         assert_eq!(app.view.settings.model.accounts[0].reserve_at, Some(55));
         assert!(app.view.settings.field.is_none());
 
-        // Out of range or not a number: the field stays open and says why.
+        // Out of range or not a number: the field stays open and says why. These open it with
+        // `m`, the key 0.7.0 shipped, which still works.
         for bad in ["0", "100", "abc", "55.5"] {
             key(&mut app, KeyCode::Char('m'));
+            assert_eq!(
+                app.view.settings.field.as_ref().map(|f| f.purpose),
+                Some(FieldFor::SoftLimit(0))
+            );
             app.on_key(
                 KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
                 Instant::now(),
@@ -525,7 +533,7 @@ fn the_reserve_mark_field_sets_clears_and_refuses_what_is_not_a_percent_used() {
         }
 
         // Empty clears it.
-        key(&mut app, KeyCode::Char('m'));
+        key(&mut app, KeyCode::Char('s'));
         app.on_key(
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
             Instant::now(),
@@ -541,7 +549,7 @@ fn the_reserve_mark_field_sets_clears_and_refuses_what_is_not_a_percent_used() {
 }
 
 #[test]
-fn every_account_menu_offers_the_reserve_mark() {
+fn every_account_menu_offers_the_soft_limit() {
     for (paused, follows_cli) in [(false, true), (true, false)] {
         let items = menu_items(crate::view::MenuTarget::Account(AccountTarget {
             index: 0,
@@ -550,6 +558,65 @@ fn every_account_menu_offers_the_reserve_mark() {
             follows_cli,
             login: AccountLogin::Working,
         }));
-        assert_eq!(items[1], "Reserve mark…", "{items:?}");
+        assert_eq!(items[1], "Soft limit…", "{items:?}");
+    }
+}
+
+#[test]
+fn the_soft_limit_button_opens_the_field_from_a_click() {
+    for (width, height) in SIZES {
+        let mut app = app(Tab::Accounts);
+        app.view.settings.model.login = None;
+        let target = SettingsHit::AccountSoftLimit(0);
+        let screen = draw(&mut app, width, height);
+        let rect = app
+            .term
+            .drawn
+            .hits
+            .rect_of(Hit::Settings(target))
+            .unwrap_or_else(|| panic!("no soft limit button at {width}x{height}"));
+        // The sample Claude account's soft limit is 80.
+        assert_eq!(rect.width, crate::widgets::button::width_of("Change"));
+        let row = &screen[usize::from(rect.y)];
+        assert!(row.contains("Soft limit: 80% used  Change "), "{row}");
+        assert_eq!(
+            app.term.drawn.hits.at(rect.x + 1, rect.y),
+            Some(Hit::Settings(target))
+        );
+        click(&mut app, target);
+        assert_eq!(
+            app.view.settings.field.as_ref().map(|f| f.purpose),
+            Some(FieldFor::SoftLimit(0))
+        );
+        key(&mut app, KeyCode::Esc);
+
+        // With no soft limit the button says Set.
+        app.view.settings.model.accounts[0].reserve_at = None;
+        let screen = draw(&mut app, width, height);
+        let rect = app.term.drawn.hits.rect_of(Hit::Settings(target)).unwrap();
+        assert_eq!(rect.width, crate::widgets::button::width_of("Set"));
+        let row = &screen[usize::from(rect.y)];
+        assert!(row.contains("Soft limit: none  Set "), "{row}");
+
+        // A right-click on it opens the account's menu.
+        app.on_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Right),
+                column: rect.x,
+                row: rect.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            Instant::now(),
+        );
+        assert!(
+            matches!(
+                app.view.menu.as_ref().map(|m| &m.target),
+                Some(crate::view::MenuTarget::Account(AccountTarget {
+                    index: 0,
+                    ..
+                }))
+            ),
+            "no account menu at {width}x{height}"
+        );
     }
 }

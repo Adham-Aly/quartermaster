@@ -235,11 +235,14 @@ fn rejects_missing_malformed_and_out_of_range_quota() {
 }
 
 #[tokio::test]
-async fn unsupported_including_claude_never_reads_credentials() {
+async fn accounts_without_a_quota_check_never_read_credentials() {
     let (store, keeper) = setup(None, LoginEndpoints::default());
     let quotas = Quotas::new(keeper);
+    assert_eq!(
+        quotas.fetch(Provider::Claude, &key(), None).await,
+        Err(QuotaError::NoCheck(NoQuotaCheck::Claude))
+    );
     for provider in [
-        Provider::Claude,
         Provider::Xai,
         Provider::Kimi,
         Provider::Gemini,
@@ -250,7 +253,7 @@ async fn unsupported_including_claude_never_reads_credentials() {
     ] {
         assert_eq!(
             quotas.fetch(provider, &key(), None).await,
-            Err(QuotaError::Unsupported)
+            Err(QuotaError::NoCheck(NoQuotaCheck::NoSource))
         );
     }
     // A custom endpoint anywhere but a balance source's API host has no quota source either.
@@ -264,10 +267,117 @@ async fn unsupported_including_claude_never_reads_credentials() {
     ] {
         assert_eq!(
             quotas.fetch(Provider::Custom, &key(), base).await,
-            Err(QuotaError::Unsupported)
+            Err(QuotaError::NoCheck(NoQuotaCheck::NoSource))
         );
     }
     assert_eq!(store.reads.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn no_quota_check_reads_as_a_neutral_note() {
+    for (why, text) in [
+        (
+            NoQuotaCheck::Claude,
+            "not offered; Claude reports its usage during turns",
+        ),
+        (
+            NoQuotaCheck::SignInWithChatGpt,
+            "not offered for Sign in with ChatGPT",
+        ),
+        (NoQuotaCheck::NoSource, "not offered by this provider"),
+    ] {
+        assert_eq!(why.to_string(), text);
+        assert_eq!(QuotaError::NoCheck(why).to_string(), text);
+    }
+}
+
+#[tokio::test]
+async fn no_check_for_matches_fetch() {
+    let providers = [
+        Provider::Claude,
+        Provider::ChatGpt,
+        Provider::Copilot,
+        Provider::OpenRouter,
+        Provider::Xai,
+        Provider::Kimi,
+        Provider::Gemini,
+        Provider::Anthropic,
+        Provider::OpenAi,
+        Provider::Custom,
+        Provider::Scripted,
+    ];
+    let balance_hosts = [
+        "https://api.deepseek.com",
+        "https://api.moonshot.ai/v1",
+        "https://api.moonshot.cn/v1",
+    ];
+    let bases = [
+        None,
+        Some(balance_hosts[0]),
+        Some(balance_hosts[1]),
+        Some(balance_hosts[2]),
+        Some("https://api.example.com/v1"),
+        Some("http://api.deepseek.com"),
+        Some("not a url"),
+    ];
+    for provider in providers {
+        for base in bases {
+            let checked = matches!(
+                provider,
+                Provider::ChatGpt | Provider::Copilot | Provider::OpenRouter
+            ) || (provider == Provider::Custom
+                && base.is_some_and(|b| balance_hosts.contains(&b)));
+            assert_eq!(
+                no_check_for(provider, base).is_none(),
+                checked,
+                "{provider:?} at {base:?}"
+            );
+            // Where there is no check, fetch says so without reading the store; where there is
+            // one, it goes on to read the (here missing) credential.
+            let (store, keeper) = setup(None, LoginEndpoints::default());
+            let result = Quotas::new(keeper).fetch(provider, &key(), base).await;
+            if let Some(why) = no_check_for(provider, base) {
+                assert_eq!(result, Err(QuotaError::NoCheck(why)));
+                assert_eq!(store.reads.load(Ordering::SeqCst), 0);
+            } else {
+                assert_eq!(result, Err(QuotaError::Credentials));
+                assert!(store.reads.load(Ordering::SeqCst) > 0);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn sign_in_with_chatgpt_is_never_sent_or_refreshed_by_a_quota_check() {
+    // No replies: both listeners close at once, so a request or refresh would fail loudly.
+    let (url, task) = server(vec![]).await;
+    let (token_url, refresh_task) = server(vec![]).await;
+    let mut login = LoginEndpoints::default();
+    login.chatgpt.token_url.clone_from(&token_url);
+    login.chatgpt.codex_token_url = token_url;
+    let mut credential = oauth();
+    if let Credential::OAuth {
+        account_id,
+        expires_at,
+        ..
+    } = &mut credential
+    {
+        // Sign in with ChatGPT's credential has no account ID. It is expired, so `fresh()`
+        // would refresh it if a quota check ever asked.
+        *account_id = None;
+        *expires_at = Some(Timestamp::UNIX_EPOCH);
+    }
+    let (store, keeper) = setup(Some(credential), login);
+    let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
+    for _ in 0..2 {
+        assert_eq!(
+            quotas.fetch(Provider::ChatGpt, &key(), None).await,
+            Err(QuotaError::NoCheck(NoQuotaCheck::SignInWithChatGpt))
+        );
+    }
+    assert_eq!(store.writes.load(Ordering::SeqCst), 0);
+    assert_eq!(task.await.unwrap(), [] as [String; 0]);
+    assert_eq!(refresh_task.await.unwrap(), [] as [String; 0]);
 }
 
 #[test]
@@ -526,8 +636,29 @@ async fn errors_are_fixed_and_do_not_echo_bodies_or_poison_login_health() {
     }
 }
 
+/// A synthetic Codex access token: an unsigned JWT whose only claim is the account ID.
+fn codex_jwt() -> String {
+    use base64::Engine as _;
+    let encode =
+        |value: &Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.to_string());
+    let claims =
+        json!({ crate::chatgpt::JWT_CLAIM_PATH: { "chatgpt_account_id": "test-account" } });
+    format!(
+        "{}.{}.test-signature",
+        encode(&json!({"alg": "none"})),
+        encode(&claims)
+    )
+}
+
+/// The Codex token endpoint's answer to a refresh.
+fn codex_refresh_reply() -> String {
+    json!({ "access_token": codex_jwt(), "refresh_token": "test-rotated", "expires_in": 3600 })
+        .to_string()
+}
+
 #[tokio::test]
 async fn refreshes_before_expiry_or_after_401_persisting_and_retrying_only_once() {
+    let renewed = codex_jwt().to_lowercase();
     for (expired, final_status) in [(true, 200), (false, 200), (false, 401)] {
         let mut replies = Vec::new();
         if !expired {
@@ -535,30 +666,15 @@ async fn refreshes_before_expiry_or_after_401_persisting_and_retrying_only_once(
         }
         replies.push((final_status, CHATGPT.into()));
         let (url, task) = server(replies).await;
-        let (token_url, refresh_task) = server(vec![(
-            200,
-            json!({
-                "access_token": "test-renewed", "refresh_token": "test-rotated",
-                "expires_in": 3600, "scope": crate::chatgpt::DIRECT_TOKEN_SCOPE
-            })
-            .to_string(),
-        )])
-        .await;
+        let (token_url, refresh_task) = server(vec![(200, codex_refresh_reply())]).await;
         let mut login = LoginEndpoints::default();
         login.chatgpt.token_url.clone_from(&token_url);
         // Both refresh flows stay on loopback, including if a fixture changes account ID.
         login.chatgpt.codex_token_url = token_url;
+        // The Codex login (it has an account ID): the only ChatGPT login a quota check sends.
         let mut credential = oauth();
-        if let Credential::OAuth {
-            account_id,
-            expires_at,
-            ..
-        } = &mut credential
-        {
-            *account_id = None;
-            if expired {
-                *expires_at = Some(Timestamp::UNIX_EPOCH);
-            }
+        if expired && let Credential::OAuth { expires_at, .. } = &mut credential {
+            *expires_at = Some(Timestamp::UNIX_EPOCH);
         }
         let (store, keeper) = setup(Some(credential), login);
         let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
@@ -574,7 +690,13 @@ async fn refreshes_before_expiry_or_after_401_persisting_and_retrying_only_once(
             requests
                 .last()
                 .unwrap()
-                .contains("authorization: bearer test-renewed")
+                .contains(&format!("authorization: bearer {renewed}"))
+        );
+        assert!(
+            requests
+                .last()
+                .unwrap()
+                .contains("chatgpt-account-id: test-account")
         );
         assert_eq!(store.writes.load(Ordering::SeqCst), 1);
         let stored = store.get(&key()).unwrap().unwrap();
@@ -593,7 +715,7 @@ async fn missing_and_api_key_credentials_are_sanitized() {
             Some(Credential::ApiKey {
                 key: Secret::new("test-key"),
             }),
-            QuotaError::Unsupported,
+            QuotaError::NoCheck(NoQuotaCheck::NoSource),
         ),
     ] {
         let (_, keeper) = setup(credential, LoginEndpoints::default());
@@ -738,14 +860,7 @@ async fn disconnect_waits_for_quota_refresh_and_queued_refresh_cannot_restore_se
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let (token_url, refresh_task) = gated_server(
-        vec![(
-            200,
-            json!({
-                "access_token": "test-renewed", "refresh_token": "test-rotated",
-                "expires_in": 3600, "scope": crate::chatgpt::DIRECT_TOKEN_SCOPE
-            })
-            .to_string(),
-        )],
+        vec![(200, codex_refresh_reply())],
         Some((started_tx, release_rx)),
     )
     .await;
@@ -753,15 +868,10 @@ async fn disconnect_waits_for_quota_refresh_and_queued_refresh_cannot_restore_se
     let mut login = LoginEndpoints::default();
     login.chatgpt.token_url.clone_from(&token_url);
     login.chatgpt.codex_token_url = token_url;
+    // The Codex login: a Sign in with ChatGPT login is never refreshed by a quota check.
     let mut credential = oauth();
-    if let Credential::OAuth {
-        expires_at,
-        account_id,
-        ..
-    } = &mut credential
-    {
+    if let Credential::OAuth { expires_at, .. } = &mut credential {
         *expires_at = Some(Timestamp::UNIX_EPOCH);
-        *account_id = None;
     }
     let (store, keeper) = setup(Some(credential), login);
     let quotas = Quotas::with_endpoints(keeper.clone(), endpoints(&quota_url));

@@ -111,7 +111,7 @@ impl SettingsView {
         }
         let field_gone = matches!(
             self.field.as_ref().map(|f| f.purpose),
-            Some(FieldFor::Label(i) | FieldFor::ReserveMark(i) | FieldFor::ReconnectKey(i))
+            Some(FieldFor::Label(i) | FieldFor::SoftLimit(i) | FieldFor::ReconnectKey(i))
                 if i >= accounts
         );
         if field_gone {

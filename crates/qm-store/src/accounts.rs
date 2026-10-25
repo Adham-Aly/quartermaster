@@ -2,7 +2,7 @@
 //!
 //! One row per account: provider, label, kind (subscription or key), the engine it runs on (which
 //! follows the provider), paused, preferred, the last usage reading, the last provider quota
-//! reading, your reserve mark and the key of its credentials in `auth.json` (never the secret). Accounts are never deleted: removing one sets
+//! reading, your soft limit and the key of its credentials in `auth.json` (never the secret). Accounts are never deleted: removing one sets
 //! `removed_at`.
 //!
 //! Reconnecting an account whose login broke keeps its row: the new credential goes in under its
@@ -50,7 +50,7 @@ pub struct AccountRow {
     pub usage_read_at: Option<Timestamp>,
     /// The last provider quota reading's pools, as JSON (`qm_core`'s stored pools), if any.
     pub quota: Option<String>,
-    /// Your reserve mark, in percent used (1 to 99); `None`: no mark.
+    /// Your soft limit, in percent used (1 to 99); `None`: no mark.
     pub reserve_at: Option<u8>,
     pub credential_ref: Option<String>,
     pub base_url: Option<String>,
@@ -214,7 +214,7 @@ pub fn record_quota(
     Ok(())
 }
 
-/// Sets or clears an active account's reserve mark (percent used, 1 to 99).
+/// Sets or clears an active account's soft limit (percent used, 1 to 99).
 pub fn set_reserve_at(
     conn: &Connection,
     id: AccountId,
@@ -222,7 +222,7 @@ pub fn set_reserve_at(
 ) -> Result<(), ChangeError> {
     if percent.is_some_and(|p| !(1..=99).contains(&p)) {
         return Err(ChangeError::Refused(
-            "A reserve mark is a percent used from 1 to 99".to_owned(),
+            "A soft limit is a percent used from 1 to 99".to_owned(),
         ));
     }
     active_account(conn, id)?;

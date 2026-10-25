@@ -179,8 +179,9 @@ pub enum Command {
     DisconnectAccount {
         account: AccountId,
     },
-    /// An account's reserve mark: the percent of its largest quota pool USED (1 to 99) at which
-    /// routing holds it back in favour of accounts under theirs; `None` clears it.
+    /// An account's soft limit (shown as "Soft limit"; stored as `reserve_at`): the percent of
+    /// its largest quota pool USED (1 to 99) past which routing serves its tier from accounts
+    /// under theirs first; `None` clears it.
     SetReserveMark {
         account: AccountId,
         #[serde(default)]
@@ -1401,6 +1402,10 @@ pub struct SettingsAccount {
     /// Display-ready time of the last successful quota check; `None` means no successful reading yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_checked_at: Option<String>,
+    /// Why this account has no provider quota check ("not offered by this provider"); shown as
+    /// a neutral note, never as a problem. `None` when a check exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_note: Option<String>,
     /// Follows the `claude` login on this Mac: paused here, never disconnected.
     #[serde(default)]
     pub follows_cli: bool,
@@ -1414,11 +1419,12 @@ pub struct SettingsAccount {
     /// routing skips it until you reconnect it. `None` is working.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
-    /// Your reserve mark, in percent USED of its largest quota pool (1 to 99); `None`: no mark.
+    /// Your soft limit, in percent USED of its largest quota pool (1 to 99): past it, routing
+    /// serves its tier from your other accounts first. `None`: no soft limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reserve_at: Option<u8>,
-    /// What routing reads for it ("7-day window 60% used · reserve at 55% used · held in
-    /// reserve"); `None` before the core has filled it.
+    /// What routing reads for it ("7-day window 60% used · past its soft limit: others serve
+    /// first"); `None` before the core has filled it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<String>,
 }
@@ -1437,6 +1443,7 @@ impl SettingsAccount {
             quota_problem: None,
             quota_refreshing: false,
             quota_checked_at: None,
+            quota_note: None,
             follows_cli: false,
             provider: None,
             api_key: false,
@@ -1763,6 +1770,7 @@ mod quota_tests {
             "quota_problem",
             "quota_refreshing",
             "quota_checked_at",
+            "quota_note",
         ] {
             legacy.as_object_mut().unwrap().remove(field);
         }
@@ -1775,6 +1783,7 @@ mod quota_tests {
         populated.quota_problem = Some("temporarily unavailable".into());
         populated.quota_refreshing = true;
         populated.quota_checked_at = Some("today 12:04".into());
+        populated.quota_note = Some("not offered by this provider".into());
         let encoded = serde_json::to_value(&populated).unwrap();
         assert_eq!(
             serde_json::from_value::<SettingsAccount>(encoded).unwrap(),
