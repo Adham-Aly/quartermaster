@@ -96,3 +96,9 @@ SELECT id, target_agent_id, kind, dedupe_key, delivered_turn_id, consumed_at FRO
   its next idle moment. A crewmate's tokens are counted live during a turn (the task pane hides
   the row while the count is 0).
 - `quartermaster dev leftovers` (skill `run-by-hand`) lists process groups left over from a crash.
+- A banner that never showed: `qm_notify` logs `installed the notifier app` (only when the bundle
+  changed), `notifications ready` (or `… macOS hides their text (Show previews is Never)`, or
+  `notifications are off in System Settings`; `a banner couldn't post` warns), then per request `banner posted` or `banner held back: you are
+  looking at Quartermaster`. With `QM_LOG=info,qm_notify=debug` it also logs each `looking` change
+  (`Away`, `In([bundle IDs])`, `Here`) and `answered banners withdrawn`. Settings ▸ System shows
+  the same state next to the Notifications switch.

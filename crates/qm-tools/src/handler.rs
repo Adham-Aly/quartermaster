@@ -585,6 +585,10 @@ pub struct StartRequest {
     pub label: Option<TaskLabelId>,
     pub kind: TaskKind,
     pub title: String,
+    /// The task's name in the crew list, when the call gave one; a crewmate joining a task leaves
+    /// the task's name as it is. Deferred starts saved before names read as `None`.
+    #[serde(default)]
+    pub name: Option<String>,
     pub goal: String,
     pub constraints: Vec<Constraint>,
     pub tests_required: bool,

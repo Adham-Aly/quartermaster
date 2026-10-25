@@ -41,7 +41,7 @@ Check a change in a light and a dark theme, with and without `COLORTERM=truecolo
 | `title()` | light slate `#9FB2C0` · default fg | section headings, an idle box's title (`title_on`) |
 | `accent()` | teal · `Yellow` | focus, the active input, approvals, the brand mark |
 | `warn()` | sand `#D7B46A` · `Yellow` | decisions, notices, tier |
-| `warn_chip()` | sand on its tint · plain warn | counts and waiting chips (`Actions 3`, `○ waits`) |
+| `warn_chip()` | sand on its tint · plain warn | counts and waiting chips (`Needs you 3`, `○ waits`) |
 | `ok()` | green · `Green` | running, ready, passed |
 | `code()` | mint `#7FD8C9` · `Yellow` | inline code, paths, writing tools |
 | `diff_addition()` | readable green text, else text on green | diff additions only |
@@ -71,11 +71,12 @@ with `theme::tone`. Tool names are coloured by family in `widgets/tools.rs`.
   Below 60×16 a too-small notice shows.
 - The logo (`logo.rs`, drawn from `assets/mark.svg`'s shapes at the exact pixel size): when the
   client's terminal answers the kitty graphics query and reports its cell size (`Colors.graphics`,
-  `cell_pixels`), the top bar's `◆` becomes the image (2 cells) and the empty Bridge shows a
-  `HERO_ROWS`-high copy above "No messages yet.". Widgets only reserve blank cells
-  (`logo::reserve` into `FrameMap.logos`); after the whole frame, `logo::kept` drops any spot a
-  menu, dialog or selection drew over, and the host sends only changed placements. Elsewhere
-  (tmux, Terminal.app) the `◆` stays.
+  `cell_pixels`), the top bar's `◆` becomes the image (2 cells), and every chat's header
+  (`widgets/chat_header.rs`: name and version, model and effort, where it works; the chat's
+  first rows, scrolling with it) leads with a 3-row copy while all its rows show. Widgets only
+  reserve blank cells (`logo::reserve` into `FrameMap.logos`); after the whole frame,
+  `logo::kept` drops any spot a menu, dialog or selection drew over, and the host sends only
+  changed placements. Elsewhere (tmux, Terminal.app) the `◆` stays.
 - Bridge columns: left 31 (20–60), a one-cell gap, the middle (never under 36), a gap, the task
   column 36 (24–70; `LEFT_DEFAULT`, `RIGHT_DEFAULT` in `app.rs`). Below 120 body columns the layout **folds**: no task column; the task pane opens as
   an overlay from the right edge with a ` ✕ `. Widths dragged on the dividers are saved
@@ -85,10 +86,14 @@ with `theme::tone`. Tool names are coloured by family in `widgets/tools.rs`.
 - Boxes: rounded borders, the title in the top border, one cell of padding inside, no gap rows
   between boxes, boxes at the frame's edges. Border in the rule colour (its title in the title
   colour); accent when focused; text colour when hovered. The input box is accent while focused
-  or holding text. The left column has no boxes: Projects, Crew and Actions are sections
-  (`bridge::section_block`), a heading (accent and bold when focused) over rows inset one cell,
-  a blank row between them (`sidebar::INSET`). Each action is two rows (`actions::ROWS`): glyph,
-  title and age, then its source or kind, dim.
+  or holding text. The left column has no boxes: Projects, Needs you (the Actions pane) and Crew
+  are sections, top to bottom and in that focus order (`bridge::section_block`), a heading
+  (accent and bold when focused) over rows inset one cell, a blank row between them
+  (`sidebar::INSET`). Each item in Needs you is a `▌` bar in its glyph's colour, its title
+  wrapped to two lines, then `kind · task name · age`, dim (`actions::lines`). While an item is
+  unseen the beacon (`widgets/beacon.rs`) is lit: the count's chip breathes, a beam sweeps the
+  heading's rule and the newest item's bar pulses; it settles once Needs you has focus or the
+  item is open. It moves only by redraws while drawn (`App::beaconing`), never terminal blink.
 - The task pane (`widgets/task.rs`): the status and kind as chips, the bold title, then ruled
   sections (`─ Usage ───`, Routing, Workspace, Recent) built by grouping the core's labelled
   `TaskRow`s; a label it doesn't place keeps its label column, so new core rows still show. When
@@ -105,14 +110,23 @@ with `theme::tone`. Tool names are coloured by family in `widgets/tools.rs`.
   projects hint under its title; `Esc` or any click closes it. A new popup or menu entry: see
   the notes at the top of `popups.rs`. A badge: make `App::entry_badge` true for the entry; the
   menu button follows (Update's comes from the core, `UpdateView::badge`).
-- The left column's trees: Crew is supervisor → task → crewmates (`widgets/crew.rs` `nodes`):
-  a crewmate row with `CrewRow::task` is drawn one level deeper, under a dim `◇ T-0042 project`
-  heading the core keeps its crewmates together for; headings have no status, no hit, and the
-  keys pass over them. Statuses align per supervisor and depth. Projects lists each project's
-  open tasks beneath it (`ProjectRow::tasks`, `├ T-0042 title`); a task line's hit
-  (`Hit::ProjectTask`) acts for its project. Guides (`│`, `├`, `└`) are dim. Heights come
-  from `widgets/sidebar.rs` `heights`: Projects takes up to a quarter, then any rows Actions
-  doesn't need; a narrow project row drops its autonomy, then its mode, before cutting the name.
+- The left column's lists: Crew is the Quartermaster, then tasks by phase (`Working · n`,
+  `Waiting · n`, `Done · n`, from `CrewRow::phase` and the flags), then `Secondmates · n`
+  (`widgets/crew.rs` `build`). A task shows by its name (`CrewTask::name`, which the
+  Quartermaster gives at start or the core derives from the title), then a dim
+  `T-0042 · project · kind · via S-02` line with a single crewmate's status at the right edge;
+  parts that don't fit are left out whole. A team lists its crewmates under it. A task whose
+  every crewmate waits in Needs you is left out. When the full list doesn't fit, each task is
+  one line (`compact`). The keys move through `FrameMap::crew_spots`. Projects is one line each,
+  `● api-server     PR · 3 tasks` (busy ones first, sorted in the core); a narrow line drops the
+  delivery, then `auto`, then the count, whole, before cutting the name. Enter or a click opens
+  one project's details under it (`View::open_project`, by name; `Esc` closes): place, settings,
+  then its tasks as Crew marks them (`crew::task_mark`); a detail line's hit (`Hit::ProjectTask`)
+  acts for its project. A list that doesn't fit counts itself in the heading and gives its last
+  line in view to `↓ 4 more, all quiet` (`keep_row_visible` leaves that line free). Guides
+  (`│`, `├`, `└`) are dim. Heights come from `widgets/sidebar.rs` `heights`: Projects takes up to
+  a quarter, Needs you up to half of the rest, Crew the remainder, and Projects grows into rows
+  Crew doesn't need. In the chat, agents' names are accent bold.
 - Settings' nested pickers, text fields and Connect view have a visible `← Back`, equivalent
   to `Esc`: dismiss the picker/field without saving, or return from Connect to Accounts (not cancel
   a running login). The Back row stays visible while content scrolls. Settings uses 48% of the
@@ -186,8 +200,9 @@ with `theme::tone`. Tool names are coloured by family in `widgets/tools.rs`.
 
 - Streaming text shows whole lines only (`widgets/stream.rs::committed`), so nothing reflows.
 - An agent thinking or busy shows a busy indicator from `widgets/spinner.rs`, never a widget's
-  own: one `Spinner` per role (`Spinner::of`: Lookout `ө` for the Quartermaster, Insignia `✩` for
-  secondmates, Helm `⎈` for crewmates), the same in its conversation and its crew-tree row, plus
+  own (`spinner::for_agent`): Lookout `ө` for the Quartermaster, Insignia `✩` for secondmates,
+  and for crewmates one of `Spinner::POOL` (Helm, Porthole, Hatch, Wind Rose, Astrolabe,
+  Rosette), different for crewmates listed together, the same in its conversation and its row, plus
   Asterism `⁂` for compacting and Compass Card `⊕` for a login. Conversations add the turn's
   nautical verb (`ө Charting a course…`, `spinner::verb`, fixed for the turn). Each kind steps at
   its own pace and redraws only while drawn (`App::spinning` bits), nothing when none is on screen. An age or running seconds count sets

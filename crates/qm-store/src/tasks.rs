@@ -63,6 +63,9 @@ pub struct NewTask {
     pub port_base: Option<u16>,
     /// The task it joins; `None` makes a new one, numbered like the crewmate when that is free.
     pub label: Option<TaskLabelId>,
+    /// The task's name in the crew list, if the start gave one: a new task takes it, and a task
+    /// joined without a name of its own gets it.
+    pub name: Option<String>,
     pub at: Timestamp,
 }
 
@@ -301,14 +304,19 @@ pub fn insert(conn: &Connection, task: &NewTask) -> Result<TaskId, StoreError> {
         message: format!("{number} is out of range for a crewmate ID"),
     })?;
     let label = match task.label {
-        Some(label) if task_labels::exists(conn, label)? => label,
+        Some(label) if task_labels::exists(conn, label)? => {
+            if let Some(name) = &task.name {
+                task_labels::name_if_unnamed(conn, label, name)?;
+            }
+            label
+        }
         Some(label) => {
             return Err(StoreError::Invalid {
                 column: "tasks.label_id",
                 message: format!("{label} doesn't exist"),
             });
         }
-        None => task_labels::create(conn, Some(number), task.at)?,
+        None => task_labels::create(conn, Some(number), task.name.as_deref(), task.at)?,
     };
     let (level, source) = task.verification.unzip();
     conn.execute(
@@ -1088,6 +1096,7 @@ mod branch_tests {
             branch: branch.map(str::to_owned),
             port_base: None,
             label: None,
+            name: None,
             at: Timestamp::now(),
         }
     }
@@ -1211,7 +1220,7 @@ mod branch_tests {
         let (conn, project, qm) = db();
         let task = insert(&conn, &new_task(project, qm, Some("fix/x"))).expect("insert");
         let old = task.own_label();
-        let new = task_labels::create(&conn, None, Timestamp::now()).expect("label");
+        let new = task_labels::create(&conn, None, None, Timestamp::now()).expect("label");
         assert!(set_label(&conn, task, new).expect("relabel"));
         assert!(
             !set_label(&conn, task, new).expect("relabel"),

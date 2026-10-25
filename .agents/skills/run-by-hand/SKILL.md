@@ -46,8 +46,9 @@ tmux resize-window -t qm -x 119 -y 40     # fold the task pane
 tmux kill-session -t qm
 ```
 
-Use a private socket (`tmux -L <name>`) when other agents share this Mac: a `kill-server` on the
-default socket ends every session on it. To paste an image (`Ctrl`+`V`) without touching your
+Use a private socket and no config (`tmux -f /dev/null -L <name>`): a `kill-server` on the default
+socket ends every session on it, and the user's `~/.tmux.conf` plugins (tmux-continuum) can restore
+their own sessions into yours. To paste an image (`Ctrl`+`V`) without touching your
 clipboard, start the app with `QM_DEV_PASTEBOARD=<name>` and put the image on that named
 pasteboard (`NSPasteboard pasteboardWithName:` from a JXA script via `osascript -l JavaScript`).
 
@@ -57,13 +58,32 @@ the task pane becomes an overlay), and 60×16 (the smallest). With `-e`, every c
 the app was started with `COLORTERM=truecolor` (or `24bit`); a `38;5;` is always a bug.
 Mouse input is easiest to check in a real terminal window.
 
+## Notifications
+
+Notifications run a helper app from `$QUARTERMASTER_HOME/Quartermaster.app`; any home other than
+`~/.quartermaster` gets the bundle ID `io.github.flotilla-labs.quartermaster.dev`, named "Quartermaster Dev", so
+macOS asks for permission once for it and keeps its own Notifications settings (set Show previews to
+Always, or banners say only "Notification"). It has only been checked with a short home under `~`
+(`~/.qm-n`). Start with `QM_LOG=info,qm_notify=debug` to see `looking`, `banner posted`,
+`banner held back`, `answered banners withdrawn` (skill `debug-from-logs`). A scripted seat
+(`QM_DEV_SEAT_SCRIPT`) with an `ask_user` step makes a question on demand.
+
+A banner is held back while a focused window's terminal app is the frontmost app. tmux forwards no
+focus events by default and a window joins focused: send `tmux send-keys -l $'\e[O'` to mark it
+unfocused. To check focus for real, open a WezTerm tab on the throwaway home with
+`wezterm cli spawn -- /usr/bin/env QUARTERMASTER_HOME=… QM_DEV=1 … target/debug/quartermaster`, one
+argument per variable: zsh doesn't split `env $VARS`, and a window without `QUARTERMASTER_HOME`
+attaches to the user's real server. Drive it with `wezterm cli send-text --no-paste`, `get-text`
+and `activate-pane`, and check which socket it reached (`lsof -U`) before typing. When done,
+`lsregister -u` the bundle (`LaunchServices.framework/.../Support/lsregister`) and delete the home.
+
 ## Sample screens
 
 `QM_DEV_SAMPLE` shows a fixed screen and ignores the core's snapshots (the picture holds still):
 `bridge`, `chat`, `thinking`, `decision`, `diff` (the approval's split diff and changed-file tree),
 `session`, `secondmate`, `settings` (the Settings
 popup over the Bridge) or `menu-badge` (a badge on the menu's Settings entry), `compacting` (the Quartermaster compacting
-its context, a failed compaction on C-0042) or `context-unknown` (no context readings), `empty` (an empty Bridge, for the logo); all values are in
+its context, a failed compaction on C-0042) or `context-unknown` (no context readings), `empty` (an empty Bridge, for the chat header); all values are in
 `crates/qm-tui/src/sample.rs`. Only the busy indicator still moves. Use them to
 compare layout and styles without any account. tmux shows the `◆` fallback; the logo image needs
 a kitty-graphics terminal (Ghostty, kitty, WezTerm) in a real window.

@@ -1,5 +1,5 @@
 //! The logo: the brand mark drawn as a kitty-protocol image where the terminal shows images,
-//! in place of the `◆` the top bar uses everywhere else, and larger on the empty Bridge.
+//! in place of the `◆` the top bar uses everywhere else, and larger in each chat's header.
 //!
 //! The mark (`assets/mark.svg`) is a quarter ring and two squares in the brand teal, so it is
 //! drawn here from its geometry, at the window's exact cell size in pixels: sharp at any font
@@ -26,8 +26,6 @@ const SQUARES: [(f64, f64, f64); 2] = [(239.63, 116.07, 120.0), (118.98, 236.07,
 const FILL: f64 = 0.84;
 /// Samples per pixel along each axis, for smooth edges.
 const SAMPLES: u32 = 4;
-/// Rows the empty Bridge's logo is tall.
-pub(crate) const HERO_ROWS: u16 = 4;
 /// Base64 bytes per graphics command, as the protocol asks.
 const CHUNK: usize = 4096;
 
@@ -36,8 +34,8 @@ const CHUNK: usize = 4096;
 pub(crate) enum Size {
     /// In the top bar's menu button, two cells by one.
     Mark,
-    /// On the empty Bridge.
-    Hero,
+    /// In a chat's header (`widgets::chat_header`).
+    Header,
 }
 
 impl Size {
@@ -45,11 +43,11 @@ impl Size {
     const fn id(self) -> u32 {
         match self {
             Self::Mark => 0x51_7a01,
-            Self::Hero => 0x51_7a02,
+            Self::Header => 0x51_7a02,
         }
     }
 
-    const ALL: [Self; 2] = [Self::Mark, Self::Hero];
+    const ALL: [Self; 2] = [Self::Mark, Self::Header];
 }
 
 /// The mark's colour (the SVG's fill), on every background: it is the brand, not text.
@@ -331,8 +329,8 @@ mod tests {
 
     #[test]
     fn a_large_image_goes_in_chunks_that_add_up_to_it() {
-        let cells = (9, HERO_ROWS);
-        let sent = transmit(Size::Hero, INK, cells);
+        let cells = (9, 4);
+        let sent = transmit(Size::Header, INK, cells);
         let commands: Vec<&str> = sent.split("\x1b\\").filter(|c| !c.is_empty()).collect();
         assert!(commands.len() > 1);
         let mut data = String::new();
@@ -357,7 +355,7 @@ mod tests {
     fn a_place_drawn_over_is_not_kept() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 10, 2));
         let first = reserve(&buffer, Size::Mark, Rect::new(2, 0, 2, 1));
-        let second = reserve(&buffer, Size::Hero, Rect::new(5, 0, 3, 2));
+        let second = reserve(&buffer, Size::Header, Rect::new(5, 0, 3, 2));
         buffer[(6, 1)].set_symbol("x");
         let kept = kept(&buffer, vec![first, second]);
         assert_eq!(
@@ -370,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hero_keeps_the_mark_square_on_any_cell() {
+    fn the_logo_keeps_the_mark_square_on_any_cell() {
         assert_eq!(INK.columns(4), 8);
         let tall = Ink { cell: (9, 20) };
         assert_eq!(tall.columns(4), 9);
@@ -411,21 +409,27 @@ mod app_tests {
                 area: Rect::new(2, 0, 2, 1),
             }
         );
-        // The empty Bridge shows the large one, square on these cells, over blank cells.
-        let hero = app.term.logos[1];
+        // The chat's header shows the larger one, square on these cells, over blank cells, with
+        // the app's name beside it.
+        let header = app.term.logos[1];
         assert_eq!(
-            (hero.size, hero.area.width, hero.area.height),
-            (Size::Hero, 8, 4)
+            (header.size, header.area.width, header.area.height),
+            (Size::Header, 6, 3)
         );
-        for y in hero.area.top()..hero.area.bottom() {
+        for y in header.area.top()..header.area.bottom() {
             let row: String = rows[usize::from(y)]
                 .chars()
-                .skip(usize::from(hero.area.x))
-                .take(8)
+                .skip(usize::from(header.area.x))
+                .take(6)
                 .collect();
-            assert_eq!(row, "        ");
+            assert_eq!(row, "      ");
         }
-        let words = usize::from(hero.area.bottom()) + 1;
-        assert!(rows[words].contains("No messages yet."), "{}", rows[words]);
+        let name = &rows[usize::from(header.area.y)];
+        let beside: String = name
+            .chars()
+            .skip(usize::from(header.area.right()) + 2)
+            .collect();
+        assert!(beside.starts_with("Quartermaster v"), "{name}");
+        assert!(rows.iter().any(|r| r.contains("No messages yet.")));
     }
 }

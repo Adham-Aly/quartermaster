@@ -187,6 +187,57 @@ pub fn check_task_title(title: &str) -> Result<(), Refusal> {
         .map_err(|why| Refusal::new(format!("the task title {title:?} {why}")))
 }
 
+/// The most words in a task's name.
+pub const MAX_TASK_NAME_WORDS: usize = 4;
+/// The most characters in a task's name.
+pub const MAX_TASK_NAME_CHARS: usize = 32;
+
+/// A task's name, as `start_crewmate` gives it: two or three plain words for the crew list
+/// ("Token refresh race"), on one line.
+pub fn check_task_name(name: &str) -> Result<(), Refusal> {
+    let words = name.split_whitespace().count();
+    let chars = name.chars().count();
+    if words == 0 {
+        return Err(Refusal::new(
+            "a task's name can't be empty; leave name out to have one made from the title",
+        ));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(Refusal::new("a task's name is one line of plain words"));
+    }
+    if words > MAX_TASK_NAME_WORDS || chars > MAX_TASK_NAME_CHARS {
+        return Err(Refusal::new(format!(
+            "the task name {name:?} is too long; use two or three words (at most \
+             {MAX_TASK_NAME_WORDS} words and {MAX_TASK_NAME_CHARS} characters)"
+        )));
+    }
+    Ok(())
+}
+
+/// A name for a task that wasn't given one, made from its title: the summary's first three words,
+/// capitalised ("feat(ui): floating focus-timer pill in the corner" is "Floating focus-timer
+/// pill"), cut to [`MAX_TASK_NAME_CHARS`] at a word.
+pub fn task_name_from_title(title: &str) -> String {
+    let summary = title.split_once(": ").map_or(title, |(_, s)| s);
+    let mut name = String::new();
+    for word in summary.split_whitespace().take(3) {
+        let next = name.chars().count() + usize::from(!name.is_empty()) + word.chars().count();
+        if next > MAX_TASK_NAME_CHARS && !name.is_empty() {
+            break;
+        }
+        if !name.is_empty() {
+            name.push(' ');
+        }
+        name.push_str(word);
+    }
+    let name: String = name.chars().take(MAX_TASK_NAME_CHARS).collect();
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => "Untitled".to_owned(),
+    }
+}
+
 /// Git refuses a ref component ending in `.lock` (exactly, case-sensitive like git itself).
 fn is_lock(component: &str) -> bool {
     component
@@ -326,6 +377,28 @@ pub fn check_display_name(name: &str) -> Result<(), Refusal> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_task_name_is_a_few_plain_words() {
+        assert!(check_task_name("Token refresh race").is_ok());
+        assert!(check_task_name("  ").is_err());
+        assert!(check_task_name("one two three four five").is_err());
+        assert!(check_task_name("Line\nbreak").is_err());
+        assert!(check_task_name(&"x".repeat(33)).is_err());
+    }
+
+    #[test]
+    fn a_missing_name_comes_from_the_titles_summary() {
+        use super::task_name_from_title as name;
+        assert_eq!(
+            name("feat(ui): floating focus-timer pill in the corner"),
+            "Floating focus-timer pill"
+        );
+        assert_eq!(name("plan: rate limiting"), "Rate limiting");
+        assert_eq!(name("fix(auth): x"), "X");
+        assert_eq!(name(""), "Untitled");
+        assert!(name(&format!("fix: {} b", "a".repeat(40))).chars().count() <= 32);
+    }
+
     use super::*;
 
     #[test]

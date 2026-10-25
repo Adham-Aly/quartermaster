@@ -1,72 +1,129 @@
-//! The Actions inbox in the left column: two rows per request waiting on you (what it is and
-//! its age, then who asks and about what, dim), newest first after the app's own configuration
-//! prompts. A click on a row opens its overlay, the only place its card and buttons are.
+//! Needs you, in the left column under Projects: every request waiting on you, newest first
+//! after the app's own configuration prompts. Each is its title, wrapped to two lines, then a dim
+//! line saying what kind it is, who asks and how long ago, all behind a bar in its colour:
+//!
+//! ```text
+//!  Needs you  2  ───━━━──────
+//! ▌ Should I fix the small typo in
+//! ▌ the README while I'm there?
+//! ▌ question · Quartermaster · 1h
+//! ```
+//!
+//! While something there is new to you the section moves (`widgets::beacon`). A click on an item
+//! opens its overlay, the only place its card and buttons are. (The pane is still `Pane::Actions`
+//! in the code.)
 
 use crate::app::App;
-use crate::bridge::{ListRow, draw_list, empty_lines, heading_style, section_block};
+use crate::bridge::{ListRow, draw_list, empty_lines, section_block};
 use crate::hit::{FrameMap, Hit, Pane};
-use crate::text::{truncate, width};
+use crate::router::Screen;
+use crate::text::{truncate, width, wrap};
 use crate::theme;
+use crate::widgets::beacon;
 use qm_types::api::{ActionItem, ActionKind, AgentRef, CardKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::ops::Range;
 
-/// The empty inbox's one row.
+/// The empty section's one row.
 pub(crate) const EMPTY: &str = "Nothing needs you.";
 
-/// Rows each item takes.
-pub(crate) const ROWS: usize = 2;
+/// The section's name.
+pub(crate) const NAME: &str = "Needs you";
 
-/// Draws the Actions section into `area`.
+/// The most lines an item's title wraps to.
+const TITLE_LINES: usize = 2;
+
+/// Draws the section into `area`.
 pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut FrameMap) {
     if area.height == 0 {
         return;
     }
-    let mut heading = vec![Span::styled("Actions", heading_style(app, Pane::Actions))];
-    if let n @ 1.. = app.snapshot.actions.len() {
+    let count = app.snapshot.actions.len();
+    let focused = app.screen == Screen::Bridge && app.focus == Pane::Actions;
+    let style = if focused {
+        theme::accent().add_modifier(Modifier::BOLD)
+    } else if count > 0 {
+        // Not the warn colour: in 16 colours it is focus's, and the chip says it anyway.
+        theme::text().add_modifier(Modifier::BOLD)
+    } else if app.term.hover == Some(Hit::Pane(Pane::Actions)) {
+        theme::text()
+    } else {
+        theme::title()
+    };
+    let mut heading = vec![Span::styled(NAME, style)];
+    if count > 0 {
+        let lit = beacon::lit(app);
         heading.push(Span::raw(" "));
-        heading.push(Span::styled(format!(" {n} "), theme::warn_chip()));
+        heading.push(beacon::chip(app, count, lit));
+        if lit {
+            // The heading starts a cell in; the rule leaves a cell at the end.
+            let used = 1 + width(NAME) + 1 + width(&format!(" {count} ")) + 1;
+            let cells = usize::from(area.width).saturating_sub(used + 1);
+            heading.push(Span::raw(" "));
+            heading.extend(beacon::rule(app, cells));
+        }
     }
-    let block = section_block(heading, false);
-    let rows = rows(app, block.inner(area).width);
+    let block = section_block(heading, true);
+    let built = build(app, block.inner(area).width);
+    map.action_spots = built.spots;
     draw_list(
         frame,
         area,
         block,
-        rows,
+        built.rows,
         app.view.actions_scroll,
         Pane::Actions,
         map,
     );
 }
 
-/// The pane's rows at `inner_width`.
-pub(crate) fn rows(app: &App, inner_width: u16) -> Vec<ListRow> {
+/// The section as drawn: its rows, and each item's lines in them.
+pub(crate) struct Built {
+    pub(crate) rows: Vec<ListRow>,
+    pub(crate) spots: Vec<Range<usize>>,
+}
+
+/// The section's row count at `inner_width`, which sizes it.
+pub(crate) fn height(app: &App, inner_width: u16) -> usize {
+    build(app, inner_width).rows.len()
+}
+
+/// The section's rows at `inner_width`.
+pub(crate) fn build(app: &App, inner_width: u16) -> Built {
     let items = &app.snapshot.actions;
     if items.is_empty() {
-        return empty_lines(&[EMPTY], inner_width)
-            .into_iter()
-            .map(ListRow::plain)
-            .collect();
+        return Built {
+            rows: empty_lines(&[EMPTY], inner_width)
+                .into_iter()
+                .map(ListRow::plain)
+                .collect(),
+            spots: Vec::new(),
+        };
     }
     let now = jiff::Timestamp::now();
-    items
-        .iter()
-        .enumerate()
-        .flat_map(|(i, item)| {
-            let hit = Hit::ActionRow(i);
-            let selected = (app.view.selected_action.as_ref() == Some(&item.key))
-                .then_some(!app.view.pointer_picked);
-            let hovered = selected != Some(true) && app.term.hover == Some(hit);
-            lines(item, usize::from(inner_width), now, hovered).map(|line| ListRow {
+    let mut out = Built {
+        rows: Vec::new(),
+        spots: Vec::new(),
+    };
+    for (i, item) in items.iter().enumerate() {
+        let hit = Hit::ActionRow(i);
+        let selected = (app.view.selected_action.as_ref() == Some(&item.key))
+            .then_some(!app.view.pointer_picked);
+        let hovered = selected != Some(true) && app.term.hover == Some(hit);
+        let from = out.rows.len();
+        for line in lines(app, item, usize::from(inner_width), now, hovered) {
+            out.rows.push(ListRow {
                 line,
                 hit: Some(hit),
                 selected,
-            })
-        })
-        .collect()
+            });
+        }
+        out.spots.push(from..out.rows.len());
+    }
+    out
 }
 
 /// The glyph and its colour for an item.
@@ -107,6 +164,31 @@ pub(crate) fn source(item: &ActionItem) -> Option<String> {
     }
 }
 
+/// Who asked, in words: the asking task's name (`Token refresh race`), else its number, the
+/// `Quartermaster`, `S-n`, or nothing for the app's own prompts.
+fn asker(app: &App, item: &ActionItem) -> Option<String> {
+    let task = item.task.or(match item.from {
+        Some(AgentRef::Crewmate { task }) => Some(task),
+        _ => None,
+    });
+    if let Some(task) = task {
+        let name = app
+            .snapshot
+            .crew
+            .iter()
+            .find(|r| r.agent == AgentRef::Crewmate { task })
+            .and_then(|r| r.task.as_ref())
+            .map(|t| t.name.clone())
+            .filter(|n| !n.is_empty());
+        return Some(name.unwrap_or_else(|| task.to_string()));
+    }
+    match item.from? {
+        AgentRef::Quartermaster => Some("Quartermaster".to_owned()),
+        AgentRef::Secondmate { id } => Some(id.to_string()),
+        AgentRef::Crewmate { task } => Some(task.to_string()),
+    }
+}
+
 /// How long ago, in one short word: `now`, `3m`, `2h`, `4d`.
 pub(crate) fn age(at: jiff::Timestamp, now: jiff::Timestamp) -> String {
     let secs = now.as_second().saturating_sub(at.as_second()).max(0);
@@ -118,16 +200,17 @@ pub(crate) fn age(at: jiff::Timestamp, now: jiff::Timestamp) -> String {
     }
 }
 
-/// An item's two rows: `☰ Plan questions        3h`, then `  T-0044 · plan(auth): session store`.
-/// A title with a ` · ` splits there; otherwise the title leads and the second row says who asks.
+/// An item's lines: its title wrapped to two lines, then `question · Quartermaster · 1h`, each
+/// behind the bar. A title with a ` · ` splits there, the rest leading the dim line.
 fn lines(
+    app: &App,
     item: &ActionItem,
     inner: usize,
     now: jiff::Timestamp,
     hovered: bool,
-) -> [Line<'static>; ROWS] {
-    let (glyph, style) = glyph(item);
-    let age = age(item.at, now);
+) -> Vec<Line<'static>> {
+    let (_, style) = glyph(item);
+    let bar = beacon::bar(app, item, style);
     let text_style = if hovered {
         theme::strong()
     } else {
@@ -139,33 +222,47 @@ fn lines(
         .map_or((item.title.as_str(), None), |(what, about)| {
             (what, Some(about))
         });
-    let source = source(item).filter(|source| !what.starts_with(source.as_str()));
-    let detail = match (source, about) {
-        (Some(source), Some(about)) => format!("{source} · {about}"),
-        (Some(source), None) => source,
-        (None, Some(about)) => about.to_owned(),
-        (None, None) => kind_word(item).to_owned(),
+    let room = inner.saturating_sub(2).max(1);
+    let mut title = wrap(what, room);
+    if title.len() > TITLE_LINES {
+        let rest = title[TITLE_LINES - 1..].join(" ");
+        title.truncate(TITLE_LINES - 1);
+        title.push(truncate(&rest, room));
+    }
+    let age = age(item.at, now);
+    let about = about.map_or_else(|| kind_word(item).to_owned(), str::to_owned);
+    // Who asks is left out when the title already says it, or when it doesn't fit whole.
+    let asker = asker(app, item).filter(|who| {
+        !what.to_lowercase().contains(&who.to_lowercase())
+            && width(&about) + width(who) + width(&age) + 6 <= room
+    });
+    let words = match asker {
+        Some(who) => format!("{about} · {who}"),
+        None => about,
     };
-    // Glyph, space, words, at least one space, the age.
-    let room = inner.saturating_sub(2 + 1 + width(&age));
-    let what = truncate(what, room);
-    let gap = inner.saturating_sub(2 + width(&what) + width(&age)).max(1);
-    [
-        Line::from(vec![
-            Span::styled(glyph, style),
-            Span::raw(" "),
-            Span::styled(what, text_style),
-            Span::raw(" ".repeat(gap)),
-            Span::styled(age, theme::dim()),
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(truncate(&detail, inner.saturating_sub(2)), theme::dim()),
-        ]),
-    ]
+    let detail = format!(
+        "{} · {age}",
+        truncate(&words, room.saturating_sub(3 + width(&age)))
+    );
+    let mut out: Vec<Line<'static>> = title
+        .into_iter()
+        .map(|part| {
+            Line::from(vec![
+                bar.clone(),
+                Span::raw(" "),
+                Span::styled(part, text_style),
+            ])
+        })
+        .collect();
+    out.push(Line::from(vec![
+        bar,
+        Span::raw(" "),
+        Span::styled(detail, theme::dim()),
+    ]));
+    out
 }
 
-/// What an item is, for a second row with nothing else to say.
+/// What an item is, for a dim line with nothing else to say.
 fn kind_word(item: &ActionItem) -> &'static str {
     match item.kind {
         ActionKind::Approval => "approval",
@@ -173,14 +270,52 @@ fn kind_word(item: &ActionItem) -> &'static str {
         ActionKind::Plan => "plan",
         ActionKind::Question => "question",
         ActionKind::Notice => "notice",
+        ActionKind::Review => "review",
+        ActionKind::Report => "report",
         _ => "setup",
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::age;
+    use super::{age, build};
+    use crate::app::App;
+    use crate::sample;
     use jiff::Timestamp;
+
+    #[test]
+    fn each_item_is_its_bar_its_wrapped_title_then_who_asks() {
+        let mut app = App::new();
+        sample::install(&mut app);
+        let built = build(&app, 29);
+        let lines: Vec<String> = built
+            .rows
+            .iter()
+            .map(|r| r.line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        // The ages move with the clock; everything before them doesn't.
+        let fixed: Vec<&str> = lines
+            .iter()
+            .map(|l| l.rsplit_once(" · ").map_or(l.as_str(), |(head, _)| head))
+            .collect();
+        assert_eq!(
+            fixed,
+            [
+                "▌ Sign in to GitHub",
+                "▌ setup",
+                // The newest you haven't seen pulses, here at its first step.
+                "▏ Staging deploys in the",
+                "▏ nightly report?",
+                "▏ question · S-02",
+                "▌ feat(billing): proration",
+                "▌ preview",
+                // The title names the task already, so it isn't repeated.
+                "▌ approval",
+            ],
+            "{lines:#?}"
+        );
+        assert_eq!(built.spots, [0..2, 2..5, 5..8]);
+    }
 
     #[test]
     fn ages_are_one_short_word() {

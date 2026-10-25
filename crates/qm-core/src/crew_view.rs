@@ -19,8 +19,8 @@ use qm_store::crew_view::{self, CrewData, OpenTask, TokenUse};
 use qm_store::db::Db;
 use qm_types::BoxFuture;
 use qm_types::api::{
-    AgentRef, Attention, Command, CrewRow, CrewTask, Snapshot, Styled, TaskDetail, TaskRow, Tone,
-    Waiting,
+    AgentRef, Attention, Command, CrewPhase, CrewRow, CrewTask, Snapshot, Styled, TaskDetail,
+    TaskRow, Tone, Waiting,
 };
 use qm_types::clock::Clock;
 use qm_types::domain::{HeldKind, TaskStatus, VerificationLevel};
@@ -158,7 +158,8 @@ fn push_group(
 }
 
 /// A task's heading over `members`, its crewmates under one supervisor: `T-0042 api-server`, with
-/// `+1` for each further project they work in (`T-0042 api-server +1`).
+/// `+1` for each further project they work in (`T-0042 api-server +1`); and its name, as it was
+/// given, else made from its oldest crewmate's title.
 fn heading(label: TaskLabelId, members: &[&OpenTask]) -> CrewTask {
     let mut projects: Vec<&str> = Vec::new();
     for task in members {
@@ -166,14 +167,40 @@ fn heading(label: TaskLabelId, members: &[&OpenTask]) -> CrewTask {
             projects.push(&task.project);
         }
     }
-    let mut words = label.to_string();
-    if let Some(first) = projects.first() {
-        words = format!("{words} {first}");
-    }
+    let mut project = projects
+        .first()
+        .map(|p| (*p).to_owned())
+        .unwrap_or_default();
     if projects.len() > 1 {
-        words = format!("{words} +{}", projects.len() - 1);
+        project = format!("{project} +{}", projects.len() - 1);
     }
-    CrewTask::new(label, words)
+    let words = if project.is_empty() {
+        label.to_string()
+    } else {
+        format!("{label} {project}")
+    };
+    let name = members
+        .iter()
+        .find_map(|t| t.label_name.clone())
+        .or_else(|| {
+            members
+                .first()
+                .map(|t| qm_policy::names::task_name_from_title(&t.title))
+        })
+        .unwrap_or_default();
+    CrewTask::new(label, words).named(name, project)
+}
+
+/// Where a task's work is, for the crew list's groups.
+fn phase(task: &OpenTask) -> CrewPhase {
+    match task.status {
+        TaskStatus::Queued | TaskStatus::Waiting | TaskStatus::Held | TaskStatus::Stuck => {
+            CrewPhase::Waiting
+        }
+        TaskStatus::Settling if task.pending_merge => CrewPhase::Waiting,
+        TaskStatus::Reported | TaskStatus::Landed => CrewPhase::Done,
+        _ => CrewPhase::Working,
+    }
 }
 
 fn push_task(
@@ -193,6 +220,8 @@ fn push_task(
         status.clone(),
     );
     row.task = Some(heading);
+    row.kind = task.kind.to_string();
+    row.phase = phase(task);
     row.waiting = waiting;
     row.needs_you = waiting.is_some();
     row.busy = task.in_turn;

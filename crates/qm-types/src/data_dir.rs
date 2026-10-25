@@ -188,6 +188,16 @@ impl DataDir {
         self.root.join("server.sock")
     }
 
+    /// The notifier's socket: the menu bar helper connects to it while the server runs.
+    pub fn notifier_socket(&self) -> PathBuf {
+        self.root.join("notifier.sock")
+    }
+
+    /// The menu bar helper's app bundle (`qm-notify`), installed and signed by the server.
+    pub fn notifier_app(&self) -> PathBuf {
+        self.root.join("Quartermaster.app")
+    }
+
     /// The plan pages' endpoint port, kept so a page rendered before a restart still sends
     /// (`{"port": 41041}`, mode 0600).
     pub fn plan_endpoint(&self) -> PathBuf {

@@ -84,35 +84,49 @@ pub(crate) fn draw_body(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut 
     let cols = columns(body, app);
     map.folded = cols.right.is_none();
 
-    // Left column: projects and crew as tall as their rows (Projects within a quarter, plus any
-    // rows Actions can spare), then the Actions inbox to the bottom.
+    // Left column: Projects (within a quarter, plus any rows Crew can spare), then Needs you as
+    // tall as its items, then the crew to the bottom; one line per task when the crew's full list
+    // doesn't fit.
     let inner_width = cols
         .left
         .width
         .saturating_sub(crate::widgets::sidebar::INSET);
-    let (projects_height, crew_height, actions_height) = crate::widgets::sidebar::heights(
-        cols.left.height,
-        cells(projects::rows(app, inner_width).len()),
-        cells(crew::rows(app, inner_width).len()),
-        cells(app.snapshot.actions.len() * crate::widgets::actions::ROWS),
-    );
+    let projects_rows = cells(projects::rows(app, inner_width).len());
+    let needs_rows = cells(crate::widgets::actions::height(app, inner_width));
+    let full = cells(crew::height(app, inner_width, false));
+    let mut compact = false;
+    let mut heights =
+        crate::widgets::sidebar::heights(cols.left.height, projects_rows, needs_rows, full);
+    if heights.2 < full.saturating_add(1) {
+        let short = cells(crew::height(app, inner_width, true));
+        if short < full {
+            compact = true;
+            heights = crate::widgets::sidebar::heights(
+                cols.left.height,
+                projects_rows,
+                needs_rows,
+                short,
+            );
+        }
+    }
+    let (projects_height, needs_height, crew_height) = heights;
     let projects_area = Rect {
         height: projects_height,
         ..cols.left
     };
-    let crew_area = Rect {
+    let needs_area = Rect {
         y: projects_area.bottom(),
+        height: needs_height,
+        ..cols.left
+    };
+    let crew_area = Rect {
+        y: needs_area.bottom(),
         height: crew_height,
         ..cols.left
     };
-    let actions_area = Rect {
-        y: crew_area.bottom(),
-        height: actions_height,
-        ..cols.left
-    };
     projects::draw(frame, projects_area, app, map);
-    crew::draw(frame, crew_area, app, map);
-    crate::widgets::actions::draw(frame, actions_area, app, map);
+    crate::widgets::actions::draw(frame, needs_area, app, map);
+    crew::draw(frame, crew_area, app, map, compact);
 
     // Middle column: a worker's session, when one is open, or the conversation above your input.
     if let Some(agent) = app.shown_session() {

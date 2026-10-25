@@ -48,6 +48,10 @@ pub struct StartCrewmateArgs {
     pub kind: TaskKind,
     // Conventional-commit style, e.g. "fix(auth): token refresh race".
     pub title: String,
+    // Two or three plain words the user sees for the task in the crew list ("Token refresh
+    // race"). Leave it out when joining a task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub goal: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<Constraint>,
@@ -141,6 +145,10 @@ pub struct SecondmateStartCrewmateArgs {
     pub base_branch: Option<String>,
     pub kind: TaskKind,
     pub title: String,
+    // Two or three plain words the user sees for the task in the crew list. Leave it out when
+    // joining a task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub goal: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<Constraint>,

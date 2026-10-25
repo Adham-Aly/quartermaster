@@ -75,6 +75,10 @@ pub struct Hello {
     pub term: String,
     #[serde(default)]
     pub colors: Colors,
+    /// The terminal app the client runs in, by its bundle ID (`com.mitchellh.ghostty`), when the
+    /// client knows it: notifications hold back while it is frontmost and a window in it has focus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_app: Option<String>,
 }
 
 impl Hello {
@@ -92,6 +96,7 @@ impl Hello {
             keyboard_enhanced: false,
             term: String::new(),
             colors: Colors::default(),
+            terminal_app: None,
         }
     }
 }
@@ -194,6 +199,9 @@ pub enum Control {
     Suspend,
     /// Restore the terminal and return.
     Exit { reason: ExitReason },
+    /// A notification was clicked and this is the window you used last: bring its own tab (or
+    /// tmux window) forward, so the click lands on Quartermaster and not on another tab.
+    Raise,
 }
 
 /// A key, independent of crossterm.

@@ -800,6 +800,7 @@ fn request(f: &Fixture, overrides: &RequestOverrides) -> (Caller, StartRequest) 
         label: None,
         kind: TaskKind::Build,
         title: "feat(x): y".into(),
+        name: None,
         goal: "g".into(),
         constraints: Vec::new(),
         tests_required: false,

@@ -87,6 +87,8 @@ pub(crate) struct Settings {
     pub(crate) autocompact_window: AutocompactWindow,
     /// The Task kinds rows (Routing), in `KindRow::ALL` order.
     pub(crate) kind_tiers: Vec<KindTierRow>,
+    /// macOS notifications are on (System).
+    pub(crate) notifications: bool,
     /// Why the core's settings part didn't start this run, shown in place of the tabs that need it.
     pub(crate) unavailable: Option<String>,
 }
@@ -264,6 +266,21 @@ impl Settings {
                     m.listed = true;
                 }
             }
+            Command::SetPin { .. }
+            | Command::SetQuartermasterModel { .. }
+            | Command::SetQuartermasterEffort { .. }
+            | Command::SetAutocompactWindow { .. }
+            | Command::SetNotifications { .. } => self.apply_preference(command),
+            Command::SetKindTier { .. } | Command::ResetKindTiers => self.apply_kind_tier(command),
+            // Only the core can act on the rest (logins it runs, keys it checks).
+            _ => {}
+        }
+    }
+
+    /// The settings that are one value each: the pin, the Quartermaster's model and effort, the
+    /// autocompact window, notifications.
+    fn apply_preference(&mut self, command: &Command) {
+        match command {
             Command::SetPin {
                 on,
                 model,
@@ -278,8 +295,7 @@ impl Settings {
             Command::SetAutocompactWindow { tokens } => {
                 self.autocompact_window = AutocompactWindow::new(*tokens);
             }
-            Command::SetKindTier { .. } | Command::ResetKindTiers => self.apply_kind_tier(command),
-            // Only the core can act on the rest (logins it runs, keys it checks).
+            Command::SetNotifications { enabled } => self.notifications = *enabled,
             _ => {}
         }
     }

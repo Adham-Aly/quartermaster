@@ -13,7 +13,7 @@ use crate::defs::{
     TaskStatusTool, TaskUpdated, UnlinkTasksArgs, UnlinkTasksTool, Unlinked,
 };
 use crate::handler::{Handle, StartRequest, ToolCx, ToolFailure};
-use qm_policy::names::check_task_title;
+use qm_policy::names::{check_task_name, check_task_title};
 use qm_policy::overrides::{Authority, OverrideKind, check_choice_override};
 use qm_types::BoxFuture;
 use qm_types::error::Refusal;
@@ -61,6 +61,9 @@ pub(crate) fn check_overrides(cx: &ToolCx<'_>, request: &StartRequest) -> Result
 /// The shape of a start request, before any override or fact is checked.
 pub fn check_start_shape(request: &StartRequest) -> Result<(), Refusal> {
     check_task_title(&request.title)?;
+    if let Some(name) = &request.name {
+        check_task_name(name)?;
+    }
     if request.folder.is_some() && request.project.is_some() {
         return Err(Refusal::new("name a folder or a listed project, not both"));
     }
@@ -130,6 +133,9 @@ pub(crate) fn prepare_start(
         label: args.join_task,
         kind: args.kind,
         title: args.title.trim().to_owned(),
+        name: args
+            .name
+            .map(|n| n.split_whitespace().collect::<Vec<_>>().join(" ")),
         goal: args.goal,
         constraints: args.constraints,
         tests_required: args.tests_required,
@@ -344,6 +350,7 @@ mod tests {
             label: None,
             kind: TaskKind::Research,
             title: "research(x): inspect".into(),
+            name: None,
             goal: "inspect".into(),
             constraints: vec![],
             tests_required: false,

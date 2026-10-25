@@ -219,6 +219,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "a · space",
                 "projects: flip the selected project between normal and auto",
             ),
+            ("n · space", "system: turn notifications on or off"),
             ("s", "system: the setup check"),
         ],
     ),

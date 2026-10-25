@@ -13,6 +13,7 @@
 //! - [`config`]: the schema of `config.toml` (no secrets);
 //! - [`api`]: the messages between the core and the terminal UI;
 //! - [`wire`]: the frames between the UI host and a terminal client;
+//! - [`attention`]: what waits on you, from the UI host to the notifier, and the clicks back;
 //! - [`fsio`]: atomic file replacement and append-only logs;
 //! - [`error`]: [`error::Refusal`], the plain reason a rule gives an agent;
 //! - [`rules`]: what the rules in `qm-policy` judge: [`rules::TurnCounters`], [`rules::ToolClass`]
@@ -22,6 +23,7 @@
 //! the environment and the data directory's own folders and files.
 
 pub mod api;
+pub mod attention;
 pub mod clock;
 pub mod config;
 pub mod data_dir;

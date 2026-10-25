@@ -1,9 +1,9 @@
 # Quartermaster
 
-A private, macOS-only Rust terminal app: one binary, `quartermaster`. You talk to one orchestrating
-agent, the Quartermaster. It hands project work to crewmates (`C-n`, grouped in short-lived tasks `T-n`),
-each in a git worktree or a plain folder edited in place, and brings the results back for you to approve. Secondmates are standing orchestrators with
-a charter. Claude agents run on the user's installed `claude`; every other
+A private, macOS-only Rust terminal app: one binary, `quartermaster`. You talk to one orchestrating agent,
+the Quartermaster. It hands project work to crewmates (`C-n`, grouped in short-lived tasks `T-n`), each in a
+git worktree or a plain folder edited in place, and brings the results back for you to approve. Secondmates
+are standing orchestrators with a charter. Claude agents run on the user's installed `claude`; every other
 account runs on the app's own Rust provider engine.
 
 **This file is zero-sum.** It stays at or under 150 lines: every line you add must be paid for by
@@ -17,7 +17,7 @@ outdated, and when your change makes this file or a skill wrong, update it in th
 
 | What | Command |
 |---|---|
-| Build everything | `cargo xtask build` (`cargo build --workspace --all-targets --locked`) |
+| Build everything | `cargo xtask build` (`cargo build --workspace --all-targets --locked`; the notifier needs `swiftc`) |
 | Format and lint | `cargo xtask check` (`cargo fmt --all --check`, then clippy with `-D warnings`) |
 | Exactly what CI runs | `cargo xtask ci` (format check, clippy with `-D warnings`, build) |
 | Install on this Mac | `cargo xtask install` (release build into `~/.cargo/bin/quartermaster`) |
@@ -33,8 +33,9 @@ Building needs rustup, which installs the Rust pinned in `rust-toolchain.toml` b
 ```text
 quartermaster (the binary) ── startup, lock, logging, wiring; nothing depends on it
  ├─ qm-tui ─────────────────── the terminal UI; qm-types only, never qm-core
+ ├─ qm-notify ──────────────── macOS banners and the menu bar helper; qm-types only
  ├─ qm-core ─┬─ qm-tools ───── qm-engine, qm-policy
- │           ├─ qm-engine, qm-store, qm-policy, qm-routing, qm-prompts, qm-git, qm-github, qm-auth
+ │           ├─ qm-engine, qm-store, qm-policy, qm-routing, qm-prompts, qm-git, qm-github, qm-auth, qm-plans
  │           └─ (never a concrete engine)
  ├─ qm-engine-claude ───────── qm-engine
  └─ qm-providers ───────────── qm-engine, qm-tools, qm-auth
@@ -56,6 +57,7 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
 | `qm-prompts` | prompts (sources in `prompts/`), briefs, charters, the context block |
 | `qm-git`, `qm-github` | worktrees and branches, landing, guarded network git · PRs, checks, the push fence, releases |
 | `qm-auth` | credentials and logins for non-Claude accounts |
+| `qm-plans`, `qm-notify` | plan pages (authored HTML, checked and composed) · notifications: the Swift helper, its bundle, the tracker |
 
 ## Data directory and runtime
 
@@ -70,11 +72,12 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
   `--foreground` says so and exits non-zero. `server.sock` (0600, same-uid peers) is bound only under the lock.
 - `logs/quartermaster-YYYY-MM-DD.log`: redacted; level from `QM_LOG` (default `info`); seven days kept, a new file at local midnight. The
   terminal belongs to the UI, so nothing is logged there.
-- `seat/`, `secondmates/S-n/`, `tasks/C-n/` (a crewmate's worktree, brief, jobs; goes at close; each
-  has `transcript/`, the provider engine's durable sessions), `artifacts/T-n/C-n/` (`report/` until forgotten;
-  `plan/`, `evidence/` while read; `qm-core` `retention.rs`), `attachments/`, `drafts/`,
-  `ui.json` (UI state, never logged; `tui.toml` is only read once for old widths), `plan-endpoint.json`
-  (the plan pages' loopback port, kept so pages rendered before a restart still send).
+- `seat/`, `secondmates/S-n/`, `tasks/C-n/` (a crewmate's worktree, brief, jobs; goes at close; each has
+  `transcript/`, the provider engine's durable sessions), `artifacts/T-n/C-n/` (`report/` until forgotten; `plan/`,
+  `evidence/` while read; `qm-core` `retention.rs`), `attachments/`, `drafts/`, `ui.json` (UI state, never logged;
+  `tui.toml` is only read once for old widths), `plan-endpoint.json` (the plan pages' loopback port, kept so
+  pages rendered before a restart still send), `Quartermaster.app` (the notifier's helper, installed and
+  ad-hoc signed by the server while notifications are on; it connects back on `notifier.sock`).
 - Scratch, `/tmp/quartermaster/<uid>/<hash>/` (`DataDir::scratch`; owner and 0700 checked, never a
   symlink): only crewmates' `scratchpad/T-n/C-n/`. Provider engines refuse writes in the data dir.
 
@@ -84,9 +87,8 @@ These override anything else. Security comes first.
 
 1. **Never set `ANTHROPIC_API_KEY` or `CLAUDE_CONFIG_DIR`**, in code, scripts or your shell. They
    move `claude` off the user's keychain subscription login.
-2. **Never print credentials**: no tokens, keys, cookies, `auth.json` contents or keychain output
-   in logs, commits, screenshots, recordings or reports. A log line's redaction is a backstop, not a
-   licence.
+2. **Never print credentials**: no tokens, keys, cookies, `auth.json` contents or keychain output in logs,
+   commits, screenshots, recordings or reports. A log line's redaction is a backstop, not a licence.
 3. The user's email is for identification only; never send it anywhere.
 4. Development runs use a throwaway data directory (`QUARTERMASTER_HOME=$(mktemp -d)`), never the
    real `~/.quartermaster`. Never copy `auth.json` between data directories (refresh tokens rotate).
@@ -97,8 +99,7 @@ These override anything else. Security comes first.
 7. No force-push, no `--no-verify`, no skipping hooks. Never move a pushed tag.
 8. Prefer quality, simplicity, robustness and long-term maintainability over development speed.
 9. Bug fixes start by reproducing the bug end to end in the real binary, the way a user sees it.
-10. Be picky about the UI, down to the cell. If something looks off, even if it isn't yours, fix
-    it or report it.
+10. Be picky about the UI, down to the cell. If something looks off, even if it isn't yours, fix it or report it.
 11. Fix any lint failure or warning you see, even if it isn't yours. No blanket `allow`s.
 
 ## Invariants the code relies on
@@ -111,11 +112,11 @@ These override anything else. Security comes first.
 - **One rulebook.** Every tool call from either engine comes back to `qm-tools` handlers, which
   check `qm-policy` and reach the core through `ToolHost`. Every `ToolHost` method has a default
   body; the core host re-checks the caller's role against the registry.
-- **One database thread, in memory.** Only `qm_store::db::Db::call` touches SQLite. The working
-  database is in memory; `kept.rs` decides what reaches disk (every table has `seq` and a KEPT or
-  VOLATILE entry; chat keeps only in-house agents' current one, user authority sources outlive chat). Migrations are
-  append-only; tables are `STRICT`; events are append-only; rows retire with `*_at`. Upserts on a
-  mirrored table fail under the dirty-mark trigger: use UPDATE, then INSERT.
+- **One database thread, in memory.** Only `qm_store::db::Db::call` touches SQLite. The working database is
+  in memory; `kept.rs` decides what reaches disk (every table has `seq` and a KEPT or VOLATILE entry; chat keeps
+  only in-house agents' current one, user authority sources outlive chat). Migrations are append-only; tables
+  are `STRICT`; events are append-only; rows retire with `*_at`. Upserts on a mirrored table fail under the
+  dirty-mark trigger: use UPDATE, then INSERT.
 - **IDs are random; `seq` orders.** Task, secondmate and message numbers are drawn at random and
   reused; no counter is stored. Creation order is `seq`, never the ID.
 - **Secrets stay in `qm-auth`.** `Secret` redacts `Debug`, has no `Display`, and neither it nor
@@ -138,10 +139,9 @@ These override anything else. Security comes first.
 
 ## Shared lists (add lines; keep order)
 
-Workspace members and `[workspace.dependencies]` (`Cargo.toml`), `TOOLS` (`qm-tools`
-`registry.rs`), `HANDLERS` (`handlers/mod.rs`), `MIGRATIONS` (`qm-store` `schema.rs`), `PROMPTS`
-(`qm-prompts` `index.rs`), `WakeKind` (`qm-types` `domain.rs`), `Screen` (`qm-tui` `router.rs`),
-API parts (`quartermaster` `wiring.rs`), and this crate map.
+Workspace members and `[workspace.dependencies]` (`Cargo.toml`), `TOOLS` (`qm-tools` `registry.rs`), `HANDLERS`
+(`handlers/mod.rs`), `MIGRATIONS` (`qm-store` `schema.rs`), `PROMPTS` (`qm-prompts` `index.rs`), `WakeKind`
+(`qm-types` `domain.rs`), `Screen` (`qm-tui` `router.rs`), API parts (`quartermaster` `wiring.rs`), this crate map.
 
 ## Skills
 

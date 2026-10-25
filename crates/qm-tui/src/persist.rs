@@ -172,6 +172,11 @@ impl Restored {
         let scrolls = object.get("scroll").and_then(Value::as_object);
         let mut popups: Vec<OpenPopup> = Vec::new();
         for open in list::<OpenPopup>(object, "popups") {
+            // An action's card shows a live inbox item it doesn't keep: it opens again from the
+            // Actions pane.
+            if open.popup == Popup::Action {
+                continue;
+            }
             // One of each, the last one on top.
             popups.retain(|o| o.popup != open.popup);
             popups.push(open);

@@ -280,9 +280,22 @@ async fn serve(dir: DataDir, booted: crate::Booted) -> Result<(), String> {
     ));
     let (handle, commands) = qm_tui::host::control();
     let (windows_tx, windows) = serve::windows();
+    // Notifications follow the host: it tells the notifier what waits on you, and the notifier
+    // (with its menu bar app) ends when the host does.
+    let (attention, notifier_end) = qm_types::attention::link();
+    let notifier = tokio::spawn(qm_notify::run(
+        dir.clone(),
+        notifier_end,
+        jiff::Timestamp::now(),
+    ));
     // The UI host holds the UI's end of the core link for the server's whole life, so windows
     // coming and going never touch the crew. It ends when the core closes.
-    let mut host = tokio::spawn(qm_tui::host::serve(client, windows, commands));
+    let mut host = tokio::spawn(qm_tui::host::serve(
+        client,
+        windows,
+        commands,
+        Some(attention),
+    ));
 
     let listener = serve::bind(&dir.server_socket())?;
     let started_unix = jiff::Timestamp::now().as_second();
@@ -324,6 +337,8 @@ async fn serve(dir: DataDir, booted: crate::Booted) -> Result<(), String> {
     drop(listener);
     let _ = std::fs::remove_file(dir.server_socket());
     connections.abort_all();
+    let _ = tokio::time::timeout(Duration::from_secs(2), notifier).await;
+    let _ = std::fs::remove_file(dir.notifier_socket());
     let _ = tokio::time::timeout(Duration::from_secs(5), core).await;
     Ok(())
 }

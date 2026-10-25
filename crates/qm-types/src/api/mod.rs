@@ -258,6 +258,11 @@ pub enum Command {
         #[serde(default)]
         effort: Option<Effort>,
     },
+    /// Turn macOS notifications (banners and the menu bar mark) on or off; saved to `config.toml`
+    /// and applied at once.
+    SetNotifications {
+        enabled: bool,
+    },
     /// Set the autocompact window, in tokens, for every agent; the core clamps and rounds it to a
     /// step. Saved to `config.toml`; each agent applies it at its next idle moment.
     SetAutocompactWindow {
@@ -775,6 +780,12 @@ pub struct ProjectRow {
     /// several projects is listed under each of them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<ProjectTask>,
+    /// Its folder, your home written `~` (`~/code/api-server`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub place: String,
+    /// The branch its work starts from and lands on (`main`); empty for a plain folder.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base_branch: String,
 }
 
 impl ProjectRow {
@@ -786,7 +797,17 @@ impl ProjectRow {
             autonomy,
             active: false,
             tasks: Vec::new(),
+            place: String::new(),
+            base_branch: String::new(),
         }
+    }
+
+    /// The project at `place`, its work based on `base_branch`.
+    #[must_use]
+    pub fn at(mut self, place: impl Into<String>, base_branch: impl Into<String>) -> Self {
+        self.place = place.into();
+        self.base_branch = base_branch.into();
+        self
     }
 }
 
@@ -834,6 +855,26 @@ pub struct CrewRow {
     /// the rows under one supervisor, which the core keeps together. `None` draws the row as is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<CrewTask>,
+    /// A crewmate's kind of work ("fix", "review"); empty for other rows, and from older servers.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// Where a crewmate's work is: the crew list groups tasks by it.
+    #[serde(default)]
+    pub phase: CrewPhase,
+}
+
+/// Where a crewmate's work is, for the crew list's groups.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CrewPhase {
+    /// Starting, working, in review or settling.
+    #[default]
+    Working,
+    /// Waiting: on you (the row's flag says so), or on something else (queued, waits).
+    Waiting,
+    /// Reported or landed: there is something to read.
+    Done,
 }
 
 /// The task heading a crewmate's row sits under in the crew tree.
@@ -843,6 +884,13 @@ pub struct CrewTask {
     pub id: TaskLabelId,
     /// The heading's words: "T-0042 api-server".
     pub label: String,
+    /// What the task is doing, in two or three words: "Token refresh race". Empty from older
+    /// servers.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// The project it works in, `+1` for each further one: "api-server", "api-server +1".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project: String,
 }
 
 impl CrewTask {
@@ -850,7 +898,17 @@ impl CrewTask {
         Self {
             id,
             label: label.into(),
+            name: String::new(),
+            project: String::new(),
         }
+    }
+
+    /// The task with its name and project.
+    #[must_use]
+    pub fn named(mut self, name: impl Into<String>, project: impl Into<String>) -> Self {
+        self.name = name.into();
+        self.project = project.into();
+        self
     }
 }
 
@@ -871,6 +929,8 @@ impl CrewRow {
             waiting: None,
             busy: false,
             task: None,
+            kind: String::new(),
+            phase: CrewPhase::Working,
         }
     }
 }
@@ -1224,6 +1284,15 @@ pub struct SessionView {
     /// the busy indicator. A crewmate's session shows it from `turn_running` and `lines`.
     #[serde(default)]
     pub thinking: bool,
+    /// The model the agent runs on, for the chat's header; the UI names it.
+    #[serde(default)]
+    pub model: Option<ModelId>,
+    #[serde(default)]
+    pub effort: Option<Effort>,
+    /// Where it works, for the chat's header: "api-server · qm/task-0042 ← main",
+    /// "notes · /Users/you/notes", or a secondmate's scope.
+    #[serde(default)]
+    pub place: String,
 }
 
 impl SessionView {
@@ -1241,6 +1310,9 @@ impl SessionView {
             conversation: Vec::new(),
             subtitle: String::new(),
             thinking: false,
+            model: None,
+            effort: None,
+            place: String::new(),
         }
     }
 }
@@ -1338,6 +1410,9 @@ pub struct SettingsView {
     /// Settings ▸ Routing ▸ Task kinds: every row, in `KindRow::ALL` order.
     #[serde(default)]
     pub kind_tiers: Vec<KindTierRow>,
+    /// macOS notifications are on (Settings ▸ System); `config.toml`'s `[notifications] enabled`.
+    #[serde(default)]
+    pub notifications: bool,
 }
 
 /// One Task kinds row: the tier it routes to and the app's default for it.

@@ -3,9 +3,12 @@
 //!
 //! ```text
 //! ╭─ C-0042 · fix(auth): token refresh race ─────────────────────  ← Quartermaster ─╮
-//! │ api-server · sonnet-5-5 · supervisor: Quartermaster                     (dim)   │
 //! │ Talking to this crewmate directly. You override its supervisor; it will  (warn) │
 //! │ reconcile.                                                                      │
+//! │                                                                                 │
+//! │ ◆ Quartermaster v0.7.1                                                          │
+//! │   Sonnet 5.5 · High effort                                               (dim)  │
+//! │   api-server · qm/task-0042 ← main · supervisor: Quartermaster           (dim)  │
 //! │                                                                                 │
 //! │ [from supervisor] Brief · C-0042 · fix(auth): token refresh race  Expand        │
 //! │                                                                                 │
@@ -22,9 +25,9 @@
 //! ```
 //!
 //! The box's title names the agent and its task; `← Quartermaster` at its right goes back to the
-//! conversation, as `Esc` does. The note and the banner stay at the top while the lines scroll
-//! under them; the bottom border carries the session's status and, while a turn runs,
-//! `Interrupt`. The Bridge's top bar and status bar stay as they are.
+//! conversation, as `Esc` does. The banner stays at the top while the lines scroll under it, led
+//! by the chat's header (`widgets::chat_header`); the bottom border carries the session's status
+//! and, while a turn runs, `Interrupt`. The Bridge's top bar and status bar stay as they are.
 //!
 //! A secondmate's session has the same frame: its charter's first line shows dim in the banner's
 //! row, and the box holds its conversation, drawn by the Bridge's chat widgets.
@@ -36,7 +39,7 @@ use crate::hit::{FrameMap, Hit, Pane};
 use crate::text::{cells, truncate, width, wrap, wrap_rows, wrap_styled};
 use crate::theme;
 use crate::widgets::conversation::{self, Row, RowText, draw_rows, prompt_box};
-use crate::widgets::{button, input_box, markdown, spinner, stream, tools};
+use crate::widgets::{button, chat_header, input_box, markdown, spinner, stream, tools};
 use qm_types::api::{AgentRef, SessionLine, SessionLineKind, SessionView};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
@@ -139,23 +142,33 @@ fn session_pane(
     map.session_rows = Some(rows_area);
     let lines = view.map_or(&[][..], |v| v.lines.as_slice());
     let chats = view.map_or(&[][..], |v| v.conversation.as_slice());
+    // The chat's header leads its rows, once the core's view has said what to put in it.
+    let top = view.map_or_else(Vec::new, |v| {
+        chat_header::rows(app, &chat_header::Facts::session(app, v), rows_area.width)
+    });
     if lines.is_empty() && chats.is_empty() {
         let text = if view.is_some() {
             "Nothing in this session yet."
         } else {
             "Opening the session…"
         };
-        let y = rows_area.y + rows_area.height / 2;
-        frame.render_widget(
-            Paragraph::new(Line::styled(text, theme::dim())).alignment(Alignment::Center),
-            Rect::new(rows_area.x, y, rows_area.width, 1),
-        );
+        let used = cells(top.len()).min(rows_area.height);
+        draw_rows(frame, rows_area, top, 0, map);
+        chat_header::place_logo(frame, rows_area, app, 0, map);
+        if used < rows_area.height {
+            let y = rows_area.y + used + (rows_area.height - used) / 2;
+            frame.render_widget(
+                Paragraph::new(Line::styled(text, theme::dim())).alignment(Alignment::Center),
+                Rect::new(rows_area.x, y, rows_area.width, 1),
+            );
+        }
         return;
     }
     let notes = crate::widgets::context_strip::chat_notes(app, agent);
     let compacting = crate::widgets::context_strip::compacting_row(app, agent);
-    let mut rows = if chats.is_empty() {
-        rows(lines, &notes, rows_area.width, app, compacting.is_none())
+    let mut rows = top;
+    rows.extend(if chats.is_empty() {
+        self::rows(lines, &notes, rows_area.width, app, compacting.is_none())
     } else {
         // A secondmate's conversation, from its side: its own replies under its name, the
         // Quartermaster's messages under the Quartermaster's.
@@ -169,7 +182,7 @@ fn session_pane(
             rows.extend(conversation::thinking_rows(chats, app, agent));
         }
         rows
-    };
+    });
     // In place of the busy row: what the agent is doing now.
     if let Some(row) = compacting {
         rows.push(Row::plain(Line::default()));
@@ -181,15 +194,20 @@ fn session_pane(
     let start = rows.len().saturating_sub(visible + offset);
     map.scroll_max.push((Pane::Session, max));
     draw_rows(frame, rows_area, rows, start, map);
+    chat_header::place_logo(frame, rows_area, app, start, map);
 }
 
-/// The rows above the lines: the note (dim), then the banner in the warn colour on the terminal's
+/// The rows above the lines: the note (dim; only from a core whose view has no `place`, as the
+/// chat's header says the same), then the banner in the warn colour on the terminal's
 /// background (on the 16-colour bright-black fill it can't be read in a light theme) or, for a
 /// secondmate, its charter's first line (dim), then a blank row. They never take more than a
 /// third of the box: the note goes first, then the rest. Returns what is left for the lines.
 fn header(frame: &mut Frame<'_>, inner: Rect, agent: AgentRef, view: Option<&SessionView>) -> Rect {
     let max = usize::from(inner.width);
+    // The chat's header says where it works and on what; a view from before it had one says it
+    // here.
     let note = view
+        .filter(|v| v.place.is_empty())
         .map(|v| v.note.as_str())
         .filter(|n| !n.is_empty())
         .map(|note| Line::styled(truncate(note, max), theme::dim()));
@@ -403,9 +421,9 @@ pub(crate) fn rows(
         &mut notes, None, max, first,
     ));
     if busy_row && running && !writing {
-        let spinner = app
-            .session_view()
-            .map_or(spinner::Spinner::Helm, |v| spinner::Spinner::of(v.agent));
+        let spinner = app.session_view().map_or(spinner::Spinner::Helm, |v| {
+            spinner::for_agent(&app.snapshot.crew, v.agent)
+        });
         // The turn's prompt: the last line the worker didn't write.
         let since = lines
             .iter()

@@ -438,6 +438,8 @@ pub struct OpenTask {
     pub task: TaskId,
     /// The task (`T-`) the crewmate belongs to.
     pub label: TaskLabelId,
+    /// The task's name, if it was given one.
+    pub label_name: Option<String>,
     pub kind: TaskKind,
     pub title: String,
     pub status: TaskStatus,
@@ -518,7 +520,8 @@ pub fn crew_data(conn: &Connection) -> Result<CrewData, StoreError> {
                         WHERE h.task_id = t.id AND h.kind = 'merge' AND h.status = 'pending'),
                 EXISTS (SELECT 1 FROM turns AS u JOIN agents AS a ON a.id = u.agent_id
                         WHERE a.task_id = t.id AND a.role = 'crewmate' AND u.status = 'running'),
-                p.path, COALESCE(t.label_id, t.id)
+                p.path, COALESCE(t.label_id, t.id),
+                (SELECT l.name FROM task_labels AS l WHERE l.id = COALESCE(t.label_id, t.id))
          FROM tasks AS t JOIN projects AS p ON p.id = t.project_id
          WHERE t.status NOT IN {HIDDEN}
          ORDER BY t.created_at, t.seq"
@@ -541,6 +544,7 @@ pub fn crew_data(conn: &Connection) -> Result<CrewData, StoreError> {
                 in_turn: r.get(12)?,
                 path: r.get(13)?,
                 label: r.get(14)?,
+                label_name: r.get(15)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -555,6 +559,7 @@ pub fn crew_data(conn: &Connection) -> Result<CrewData, StoreError> {
         tasks.push(OpenTask {
             task,
             label: base.label,
+            label_name: base.label_name,
             kind: base.kind,
             title: base.title,
             status: base.status,
@@ -588,6 +593,7 @@ pub fn crew_data(conn: &Connection) -> Result<CrewData, StoreError> {
 /// A task row before its agent, routing, tokens and activity are added.
 struct TaskBase {
     task: TaskId,
+    label_name: Option<String>,
     kind: TaskKind,
     title: String,
     status: TaskStatus,

@@ -13,7 +13,6 @@ use crate::hit::{FrameMap, Hit, Pane};
 use crate::popups::Popup;
 use crate::text::{cells, truncate};
 use crate::theme;
-use crate::widgets::actions::ROWS;
 use crate::widgets::card::{self, Button};
 use crate::widgets::conversation::{Row, draw_rows};
 use crossterm::event::KeyCode;
@@ -293,7 +292,15 @@ impl App {
     pub(crate) fn actions_after_snapshot(&mut self, now: Instant) {
         if self.view.selected_action.is_some() && self.selected_action_index().is_none() {
             let last = self.snapshot.actions.len().checked_sub(1);
-            let keep = last.map(|last| (self.view.actions_scroll / ROWS).min(last));
+            // The item that was at the top of the section, or the last.
+            let scroll = self.view.actions_scroll;
+            let top = self
+                .term
+                .drawn
+                .action_spots
+                .iter()
+                .position(|lines| lines.end > scroll);
+            let keep = last.map(|last| top.unwrap_or(last).min(last));
             self.view.selected_action = keep
                 .and_then(|i| self.snapshot.actions.get(i))
                 .map(|item| item.key.clone());
@@ -490,28 +497,46 @@ impl App {
         }
     }
 
-    /// Scrolls the Actions list so row `index` shows.
+    /// Scrolls Needs you so item `index` shows, by its lines as last drawn.
     pub(crate) fn keep_action_visible(&mut self, index: usize) {
+        let Some(lines) = self.term.drawn.action_spots.get(index).cloned() else {
+            return;
+        };
         let shown = self
             .term
             .drawn
             .scroll_areas
             .iter()
             .find(|(_, p)| *p == Pane::Actions)
-            .map_or(ROWS, |(area, _)| {
-                // Less the section's heading.
-                usize::from(area.height.saturating_sub(1)).max(ROWS)
+            .map_or(lines.len(), |(area, _)| {
+                // Less the section's heading and the blank row under it.
+                usize::from(area.height.saturating_sub(2)).max(1)
             });
         let scroll = self.view.actions_scroll;
-        let (top, bottom) = (index * ROWS, index * ROWS + ROWS);
-        let to = if top < scroll {
-            top
-        } else if bottom > scroll + shown {
-            bottom - shown
+        let to = if lines.start < scroll {
+            lines.start
+        } else if lines.end > scroll + shown {
+            (lines.end - shown).min(lines.start)
         } else {
             scroll
         };
         self.change(|app| &mut app.view.actions_scroll, to);
+    }
+
+    /// Opens the card of the request `key` (a click on its notification); if it has been answered
+    /// since, shows the inbox.
+    pub(crate) fn open_action_key(&mut self, key: &ActionKey) {
+        self.show(crate::router::Screen::Bridge);
+        self.focus_pane(Pane::Actions);
+        if let Some(i) = self
+            .snapshot
+            .actions
+            .iter()
+            .position(|item| &item.key == key)
+        {
+            self.keep_action_visible(i);
+            self.open_action(i);
+        }
     }
 
     /// Focuses the inbox on its newest item of `kind` (the status bar's counters).
@@ -598,7 +623,7 @@ mod tests {
     fn focusing_the_pane_selects_its_first_row() {
         let mut app = inbox();
         app.view.selected_action = None;
-        app.focus_pane(Pane::Crew);
+        app.focus_pane(Pane::Projects);
         key(&mut app, KeyCode::Tab);
         assert_eq!(app.focus, Pane::Actions);
         assert_eq!(app.selected_action_index(), Some(0));
@@ -718,7 +743,7 @@ mod tests {
         for (w, h) in [(80, 24), (60, 16)] {
             let mut app = inbox();
             let rows = screen(&mut app, w, h);
-            assert!(rows.iter().any(|row| row.contains("Actions")), "{w}x{h}");
+            assert!(rows.iter().any(|row| row.contains("Needs you")), "{w}x{h}");
         }
     }
     /// Opens the approval and presses Approve; returns its held action.

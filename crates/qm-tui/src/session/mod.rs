@@ -418,8 +418,6 @@ mod tests {
         key(&mut app, KeyCode::BackTab);
         assert_eq!(app.focus, Pane::Session);
         key(&mut app, KeyCode::BackTab);
-        assert_eq!(app.focus, Pane::Actions);
-        key(&mut app, KeyCode::BackTab);
         assert_eq!(app.focus, Pane::Crew);
         // The left and right columns' keys still work while a session shows.
         key(&mut app, KeyCode::Down);

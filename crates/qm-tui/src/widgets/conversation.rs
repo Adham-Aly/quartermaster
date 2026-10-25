@@ -1,14 +1,13 @@
-//! The conversation with the Quartermaster: message headers by source, acknowledgement ticks,
+//! The conversation with the Quartermaster: the chat's header, message headers by source, acknowledgement ticks,
 //! queued messages, cards, the busy indicator while it thinks, and scrolling.
 //!
 //! Content is top-aligned while it fits and pinned to the newest line once it overflows; you
 //! scroll up from there (`App::scroll_from_bottom`).
 
-use super::{context_strip, markdown, spinner, stream};
+use super::{chat_header, context_strip, markdown, spinner, stream};
 use crate::app::App;
 use crate::bridge::{empty_lines, pane_block, pane_style};
 use crate::hit::{FrameMap, Hit, Pane, TextRow};
-use crate::logo;
 use crate::text::{cells, truncate, width, wrap_rows};
 use crate::theme;
 use qm_types::api::{AgentRef, ChatLine, CompactionNote};
@@ -107,7 +106,11 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
         return 0;
     }
     let thinking = app.snapshot.thinking;
+    let header = chat_header::rows(app, &chat_header::Facts::quartermaster(app), inner.width);
     if app.snapshot.conversation.is_empty() && !thinking {
+        let used = cells(header.len()).min(inner.height);
+        draw_rows(frame, inner, header, 0, map);
+        chat_header::place_logo(frame, inner, app, 0, map);
         let lines = empty_lines(
             &[
                 "No messages yet.",
@@ -115,40 +118,28 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
             ],
             inner.width,
         );
-        let height = cells(lines.len()).min(inner.height);
-        // The logo above the words, a row apart, where the terminal shows images and there is
-        // room for it with a margin all round.
-        let hero = app.term.logo.map(|ink| {
-            let rows = logo::HERO_ROWS;
-            Rect::new(0, 0, ink.columns(rows), rows)
-        });
-        let hero = hero
-            .filter(|h| h.width + 4 <= inner.width && h.height + 1 + height + 4 <= inner.height);
-        let total = hero.map_or(height, |h| h.height + 1 + height);
-        let top = inner.y + (inner.height - total) / 2;
-        let y = top + hero.map_or(0, |h| h.height + 1);
+        // The words in the middle of the room under the header.
+        let room = inner.height - used;
+        let height = cells(lines.len()).min(room);
         frame.render_widget(
             Paragraph::new(lines).alignment(Alignment::Center),
-            Rect::new(inner.x, y, inner.width, height),
+            Rect::new(
+                inner.x,
+                inner.y + used + (room - height) / 2,
+                inner.width,
+                height,
+            ),
         );
-        if let Some(hero) = hero {
-            let area = Rect {
-                x: inner.x + (inner.width - hero.width) / 2,
-                y: top,
-                ..hero
-            };
-            map.logos
-                .push(logo::reserve(frame.buffer_mut(), logo::Size::Hero, area));
-        }
         return 0;
     }
     let agent = AgentRef::Quartermaster;
-    let mut rows = rows(
+    let mut rows = header;
+    rows.extend(self::rows(
         &app.snapshot.conversation,
         &context_strip::chat_notes(app, agent),
         inner.width,
         &Voices::QUARTERMASTER,
-    );
+    ));
     if let Some(row) = context_strip::compacting_row(app, agent) {
         rows.push(Row::plain(Line::default()));
         rows.push(row);
@@ -160,6 +151,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
     let offset = app.scroll_from_bottom.min(max);
     let start = rows.len().saturating_sub(visible + offset);
     draw_rows(frame, inner, rows, start, map);
+    chat_header::place_logo(frame, inner, app, start, map);
     max
 }
 
@@ -210,7 +202,7 @@ pub(crate) fn rows(
 /// under your message, on the row the reply's header will take; after a blank row otherwise, as
 /// any other message would be.
 pub(crate) fn thinking_rows(chats: &[ChatLine], app: &App, agent: AgentRef) -> Vec<Row> {
-    let spinner = spinner::Spinner::of(agent);
+    let spinner = spinner::for_agent(&app.snapshot.crew, agent);
     let answering = chats
         .last()
         .is_none_or(|c| c.source == MessageSource::You && !c.queued);
@@ -332,16 +324,16 @@ fn header(chat: &ChatLine, max: u16, voices: &Voices<'_>) -> Line<'static> {
     Line::from(spans)
 }
 
-/// `you 13:41 · context`. Names are bold in the text colour; a supervisor's marked line keeps
-/// its violet, the app's words their dim.
+/// `you 13:41 · context`. Names are bold: yours in the text colour, an agent's (the Quartermaster,
+/// a secondmate) in teal; a supervisor's marked line keeps its violet, the app's words their dim.
 fn title(chat: &ChatLine, voices: &Voices<'_>) -> Vec<Span<'static>> {
     let (name, name_style) = match chat.source {
         MessageSource::You => ("you", theme::text()),
-        MessageSource::Agent => (voices.agent, theme::text()),
+        MessageSource::Agent => (voices.agent, theme::accent()),
         MessageSource::Supervisor if voices.supervisor == "supervisor" => {
             (voices.supervisor, theme::violet())
         }
-        MessageSource::Supervisor => (voices.supervisor, theme::text()),
+        MessageSource::Supervisor => (voices.supervisor, theme::accent()),
         MessageSource::App => ("app", theme::dim()),
     };
     let time = chat

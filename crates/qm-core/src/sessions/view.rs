@@ -65,6 +65,9 @@ pub fn build(
     let mut view = SessionView::new(agent);
     view.title.clone_from(&header.title);
     view.note = note(header);
+    view.model.clone_from(&header.model);
+    view.effort = header.effort;
+    view.place = place(header);
     view.turn_running = header.agent_status == AgentStatus::Running;
     view.status = status(header, now);
     view.open = is_open(header.status) && !is_exiting(header.status);
@@ -79,16 +82,34 @@ pub fn build(
 
 /// "api-server · sonnet-5-5 · supervisor: Quartermaster" (`S-02` for a secondmate's crewmate).
 fn note(header: &SessionHeader) -> String {
-    let supervisor = match header.supervisor {
-        (Role::Secondmate, Some(id)) => id.to_string(),
-        _ => "Quartermaster".to_owned(),
-    };
+    let supervisor = supervisor(header);
     let mut parts = vec![header.project.clone()];
     if let Some(model) = &header.model {
         parts.push(model.to_string());
     }
     parts.push(format!("supervisor: {supervisor}"));
     parts.join(" · ")
+}
+
+/// "api-server · qm/task-0042 ← main · supervisor: S-02", or the folder a folder task works in.
+fn place(header: &SessionHeader) -> String {
+    let at = match &header.branch {
+        Some((branch, target)) => format!("{branch} ← {target}"),
+        None => header.folder.clone(),
+    };
+    format!(
+        "{} · {at} · supervisor: {}",
+        header.project,
+        supervisor(header)
+    )
+}
+
+/// `Quartermaster`, or the secondmate's `S-02`.
+fn supervisor(header: &SessionHeader) -> String {
+    match header.supervisor {
+        (Role::Secondmate, Some(id)) => id.to_string(),
+        _ => "Quartermaster".to_owned(),
+    }
 }
 
 /// "running 14m · job J3 idle", "running 14m · working", "reported 40m · idle".
@@ -147,6 +168,9 @@ pub async fn load_secondmate(
         return Ok(None);
     };
     let data = load_conversation(db, record.agent).await?;
+    let runs_on = db
+        .call(move |conn| qm_store::secondmates::session_row(conn, id))
+        .await?;
     let status = secondmates.loop_status(id).unwrap_or_default();
     let mut view = SessionView::new(AgentRef::Secondmate { id });
     let word = if status.turn_running {
@@ -156,6 +180,11 @@ pub async fn load_secondmate(
     };
     "secondmate".clone_into(&mut view.title);
     view.note = format!("{} · {word}", one_line(&record.scope));
+    view.place = one_line(&record.scope);
+    if let Some(agent) = runs_on {
+        view.model = agent.model;
+        view.effort = agent.effort;
+    }
     word.clone_into(&mut view.status);
     view.subtitle = charter_text(&record)
         .lines()

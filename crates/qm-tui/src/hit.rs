@@ -187,6 +187,10 @@ pub(crate) struct FrameMap {
     pub(crate) field: Option<crate::input::field::Drawn>,
     /// The places widgets left blank for the logo, checked once the frame is drawn.
     pub(crate) logos: Vec<crate::logo::Spot>,
+    /// Each agent's lines in the crew list, in the order it was drawn (what the keys move by).
+    pub(crate) crew_spots: Vec<(std::ops::Range<usize>, AgentRef)>,
+    /// Each Needs you item's lines, by index into `Snapshot::actions`.
+    pub(crate) action_spots: Vec<std::ops::Range<usize>>,
 }
 
 impl FrameMap {
