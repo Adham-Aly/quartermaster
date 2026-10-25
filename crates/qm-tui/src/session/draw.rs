@@ -36,7 +36,7 @@ use crate::hit::{FrameMap, Hit, Pane};
 use crate::text::{cells, truncate, width, wrap, wrap_rows, wrap_styled};
 use crate::theme;
 use crate::widgets::conversation::{self, Row, RowText, draw_rows, prompt_box};
-use crate::widgets::{button, input_box, markdown, spinner, stream};
+use crate::widgets::{button, input_box, markdown, spinner, stream, tools};
 use qm_types::api::{AgentRef, SessionLine, SessionLineKind, SessionView};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
@@ -59,10 +59,8 @@ pub(crate) fn draw(
 ) {
     let view = app.session_view();
     let input_height = input_box::height(app, area.width);
-    let [session_area, strip_area, input_area] =
-        crate::widgets::context_strip::split(app, area, input_height, agent);
+    let [session_area, input_area] = crate::widgets::context_strip::split(area, input_height);
     session_pane(frame, session_area, app, agent, view, map);
-    crate::widgets::context_strip::draw(frame, strip_area, app, agent);
     input(frame, input_area, app, agent, view, map);
 }
 
@@ -129,6 +127,7 @@ fn session_pane(
             frame,
             Rect::new(area.x, area.bottom() - 1, area.width, 1),
             app,
+            agent,
             view,
             map,
         );
@@ -227,23 +226,27 @@ fn header(frame: &mut Frame<'_>, inner: Rect, agent: AgentRef, view: Option<&Ses
     }
 }
 
-/// `╰─ running 14m · job J3 idle ──── Interrupt ─╯`: the session's status, dim, and while a turn
-/// runs the `Interrupt` button, one `─` from the corner.
+/// `╰─ running 14m · job J3 idle ── ━━━━─── 61% context · 3 calls ─ Interrupt ─╯`: the
+/// session's status, dim, the context strip right-aligned, and while a turn runs the `Interrupt`
+/// button, one `─` from the corner.
 fn bottom_border(
     frame: &mut Frame<'_>,
     area: Rect,
     app: &App,
+    agent: AgentRef,
     view: Option<&SessionView>,
     map: &mut FrameMap,
 ) {
     let style = pane_style(app, Pane::Session);
     let running = view.is_some_and(|v| v.turn_running);
     let mut right = area.right().saturating_sub(2);
+    let mut strip_end = area.right();
     if running {
         let w = button::width_of(INTERRUPT);
         if area.width > w + 8 {
             let hit = Hit::Session(SessionHit::Interrupt);
             right -= w;
+            strip_end = right + 1;
             let rect = Rect::new(right, area.y, w, 1);
             frame.render_widget(
                 Line::from(button::span(INTERRUPT, app.term.hover == Some(hit))),
@@ -252,23 +255,27 @@ fn bottom_border(
             map.hits.add(rect, hit);
         }
     }
-    let Some(status) = view.map(|v| v.status.as_str()).filter(|s| !s.is_empty()) else {
-        return;
-    };
-    // `╰─ ` before it, ` ─` after it at the least.
-    let room = usize::from(right.saturating_sub(area.x + 5));
-    if room < 4 {
-        return;
+    let mut used = 0;
+    if let Some(status) = view.map(|v| v.status.as_str()).filter(|s| !s.is_empty()) {
+        // `╰─ ` before it, ` ─` after it at the least.
+        let room = usize::from(right.saturating_sub(area.x + 5));
+        if room >= 4 {
+            let text = truncate(status, room);
+            let line = Line::from(vec![
+                Span::styled(" ", style),
+                Span::styled(text, theme::dim()),
+                Span::styled(" ", style),
+            ]);
+            used = cells(line.width());
+            frame.render_widget(line, Rect::new(area.x + 2, area.y, used, 1));
+        }
     }
-    let text = truncate(status, room);
-    let spans = vec![
-        Span::styled(" ", style),
-        Span::styled(text, theme::dim()),
-        Span::styled(" ", style),
-    ];
-    let line = Line::from(spans);
-    let w = cells(line.width());
-    frame.render_widget(line, Rect::new(area.x + 2, area.y, w, 1));
+    let strip = Rect {
+        width: strip_end.saturating_sub(area.x),
+        ..area
+    };
+    // One `─` between the status and the strip.
+    crate::widgets::context_strip::draw_in_border(frame, strip, 2 + used + 1, app, agent);
 }
 
 /// The rows a session's lines take at `max` cells.
@@ -356,7 +363,8 @@ pub(crate) fn rows(
                 i += run - 1;
                 // Still counting while the turn runs and nothing has come after it.
                 let live = running && i == lines.len();
-                tool_group(&mut out, group, live, max, app);
+                let until = lines.get(i).map(|l| l.at);
+                tool_group(&mut out, group, live, until, max, app);
             }
             SessionLineKind::You => {
                 out.blank();
@@ -400,40 +408,158 @@ pub(crate) fn rows(
     out.rows
 }
 
-/// A run of tool calls: `▸ 12 tool calls…` (dim, the text colour under the pointer), counting
-/// up while `live`; a click shows each call under `▾ 12 tool calls`, and another hides them.
-fn tool_group(out: &mut Rows, group: &[SessionLine], live: bool, max: u16, app: &App) {
+/// A run of tool calls on one row: `▸ Read 4  Bash 3        7 calls · 14s`, each tool's name in
+/// its colour with how many times it was called (the arrow dim, the text colour under the
+/// pointer), and on the right how many calls and how long from the first to whatever came next
+/// (`until`); `…` while `live`. A click shows each call under `▾`, and another hides them.
+fn tool_group(
+    out: &mut Rows,
+    group: &[SessionLine],
+    live: bool,
+    until: Option<jiff::Timestamp>,
+    max: u16,
+    app: &App,
+) {
     let Some(first) = group.first() else {
         return;
     };
     let hit = Hit::Session(SessionHit::ToolGroup(first.id));
     let expanded = app.is_tool_group_expanded(first.id);
     let n = group.len();
-    let label = format!(
-        "{} {n} tool call{}{}",
-        if expanded { "▾" } else { "▸" },
-        if n == 1 { "" } else { "s" },
-        if live { "…" } else { "" },
-    );
-    let label = truncate(&label, usize::from(max.saturating_sub(2)));
-    let style = if app.term.hover == Some(hit) {
+    let mut summary = format!("{n} call{}", if n == 1 { "" } else { "s" });
+    if live {
+        summary.push('…');
+    } else if let Some(until) = until {
+        let secs = until
+            .as_second()
+            .saturating_sub(first.at.as_second())
+            .max(0);
+        summary.push_str(" · ");
+        summary.push_str(&duration(secs));
+    }
+    let arrow = if expanded { "▾" } else { "▸" };
+    let arrow_style = if app.term.hover == Some(hit) {
         theme::text()
     } else {
         theme::dim()
     };
+    // Each tool once, in the order first called, with its count.
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for line in group {
+        let (name, _, _) = tools::split(&line.text);
+        match counts.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((name, 1)),
+        }
+    }
+    let inner = usize::from(max.saturating_sub(2));
+    // The arrow and its space; two cells at least before the summary.
+    let mut room = inner.saturating_sub(2 + 2 + width(&summary));
+    let mut chips: Vec<Span<'static>> = Vec::new();
+    let mut text = format!("{arrow} ");
+    for (k, (name, count)) in counts.iter().enumerate() {
+        let chip = format!("{name} {count}");
+        let gap = if chips.is_empty() { 0 } else { 2 };
+        let left = counts.len() - k - 1;
+        // Room for this chip, and for `+N` after it if more follow.
+        let more = if left > 0 {
+            2 + width(&format!("+{left}"))
+        } else {
+            0
+        };
+        if gap + width(&chip) + more > room {
+            let rest = format!("+{}", counts.len() - k);
+            if !chips.is_empty() && 2 + width(&rest) <= room {
+                chips.push(Span::raw("  "));
+                text.push_str("  ");
+                chips.push(Span::styled(rest.clone(), theme::dim()));
+                text.push_str(&rest);
+            }
+            break;
+        }
+        room -= gap + width(&chip);
+        if gap > 0 {
+            chips.push(Span::raw("  "));
+            text.push_str("  ");
+        }
+        chips.push(Span::styled((*name).to_owned(), tools::style(name)));
+        chips.push(Span::styled(format!(" {count}"), theme::dim()));
+        text.push_str(&chip);
+    }
+    let pad = inner.saturating_sub(width(&text) + width(&summary)).max(2);
+    let summary = truncate(&summary, inner.saturating_sub(width(&text) + 2));
+    text.push_str(&" ".repeat(pad));
+    text.push_str(&summary);
+    let mut spans = vec![
+        Span::raw("  "),
+        Span::styled(arrow, arrow_style),
+        Span::raw(" "),
+    ];
+    spans.extend(chips);
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(summary, theme::dim()));
     out.rows.push(Row {
-        line: Line::from(vec![Span::raw("  "), Span::styled(label.clone(), style)]),
-        hits: vec![(2, cells(width(&label)), hit)],
+        line: Line::from(spans),
+        hits: vec![(2, cells(width(&text)), hit)],
         text: Some(RowText {
             offset: 2,
-            text: label,
+            text,
             continues: false,
         }),
     });
     if expanded {
-        for line in group {
-            out.wrapped(&line.text, max, 6, "    · ", theme::dim());
+        for (k, line) in group.iter().enumerate() {
+            let branch = if k + 1 == group.len() { "└ " } else { "├ " };
+            call_rows(out, &line.text, branch, max);
         }
+    }
+}
+
+/// One call under an expanded run: `├ Bash cargo test auth  → 41 passed`, the name in its tool's
+/// colour, the target in the text colour and the result dim, wrapped under the name.
+fn call_rows(out: &mut Rows, text: &str, branch: &str, max: u16) {
+    let (name, target, result) = tools::split(text);
+    let mut runs = vec![(name.to_owned(), tools::style(name))];
+    if !target.is_empty() {
+        runs.push((format!(" {target}"), theme::text()));
+    }
+    if let Some(result) = result {
+        runs.push((format!("  → {result}"), theme::dim()));
+    }
+    let indent = 6;
+    for (i, row) in wrap_styled(&runs, usize::from(max.saturating_sub(indent)))
+        .into_iter()
+        .enumerate()
+    {
+        let lead = if i == 0 {
+            vec![
+                Span::raw("    "),
+                Span::styled(branch.to_owned(), theme::rule()),
+            ]
+        } else {
+            vec![Span::raw(" ".repeat(usize::from(indent)))]
+        };
+        let row_text: String = row.iter().map(|(t, _)| t.as_str()).collect();
+        let mut spans = lead;
+        spans.extend(row.into_iter().map(|(t, style)| Span::styled(t, style)));
+        out.rows.push(Row {
+            line: Line::from(spans),
+            text: Some(RowText {
+                offset: indent,
+                text: row_text,
+                continues: i > 0,
+            }),
+            hits: Vec::new(),
+        });
+    }
+}
+
+/// A run's length in one short word: `4s`, `2m`, `1h`.
+fn duration(secs: i64) -> String {
+    match secs {
+        ..60 => format!("{secs}s"),
+        60..3_600 => format!("{}m", secs / 60),
+        _ => format!("{}h", secs / 3_600),
     }
 }
 
@@ -580,19 +706,35 @@ mod tests {
         lines.truncate(8);
         lines.push(tool(9, "Read a"));
         let shown = texts(&rows(&lines, &[], 80, &app, true));
-        assert!(shown.contains(&"  ▸ 3 tool calls".to_owned()), "{shown:#?}");
-        assert!(shown.contains(&"  ▸ 1 tool call…".to_owned()), "{shown:#?}");
+        let first = shown
+            .iter()
+            .find(|s| s.starts_with("  ▸ Read 1  delivery_check 1  Bash 1 "))
+            .expect("the first run");
+        assert!(first.ends_with(" 3 calls · 2m"), "{shown:#?}");
+        assert!(
+            shown
+                .iter()
+                .any(|s| s.starts_with("  ▸ Read 1 ") && s.ends_with(" 1 call…")),
+            "{shown:#?}"
+        );
         assert!(!shown.iter().any(|s| s.contains("Read AGENTS.md")));
         lines.push(tool(10, "Edit b"));
         let shown = texts(&rows(&lines, &[], 80, &app, true));
         assert!(
-            shown.contains(&"  ▸ 2 tool calls…".to_owned()),
+            shown
+                .iter()
+                .any(|s| s.starts_with("  ▸ Read 1  Edit 1 ") && s.ends_with(" 2 calls…")),
             "{shown:#?}"
         );
         // Once the turn ends, the count stops.
         app.snapshot.session.as_mut().unwrap().turn_running = false;
         let shown = texts(&rows(&lines, &[], 80, &app, true));
-        assert!(shown.contains(&"  ▸ 2 tool calls".to_owned()), "{shown:#?}");
+        assert!(
+            shown
+                .iter()
+                .any(|s| s.starts_with("  ▸ Read 1  Edit 1 ") && s.ends_with(" 2 calls")),
+            "{shown:#?}"
+        );
     }
 
     #[test]
@@ -605,11 +747,18 @@ mod tests {
         app.toggle_tool_group(9);
         lines.push(tool(10, "Edit b"));
         let shown = texts(&rows(&lines, &[], 80, &app, true));
-        let at = shown.iter().position(|s| s == "  ▾ 2 tool calls…").unwrap();
-        assert_eq!(shown[at + 1], "    · Read a");
-        assert_eq!(shown[at + 2], "    · Edit b");
+        let at = shown
+            .iter()
+            .position(|s| s.starts_with("  ▾ Read 1  Edit 1 ") && s.ends_with(" 2 calls…"))
+            .unwrap_or_else(|| panic!("{shown:#?}"));
+        assert_eq!(shown[at + 1], "    ├ Read a");
+        assert_eq!(shown[at + 2], "    └ Edit b");
         // The first run is still collapsed.
-        assert!(shown.contains(&"  ▸ 3 tool calls".to_owned()));
+        assert!(
+            shown
+                .iter()
+                .any(|s| s.starts_with("  ▸ Read 1  delivery_check 1 "))
+        );
         // The state outlives leaving and re-entering the session.
         app.leave_session();
         app.enter_session(AgentRef::Crewmate {

@@ -8,6 +8,7 @@ use super::{context_strip, markdown, spinner, stream};
 use crate::app::App;
 use crate::bridge::{empty_lines, pane_block, pane_style};
 use crate::hit::{FrameMap, Hit, Pane, TextRow};
+use crate::logo;
 use crate::text::{cells, truncate, width, wrap_rows};
 use crate::theme;
 use qm_types::api::{AgentRef, ChatLine, CompactionNote};
@@ -115,11 +116,30 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
             inner.width,
         );
         let height = cells(lines.len()).min(inner.height);
-        let y = inner.y + (inner.height - height) / 2;
+        // The logo above the words, a row apart, where the terminal shows images and there is
+        // room for it with a margin all round.
+        let hero = app.term.logo.map(|ink| {
+            let rows = logo::HERO_ROWS;
+            Rect::new(0, 0, ink.columns(rows), rows)
+        });
+        let hero = hero
+            .filter(|h| h.width + 4 <= inner.width && h.height + 1 + height + 4 <= inner.height);
+        let total = hero.map_or(height, |h| h.height + 1 + height);
+        let top = inner.y + (inner.height - total) / 2;
+        let y = top + hero.map_or(0, |h| h.height + 1);
         frame.render_widget(
             Paragraph::new(lines).alignment(Alignment::Center),
             Rect::new(inner.x, y, inner.width, height),
         );
+        if let Some(hero) = hero {
+            let area = Rect {
+                x: inner.x + (inner.width - hero.width) / 2,
+                y: top,
+                ..hero
+            };
+            map.logos
+                .push(logo::reserve(frame.buffer_mut(), logo::Size::Hero, area));
+        }
         return 0;
     }
     let agent = AgentRef::Quartermaster;

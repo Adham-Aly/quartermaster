@@ -72,6 +72,8 @@ struct Window {
     reader: JoinHandle<()>,
     /// Frames were dropped because it stopped reading: the next frame must repaint everything.
     stalled: bool,
+    /// What the window's terminal holds of the logo.
+    logo: crate::logo::Shown,
 }
 
 impl Window {
@@ -86,6 +88,8 @@ impl Window {
         // next frame draws every cell.
         let _ = self.terminal.resize(Rect::new(0, 0, cols, rows));
         self.stalled = false;
+        // The terminal is cleared and may have dropped what was sent: send the logo afresh.
+        self.logo.reset();
     }
 }
 
@@ -487,6 +491,7 @@ impl Host {
         term.ssh = hello.ssh;
         term.size = (cols, rows);
         term.palette = crate::theme::fit_reported(&hello.colors);
+        term.logo = crate::theme::logo_ink(&hello.colors);
         term.background = match hello.background {
             wire::Background::Light => Background::Light,
             wire::Background::Dark => Background::Dark,
@@ -501,6 +506,7 @@ impl Host {
             writer,
             reader,
             stalled: false,
+            logo: crate::logo::Shown::default(),
         };
         window.send(Frame::Welcome(Welcome::new(id, env!("CARGO_PKG_VERSION"))));
         self.windows.push(window);
@@ -521,7 +527,11 @@ impl Host {
                 self.app.redraw();
             }
             Frame::Colors(colors) => {
-                self.windows[at].term.palette = crate::theme::fit_reported(&colors);
+                let window = &mut self.windows[at];
+                window.term.palette = crate::theme::fit_reported(&colors);
+                window.term.logo = crate::theme::logo_ink(&colors);
+                // Sent after the terminal was entered again (or its cells changed size).
+                window.logo.reset();
                 self.app.redraw();
             }
             Frame::Detach => {
@@ -618,6 +628,10 @@ impl Host {
         if let Some(osc52) = app.term.osc52.take() {
             // Outside the synchronized update, so the terminal acts on it at once.
             bytes.extend_from_slice(osc52.as_bytes());
+        }
+        if drawn.is_ok() {
+            // After the frame, which drew the blank cells the logo goes over.
+            bytes.extend(window.logo.update(app.term.logo, &app.term.logos));
         }
         std::mem::swap(&mut self.app.term, &mut self.windows[at].term);
         if drawn.is_ok() && !bytes.is_empty() {

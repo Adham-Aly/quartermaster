@@ -1,10 +1,15 @@
-//! The left column's three boxes: Projects, Crew and Actions, stacked top to bottom.
+//! The left column's three sections: Projects, Crew and Actions, stacked top to bottom. Each is a
+//! heading, its rows, then a blank row before the next (no boxes: the column reads as one list).
+
+/// Cells of the column's width that aren't rows: a cell of padding either side.
+pub(crate) const INSET: u16 = 2;
 
 /// Heights of Projects, Crew and Actions for a left column `h` rows tall, given each pane's
-/// number of content rows. Projects starts at no more than a quarter of the column and Crew as
-/// tall as its rows, leaving Actions a usable box; Actions takes the rest, so it reaches the
-/// bottom of the column. Projects then grows into any rows that Actions doesn't need, so a
-/// project tree is shown whole whenever Crew and Actions are.
+/// number of content rows (each section adds two: its heading and the blank row under it).
+/// Projects starts at no more than a quarter of the column and Crew as tall as its rows, leaving
+/// Actions a usable section; Actions takes the rest, so it reaches the bottom of the column.
+/// Projects then grows into any rows that Actions doesn't need, so a project tree is shown whole
+/// whenever Crew and Actions are.
 pub(crate) fn heights(h: u16, projects: u16, crew: u16, actions: u16) -> (u16, u16, u16) {
     let projects_want = projects.saturating_add(2);
     let projects = projects_want.min((h / 4).max(3)).min(h);

@@ -66,6 +66,7 @@ mod draft_sync;
 mod hit;
 pub mod host;
 mod input;
+mod logo;
 mod persist;
 mod placeholder;
 mod popups;

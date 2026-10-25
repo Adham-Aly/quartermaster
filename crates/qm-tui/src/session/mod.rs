@@ -309,9 +309,9 @@ mod tests {
         assert_eq!(app.screen, Screen::Bridge);
         assert_eq!(app.view.middle, Middle::Session(t42()));
         let rows = screen(&mut app, 150, 45);
-        assert!(rows[0].contains("Menu"), "{}", rows[0]);
+        assert!(rows[0].contains("quartermaster ▾"), "{}", rows[0]);
         let title = &rows[1];
-        assert!(title.starts_with("╭─ Projects "), "{title}");
+        assert!(title.starts_with(" Projects "), "{title}");
         assert!(
             title.contains("╭─ C-0042 · fix(auth): token refresh race "),
             "{title}"
@@ -321,7 +321,7 @@ mod tests {
             title.ends_with("╭─ C-0042 ─────────────────────────╮"),
             "{title}"
         );
-        assert!(rows.iter().any(|r| r.contains("╭─ Crew ")));
+        assert!(rows.iter().any(|r| r.starts_with(" Crew ")));
         assert!(
             rows.iter()
                 .any(|r| r.contains("╰─ running 14m · job J3 idle ─"))

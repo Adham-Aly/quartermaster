@@ -65,6 +65,10 @@ pub const CONTEXT_UNKNOWN: &str = "context-unknown";
 /// The Bridge with the Actions inbox focused and a long list in it.
 pub const ACTIONS: &str = "actions";
 
+/// The Bridge before the first message: the conversation empty (with the logo, where the
+/// terminal shows images).
+pub const EMPTY: &str = "empty";
+
 /// Puts the sample worker session into `app`: C-0042's session in the Bridge sample's middle
 /// panel, the input focused and empty. Nothing waits for you.
 pub(crate) fn install_session(app: &mut App) {
@@ -180,6 +184,11 @@ pub(crate) fn install_from_env(app: &mut App) -> bool {
         Ok(CONTEXT_UNKNOWN) => {
             install(app);
             app.snapshot.context = Vec::new();
+        }
+        Ok(EMPTY) => {
+            install(app);
+            app.snapshot.conversation.clear();
+            app.snapshot.thinking = false;
         }
         _ => return false,
     }
@@ -777,10 +786,20 @@ fn tasks() -> Vec<TaskDetail> {
             Some("status"),
             vec![s("running", Tone::Ok), s(" 12m", Tone::Text)],
         ),
+        TaskRow::new(
+            Some("tokens"),
+            vec![s(
+                "in 2.5k · cache read 2.0M · cache write 106k · out 62k · $2.48 · 14 turns",
+                Tone::Text,
+            )],
+        ),
     ];
+    detail.kind = String::from("code");
     detail.activity = vec![
-        String::from("Bash cargo test auth"),
+        String::from("Read src/auth/refresh.rs"),
+        String::from("Bash cargo test auth  → 41 passed"),
         String::from("Edit src/auth/refresh.rs"),
+        String::from("delivery_check"),
     ];
     detail.running = true;
     vec![detail]

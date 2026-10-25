@@ -4,7 +4,7 @@
 //! a task's heading carries neither, only the guide lines that join it to its crewmates.
 
 use crate::app::App;
-use crate::bridge::{ListRow, draw_list, empty_lines, pane_block, pane_style};
+use crate::bridge::{ListRow, draw_list, empty_lines, heading_style, section_block};
 use crate::hit::{FrameMap, Hit, Pane};
 use crate::text::{truncate, width};
 use crate::theme;
@@ -16,9 +16,10 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-/// Draws the crew box into `area`.
+/// Draws the crew section into `area`.
 pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut FrameMap) {
-    let block = pane_block("Crew", pane_style(app, Pane::Crew));
+    let heading = Span::styled("Crew", heading_style(app, Pane::Crew));
+    let block = section_block(vec![heading], true);
     let rows = rows(app, block.inner(area).width);
     draw_list(
         frame,
@@ -391,7 +392,7 @@ mod tests {
         app
     }
 
-    /// The Crew box's lines inside its border, trailing blanks dropped.
+    /// The Crew section's rows under its heading, up to the blank row that ends it.
     fn crew_box(app: &mut App, w: u16, h: u16) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
@@ -402,15 +403,15 @@ mod tests {
             .collect();
         let top = lines
             .iter()
-            .position(|l| l.starts_with("╭─ Crew "))
-            .expect("the crew box is drawn");
+            .position(|l| l.starts_with(" Crew "))
+            .expect("the crew section is drawn");
         lines[top + 1..]
             .iter()
-            .take_while(|l| !l.starts_with('╰'))
             .map(|l| {
-                let inside: String = l.chars().skip(2).take(27).collect();
+                let inside: String = l.chars().skip(1).take(29).collect();
                 inside.trim_end().to_owned()
             })
+            .take_while(|l| !l.is_empty())
             .collect()
     }
 
@@ -429,12 +430,12 @@ mod tests {
             [
                 "◆ Quartermaster     ready",
                 "├ ◇ T-0042 api-server",
-                "│ ├ ● C-0042 fix    12m",
-                "│ └ ● C-0046 review 2m",
+                "│ ├ ● C-0042 fix     12m",
+                "│ └ ● C-0046 review  2m",
                 "├ ◇ T-0039 api-server",
-                "│ └ ⚑ C-0039 feat   approve",
+                "│ └ ⚑ C-0039 feat    approve",
                 "├ ◇ T-0047 web-app",
-                "│ └ ⚑ C-0047 fix    decide",
+                "│ └ ⚑ C-0047 fix     decide",
                 "└ ○ S-02 web-app  idle",
                 "  ├ ◇ T-0045 web-app",
                 "  │ └ ● C-0045 build  3m",
@@ -550,7 +551,7 @@ mod tests {
         app.snapshot.crew.insert(7, sibling);
         let lines = crew_box(&mut app, 150, 45);
         assert_eq!(lines[10], "  │ ├ ● C-0045 build decide");
-        assert_eq!(lines[11], "  │ └ ○ C-0049 re… reported");
+        assert_eq!(lines[11], "  │ └ ○ C-0049 revi… reported");
     }
 
     #[test]
@@ -562,8 +563,8 @@ mod tests {
             "T-0042 a-project-with-a-very-long-name".clone_into(&mut task.label);
         }
         let lines = crew_box(&mut app, 150, 45);
-        assert_eq!(lines[1], "├ ◇ T-0042 a-project-with-…");
+        assert_eq!(lines[1], "├ ◇ T-0042 a-project-with-a-…");
         // The crewmates' statuses still follow their own labels.
-        assert_eq!(lines[2], "│ ├ ● C-0042 fix    12m");
+        assert_eq!(lines[2], "│ ├ ● C-0042 fix     12m");
     }
 }

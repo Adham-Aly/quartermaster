@@ -1154,6 +1154,9 @@ pub struct TaskDetail {
     pub task: TaskId,
     /// "fix(auth): token refresh race", bold and wrapped.
     pub title: String,
+    /// The task's kind ("code", "plan", "research"), shown as a chip; empty when unknown.
+    #[serde(default)]
+    pub kind: String,
     #[serde(default)]
     pub rows: Vec<TaskRow>,
     /// Recent tool calls, oldest first, each shown as "▸ Bash cargo test auth".
@@ -1172,6 +1175,7 @@ impl TaskDetail {
         Self {
             task,
             title: title.into(),
+            kind: String::new(),
             rows: Vec::new(),
             activity: Vec::new(),
             running: false,

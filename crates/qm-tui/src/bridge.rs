@@ -17,7 +17,7 @@ use crate::widgets::{
 use qm_types::api::AgentRef;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
@@ -86,12 +86,15 @@ pub(crate) fn draw_body(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut 
 
     // Left column: projects and crew as tall as their rows (Projects within a quarter, plus any
     // rows Actions can spare), then the Actions inbox to the bottom.
-    let inner_width = cols.left.width.saturating_sub(4);
+    let inner_width = cols
+        .left
+        .width
+        .saturating_sub(crate::widgets::sidebar::INSET);
     let (projects_height, crew_height, actions_height) = crate::widgets::sidebar::heights(
         cols.left.height,
         cells(projects::rows(app, inner_width).len()),
         cells(crew::rows(app, inner_width).len()),
-        cells(app.snapshot.actions.len()),
+        cells(app.snapshot.actions.len() * crate::widgets::actions::ROWS),
     );
     let projects_area = Rect {
         height: projects_height,
@@ -181,19 +184,20 @@ fn draw_conversation(frame: &mut Frame<'_>, middle: Rect, app: &App, map: &mut F
     }
     let agent = AgentRef::Quartermaster;
     let input_height = input_box::height(app, middle.width);
-    let [conversation_area, strip_area, input_area] =
-        context_strip::split(app, middle, input_height, agent);
+    let [conversation_area, input_area] = context_strip::split(middle, input_height);
     map.conversation_scroll_max = conversation::draw(frame, conversation_area, app, map);
-    context_strip::draw(frame, strip_area, app, agent);
-    input_box::draw(frame, input_area, app, map);
-    // The slash-command menu sits on the conversation, just above the strip and the input box.
-    if let Some(menu) = app.slash_menu() {
-        let anchor = Rect {
-            y: strip_area.y,
-            height: strip_area.height + input_area.height,
-            ..input_area
+    if conversation_area.height > 1 {
+        let border = Rect {
+            y: conversation_area.bottom() - 1,
+            height: 1,
+            ..conversation_area
         };
-        slash_menu::draw(frame, conversation_area, anchor, &menu, app, map);
+        context_strip::draw_in_border(frame, border, 2, app, agent);
+    }
+    input_box::draw(frame, input_area, app, map);
+    // The slash-command menu sits on the conversation, just above the input box.
+    if let Some(menu) = app.slash_menu() {
+        slash_menu::draw(frame, conversation_area, input_area, &menu, app, map);
     }
 }
 
@@ -212,12 +216,39 @@ pub(crate) fn pane_block(title: &str, style: Style) -> Block<'static> {
         .border_style(style)
         .title(Line::from(vec![
             Span::styled("─", style),
-            Span::styled(format!(" {title} "), style),
+            Span::styled(format!(" {title} "), theme::title_on(style)),
         ]))
         .padding(Padding::horizontal(1))
 }
 
-/// A pane's border style: accent when focused, the text colour when hovered, dim otherwise.
+/// A left-column section ("Projects", "Crew", "Actions"): no box, its heading on the top row,
+/// its rows below with a cell of padding either side, and a blank row under them when `gap`.
+pub(crate) fn section_block(heading: Vec<Span<'static>>, gap: bool) -> Block<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(heading);
+    Block::new().title(Line::from(spans)).padding(Padding {
+        left: 1,
+        right: 1,
+        top: 0,
+        bottom: u16::from(gap),
+    })
+}
+
+/// A section heading's style: accent when its pane has focus, text when hovered, the title
+/// colour otherwise.
+pub(crate) fn heading_style(app: &App, pane: Pane) -> Style {
+    let focused = app.screen == Screen::Bridge && app.focus == pane;
+    if focused {
+        theme::accent().add_modifier(Modifier::BOLD)
+    } else if app.term.hover == Some(Hit::Pane(pane)) {
+        theme::text()
+    } else {
+        theme::title()
+    }
+}
+
+/// A pane's border style: accent when focused, the text colour when hovered, the rule colour
+/// otherwise.
 pub(crate) fn pane_style(app: &App, pane: Pane) -> Style {
     let focused = app.screen == Screen::Bridge && app.focus == pane;
     theme::border(focused, app.term.hover == Some(Hit::Pane(pane)))
@@ -271,9 +302,9 @@ pub(crate) fn draw_list(
     map.scroll_areas.push((area, pane));
     let max = rows.len().saturating_sub(usize::from(inner.height));
     map.scroll_max.push((pane, max));
-    // The row's full width inside the border, padding included.
-    let wide_x = area.x.saturating_add(1);
-    let wide_width = area.width.saturating_sub(2);
+    // The row's full width inside the border (if any), padding included.
+    let wide_x = inner.x.saturating_sub(1).max(area.x);
+    let wide_width = (inner.right() + 1).min(area.right()) - wide_x;
     for (y, row) in (inner.y..inner.bottom()).zip(rows.into_iter().skip(scroll.min(max))) {
         let wide = Rect::new(wide_x, y, wide_width, 1);
         frame.render_widget(row.line, Rect::new(inner.x, y, inner.width, 1));

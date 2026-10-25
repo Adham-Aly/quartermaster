@@ -1,8 +1,9 @@
-//! The Actions inbox in the left column: one row per request waiting on you, newest first after
-//! the app's own configuration prompts. A click on a row opens its overlay, the only place its card and buttons are.
+//! The Actions inbox in the left column: two rows per request waiting on you (what it is and
+//! its age, then who asks and about what, dim), newest first after the app's own configuration
+//! prompts. A click on a row opens its overlay, the only place its card and buttons are.
 
 use crate::app::App;
-use crate::bridge::{ListRow, draw_list, empty_lines, pane_block, pane_style};
+use crate::bridge::{ListRow, draw_list, empty_lines, heading_style, section_block};
 use crate::hit::{FrameMap, Hit, Pane};
 use crate::text::{truncate, width};
 use crate::theme;
@@ -15,16 +16,20 @@ use ratatui::text::{Line, Span};
 /// The empty inbox's one row.
 pub(crate) const EMPTY: &str = "Nothing needs you.";
 
-/// Draws the Actions box into `area`.
+/// Rows each item takes.
+pub(crate) const ROWS: usize = 2;
+
+/// Draws the Actions section into `area`.
 pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut FrameMap) {
     if area.height == 0 {
         return;
     }
-    let title = match app.snapshot.actions.len() {
-        0 => "Actions".to_owned(),
-        n => format!("Actions · {n}"),
-    };
-    let block = pane_block(&title, pane_style(app, Pane::Actions));
+    let mut heading = vec![Span::styled("Actions", heading_style(app, Pane::Actions))];
+    if let n @ 1.. = app.snapshot.actions.len() {
+        heading.push(Span::raw(" "));
+        heading.push(Span::styled(format!(" {n} "), theme::warn_chip()));
+    }
+    let block = section_block(heading, false);
     let rows = rows(app, block.inner(area).width);
     draw_list(
         frame,
@@ -50,16 +55,16 @@ pub(crate) fn rows(app: &App, inner_width: u16) -> Vec<ListRow> {
     items
         .iter()
         .enumerate()
-        .map(|(i, item)| {
+        .flat_map(|(i, item)| {
             let hit = Hit::ActionRow(i);
             let selected = (app.view.selected_action.as_ref() == Some(&item.key))
                 .then_some(!app.view.pointer_picked);
             let hovered = selected != Some(true) && app.term.hover == Some(hit);
-            ListRow {
-                line: line(item, usize::from(inner_width), now, hovered),
+            lines(item, usize::from(inner_width), now, hovered).map(|line| ListRow {
+                line,
                 hit: Some(hit),
                 selected,
-            }
+            })
         })
         .collect()
 }
@@ -113,7 +118,14 @@ pub(crate) fn age(at: jiff::Timestamp, now: jiff::Timestamp) -> String {
     }
 }
 
-fn line(item: &ActionItem, inner: usize, now: jiff::Timestamp, hovered: bool) -> Line<'static> {
+/// An item's two rows: `☰ Plan questions        3h`, then `  T-0044 · plan(auth): session store`.
+/// A title with a ` · ` splits there; otherwise the title leads and the second row says who asks.
+fn lines(
+    item: &ActionItem,
+    inner: usize,
+    now: jiff::Timestamp,
+    hovered: bool,
+) -> [Line<'static>; ROWS] {
     let (glyph, style) = glyph(item);
     let age = age(item.at, now);
     let text_style = if hovered {
@@ -121,25 +133,48 @@ fn line(item: &ActionItem, inner: usize, now: jiff::Timestamp, hovered: bool) ->
     } else {
         theme::text()
     };
-    let mut words = String::new();
-    if let Some(source) = source(item)
-        && !item.title.starts_with(&source)
-    {
-        words.push_str(&source);
-        words.push(' ');
-    }
-    words.push_str(&item.title);
+    let (what, about) = item
+        .title
+        .split_once(" · ")
+        .map_or((item.title.as_str(), None), |(what, about)| {
+            (what, Some(about))
+        });
+    let source = source(item).filter(|source| !what.starts_with(source.as_str()));
+    let detail = match (source, about) {
+        (Some(source), Some(about)) => format!("{source} · {about}"),
+        (Some(source), None) => source,
+        (None, Some(about)) => about.to_owned(),
+        (None, None) => kind_word(item).to_owned(),
+    };
     // Glyph, space, words, at least one space, the age.
     let room = inner.saturating_sub(2 + 1 + width(&age));
-    let words = truncate(&words, room);
-    let gap = inner.saturating_sub(2 + width(&words) + width(&age)).max(1);
-    Line::from(vec![
-        Span::styled(glyph, style),
-        Span::raw(" "),
-        Span::styled(words, text_style),
-        Span::raw(" ".repeat(gap)),
-        Span::styled(age, theme::dim()),
-    ])
+    let what = truncate(what, room);
+    let gap = inner.saturating_sub(2 + width(&what) + width(&age)).max(1);
+    [
+        Line::from(vec![
+            Span::styled(glyph, style),
+            Span::raw(" "),
+            Span::styled(what, text_style),
+            Span::raw(" ".repeat(gap)),
+            Span::styled(age, theme::dim()),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(truncate(&detail, inner.saturating_sub(2)), theme::dim()),
+        ]),
+    ]
+}
+
+/// What an item is, for a second row with nothing else to say.
+fn kind_word(item: &ActionItem) -> &'static str {
+    match item.kind {
+        ActionKind::Approval => "approval",
+        ActionKind::Decision => "decision",
+        ActionKind::Plan => "plan",
+        ActionKind::Question => "question",
+        ActionKind::Notice => "notice",
+        _ => "setup",
+    }
 }
 
 #[cfg(test)]

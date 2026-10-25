@@ -2448,6 +2448,7 @@ dependencies = [
 name = "qm-tui"
 version = "0.7.1"
 dependencies = [
+ "base64 0.22.1",
  "crossterm",
  "jiff",
  "nix 0.31.3",

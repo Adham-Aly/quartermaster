@@ -13,6 +13,7 @@ use crate::hit::{FrameMap, Hit, Pane};
 use crate::popups::Popup;
 use crate::text::{cells, truncate};
 use crate::theme;
+use crate::widgets::actions::ROWS;
 use crate::widgets::card::{self, Button};
 use crate::widgets::conversation::{Row, draw_rows};
 use crossterm::event::KeyCode;
@@ -292,7 +293,7 @@ impl App {
     pub(crate) fn actions_after_snapshot(&mut self, now: Instant) {
         if self.view.selected_action.is_some() && self.selected_action_index().is_none() {
             let last = self.snapshot.actions.len().checked_sub(1);
-            let keep = last.map(|last| self.view.actions_scroll.min(last));
+            let keep = last.map(|last| (self.view.actions_scroll / ROWS).min(last));
             self.view.selected_action = keep
                 .and_then(|i| self.snapshot.actions.get(i))
                 .map(|item| item.key.clone());
@@ -497,14 +498,16 @@ impl App {
             .scroll_areas
             .iter()
             .find(|(_, p)| *p == Pane::Actions)
-            .map_or(1, |(area, _)| {
-                usize::from(area.height.saturating_sub(2)).max(1)
+            .map_or(ROWS, |(area, _)| {
+                // Less the section's heading.
+                usize::from(area.height.saturating_sub(1)).max(ROWS)
             });
         let scroll = self.view.actions_scroll;
-        let to = if index < scroll {
-            index
-        } else if index >= scroll + shown {
-            index + 1 - shown
+        let (top, bottom) = (index * ROWS, index * ROWS + ROWS);
+        let to = if top < scroll {
+            top
+        } else if bottom > scroll + shown {
+            bottom - shown
         } else {
             scroll
         };

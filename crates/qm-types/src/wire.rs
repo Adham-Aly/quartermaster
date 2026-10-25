@@ -42,6 +42,18 @@ pub struct Colors {
     pub bg: Option<[u8; 3]>,
     #[serde(default)]
     pub ansi: Vec<Option<[u8; 3]>>,
+    /// Whether the terminal takes 24-bit colour (`COLORTERM`), so the host may draw with the
+    /// app's own palette rather than the terminal's 16.
+    #[serde(default)]
+    pub truecolor: bool,
+    /// Whether the terminal shows images by the kitty graphics protocol, so the host may draw
+    /// the logo.
+    #[serde(default)]
+    pub graphics: bool,
+    /// One cell's size in pixels, `[width, height]`, when the terminal says: the logo is drawn
+    /// at it.
+    #[serde(default)]
+    pub cell_pixels: Option<[u16; 2]>,
 }
 
 /// The client's first frame: who it is and what its terminal can do.
@@ -473,6 +485,9 @@ mod tests {
                 fg: Some([1, 2, 3]),
                 bg: None,
                 ansi: vec![Some([9, 9, 9]), None],
+                truecolor: true,
+                graphics: true,
+                cell_pixels: Some([16, 34]),
             }),
             Frame::Detach,
             Frame::Request(Request::Stop { force: true }),

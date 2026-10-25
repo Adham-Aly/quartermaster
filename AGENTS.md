@@ -133,7 +133,7 @@ These override anything else. Security comes first.
   `agent`); while one runs, every crewmate tool that isn't `Read` class is refused in-band.
 - **Saying no is a `Refusal`:** one plain sentence the agent can act on, naming the in-band path.
 - **Time comes from a `qm_types::clock::Clock`**, never read directly in core logic.
-- **The terminal's 16 colours only**, through `qm-tui` `theme.rs` and the 16-colour backend.
+- **Colours only through `qm-tui` `theme.rs` roles**: teal 24-bit with `COLORTERM`, else the 16.
 - Each library crate has its own `thiserror` error enum.
 
 ## Shared lists (add lines; keep order)

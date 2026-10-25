@@ -19,3 +19,4 @@ pub(crate) mod slash_menu;
 pub(crate) mod spinner;
 pub(crate) mod stream;
 pub(crate) mod task;
+pub(crate) mod tools;

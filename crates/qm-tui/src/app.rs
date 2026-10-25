@@ -185,7 +185,7 @@ impl App {
         self.spinning.set(false);
         self.ages_shown.set(false);
         let mut map = FrameMap::default();
-        if let Some(body) = chrome::draw(frame, self, &mut map.hits) {
+        if let Some(body) = chrome::draw(frame, self, &mut map) {
             router::draw(frame, body, self, &mut map);
             crate::popups::draw(frame, body, self, &mut map);
         }
@@ -209,6 +209,8 @@ impl App {
                 &mut map.hits,
             );
         }
+        // Last, once everything that could cover the logo is drawn.
+        self.term.logos = crate::logo::kept(frame.buffer_mut(), std::mem::take(&mut map.logos));
         let actions_before = self.actions_height();
         self.term.drawn = map;
         self.after_actions_resize(actions_before);

@@ -5,7 +5,7 @@
 //! its menu, which sets its autonomy (normal or auto); a task's line acts for its project.
 
 use crate::app::App;
-use crate::bridge::{ListRow, draw_list, empty_lines, pane_block, pane_style};
+use crate::bridge::{ListRow, draw_list, empty_lines, heading_style, section_block};
 use crate::hit::{FrameMap, Hit, Pane};
 use crate::text::{truncate, width};
 use crate::theme;
@@ -16,9 +16,10 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
-/// Draws the projects box into `area`.
+/// Draws the projects section into `area`.
 pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut FrameMap) {
-    let block = pane_block("Projects", pane_style(app, Pane::Projects));
+    let heading = Span::styled("Projects", heading_style(app, Pane::Projects));
+    let block = section_block(vec![heading], true);
     let rows = rows(app, block.inner(area).width);
     draw_list(
         frame,
@@ -149,7 +150,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use std::time::Instant;
 
-    /// The Projects box's lines inside its border, trailing blanks dropped.
+    /// The Projects section's rows under its heading, up to the blank row that ends it.
     fn projects_box(app: &mut App, w: u16, h: u16) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
@@ -160,15 +161,15 @@ mod tests {
             .collect();
         let top = lines
             .iter()
-            .position(|l| l.starts_with("╭─ Projects "))
-            .expect("the projects box is drawn");
+            .position(|l| l.starts_with(" Projects "))
+            .expect("the projects section is drawn");
         lines[top + 1..]
             .iter()
-            .take_while(|l| !l.starts_with('╰'))
             .map(|l| {
-                let inside: String = l.chars().skip(2).take(27).collect();
+                let inside: String = l.chars().skip(1).take(29).collect();
                 inside.trim_end().to_owned()
             })
+            .take_while(|l| !l.is_empty())
             .collect()
     }
 
@@ -189,7 +190,7 @@ mod tests {
     fn each_project_lists_its_open_tasks_beneath_it() {
         let mut app = App::new();
         sample::install(&mut app);
-        let rows: Vec<String> = super::rows(&app, 27)
+        let rows: Vec<String> = super::rows(&app, 29)
             .iter()
             .map(|row| row.line.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
@@ -197,17 +198,17 @@ mod tests {
             rows,
             [
                 "● api-server  PR · normal",
-                "├ T-0042 fix(auth): token …",
-                "└ T-0039 feat(billing): pr…",
+                "├ T-0042 fix(auth): token re…",
+                "└ T-0039 feat(billing): pror…",
                 "● web-app     PR · auto",
-                "├ T-0045 feat(upload): res…",
-                "└ T-0047 fix(ci): flaky up…",
-                "○ dotfiles  branch · normal",
-                "└ T-0048 fix(zsh): slow pr…",
-                "○ personal  branch · normal",
+                "├ T-0045 feat(upload): resum…",
+                "└ T-0047 fix(ci): flaky uplo…",
+                "○ dotfiles    branch · normal",
+                "└ T-0048 fix(zsh): slow prom…",
+                "○ personal    branch · normal",
             ]
         );
-        // The box grows into the rows Actions doesn't need, so the whole tree shows.
+        // The section grows into the rows Actions doesn't need, so the whole tree shows.
         assert_eq!(projects_box(&mut app, 150, 45), rows);
     }
 
@@ -253,7 +254,7 @@ mod tests {
         let mut app = App::new();
         sample::install(&mut app);
         app.focus = Pane::Projects;
-        // Short enough that the Projects box scrolls.
+        // Short enough that the Projects section scrolls.
         projects_box(&mut app, 100, 30);
         for _ in 0..3 {
             app.on_event(

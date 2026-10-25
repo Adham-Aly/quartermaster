@@ -256,6 +256,7 @@ fn detail(
 ) -> TaskDetail {
     let text = |s: String| vec![Styled::new(s, Tone::Text)];
     let mut d = TaskDetail::new(task.task, task.title.clone());
+    d.kind = task.kind.to_string();
     d.rows
         .push(TaskRow::new(Some("project"), text(task.project.clone())));
     // The task this crewmate works towards (its heading in the crew tree), and who else is in it.

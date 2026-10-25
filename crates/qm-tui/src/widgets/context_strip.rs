@@ -1,14 +1,14 @@
-//! The context strip: one to three rows attached to the top of the input box, for the agent in
-//! the middle column.
+//! The context strip: one line in the bottom border of the middle column's box, for the agent
+//! shown there (`━━━━━─── 61% context · $0.04 last turn · 3 calls`), and the fuller lines the
+//! task pane's Usage section shows.
 //!
-//! Row 1 is occupancy: how full the context is against the point where the agent's engine
-//! compacts by itself, from the latest single model call (never a cumulative sum), with its age.
-//! Row 2 is the running or latest turn, by the categories the engine reports. Unknown and stale
-//! readings say so in words. Ages are computed here, against the wall clock: drawing one sets
+//! Occupancy is how full the context is against the point where the agent's engine compacts by
+//! itself, from the latest single model call (never a cumulative sum), with its age. The turn is
+//! the running or latest one, by the categories the engine reports. Unknown and stale readings
+//! say so in words. Ages are computed here, against the wall clock: drawing one sets
 //! `App::ages_shown`, and `App::tick` then redraws once a second.
 
 use crate::app::App;
-use crate::session::draw::agent_label;
 use crate::text::wrap_parts;
 use crate::theme;
 use crate::widgets::conversation::Row;
@@ -22,10 +22,8 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Clear, Paragraph};
 
-/// The most rows the strip takes.
-const MAX_ROWS: usize = 3;
 /// Cells in the occupancy bar.
 const BAR: u64 = 10;
 
@@ -39,109 +37,147 @@ pub(crate) fn view_for(app: &App, agent: AgentRef) -> Option<&AgentContextView> 
     app.snapshot.context.iter().find(|c| c.agent == agent)
 }
 
-/// The conversation, strip and input areas of `middle`. The input keeps its height first (at most
-/// half the column); the strip takes its rows only while strip and input together fit in half,
-/// else fewer, else none.
-pub(crate) fn split(app: &App, middle: Rect, input_height: u16, agent: AgentRef) -> [Rect; 3] {
-    let half = middle.height / 2;
-    let input_height = input_height.min(half);
-    let wanted = u16::try_from(rows(app, agent, text_width(middle)).len()).unwrap_or(0);
-    // A short column keeps its room for the conversation: one row under 24, two under 34.
-    let wanted = wanted.min(match middle.height {
-        0..24 => 1,
-        24..34 => 2,
-        _ => 3,
-    });
-    let strip_height = wanted.min(half.saturating_sub(input_height));
+/// The conversation and input areas of `middle`: the input keeps its height (at most half the
+/// column), the conversation's box takes the rest.
+pub(crate) fn split(middle: Rect, input_height: u16) -> [Rect; 2] {
+    let input_height = input_height.min(middle.height / 2);
     let input = Rect {
         y: middle.bottom() - input_height,
         height: input_height,
         ..middle
     };
-    let strip = Rect {
-        y: input.y - strip_height,
-        height: strip_height,
-        ..middle
-    };
     let conversation = Rect {
-        height: middle.height - input_height - strip_height,
+        height: middle.height - input_height,
         ..middle
     };
-    [conversation, strip, input]
+    [conversation, input]
 }
 
-/// The strip's text width: in line with the input's `›`, two cells in from each side.
-fn text_width(area: Rect) -> usize {
-    usize::from(area.width.saturating_sub(4))
-}
-
-/// Draws the strip in `area` (from [`split`]). Not a hit target.
-pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, agent: AgentRef) {
-    if area.height == 0 {
+/// The strip in the bottom border of the box (`area` is that border row), right-aligned with a
+/// `─` before the corner, leaving `left` cells from the left edge free. Not a hit target.
+pub(crate) fn draw_in_border(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    left: u16,
+    app: &App,
+    agent: AgentRef,
+) {
+    // ` runs ` plus the `─╯` after it.
+    let room = usize::from(area.width.saturating_sub(left + 4));
+    let runs = border_runs(app, agent, room);
+    if runs.is_empty() {
         return;
     }
-    let rows = fit(app, agent, text_width(area), usize::from(area.height));
-    let lines: Vec<Line<'static>> = rows
-        .into_iter()
-        .map(|row| {
-            Line::from(
-                row.into_iter()
-                    .map(|(t, s)| Span::styled(t, s))
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect();
-    let inside = Rect {
-        x: area.x + 2,
-        width: area.width.saturating_sub(4),
-        ..area
-    };
-    frame.render_widget(Paragraph::new(lines), inside);
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(runs.into_iter().map(|(t, s)| Span::styled(t, s)));
+    spans.push(Span::raw(" "));
+    let line = Line::from(spans);
+    let w = u16::try_from(line.width()).unwrap_or(u16::MAX);
+    let x = area.right().saturating_sub(w + 2);
+    let rect = Rect::new(x, area.y, w, 1);
+    // Plain-text runs must not take the border's colour from the cells under them.
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(line), rect);
 }
 
-/// The strip's wrapped rows at `width`, at most three.
-fn rows(app: &App, agent: AgentRef, width: usize) -> Vec<Vec<Run>> {
-    fit(app, agent, width, MAX_ROWS)
-}
-
-/// The rows at `width`, dropping parts until they fit in `max` rows: the reading's age first,
-/// then the turn row from its end, then the occupancy row's details, never the percentage.
-fn fit(app: &App, agent: AgentRef, width: usize, max: usize) -> Vec<Vec<Run>> {
-    if width == 0 || max == 0 {
-        return Vec::new();
-    }
+/// The strip's one line at no more than `max` cells: `━━━━━─── 61% context · $0.04 last turn ·
+/// 3 calls`, dropping from its end (the calls, the turn, the word) to fit; the details are in
+/// the task pane's Usage section.
+fn border_runs(app: &App, agent: AgentRef, max: usize) -> Vec<Run> {
     let now = Timestamp::now();
     let view = view_for(app, agent);
-    let (mut first, mut droppable, mut aged) = occupancy_row(app, agent, view, now);
-    let mut second = view
-        .and_then(|v| v.turn.as_ref())
-        .map(|t| turn_row(app, t, now))
-        .unwrap_or_default();
-    loop {
-        let mut out = wrap_row(&first, width);
-        if !second.is_empty() {
-            out.extend(wrap_row(&second, width));
+    let mut lead: Vec<Run> = Vec::new();
+    let mut word: Vec<Run> = Vec::new();
+    match view {
+        None => lead.push(("context unknown".to_owned(), theme::dim())),
+        Some(view) if view.compacting.is_some() => {
+            let since = view.compacting.map_or(now, |c| c.since);
+            let secs = now.duration_since(since).as_secs().max(0);
+            app.ages_shown.set(true);
+            lead.push((spinner::glyph(app).content.into_owned(), theme::ok()));
+            lead.push((format!(" compacting context… {secs}s"), theme::accent()));
         }
-        if out.len() <= max {
-            return out;
-        }
-        if aged {
-            // The age is the last droppable part, so it goes first.
-            aged = false;
-            if let Some(i) = droppable.pop() {
-                first.remove(i);
+        Some(view) => {
+            let occ = &view.occupancy;
+            let tilde = if occ.estimate { "~" } else { "" };
+            match (occ.tokens, &occ.point) {
+                (Some(tokens), PointView::At(point)) => {
+                    let pct = percent(tokens, *point);
+                    let stale = occ.stale.is_some();
+                    let tone = if stale { theme::dim() } else { level(pct) };
+                    let fill = if stale || pct >= 70 {
+                        tone
+                    } else {
+                        theme::accent()
+                    };
+                    let filled = bar_cells(pct);
+                    let bar = usize::try_from(BAR).unwrap_or(10);
+                    lead.push(("━".repeat(filled), fill));
+                    lead.push(("━".repeat(bar - filled), theme::rule()));
+                    lead.push((format!(" {tilde}{pct}%"), tone));
+                    word.push((" context".to_owned(), theme::dim()));
+                    if stale {
+                        word.push((" · stale".to_owned(), theme::warn()));
+                    }
+                }
+                (Some(tokens), _) => {
+                    lead.push((format!("{tilde}{}", tokens_short(tokens)), theme::text()));
+                    word.push((" in context".to_owned(), theme::dim()));
+                }
+                (None, _) => lead.push(("context unknown".to_owned(), theme::dim())),
             }
-        } else if second.len() > 1 {
-            second.pop();
-        } else if !second.is_empty() {
-            second.clear();
-        } else if let Some(i) = droppable.pop() {
-            first.remove(i);
-        } else {
-            out.truncate(max);
-            return out;
         }
     }
+    let mut turn: Vec<Run> = Vec::new();
+    let mut calls: Vec<Run> = Vec::new();
+    if let Some(t) = view.and_then(|v| v.turn.as_ref()) {
+        let when = if t.running { "this turn" } else { "last turn" };
+        if let Some(cost) = &t.cost {
+            turn.push((" · ".to_owned(), theme::dim()));
+            turn.push((cost.clone(), theme::text()));
+            turn.push((format!(" {when}"), theme::dim()));
+            let n = match t.model_calls {
+                1 => "1 call".to_owned(),
+                n => format!("{n} calls"),
+            };
+            calls.push((format!(" · {n}"), theme::dim()));
+        } else {
+            let n = match t.model_calls {
+                1 => "1 call".to_owned(),
+                n => format!("{n} calls"),
+            };
+            turn.push((" · ".to_owned(), theme::dim()));
+            turn.push((n, theme::text()));
+            turn.push((format!(" {when}"), theme::dim()));
+        }
+    }
+    let len = |runs: &[Run]| {
+        runs.iter()
+            .map(|(t, _)| crate::text::width(t))
+            .sum::<usize>()
+    };
+    for take in [
+        vec![&lead, &word, &turn, &calls],
+        vec![&lead, &word, &turn],
+        vec![&lead, &word],
+        vec![&lead],
+    ] {
+        let runs: Vec<Run> = take.into_iter().flatten().cloned().collect();
+        if len(&runs) <= max {
+            return runs;
+        }
+    }
+    Vec::new()
+}
+
+/// The task pane's turn lines at `width`: the running turn so far, or the latest one, by the
+/// categories the engine reports.
+pub(crate) fn turn_lines(app: &App, agent: AgentRef, width: usize) -> Vec<Vec<Run>> {
+    let now = Timestamp::now();
+    view_for(app, agent)
+        .and_then(|v| v.turn.as_ref())
+        .map(|t| wrap_row(&turn_row(app, t, now), width))
+        .unwrap_or_default()
 }
 
 fn wrap_row(parts: &[Part], width: usize) -> Vec<Vec<Run>> {
@@ -153,112 +189,6 @@ fn wrap_row(parts: &[Part], width: usize) -> Vec<Vec<Run>> {
         runs.extend(part.iter().cloned());
     }
     wrap_parts(&runs, width)
-}
-
-/// Row 1, the indexes of its parts that may be dropped (popped from the end), and whether the
-/// last of those is the reading's age.
-fn occupancy_row(
-    app: &App,
-    agent: AgentRef,
-    view: Option<&AgentContextView>,
-    now: Timestamp,
-) -> (Vec<Part>, Vec<usize>, bool) {
-    let label: Run = (agent_label(agent), theme::strong());
-    let Some(view) = view else {
-        return (
-            vec![
-                vec![label],
-                dim_part("context unknown"),
-                dim_part("no reading since the app started"),
-            ],
-            vec![2],
-            false,
-        );
-    };
-    let occ = &view.occupancy;
-    if let Some(compacting) = view.compacting {
-        let secs = now.duration_since(compacting.since).as_secs().max(0);
-        app.ages_shown.set(true);
-        let mut parts = vec![vec![
-            label,
-            (" ".to_owned(), Style::default()),
-            (spinner::glyph(app).content.into_owned(), theme::ok()),
-            (format!(" compacting context… {secs}s"), theme::accent()),
-        ]];
-        if let Some(was) = compacting.was {
-            let mut words = format!("was {}", tokens_short(was));
-            if let PointView::At(point) = occ.point {
-                words.push_str(" of ");
-                words.push_str(&tokens_short(point));
-            }
-            parts.push(dim_part(&words));
-        }
-        return (parts, vec![1], false);
-    }
-    let stale = occ.stale.is_some();
-    let number = if stale { theme::dim() } else { theme::text() };
-    let mut parts: Vec<Part> = Vec::new();
-    let mut droppable = Vec::new();
-    match (occ.tokens, &occ.point) {
-        (Some(tokens), PointView::At(point)) => {
-            let pct = percent(tokens, *point);
-            let tone = if stale { theme::dim() } else { level(pct) };
-            let tilde = if occ.estimate { "~" } else { "" };
-            let filled = bar_cells(pct);
-            parts.push(vec![
-                label,
-                (" ".to_owned(), Style::default()),
-                ("━".repeat(filled), tone),
-                (
-                    "─".repeat(usize::try_from(BAR).unwrap_or(10) - filled),
-                    theme::faded(),
-                ),
-                (format!(" {tilde}{pct}%"), tone),
-            ]);
-            parts.push(vec![
-                (format!("{tilde}{}", tokens_short(tokens)), number),
-                (" of ".to_owned(), theme::dim()),
-                (tokens_short(*point), number),
-                (" before auto-compact".to_owned(), theme::dim()),
-            ]);
-            droppable.push(1);
-        }
-        (Some(tokens), point) => {
-            let tilde = if occ.estimate { "~" } else { "" };
-            parts.push(vec![label]);
-            parts.push(vec![
-                (format!("{tilde}{}", tokens_short(tokens)), number),
-                (" in context".to_owned(), theme::dim()),
-            ]);
-            parts.extend(point_parts(point, occ.window));
-            droppable.extend((2..parts.len()).rev());
-        }
-        (None, point) => {
-            parts.push(vec![label]);
-            parts.push(dim_part("context unknown"));
-            if let Some(why) = &occ.unknown_why {
-                parts.push(dim_part(why));
-            }
-            let at = parts.len();
-            parts.extend(point_parts(point, occ.window));
-            droppable.extend((at..parts.len()).rev());
-            droppable.extend((2..at).rev());
-        }
-    }
-    // `droppable` pops from its end: the age first, then the rest.
-    droppable.reverse();
-    let mut aged = false;
-    if occ.tokens.is_some()
-        && let Some(age) = age_words(app, occ, now)
-    {
-        droppable.push(parts.len());
-        parts.push(dim_part(&age));
-        aged = true;
-    }
-    if let Some(stale) = &occ.stale {
-        parts.push(vec![(format!("stale: {stale}"), theme::warn())]);
-    }
-    (parts, droppable, aged)
 }
 
 /// The parts that say where the engine compacts, when the bar can't.
@@ -407,6 +337,63 @@ pub(crate) fn card_runs(app: &App, view: Option<&AgentContextView>) -> Vec<Run> 
         runs.extend(part);
     }
     runs
+}
+
+/// The task pane's context lines at `width` cells: a bar across the pane with the percentage,
+/// then `106k of 167k before auto-compact · 2m ago`. Without a point to measure against (or while
+/// compacting), the card's words alone.
+pub(crate) fn usage_lines(
+    app: &App,
+    view: Option<&AgentContextView>,
+    width: usize,
+) -> Vec<Vec<Run>> {
+    let now = Timestamp::now();
+    let Some(v) = view.filter(|v| v.compacting.is_none()) else {
+        return vec![card_runs(app, view)];
+    };
+    let occ = &v.occupancy;
+    let (Some(tokens), PointView::At(point)) = (occ.tokens, &occ.point) else {
+        return vec![card_runs(app, view)];
+    };
+    let pct = percent(tokens, *point);
+    let stale = occ.stale.is_some();
+    let tone = if stale { theme::dim() } else { level(pct) };
+    let fill = if stale || pct >= 70 {
+        tone
+    } else {
+        theme::accent()
+    };
+    let tilde = if occ.estimate { "~" } else { "" };
+    let label = format!(" {tilde}{pct}%");
+    let bar = width.saturating_sub(crate::text::width(&label)).max(1);
+    let filled = if pct == 0 {
+        0
+    } else {
+        let pct = usize::try_from(pct.min(100)).unwrap_or(100);
+        ((bar * pct + 50) / 100).clamp(1, bar)
+    };
+    let number = if stale { theme::dim() } else { theme::text() };
+    let mut words = vec![
+        (format!("{tilde}{}", tokens_short(tokens)), number),
+        (" of ".to_owned(), theme::dim()),
+        (tokens_short(*point), number),
+        (" before auto-compact".to_owned(), theme::dim()),
+    ];
+    if let Some(age) = age_words(app, occ, now) {
+        words.push((format!(" · {age}"), theme::dim()));
+    }
+    if let Some(stale) = &occ.stale {
+        words.push((" · ".to_owned(), theme::dim()));
+        words.push((format!("stale: {stale}"), theme::warn()));
+    }
+    vec![
+        vec![
+            ("━".repeat(filled), fill),
+            ("━".repeat(bar - filled), theme::rule()),
+            (label, tone),
+        ],
+        words,
+    ]
 }
 
 fn dim_part(words: &str) -> Part {

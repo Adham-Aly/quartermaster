@@ -53,7 +53,8 @@ pasteboard (`NSPasteboard pasteboardWithName:` from a JXA script via `osascript 
 
 Check the sizes that change the layout: 150×45, 120×40 (unfolded), 119×40 and 100×30 (folded:
 the task pane becomes an overlay), and 60×16 (the smallest). With `-e`, every colour must be a
-16-colour SGR code (`30`–`37`, `90`–`97`, `40`–`47`, `100`–`107`); a `38;5;` or `38;2;` is a bug.
+16-colour SGR code (`30`–`37`, `90`–`97`, `40`–`47`, `100`–`107`), plus `38;2;`/`48;2;` only when
+the app was started with `COLORTERM=truecolor` (or `24bit`); a `38;5;` is always a bug.
 Mouse input is easiest to check in a real terminal window.
 
 ## Sample screens
@@ -62,9 +63,10 @@ Mouse input is easiest to check in a real terminal window.
 `bridge`, `chat`, `thinking`, `decision`, `diff` (the approval's split diff and changed-file tree),
 `session`, `secondmate`, `settings` (the Settings
 popup over the Bridge) or `menu-badge` (a badge on the menu's Settings entry), `compacting` (the Quartermaster compacting
-its context, a failed compaction on C-0042) or `context-unknown` (no context readings); all values are in
+its context, a failed compaction on C-0042) or `context-unknown` (no context readings), `empty` (an empty Bridge, for the logo); all values are in
 `crates/qm-tui/src/sample.rs`. Only the busy indicator still moves. Use them to
-compare layout and styles without any account.
+compare layout and styles without any account. tmux shows the `◆` fallback; the logo image needs
+a kitty-graphics terminal (Ghostty, kitty, WezTerm) in a real window.
 
 ## Developer entry points (hidden)
 
