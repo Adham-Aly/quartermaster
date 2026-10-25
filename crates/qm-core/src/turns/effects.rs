@@ -20,7 +20,8 @@ use qm_types::ids::TaskId;
 /// | `reply`, `ask_user`, `acknowledge`, `present_hold`, `propose_project`, `start_secondmate`, a held `settle_task` | `Shown` |
 /// | `start_crewmate` | `Started(result.crewmate)` |
 /// | `message_task` | `Steered(args.task)` |
-/// | `stop_task`, `close_task` | `Stopped(args.task)` |
+/// | `stop_task` | `Stopped(args.task)` |
+/// | `close_task` | `Closed(args.task)` |
 /// | `settle_task` (merged, delivered, landed, closed) | `Settled(args.task)` |
 /// | `set_verification`, `set_task_project` / `set_task_label` | `TaskChanged(args.task)` / `TaskChanged(args.crewmate)` |
 /// | `link_tasks`, `unlink_tasks` | `TaskChanged(args.blocked)` |
@@ -47,9 +48,8 @@ pub fn effect_of(tool: &str, args: &serde_json::Value, result: &ToolResult) -> O
             .and_then(|o| task_at(&o, "crewmate"))
             .map(Effect::Started),
         t if t == defs::MessageTaskTool::NAME => task_at(args, "task").map(Effect::Steered),
-        t if t == defs::StopTaskTool::NAME || t == defs::CloseTaskTool::NAME => {
-            task_at(args, "task").map(Effect::Stopped)
-        }
+        t if t == defs::StopTaskTool::NAME => task_at(args, "task").map(Effect::Stopped),
+        t if t == defs::CloseTaskTool::NAME => task_at(args, "task").map(Effect::Closed),
         t if t == defs::SettleTaskTool::NAME => {
             let held = output()
                 .and_then(|o| o.get("outcome").and_then(|v| v.as_str()).map(str::to_owned))
@@ -107,6 +107,18 @@ mod tests {
             effect_of("unlink_tasks", &args, &ToolResult::error("refused")),
             None
         );
+    }
+
+    #[test]
+    fn a_close_reads_closed_and_a_stop_reads_stopped() {
+        let args = serde_json::json!({"task": "C-0042"});
+        let ok = ToolResult::ok(r#"{"task":"C-0042","status":"closed"}"#);
+        let closed = effect_of("close_task", &args, &ok).unwrap();
+        assert_eq!(closed, Effect::Closed(TaskId::new(42).unwrap()));
+        assert_eq!(effect_line(&closed).as_deref(), Some("Closed: C-0042"));
+        let stopped = effect_of("stop_task", &args, &ok).unwrap();
+        assert_eq!(stopped, Effect::Stopped(TaskId::new(42).unwrap()));
+        assert_eq!(effect_line(&stopped).as_deref(), Some("Stopped: C-0042"));
     }
 
     #[test]
