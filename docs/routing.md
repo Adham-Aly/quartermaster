@@ -71,19 +71,39 @@ Add providers in **Settings ▸ Accounts**, then open **Settings ▸ Model level
 usage. Quotas are fetched in the background when an account first appears, every five
 minutes, and when Settings opens (at most once per 30 seconds). Requests already in
 flight are not duplicated. A failed refresh shows a plain error and keeps the previous
-reading and its check time, so an old reading is not mistaken for a fresh one.
+reading and its check time, so an old reading is not mistaken for a fresh one. A
+rate-limited check waits for the provider's `Retry-After` (one minute to one hour), or ten
+minutes if it gives none, even when Settings opens again.
 
-Supported sources are ChatGPT's usage windows, GitHub Copilot's chat/completions/premium
-request quotas, OpenRouter's **per-key spending budget** (not wallet credit), and the
+Subscription quotas, each read with that account's own login:
+
+| Subscription | Read from | Shows |
+|---|---|---|
+| ChatGPT (Codex login) | `chatgpt.com/backend-api/wham/usage` | the 5-hour and weekly windows, named by their length |
+| GitHub Copilot | `api.github.com/copilot_internal/user` | the chat, completions and premium-request allowances |
+| Kimi Code | `api.kimi.com/coding/v1/usages` | the 5-hour, weekly and monthly windows |
+| Grok (xAI) | grok.com's credits meter (gRPC-web) | the shared credits for the period, and Grok Build, chat and API shares |
+
+These are private provider endpoints that may refuse access or change their response
+formats; an answer the app doesn't recognise is an error, never a guessed reading. A
+Codex, Kimi or Grok login is refreshed and asked once more after a 401. If Grok's meter
+refuses a login, xAI's API is asked whether it still takes it: if so the account just has
+no reading; only if both refuse is it *refused*. Copilot sends a zero-entitlement
+placeholder for a seat billed another way; it is left out, not read as used up. Grok's
+product shares are shown but only the shared credits rank and cut off an account.
+
+Other sources are OpenRouter's **per-key spending budget** (not wallet credit) and the
 **prepaid balance** of every API key whose provider lets that same key read it.
-ChatGPT and Copilot use private provider endpoints and may refuse access or change their
-response formats. ChatGPT's usage windows need the Codex login: a **Sign in with ChatGPT**
-login's token is for the OpenAI API, so a quota check never sends or refreshes it.
+ChatGPT's usage windows need the Codex login: a **Sign in with ChatGPT** login's token is
+for the OpenAI API, so a quota check never sends or refreshes it; nor is an xAI key ever
+sent to Grok's subscription meter.
 Accounts without a quota check (Claude, Sign in with ChatGPT, and API keys or custom
 endpoints with no quota API) show a neutral, dim note such as *Provider quota: not offered
-by this provider*. They make no request and never show a problem. In particular, the app
-never reads Claude's subscription credentials; Claude's usage comes from its engine. An
-unlimited OpenRouter key budget does not mean unlimited account credit.
+by this provider*. They make no request and never show a problem. A check whose answer
+has nothing metered in it shows *Provider quota: none reported for this login* and clears
+the account's stored reading. The app never reads Claude's subscription credentials;
+Claude's usage comes from its engine. An unlimited OpenRouter key budget does not mean
+unlimited account credit.
 
 Prepaid (top-up) balances, by API-key provider:
 
@@ -100,7 +120,7 @@ Prepaid (top-up) balances, by API-key provider:
 A custom endpoint is recognised by its base URL's host (HTTPS, default port, any path),
 and the key goes only to that provider's own fixed balance URL, the host it already
 serves, never to a URL built from the endpoint. Subscriptions (Kimi's included) have no
-top-up balance; their quota comes from their windows or, for Claude, its engine.
+top-up balance; their quota comes from their windows or credits or, for Claude, its engine.
 
 Lookups use the connected account's stored token and the existing refresh mechanism;
 provider response bodies and credentials never appear in quota errors. A refused or failed
@@ -124,8 +144,8 @@ of two pools the same length the more used one. Readings come from two places:
 
 - the engine's own usage reports, read once a minute: Claude's latest rate-limit windows
   (5-hour and 7-day) after its first turn, and the provider engine's usage headers;
-- the provider quota checks above (ChatGPT windows, Copilot chat and premium requests,
-  OpenRouter key budget, prepaid balances).
+- the provider quota checks above (ChatGPT and Kimi Code windows, Grok credits, Copilot
+  chat and premium requests, OpenRouter key budget, prepaid balances).
 
 **A balance**, from any source in the table above, has no limit of its own, so it is
 measured against the **balance at the last top-up**. The first check is the reference
