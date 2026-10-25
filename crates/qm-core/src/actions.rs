@@ -104,6 +104,7 @@ impl ActionsPart {
 
         items.extend(self.plans().await);
         items.extend(self.reviews().await);
+        items.extend(self.reports().await);
         items.extend(self.questions_and_notices().await);
 
         order(config, items)
@@ -214,6 +215,72 @@ impl ActionsPart {
                     ActionOpen::Session {
                         agent: AgentRef::Crewmate { task },
                     },
+                )
+                .with_task(task)
+                .with_from(AgentRef::Crewmate { task }),
+            );
+        }
+        out
+    }
+
+    /// Finished answer tasks' reports you haven't opened or dismissed, while their page is there.
+    async fn reports(&self) -> Vec<ActionItem> {
+        let kinds = crate::reports::api::card_kinds();
+        let read = self
+            .db
+            .call(move |conn| {
+                let mut out = Vec::new();
+                for row in task_store::unread_reports(conn, &kinds)? {
+                    if !crate::reports::api::has_report_card(&row) {
+                        continue;
+                    }
+                    let project = crate::tasks::load_project(conn, row.project)?
+                        .map(|p| p.name)
+                        .unwrap_or_default();
+                    let report = qm_store::reports::latest_clear(conn, row.id)?;
+                    out.push((row, project, report));
+                }
+                Ok(out)
+            })
+            .await;
+        let rows = match read {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!(error = %e, "couldn't read the reports waiting on you");
+                return Vec::new();
+            }
+        };
+        let mut out = Vec::new();
+        for (row, project, report) in rows {
+            if crate::reports::api::report_page(&self.tasks.paths_of(&row)).is_err() {
+                continue;
+            }
+            let task = row.id;
+            let card = crate::reports::api::report_card(
+                task,
+                row.kind,
+                &row.title,
+                &project,
+                report.as_ref(),
+            );
+            let title = format!("{} · {}", card.heading, row.title);
+            let at = row.reported_at.unwrap_or(row.created_at);
+            // Go to its session while the task is open; a closed one has nobody left to talk to.
+            let open = if row.status == TaskStatus::Closed {
+                ActionOpen::Conversation
+            } else {
+                ActionOpen::Session {
+                    agent: AgentRef::Crewmate { task },
+                }
+            };
+            out.push(
+                ActionItem::new(
+                    ActionKey::Report { task },
+                    ActionKind::Report,
+                    title,
+                    at,
+                    card,
+                    open,
                 )
                 .with_task(task)
                 .with_from(AgentRef::Crewmate { task }),

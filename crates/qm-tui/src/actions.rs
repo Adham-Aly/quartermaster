@@ -165,7 +165,9 @@ const fn answers(action: &CardAction) -> bool {
         | CardAction::LeaveIt
         | CardAction::Reply { .. }
         | CardAction::ApprovePlan { .. }
-        | CardAction::ApproveReview { .. } => true,
+        | CardAction::ApproveReview { .. }
+        | CardAction::ReadReport { .. }
+        | CardAction::DismissReport { .. } => true,
         _ => false,
     }
 }
@@ -1203,6 +1205,33 @@ mod popup_tests {
         open(&mut app, |item| item.kind == ActionKind::Review);
         key(&mut app, KeyCode::Char('g'));
         assert_eq!(app.take_commands(), [Command::ApproveReview { task }]);
+    }
+
+    #[test]
+    fn a_report_opens_or_dismisses_and_waits_for_its_card_to_go() {
+        let mut app = chat();
+        let i = open(&mut app, |item| item.kind == ActionKind::Report);
+        let ActionKey::Report { task } = app.snapshot.actions[i].key else {
+            panic!("a report");
+        };
+        let shown = labels(&mut app);
+        assert!(shown.contains(&"Open".to_owned()), "{shown:?}");
+        assert!(shown.contains(&"Dismiss".to_owned()), "{shown:?}");
+        key(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.take_commands(), [Command::OpenReport { task }]);
+        // Opening reads it: the card goes, and the overlay closes without saying it went elsewhere.
+        assert!(app.view.action_pressed.is_some());
+        let mut next = app.snapshot.clone();
+        next.actions
+            .retain(|item| item.key != ActionKey::Report { task });
+        app.on_update(Update::Snapshot(Box::new(next)));
+        assert_eq!(app.popup(), None);
+        assert_ne!(app.term.flash.as_ref().map(|f| f.text.as_str()), Some(GONE));
+        let mut app = chat();
+        open(&mut app, |item| item.kind == ActionKind::Report);
+        key(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.take_commands(), [Command::DismissReport { task }]);
+        assert!(app.view.action_pressed.is_some());
     }
 
     #[test]

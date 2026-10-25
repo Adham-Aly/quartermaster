@@ -31,8 +31,8 @@ Progress is `PRAGMA user_version`, which counts entries in `MIGRATIONS`.
 
 1. Write `crates/qm-store/migrations/NNNN_<what>.sql`. Start with a comment saying what it adds
    and why. `ALTER TABLE … ADD COLUMN` needs a default (or must be nullable) because rows exist.
-2. Append one line to `MIGRATIONS` in `crates/qm-store/src/schema.rs`:
-   `M::up(include_str!("../migrations/NNNN_<what>.sql")).foreign_key_check(),`
+2. Append its `include_str!("../migrations/NNNN_<what>.sql"),` to `SQL` in
+   `crates/qm-store/src/schema.rs`, and one line to `MIGRATIONS`: `M::up(SQL[n]).foreign_key_check(),`
 3. Put the queries in the table's module in `crates/qm-store/src/` (a new module gets a `mod`
    line in `lib.rs`). Queries are plain functions over `&Connection` / `&mut Connection`, called
    inside `Db::call` by the core; nothing else opens the database.

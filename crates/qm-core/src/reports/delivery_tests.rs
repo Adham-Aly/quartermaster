@@ -3,6 +3,7 @@ use super::*;
 use crate::turns::forget_tests::Fixture;
 use qm_tools::defs::{Ack, ReportArgs};
 use qm_tools::handler::{Caller, Dispatcher, ToolCx, ToolFailure, ToolHost};
+use qm_types::api::ActionOpen;
 use qm_types::domain::{Role, TaskKind};
 use qm_types::ids::AgentId;
 use serde_json::{Value, json};
@@ -115,12 +116,51 @@ impl Delivery {
         snapshot
     }
 
+    /// The Actions panel, as the UI gets it.
+    async fn actions(&self) -> Vec<qm_types::api::ActionItem> {
+        let svc = &self.host.0;
+        let deps = svc.deps();
+        let held = crate::held::HeldService::new(
+            deps.db.clone(),
+            deps.clock.clone(),
+            std::sync::Arc::new(NoSignal),
+        );
+        let part = crate::actions::ActionsPart::new(
+            held,
+            (deps.db.clone(), deps.clock.clone(), deps.data_dir.clone()),
+            AgentId::new(1),
+            svc.clone(),
+        );
+        let mut snapshot = Snapshot::default();
+        part.fill(&mut snapshot).await;
+        snapshot.actions
+    }
+
+    async fn assert_no_card(&self) {
+        assert_eq!(self.actions().await, [] as [qm_types::api::ActionItem; 0]);
+    }
+
+    /// The task reports again, after you last read its report.
+    async fn report_again(&self) {
+        self.fixture
+            .db()
+            .call(|conn| {
+                conn.execute(
+                    "UPDATE tasks SET reported_at = report_read_at + 1 WHERE id = 3",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
     async fn assert_delivered(&self, kind: TaskKind, answer: &'static str) {
         self.fixture
             .db()
             .call(move |conn| {
                 let row = tasks::load(conn, TaskId::new(3).unwrap())?.unwrap();
-                assert_eq!(row.status, qm_types::domain::TaskStatus::Reported);
+                assert_eq!(row.status, TaskStatus::Reported);
                 assert!(row.reported_at.is_some());
                 let reports = qm_store::reports::for_task(conn, row.id)?;
                 assert_eq!(reports.len(), 1);
@@ -184,6 +224,45 @@ impl Drop for Delivery {
     }
 }
 
+#[derive(Debug)]
+struct NoSignal;
+impl crate::held::WakeSignal for NoSignal {
+    fn signal(&self, _: AgentId) {}
+}
+
+/// The card of a finished answer task's report: the answer's first line, and Open and Dismiss.
+fn assert_report_card(item: &qm_types::api::ActionItem, kind: TaskKind, answer: &str) {
+    use qm_types::api::{ActionKey, ActionKind, CardAction};
+    let task = TaskId::new(3).unwrap();
+    assert_eq!(item.key, ActionKey::Report { task });
+    assert_eq!(item.kind, ActionKind::Report);
+    assert_eq!(item.task, Some(task));
+    assert_eq!(item.from, Some(AgentRef::Crewmate { task }));
+    assert_eq!(item.title, "Report ready · Findings");
+    assert_eq!(item.card.kind, CardKind::Report);
+    assert_eq!(item.card.heading, REPORT_HEADING);
+    assert_eq!(item.card.title.as_deref(), Some("C-0003 Findings"));
+    let words: Vec<String> = item
+        .card
+        .lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.text.as_str()).collect())
+        .collect();
+    assert_eq!(words[0], answer.lines().next().unwrap(), "{words:?}");
+    assert!(
+        words[1].starts_with(&format!("The {kind} is done.")),
+        "{words:?}"
+    );
+    let buttons: Vec<_> = item.card.buttons.iter().map(|b| &b.action).collect();
+    assert_eq!(
+        buttons,
+        [
+            &CardAction::ReadReport { task },
+            &CardAction::DismissReport { task }
+        ]
+    );
+}
+
 #[tokio::test]
 async fn four_answer_kinds_refuse_missing_or_template_then_deliver_and_surface() {
     for kind in [
@@ -237,7 +316,18 @@ async fn four_answer_kinds_refuse_missing_or_template_then_deliver_and_surface()
         assert!(snapshot.tasks[0].report_available);
         assert_eq!(snapshot.crew.len(), 1);
         assert!(!snapshot.crew[0].needs_you);
-        assert_eq!(snapshot.actions, [] as [qm_types::api::ActionItem; 0]);
+        // The finished report waits in Actions as a card, not in the chat.
+        let actions = delivery.actions().await;
+        assert_eq!(actions.len(), 1, "{actions:?}");
+        assert_report_card(&actions[0], kind, answer);
+        assert_eq!(
+            actions[0].open,
+            ActionOpen::Session {
+                agent: AgentRef::Crewmate {
+                    task: delivery.caller.task.unwrap()
+                }
+            }
+        );
         snapshot.tasks[0].running = true;
         part.fill(&mut snapshot).await;
         assert_eq!(snapshot.tasks.len(), 1);
@@ -257,9 +347,24 @@ async fn four_answer_kinds_refuse_missing_or_template_then_deliver_and_surface()
             .await
             .unwrap();
         assert!(delivery.fill().await.tasks[0].report_available);
+        // Its supervisor closing it leaves the card until you read it, with nowhere to go.
+        let actions = delivery.actions().await;
+        assert_report_card(&actions[0], kind, answer);
+        assert_eq!(actions[0].open, ActionOpen::Conversation);
+        part.handle(&Command::DismissReport {
+            task: delivery.caller.task.unwrap(),
+        })
+        .unwrap()
+        .await;
+        delivery.assert_no_card().await;
+        assert!(delivery.fill().await.tasks[0].report_available);
+        // A newer report than the one you read has its card again.
+        delivery.report_again().await;
+        assert_report_card(&delivery.actions().await[0], kind, answer);
         fs::remove_file(delivery.page()).unwrap();
         assert_eq!(delivery.fill().await.tasks, [] as [TaskDetail; 0]);
         assert!(part.page(delivery.caller.task.unwrap()).await.is_err());
+        delivery.assert_no_card().await;
     }
 }
 
@@ -329,14 +434,21 @@ async fn unfinished_outcomes_and_other_kinds_do_not_require_html() {
             assert!(!result.is_error, "{kind}/{outcome}: {result:?}");
             assert!(!delivery.page().exists());
             assert_eq!(delivery.fill().await.tasks, [] as [TaskDetail; 0]);
+            delivery.assert_no_card().await;
         }
     }
-    let delivery = Delivery::new(TaskKind::Build).await;
-    let result = delivery
-        .report(json!({"outcome": "done", "answer": "No code changes necessary."}))
-        .await;
-    assert!(!result.is_error, "{result:?}");
-    assert!(!delivery.page().exists());
+    for kind in [TaskKind::Build, TaskKind::Fix, TaskKind::Unclear] {
+        let delivery = Delivery::new(kind).await;
+        let result = delivery
+            .report(json!({"outcome": "done", "answer": "No code changes necessary."}))
+            .await;
+        assert!(!result.is_error, "{kind}: {result:?}");
+        assert!(!delivery.page().exists());
+        // Even a page left in its folder gives a kind without a required report no card.
+        fs::create_dir_all(delivery.page().parent().unwrap()).unwrap();
+        delivery.write_page();
+        delivery.assert_no_card().await;
+    }
 }
 
 #[path = "review_delivery_tests.rs"]

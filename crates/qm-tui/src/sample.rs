@@ -493,7 +493,8 @@ fn approval_card() -> Card {
 /// The chat sample (the reply, the app's `✓ Steered: C-0042`, the
 /// Quartermaster's `✓ Noted for next time`, your 14:20 message that nothing came of), a plan
 /// reply sent from its page as one line, then a question and a message of yours queued behind the
-/// turn that asked it. The notice, the question and a plan's round wait in Actions.
+/// turn that asked it. The notice, the question, a plan's round, a review and a lookup's report
+/// wait in Actions.
 #[doc(hidden)]
 pub fn chat() -> Snapshot {
     let mut out = snapshot();
@@ -504,6 +505,7 @@ pub fn chat() -> Snapshot {
         question_item(),
         plan_item(),
         review_item(),
+        report_item(),
     ]);
     out
 }
@@ -702,6 +704,46 @@ fn review_item() -> ActionItem {
         ActionKind::Review,
         "Review ready · review(auth): token refresh race",
         at(14, 26),
+        card,
+        ActionOpen::Session {
+            agent: AgentRef::Crewmate { task },
+        },
+    )
+    .with_task(task)
+    .with_from(AgentRef::Crewmate { task })
+}
+
+fn report_item() -> ActionItem {
+    let task = task_id(46);
+    let mut card = Card::new(CardKind::Report, "Report ready");
+    card.title = Some(String::from("C-0046 lookup(auth): where tokens refresh"));
+    card.note = Some(String::from("· api-server"));
+    card.lines = vec![
+        CardLine::new(
+            2,
+            vec![s(
+                "Tokens refresh in session::renew, on the request path, never in the background.",
+                Tone::Text,
+            )],
+        ),
+        CardLine::new(
+            2,
+            vec![s(
+                "The lookup is done. Open its report in your browser; once you open or dismiss \
+                 it, it leaves Actions. The task pane still opens it.",
+                Tone::Dim,
+            )],
+        ),
+    ];
+    card.buttons = vec![
+        CardButton::new("Open", 'o', CardAction::ReadReport { task }),
+        CardButton::new("Dismiss", 'd', CardAction::DismissReport { task }),
+    ];
+    ActionItem::new(
+        ActionKey::Report { task },
+        ActionKind::Report,
+        "Report ready · lookup(auth): where tokens refresh",
+        at(14, 27),
         card,
         ActionOpen::Session {
             agent: AgentRef::Crewmate { task },

@@ -85,7 +85,10 @@ impl App {
             CardAction::OpenPlan { task } => self.command(Command::OpenPlan { task }),
             CardAction::CopyPlanPath { path } => self.copy(&path, now),
             CardAction::ApprovePlan { task } => self.command(Command::ApprovePlan { task }),
-            CardAction::OpenReport { task } => self.command(Command::OpenReport { task }),
+            CardAction::OpenReport { task } | CardAction::ReadReport { task } => {
+                self.command(Command::OpenReport { task });
+            }
+            CardAction::DismissReport { task } => self.command(Command::DismissReport { task }),
             CardAction::ApproveReview { task } => self.command(Command::ApproveReview { task }),
             CardAction::OpenSettings => {
                 self.close_action();
