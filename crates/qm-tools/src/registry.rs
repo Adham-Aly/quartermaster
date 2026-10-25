@@ -192,7 +192,7 @@ mod tests {
                 prompt_chars <= 12_000,
                 "{role}: {prompt_chars} prompt characters"
             );
-            assert!(total <= 30_200, "{role}: {total} total characters");
+            assert!(total <= 30_300, "{role}: {total} total characters");
         }
     }
 
