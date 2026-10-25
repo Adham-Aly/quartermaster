@@ -4,6 +4,8 @@
 //! ([`report_card`]: Open, Dismiss) until you open it, from the card or the task pane, or dismiss
 //! it; `tasks.report_read_at` records when. The card stays after the task closes, since its
 //! supervisor usually closes it as soon as it reports, and comes back if the task reports again.
+//! A closed task has no row in the crew and no task pane: once its card is read, its report goes
+//! with its other files ([`crate::retention`]).
 //! A review's report under normal autonomy has its own card while it waits on your go-ahead
 //! ([`review_card`]; [`crate::tasks::review`]): Open, and Go ahead.
 
@@ -61,7 +63,7 @@ impl ReportPart {
                     .status()
                     .await;
                 if result.is_ok_and(|status| status.success()) {
-                    self.mark_read(task).await;
+                    self.mark_read(task, true).await;
                     return;
                 }
                 format!("{task}'s report couldn't be opened in your browser on this Mac.")
@@ -71,18 +73,25 @@ impl ReportPart {
         self.note(&problem).await;
     }
 
-    /// You opened or dismissed `task`'s report: its card leaves Actions.
-    async fn mark_read(&self, task: TaskId) {
-        let at = self.svc.deps().clock.now();
-        if let Err(e) = self
-            .svc
-            .deps()
+    /// You opened (`opened`) or dismissed `task`'s report: its card leaves Actions, and a closed
+    /// task's report then goes.
+    async fn mark_read(&self, task: TaskId, opened: bool) {
+        let deps = self.svc.deps();
+        let at = deps.clock.now();
+        if let Err(e) = deps
             .db
             .call(move |conn| tasks::mark_report_read(conn, task, at))
             .await
         {
             tracing::error!(error = %e, %task, "couldn't record that a report was read");
+            return;
         }
+        crate::retention::after_report_read(
+            deps.db.clone(),
+            deps.data_dir.clone(),
+            deps.clock.clone(),
+            opened,
+        );
     }
 
     /// The Go ahead on a review's card.
@@ -225,7 +234,7 @@ pub(crate) fn report_card(
         vec![Styled::new(
             format!(
                 "The {kind} is done. Open its report in your browser; once you open or dismiss \
-                 it, it leaves Actions. The task pane still opens it."
+                 it, it leaves Actions."
             ),
             Tone::Dim,
         )],
@@ -267,7 +276,7 @@ impl ApiPart for ReportPart {
                 Handled::Changed
             })),
             Command::DismissReport { task } => Some(Box::pin(async move {
-                self.mark_read(*task).await;
+                self.mark_read(*task, false).await;
                 Handled::Changed
             })),
             Command::ApproveReview { task } => Some(Box::pin(async move {
@@ -280,8 +289,8 @@ impl ApiPart for ReportPart {
 
     fn fill<'a>(&'a self, snapshot: &'a mut Snapshot) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            // Closed answer-only tasks leave the live crew tree. Retained reports get a
-            // resting crew row so their task detail action survives closure and restart.
+            // Only an open task's report: a closed task has left the crew, and its unread
+            // report is opened from its card in Actions.
             let mut reports = Vec::new();
             for (_, task, _) in self.svc.deps().data_dir.filed_artifacts() {
                 if let Ok(Some(row)) = self
@@ -290,6 +299,7 @@ impl ApiPart for ReportPart {
                     .db
                     .call(move |conn| tasks::load(conn, task))
                     .await
+                    && row.status != TaskStatus::Closed
                     && has_report(&row)
                     && report_page(&self.svc.paths_of(&row)).is_ok()
                 {
@@ -331,7 +341,7 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     #[test]
-    fn retained_reports_stay_in_the_task_pane_and_finished_answers_get_a_card() {
+    fn an_open_tasks_report_shows_in_its_task_pane_and_finished_answers_get_a_card() {
         let task = TaskId::new(42).unwrap();
         let mut snapshot = Snapshot::default();
         surface(&mut snapshot, task, "Research results");

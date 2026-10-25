@@ -89,6 +89,50 @@ impl Delivery {
             .join("report/report.html")
     }
 
+    fn artifacts(&self) -> PathBuf {
+        self.page()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf()
+    }
+
+    /// Its supervisor (the Quartermaster, agent 1) closes it with `close_task`.
+    async fn close(&self) {
+        let quartermaster = Caller {
+            agent: AgentId::new(1),
+            role: Role::Quartermaster,
+            task: None,
+            secondmate: None,
+            turn: None,
+            plan: None,
+        };
+        let closed = self
+            .host
+            .0
+            .close_task(&quartermaster, self.caller.task.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(closed.status, TaskStatus::Closed);
+    }
+
+    /// Gives the sweep a read report starts in the background time to run.
+    async fn settle_sweeps(&self) {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+
+    /// Waits (up to five seconds) for that sweep to take the page.
+    async fn wait_until_swept(&self) {
+        for _ in 0..250 {
+            if !self.page().exists() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("the report's page wasn't swept");
+    }
+
     fn write_page(&self) {
         fs::write(self.page(), "<!doctype html><html><head><title>Findings</title></head><body><h1>Result</h1><p>Checked locally.</p></body></html>").unwrap();
     }
@@ -333,39 +377,80 @@ async fn four_answer_kinds_refuse_missing_or_template_then_deliver_and_surface()
         assert_eq!(snapshot.tasks.len(), 1);
         assert_eq!(snapshot.crew.len(), 1);
         assert!(snapshot.tasks[0].running, "fill preserves live task detail");
-        // Retained artifact remains reachable through fill after the task leaves the live tree.
-        delivery
-            .fixture
-            .db()
-            .call(|conn| {
-                conn.execute(
-                    "UPDATE tasks SET status = 'closed', outcome = 'answered', closed_at = 2 WHERE id = 3",
-                    [],
-                )?;
-                Ok(())
-            })
-            .await
-            .unwrap();
-        assert!(delivery.fill().await.tasks[0].report_available);
-        // Its supervisor closing it leaves the card until you read it, with nowhere to go.
-        let actions = delivery.actions().await;
-        assert_report_card(&actions[0], kind, answer);
-        assert_eq!(actions[0].open, ActionOpen::Conversation);
+        // Dismissing it takes the card away; a newer report than the one you read brings it back.
         part.handle(&Command::DismissReport {
             task: delivery.caller.task.unwrap(),
         })
         .unwrap()
         .await;
         delivery.assert_no_card().await;
-        assert!(delivery.fill().await.tasks[0].report_available);
-        // A newer report than the one you read has its card again.
         delivery.report_again().await;
         assert_report_card(&delivery.actions().await[0], kind, answer);
-        fs::remove_file(delivery.page()).unwrap();
-        assert_eq!(delivery.fill().await.tasks, [] as [TaskDetail; 0]);
+        // The open task's report stays through the sweep its dismissal started.
+        delivery.settle_sweeps().await;
+        assert!(delivery.page().is_file());
+
+        // Its supervisor retires it: it leaves the crew and the task pane at once. The card stays
+        // until you read it, with nowhere to go, and so does the page it opens.
+        delivery.close().await;
+        let snapshot = delivery.fill().await;
+        assert_eq!(snapshot.tasks, [] as [TaskDetail; 0]);
+        assert_eq!(snapshot.crew, [] as [CrewRow; 0]);
+        let actions = delivery.actions().await;
+        assert_report_card(&actions[0], kind, answer);
+        assert_eq!(actions[0].open, ActionOpen::Conversation);
+        assert!(delivery.page().is_file(), "an unread report stays");
+        // Once you dismiss it, nothing needs its files: they go, and so does the card.
+        part.handle(&Command::DismissReport {
+            task: delivery.caller.task.unwrap(),
+        })
+        .unwrap()
+        .await;
+        delivery.wait_until_swept().await;
+        assert!(!delivery.artifacts().exists(), "its whole artifacts folder");
         assert!(part.page(delivery.caller.task.unwrap()).await.is_err());
         delivery.assert_no_card().await;
+        assert_eq!(delivery.fill().await.crew, [] as [CrewRow; 0]);
     }
+}
+
+#[tokio::test]
+async fn retiring_a_read_report_removes_its_crew_row_and_artifacts_at_once() {
+    let delivery = Delivery::new(TaskKind::Lookup).await;
+    delivery.write_page();
+    fs::create_dir_all(delivery.artifacts().join("evidence")).unwrap();
+    fs::write(delivery.artifacts().join("evidence/before.txt"), "seen").unwrap();
+    // A file the crewmate made outside the data folder, as a user might ask for.
+    let outside = std::env::temp_dir().join(format!("qm-outside-{}.txt", std::process::id()));
+    fs::write(&outside, "keep me").unwrap();
+    let accepted = delivery
+        .report(json!({"outcome": "done", "answer": "Found it."}))
+        .await;
+    assert!(!accepted.is_error, "{accepted:?}");
+    assert_eq!(delivery.fill().await.crew.len(), 1);
+    // You read it before its supervisor closes it.
+    ReportPart::new(delivery.host.0.clone())
+        .handle(&Command::DismissReport {
+            task: delivery.caller.task.unwrap(),
+        })
+        .unwrap()
+        .await;
+    delivery.close().await;
+    // The close's own sweep took everything; nothing waits for a later one.
+    assert!(!delivery.artifacts().exists());
+    assert!(
+        fs::read_dir(delivery.host.0.deps().data_dir.artifacts_dir())
+            .unwrap()
+            .next()
+            .is_none(),
+        "its task's folder goes too"
+    );
+    let snapshot = delivery.fill().await;
+    assert_eq!(snapshot.crew, [] as [CrewRow; 0]);
+    assert_eq!(snapshot.tasks, [] as [TaskDetail; 0]);
+    delivery.assert_no_card().await;
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "keep me");
+    fs::remove_file(outside).unwrap();
 }
 
 #[tokio::test]

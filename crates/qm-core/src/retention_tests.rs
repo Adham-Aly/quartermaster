@@ -70,7 +70,7 @@ fn a_plan_stays_until_its_build_has_its_copy_and_evidence_until_no_one_reads_it(
     // T-1 is a closed plan a build (T-5) hasn't copied yet; T-2 a closed plan T-6 has copied;
     // T-3 a closed task T-7 retries; T-4 closed and read by no one.
     let facts = Facts {
-        retained_tasks: (1..=7).map(id).collect(),
+        unread_reports: vec![],
         open: vec![
             open(5, TaskKind::Build, Some(1), None),
             open(6, TaskKind::Build, Some(2), None),
@@ -136,7 +136,7 @@ fn transcripts_keep_the_named_session_and_unnamed_ones_wait_an_hour_unless_at_st
     }
     touch(&seat.join("notes.txt"));
     let facts = Facts {
-        retained_tasks: vec![id(8)],
+        unread_reports: vec![],
         open: vec![open(8, TaskKind::Build, None, None)],
         sessions: vec![
             session(Owner::Seat, "current"),
@@ -217,7 +217,7 @@ fn an_older_layouts_scratch_plans_and_evidence_move_in_or_go() {
     touch(&data.scratch().join("scratchpad/T-0012/notes"));
     touch(&data.scratch().join("scratchpad/T-0011/notes"));
     let facts = Facts {
-        retained_tasks: vec![id(11)],
+        unread_reports: vec![],
         open: vec![open(11, TaskKind::Plan, None, None)],
         sessions: vec![],
     };
@@ -271,9 +271,9 @@ fn an_older_versions_artifacts_are_filed_under_their_task() {
     touch(&flat(15).join("report/report.html"));
     touch(&flat(16).join("report/report.html"));
     touch(&flat(17).join("plan/plan.md"));
-    // C-15 is open, C-16 closed but kept, C-17 forgotten.
+    // C-15 is open, C-16 closed with its report's card unread, C-17 forgotten.
     let facts = Facts {
-        retained_tasks: vec![id(15), id(16)],
+        unread_reports: vec![id(16)],
         open: vec![open(15, TaskKind::Plan, None, None)],
         sessions: vec![],
     };
@@ -295,16 +295,14 @@ fn an_older_versions_artifacts_are_filed_under_their_task() {
     );
     assert!(fs::symlink_metadata(flat(17)).is_err());
 
-    // Once C-15 closes, the links and everything but its report go.
+    // Once C-15 closes, the links and all its files go; C-16's unread report stays.
     let closed = Facts {
-        retained_tasks: vec![id(15), id(16)],
+        unread_reports: vec![id(16)],
         ..Facts::default()
     };
     apply(data, &closed, SystemTime::now(), When::Running);
     assert!(fs::symlink_metadata(flat(15).join("plan")).is_err());
-    assert!(!c15.plan.exists());
-    assert!(!c15.evidence.exists());
-    assert!(c15.artifacts.join("report/report.html").is_file());
+    assert!(!c15.artifacts.exists());
     assert!(c16.artifacts.join("report/report.html").is_file());
 }
 
@@ -321,7 +319,7 @@ fn a_crewmate_moved_to_another_task_keeps_links_at_its_old_folders_until_it_clos
     let mut moved = open(21, TaskKind::Plan, None, None);
     moved.folder_label = label(20);
     let facts = Facts {
-        retained_tasks: vec![id(21)],
+        unread_reports: vec![],
         open: vec![moved],
         sessions: vec![],
     };
@@ -357,7 +355,7 @@ fn plan_staging_and_temporaries_go_after_an_hour() {
     touch(&paths.plan.join(".plan.md.tmp-1-0"));
     touch(&paths.plan.join("plan.md"));
     let facts = Facts {
-        retained_tasks: vec![id(13)],
+        unread_reports: vec![],
         open: vec![open(13, TaskKind::Plan, None, None)],
         sessions: vec![],
     };
@@ -371,7 +369,7 @@ fn plan_staging_and_temporaries_go_after_an_hour() {
 }
 
 #[test]
-fn a_report_survives_a_closed_retained_task_but_goes_when_forgotten() {
+fn a_closed_tasks_report_stays_while_its_card_is_unread_then_goes_with_its_folder() {
     let home = Home::new("reports");
     let data = &home.data;
     let paths = data.task(id(14), id(14).own_label());
@@ -380,9 +378,9 @@ fn a_report_survives_a_closed_retained_task_but_goes_when_forgotten() {
     touch(&report.join("assets/chart.svg"));
     touch(&paths.plan.join("plan.md"));
     touch(&paths.evidence.join("run.log"));
-    // The task is closed (not in `open`), but its row is still retained.
+    // The task is closed (not in `open`), but you haven't opened or dismissed its report yet.
     let facts = Facts {
-        retained_tasks: vec![id(14)],
+        unread_reports: vec![id(14)],
         ..Facts::default()
     };
     for when in [When::Running, When::Startup] {
@@ -393,8 +391,92 @@ fn a_report_survives_a_closed_retained_task_but_goes_when_forgotten() {
         assert!(!paths.evidence.exists());
     }
 
-    // Forgetting removes the row: no old report may remain for a reused task ID.
+    // Once you have read it (or the task is forgotten), the report goes, and its folders with it.
     apply(data, &Facts::default(), SystemTime::now(), When::Running);
     assert!(!report.exists());
     assert!(!paths.artifacts.exists());
+    assert!(fs::symlink_metadata(data.artifacts_dir().join("T-0014")).is_err());
+}
+
+#[test]
+fn an_open_crewmates_report_stays_and_a_read_closed_ones_goes_at_once() {
+    let home = Home::new("read-reports");
+    let data = &home.data;
+    let open_report = data
+        .task(id(18), id(18).own_label())
+        .artifacts
+        .join("report");
+    let read_report = data
+        .task(id(19), id(19).own_label())
+        .artifacts
+        .join("report");
+    for report in [&open_report, &read_report] {
+        touch(&report.join("report.html"));
+        touch(&report.join("template.html"));
+    }
+    // C-18 is still open (reported, waiting on its supervisor); C-19 closed and read.
+    let facts = Facts {
+        open: vec![open(18, TaskKind::Research, None, None)],
+        ..Facts::default()
+    };
+    apply(data, &facts, SystemTime::now(), When::Running);
+    assert!(open_report.join("report.html").is_file());
+    assert!(!read_report.exists());
+    assert!(!data.task(id(19), id(19).own_label()).artifacts.exists());
+}
+
+/// A clock whose sleeps end only when the test says so.
+#[derive(Debug, Default)]
+struct GatedClock {
+    wake: Arc<tokio::sync::Notify>,
+}
+
+impl Clock for GatedClock {
+    fn now(&self) -> jiff::Timestamp {
+        jiff::Timestamp::UNIX_EPOCH
+    }
+    fn instant(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+    fn sleep_until(&self, _: std::time::Instant) -> qm_types::clock::Sleep {
+        let wake = Arc::clone(&self.wake);
+        Box::pin(async move { wake.notified().await })
+    }
+}
+
+#[tokio::test]
+async fn an_opened_closed_report_goes_after_the_browser_had_time_to_load_it() {
+    let home = Home::new("opened");
+    let data = home.data.clone();
+    let db = Db::open(&home.base.join("state.db")).unwrap();
+    // C-22 closed with its answer, and you have just opened its report.
+    db.call(|conn| {
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, delivery_mode,
+                 status, outcome, created_at, reported_at, report_read_at, closed_at, seq)
+             VALUES (22, 1, 1, 'lookup', 't', 'g', 'folder', 'closed', 'answered', 1, 2, 3, 3, 1);",
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let page = data
+        .task(id(22), id(22).own_label())
+        .artifacts
+        .join("report/report.html");
+    touch(&page);
+    let clock = Arc::new(GatedClock::default());
+    after_report_read(db, data.clone(), clock.clone(), true);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(page.is_file(), "kept while the browser loads it");
+    clock.wake.notify_one();
+    for _ in 0..250 {
+        if !page.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!page.exists());
+    assert!(fs::symlink_metadata(data.artifacts_dir().join("T-0022")).is_err());
 }
