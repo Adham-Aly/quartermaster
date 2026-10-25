@@ -42,7 +42,8 @@ pub struct StartCrewmateArgs {
     // The folder doesn't exist yet and the user asked for a new one: the app makes it first.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub create_folder: bool,
-    // An open task (T-n) the new crewmate joins. Leave it out: the crewmate gets a task of its own.
+    // An open task (T-n) the new crewmate joins. Leave it out: it joins the open task of the crewmate
+    // named in `builds_on` or `stronger_retry_of`, else gets a task of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join_task: Option<TaskLabelId>,
     pub kind: TaskKind,
@@ -130,7 +131,8 @@ pub struct SecondmateStartCrewmateArgs {
     // The folder doesn't exist yet and the user asked for a new one: the app makes it first.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub create_folder: bool,
-    // An open task (T-n) the new crewmate joins. Leave it out: the crewmate gets a task of its own.
+    // An open task (T-n) the new crewmate joins. Leave it out: it joins the open task of the crewmate
+    // named in `builds_on` or `stronger_retry_of`, else gets a task of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join_task: Option<TaskLabelId>,
     // The routed request this task serves, whose stored fields the app applies.

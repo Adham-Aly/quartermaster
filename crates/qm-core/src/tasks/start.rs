@@ -1051,13 +1051,17 @@ pub(crate) async fn start_when_ready(
             {
                 validated.user_words_message = None;
             }
-            if let Some(label) = req.label
-                && let Some(why) = join_refusal(&tx, &caller, label, "join_task")?
-            {
-                return Ok((Recorded::Refused(why), notify));
-            }
+            let label = match req.label {
+                Some(label) => {
+                    if let Some(why) = join_refusal(&tx, &caller, label, "join_task")? {
+                        return Ok((Recorded::Refused(why), notify));
+                    }
+                    Some(label)
+                }
+                None => follow_up_label(&tx, &caller, req.builds_on.or(req.stronger_retry_of))?,
+            };
             let new = NewTask {
-                label: req.label,
+                label,
                 branch: branch.clone(),
                 project: project.id,
                 supervisor: caller.agent,
@@ -1594,6 +1598,26 @@ pub(crate) fn join_refusal(
         }
     }
     Ok(None)
+}
+
+/// The task a follow-up joins when its start names none: the task of the crewmate it builds on or
+/// retries, so work on one thing stays in one task. `None` (a task of its own) when there's no
+/// such crewmate, or `caller` couldn't join its task because it's finished or not theirs.
+fn follow_up_label(
+    conn: &Connection,
+    caller: &Caller,
+    source: Option<TaskId>,
+) -> Result<Option<TaskLabelId>, StoreError> {
+    let Some(source) = source else {
+        return Ok(None);
+    };
+    let Some(label) = task_store::label(conn, source)? else {
+        return Ok(None);
+    };
+    // A default never refuses a start: anything that would is a task of its own instead.
+    let joinable = qm_store::task_labels::exists(conn, label)?
+        && join_refusal(conn, caller, label, "join_task")?.is_none();
+    Ok(joinable.then_some(label))
 }
 
 /// Gathers the crewmate's instruction files and skills (idempotent).
