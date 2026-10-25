@@ -72,10 +72,15 @@ pub const KEPT: &[Kept] = &[
         table: "projects",
         predicate: "1",
     },
+    // A crewmate is kept only with its task: its row must name one (a CHECK), so a crewmate whose
+    // task leaves can't have that reference nulled. Whatever else would keep it (a wake it never
+    // took, say) goes with it.
     Kept {
         table: "agents",
         predicate: concat!(
-            "retired_at IS NULL \
+            "(role <> 'crewmate' OR task_id IN (SELECT id FROM tasks WHERE ",
+            retained_task!(),
+            ")) AND (retired_at IS NULL \
                     OR task_id IN (SELECT id FROM tasks WHERE ",
             retained_task!(),
             ") \
@@ -91,7 +96,7 @@ pub const KEPT: &[Kept] = &[
                     OR id IN (SELECT agent_id FROM routing_decisions \
                               WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed')) \
                     OR id IN (SELECT agent_id FROM jobs \
-                              WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed'))"
+                              WHERE task_id IN (SELECT id FROM tasks WHERE status <> 'closed')))"
         ),
     },
     // User authority outlives chat clearing and engine-owned chat, but not its owner.
@@ -173,10 +178,12 @@ pub const KEPT: &[Kept] = &[
                     OR observe_state = 'observing' \
                     OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed')",
     },
+    // A wake goes with the agent it wakes (after `agents`, which it reads).
     Kept {
         table: "wakes",
-        predicate: "consumed_at IS NULL \
-                    OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed')",
+        predicate: "target_agent_id IN (SELECT id FROM agents) \
+                    AND (consumed_at IS NULL \
+                         OR task_id IN (SELECT id FROM tasks WHERE status <> 'closed'))",
     },
     // Terminal rows remain queryable too; a cancelled/started schedule can never replay.
     Kept {
