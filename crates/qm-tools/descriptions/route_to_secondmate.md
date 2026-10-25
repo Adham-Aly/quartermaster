@@ -5,4 +5,4 @@ Send work into a secondmate's scope. App copies user words, stamps a correlation
 - preference: {selection: ModelId REQUIRED, provider?: Provider, model?: ModelId, effort?: Effort}. Choose strongest actual routed-tier entry meeting ALL user constraints; optional fields constrain. Never invent combinations. App checks eligibility/effort; no match -> ordinary routing with note, never tier escape. Authority-free on later/event turns; cannot contradict overrides. Citation optional; any source is validated against its original owner.
 - base_branch, later_steps: only when the user's own message this turn asked; refused on app-event turns. later_steps names model/effort/premium for later kinds.
 Premium covers every crewmate this request starts. Set premium, not its model name; for only some steps, put premium: true in later_steps for those kinds.
-Choices and preference pass through correlation to immediate or deferred starts; do not reassert delegated choices. Named model busy: queue, never substitute.
+Choices and preference pass through correlation to immediate or deferred starts; do not reassert delegated choices.
