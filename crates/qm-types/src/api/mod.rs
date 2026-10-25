@@ -112,8 +112,8 @@ pub enum Command {
     OpenReport {
         task: TaskId,
     },
-    /// Take a finished report's card out of Actions without opening it. The task pane still
-    /// opens the report.
+    /// Take a finished report's card out of Actions without opening it. While its task is open,
+    /// the task pane still opens the report; once it is closed, the report goes.
     DismissReport {
         task: TaskId,
     },

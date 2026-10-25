@@ -730,7 +730,7 @@ fn report_item() -> ActionItem {
             2,
             vec![s(
                 "The lookup is done. Open its report in your browser; once you open or dismiss \
-                 it, it leaves Actions. The task pane still opens it.",
+                 it, it leaves Actions.",
                 Tone::Dim,
             )],
         ),

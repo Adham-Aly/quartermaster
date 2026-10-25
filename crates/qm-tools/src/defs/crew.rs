@@ -297,8 +297,8 @@ pub struct MessageTaskArgs {
 }
 
 tool! {
-    /// Stops a direct report's work and retires it: its worktree and branch are removed. A
-    /// plain-folder task's edits stay where they are.
+    /// Stops a direct report's work and retires it, as `close_task` does: it leaves the crew and
+    /// its worktree and branch are removed. A plain-folder task's edits stay where they are.
     StopTaskTool {
         name: "stop_task",
         class: Act,
@@ -412,8 +412,9 @@ pub struct TaskChanged {
 }
 
 tool! {
-    /// Closes a direct report's task and retires its worktree and branch. A plain-folder task
-    /// keeps its files where they are.
+    /// Closes a direct report's task and retires it: it leaves the crew, its worktree and branch
+    /// are removed, and the app's own files for it go once nothing needs them. A plain-folder
+    /// task keeps its files where they are.
     CloseTaskTool {
         name: "close_task",
         class: Act,
