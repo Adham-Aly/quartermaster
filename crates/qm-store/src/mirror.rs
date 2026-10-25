@@ -770,6 +770,67 @@ mod tests {
         assert_eq!(count(&mem, "secondmates"), 0);
     }
 
+    /// A crewmate retired with its closed task, and steers sent to it that it never took.
+    const STEERED_CREWMATE: &str =
+        "INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode, \
+             merge_method, created_at, seq) \
+             VALUES (1, 'p', '/p', 'created', 'main', 'direct_pr', 'merge', 1, 1);
+         INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, delivery_mode, \
+             branch, status, outcome, created_at, closed_at, seq) \
+             VALUES (5, 1, 1, 'build', 't', 'g', 'direct_pr', 'qm/task-5', 'closed', 'landed', \
+                     1, 2, 5);
+         INSERT INTO agents (id, role, supervisor_id, task_id, home, status, created_at, \
+             retired_at, seq) \
+             VALUES (6, 'crewmate', 1, 5, '/c', 'retired', 1, 2, 6);
+         INSERT INTO wakes (id, target_agent_id, kind, payload, dedupe_key, task_id, \
+             created_at, seq) \
+             VALUES (7, 6, 'steer', '{}', 'a', 5, 1, 7), (8, 6, 'blocked_by', '{}', 'b', 5, 1, 8);";
+
+    /// After a load that dropped the steered crewmate: only the quartermaster is left, nothing
+    /// dangles, and a second start opens too.
+    fn assert_steered_crewmate_dropped(scratch: &Scratch) {
+        let (mem, mirror) = Mirror::open(&scratch.state()).expect("an existing install opens");
+        assert_eq!(count(&mem, "agents"), 1, "the crewmate goes with its task");
+        assert_eq!(count(&mem, "tasks"), 0);
+        assert_eq!(count(&mem, "wakes"), 0, "wakes go with the agent they wake");
+        assert_eq!(count(&mem, "pragma_foreign_key_check"), 0);
+        drop((mem, mirror));
+        Mirror::open(&scratch.state()).expect("a second start");
+    }
+
+    #[test]
+    fn a_crewmate_whose_task_is_gone_leaves_with_its_wakes() {
+        // Through the running store: the task closes and its facts are read, but steers the
+        // crewmate never took still name it.
+        let scratch = Scratch::new("steered-crewmate");
+        {
+            let (mem, mut mirror) = Mirror::open(&scratch.state()).expect("a new mirror");
+            quartermaster(&mem);
+            mem.execute_batch(STEERED_CREWMATE).expect("rows");
+            mirror.flush(&mem).expect("a flush");
+        }
+        assert_steered_crewmate_dropped(&scratch);
+    }
+
+    #[test]
+    fn an_existing_install_whose_crewmate_outlived_its_task_opens() {
+        // `state.db` as earlier versions left it: they kept the crewmate for its unconsumed
+        // wakes but dropped its closed task, with or without the task's row still in the file.
+        for task_in_file in [true, false] {
+            let scratch = Scratch::new(&format!("outlived-task-{task_in_file}"));
+            {
+                let mut old = connection::open_disk(&scratch.state()).expect("the old file");
+                schema::migrate_mirror(&mut old).expect("the schema");
+                quartermaster(&old);
+                old.execute_batch(STEERED_CREWMATE).expect("rows");
+                if !task_in_file {
+                    old.execute("DELETE FROM tasks", []).expect("the task left");
+                }
+            }
+            assert_steered_crewmate_dropped(&scratch);
+        }
+    }
+
     #[test]
     fn a_busy_checkpoint_keeps_the_erasure_pending_until_one_completes() {
         let scratch = Scratch::new("busy-checkpoint");
