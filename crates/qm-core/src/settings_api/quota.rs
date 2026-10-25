@@ -3,11 +3,13 @@
 //! `crate::quota_pools`) for quota-aware routing. The new pools are worked out on the database
 //! thread from the reading stored there, so a balance keeps its last top-up between checks.
 //! An account with no quota check (Claude, keys without a quota API, a Sign in with ChatGPT
-//! login) gets a neutral note instead, and makes no request.
-use super::{Inner, accounts};
+//! login) gets a neutral note instead, and makes no request. A check whose answer had nothing
+//! metered in it gets a note too, and clears the account's stored pools. A rate-limited check
+//! waits for the provider's `Retry-After` (else ten minutes) before asking again.
+use super::{AccountRow, Inner, accounts};
 use qm_auth::{
     CredentialRef,
-    quota::{NoQuotaCheck, QuotaError, Quotas},
+    quota::{NoQuotaCheck, QuotaError, QuotaSummary, Quotas},
 };
 use std::{
     sync::Arc,
@@ -16,6 +18,11 @@ use std::{
 
 const PERIOD: Duration = Duration::from_secs(300);
 const OPEN_COOLDOWN: Duration = Duration::from_secs(30);
+/// How long a rate-limited check waits when the provider doesn't say.
+const RATE_LIMIT_WAIT: Duration = Duration::from_secs(600);
+/// The bounds on a provider's `Retry-After`.
+const RETRY_AFTER_BOUNDS: (Duration, Duration) =
+    (Duration::from_secs(60), Duration::from_secs(3_600));
 
 #[derive(Default)]
 pub(super) struct CachedQuota {
@@ -26,6 +33,8 @@ pub(super) struct CachedQuota {
     pub refreshing: bool,
     pub checked_at: Option<String>,
     attempted: Option<Instant>,
+    /// After a rate limit: no check before this, even when Settings opens.
+    not_before: Option<Instant>,
     /// Distinguishes reconnect generations even when the account and credential key stay the same.
     generation: Arc<()>,
 }
@@ -101,7 +110,10 @@ async fn refresh_with(inner: &Arc<Inner>, opened: bool, quotas: Option<Arc<Quota
                 cached.no_check(why);
                 continue;
             }
-            if cached.refreshing || !due(cached.attempted, now, interval) {
+            if cached.refreshing
+                || !due(cached.attempted, now, interval)
+                || cached.not_before.is_some_and(|at| now < at)
+            {
                 continue;
             }
             cached.refreshing = true;
@@ -121,61 +133,82 @@ async fn refresh_with(inner: &Arc<Inner>, opened: bool, quotas: Option<Arc<Quota
     for (account, generation) in requests {
         let inner = Arc::clone(inner);
         let quotas = Arc::clone(&quotas);
-        tokio::spawn(async move {
-            let result = match account
-                .credential_ref
-                .as_deref()
-                .and_then(|key| CredentialRef::new(key).ok())
-            {
-                Some(key) => {
-                    quotas
-                        .fetch(account.provider, &key, account.base_url.as_deref())
-                        .await
+        tokio::spawn(async move { check(&inner, &quotas, &account, &generation).await });
+    }
+}
+
+/// Runs one account's check and records what it found.
+async fn check(inner: &Arc<Inner>, quotas: &Quotas, account: &AccountRow, generation: &Arc<()>) {
+    let result = match account
+        .credential_ref
+        .as_deref()
+        .and_then(|key| CredentialRef::new(key).ok())
+    {
+        Some(key) => {
+            quotas
+                .fetch(account.provider, &key, account.base_url.as_deref())
+                .await
+        }
+        None => Err(QuotaError::NoCheck(NoQuotaCheck::NoSource)),
+    };
+    let mut pools = None;
+    {
+        let mut state = inner.lock();
+        // A disconnected account's in-flight request must not recreate its cache.
+        if let Some(cached) = state.quotas.get_mut(&account.id)
+            && Arc::ptr_eq(&cached.generation, generation)
+        {
+            cached.refreshing = false;
+            cached.not_before = None;
+            match result {
+                Ok(summary) => {
+                    cached.lines = summary.buckets.iter().map(ToString::to_string).collect();
+                    cached.problem = None;
+                    cached.note = None;
+                    cached.checked_at = Some(inner.clock.now().to_string());
+                    pools = Some(summary);
                 }
-                None => Err(QuotaError::NoCheck(NoQuotaCheck::NoSource)),
-            };
-            let mut pools = None;
-            {
-                let mut state = inner.lock();
-                // A disconnected account's in-flight request must not recreate its cache.
-                if let Some(cached) = state.quotas.get_mut(&account.id)
-                    && Arc::ptr_eq(&cached.generation, &generation)
-                {
-                    cached.refreshing = false;
-                    match result {
-                        Ok(summary) => {
-                            cached.lines =
-                                summary.buckets.iter().map(ToString::to_string).collect();
-                            cached.problem = None;
-                            cached.note = None;
-                            cached.checked_at = Some(inner.clock.now().to_string());
-                            pools = Some(summary);
-                        }
-                        Err(QuotaError::NoCheck(why)) => cached.no_check(why),
-                        Err(error) => cached.problem = Some(error.to_string()),
+                Err(QuotaError::NoCheck(why)) => {
+                    cached.no_check(why);
+                    // Nothing metered: an earlier reading's pools no longer hold.
+                    if why == NoQuotaCheck::NoReading {
+                        pools = Some(QuotaSummary::new(Vec::new()));
                     }
                 }
-            }
-            if let Some(summary) = pools {
-                let (id, at) = (account.id, inner.clock.now());
-                if let Err(e) = inner
-                    .db
-                    .call(move |conn| {
-                        let before = accounts::load_account(conn, id)?.and_then(|a| a.quota);
-                        let stored = crate::quota_pools::from_summary(&summary, before.as_deref());
-                        match serde_json::to_string(&stored) {
-                            Ok(json) => accounts::record_quota(conn, id, &json, at),
-                            Err(_) => Ok(()),
-                        }
-                    })
-                    .await
-                {
-                    tracing::warn!(error = %e, "couldn't store the account's quota reading");
+                Err(error) => {
+                    if let QuotaError::RateLimited { retry_after } = error {
+                        cached.not_before =
+                            Some(inner.clock.instant() + rate_limit_wait(retry_after));
+                    }
+                    cached.problem = Some(error.to_string());
                 }
             }
-            inner.changed();
-        });
+        }
     }
+    if let Some(summary) = pools {
+        let (id, at) = (account.id, inner.clock.now());
+        if let Err(e) = inner
+            .db
+            .call(move |conn| {
+                let before = accounts::load_account(conn, id)?.and_then(|a| a.quota);
+                let stored = crate::quota_pools::from_summary(&summary, before.as_deref());
+                match serde_json::to_string(&stored) {
+                    Ok(json) => accounts::record_quota(conn, id, &json, at),
+                    Err(_) => Ok(()),
+                }
+            })
+            .await
+        {
+            tracing::warn!(error = %e, "couldn't store the account's quota reading");
+        }
+    }
+    inner.changed();
+}
+
+/// How long to wait after a rate limit: the provider's `Retry-After`, kept within bounds.
+fn rate_limit_wait(retry_after: Option<Duration>) -> Duration {
+    let (low, high) = RETRY_AFTER_BOUNDS;
+    retry_after.map_or(RATE_LIMIT_WAIT, |d| d.clamp(low, high))
 }
 
 fn due(attempted: Option<Instant>, now: Instant, interval: Duration) -> bool {
@@ -769,10 +802,16 @@ mod tests {
         assert_eq!(failed.quota_checked_at, old.quota_checked_at);
         assert_eq!(
             failed.quota_problem,
-            Some(QuotaError::RateLimited.to_string())
+            Some(QuotaError::RateLimited { retry_after: None }.to_string())
         );
         assert!(!failed.quota_refreshing);
+        // A rate limit holds off even the open cooldown's check until its wait is over.
         f.clock.advance(OPEN_COOLDOWN);
+        f.command(Command::RefreshQuotas).await;
+        assert!(!f.fill().await.accounts[0].quota_refreshing);
+        assert_eq!(f.count.load(Ordering::SeqCst), 2);
+        f.clock
+            .advance(RATE_LIMIT_WAIT.saturating_sub(OPEN_COOLDOWN));
         f.command(Command::RefreshQuotas).await;
         f.success().await;
         let recovered = f.fill().await.accounts.remove(0);
@@ -846,6 +885,104 @@ mod tests {
             f.fill().await.accounts[0].quota_lines,
             ["Key budget: $9.00 remaining"]
         );
+    }
+
+    #[test]
+    fn a_rate_limit_waits_for_retry_after_within_bounds() {
+        assert_eq!(rate_limit_wait(None), RATE_LIMIT_WAIT);
+        assert_eq!(
+            rate_limit_wait(Some(Duration::from_secs(120))),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            rate_limit_wait(Some(Duration::ZERO)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            rate_limit_wait(Some(Duration::from_hours(24))),
+            Duration::from_secs(3_600)
+        );
+    }
+
+    /// A subscription login, for the providers whose check takes one.
+    fn login() -> Credential {
+        Credential::OAuth {
+            access_token: Secret::new("synthetic-access"),
+            refresh_token: Some(Secret::new("synthetic-github")),
+            expires_at: None,
+            account_id: None,
+            client_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_kimi_code_login_shows_its_windows_and_feeds_routing() {
+        let mut f = Fixture::with(Provider::Kimi, None).await;
+        *f.store.0.lock().unwrap() = Some(login());
+        f.fill().await;
+        f.reply(
+            r#"{"usages":{"limit_5h":{"used_ratio":0.625,"reset_time":"2026-10-23T03:00:00Z"},"limit_7d":{"used_ratio":0.125,"reset_time":"2026-10-27T00:00:00Z"}}}"#,
+        )
+        .await;
+        let account = f.fill().await.accounts.remove(0);
+        assert_eq!(
+            account.quota_lines,
+            [
+                "5-hour: 38% remaining; resets 2026-10-23T03:00:00Z",
+                "7-day: 88% remaining; resets 2026-10-27T00:00:00Z",
+            ]
+        );
+        assert_eq!(account.quota_note, None);
+        assert_eq!(account.quota_problem, None);
+        assert!(
+            account
+                .routing
+                .as_deref()
+                .is_some_and(|line| line.starts_with("7-day window 12% used")),
+            "{:?}",
+            account.routing
+        );
+    }
+
+    #[tokio::test]
+    async fn copilots_placeholder_never_cuts_the_account_off_and_no_reading_clears_pools() {
+        let mut f = Fixture::with(Provider::Copilot, None).await;
+        *f.store.0.lock().unwrap() = Some(login());
+        let routing = |view: &SettingsView| view.accounts[0].routing.clone().unwrap();
+        f.fill().await;
+        f.reply(
+            r#"{"quota_reset_date":"2030-01-01","quota_snapshots":{"chat":{"entitlement":0,"remaining":0,"percent_remaining":0},"premium_interactions":{"entitlement":300,"remaining":67,"percent_remaining":22.3}}}"#,
+        )
+        .await;
+        let view = f.fill().await;
+        assert_eq!(
+            view.accounts[0].quota_lines,
+            ["Premium requests: 22% remaining; resets 2030-01-01"]
+        );
+        assert_eq!(routing(&view), "monthly premium requests 78% used");
+        // Nothing metered at all: a note, and the old pools go.
+        f.clock.advance(OPEN_COOLDOWN);
+        f.command(Command::RefreshQuotas).await;
+        f.reply(
+            r#"{"quota_snapshots":{"chat":{"entitlement":0,"remaining":0,"percent_remaining":0}}}"#,
+        )
+        .await;
+        let account = f.fill().await.accounts.remove(0);
+        assert_eq!(
+            account.quota_note.as_deref(),
+            Some("none reported for this login")
+        );
+        assert_eq!(account.quota_problem, None);
+        assert_eq!(account.quota_lines, [] as [String; 0]);
+        let stored = f
+            .part
+            .inner
+            .db
+            .call(|c| Ok(accounts::list_active(c)?.remove(0).quota))
+            .await
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some(r#"{"pools":[]}"#));
+        assert!(account.routing.unwrap().starts_with("quota unknown"));
     }
 
     #[test]

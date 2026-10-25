@@ -72,13 +72,32 @@ type ResponseGate = (
 
 async fn gated_server(
     replies: Vec<(u16, String)>,
+    gate: Option<ResponseGate>,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    let replies = replies
+        .into_iter()
+        .map(|(status, body)| {
+            (
+                status,
+                body.into_bytes(),
+                "Content-Type: application/json\r\n".to_owned(),
+            )
+        })
+        .collect();
+    raw_server(replies, gate).await
+}
+
+/// Answers each request in turn with a status, a body and extra header lines (each ending in
+/// `\r\n`), and returns the requests as lowercase text.
+async fn raw_server(
+    replies: Vec<(u16, Vec<u8>, String)>,
     mut gate: Option<ResponseGate>,
 ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/quota", listener.local_addr().unwrap());
     let task = tokio::spawn(async move {
         let mut requests = Vec::new();
-        for (status, body) in replies {
+        for (status, body, headers) in replies {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = Vec::new();
             loop {
@@ -92,16 +111,17 @@ async fn gated_server(
                     break;
                 }
             }
-            requests.push(String::from_utf8(request).unwrap().to_lowercase());
+            requests.push(String::from_utf8_lossy(&request).to_lowercase());
             if let Some((started, release)) = gate.take() {
                 started.send(()).unwrap();
                 release.await.unwrap();
             }
             let reply = format!(
-                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status} Test\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             socket.write_all(reply.as_bytes()).await.unwrap();
+            socket.write_all(&body).await.unwrap();
         }
         requests
     });
@@ -116,7 +136,11 @@ const CHATGPT: &str = r#"{"rate_limit":{"primary_window":{"used_percent":25,"res
 
 #[test]
 fn chatgpt_windows_are_safe_and_numeric() {
-    let summary = parse_chatgpt(&serde_json::from_str(CHATGPT).unwrap()).unwrap();
+    let summary = parse_chatgpt(
+        &serde_json::from_str(CHATGPT).unwrap(),
+        Timestamp::UNIX_EPOCH,
+    )
+    .unwrap();
     assert_eq!(summary.buckets.len(), 2);
     assert_eq!(summary.buckets[0].remaining_percent, Some(75.0));
     assert_eq!(summary.buckets[0].window_seconds, Some(18000));
@@ -140,7 +164,9 @@ fn copilot_handles_unlimited_and_missing_fields() {
             "premium_interactions": {"remaining": 42, "entitlement": 100, "percent_remaining": 42.0},
             "untrusted": {"remaining": 999}
         }
-    })).unwrap();
+    }))
+    .unwrap()
+    .unwrap();
     assert_eq!(summary.buckets.len(), 2);
     assert!(summary.buckets[0].unlimited);
     assert_eq!(summary.buckets[0].remaining_percent, None);
@@ -150,6 +176,7 @@ fn copilot_handles_unlimited_and_missing_fields() {
     let date_only = parse_copilot(
         &json!({"quota_reset_date": "2030-01-01", "quota_snapshots": {"chat": {"remaining": 0}}}),
     )
+    .unwrap()
     .unwrap();
     assert!(date_only.buckets[0].resets_at.is_none());
     assert_eq!(
@@ -224,7 +251,10 @@ fn rejects_missing_malformed_and_out_of_range_quota() {
         json!({"rate_limit": {"primary_window": {"used_percent": -1}}}),
         json!({"rate_limit": {"primary_window": {"used_percent": "test-access"}}}),
     ] {
-        assert_eq!(parse_chatgpt(&value), Err(QuotaError::InvalidResponse));
+        assert_eq!(
+            parse_chatgpt(&value, Timestamp::UNIX_EPOCH),
+            Err(QuotaError::InvalidResponse)
+        );
     }
     assert_eq!(
         parse_copilot(
@@ -243,8 +273,6 @@ async fn accounts_without_a_quota_check_never_read_credentials() {
         Err(QuotaError::NoCheck(NoQuotaCheck::Claude))
     );
     for provider in [
-        Provider::Xai,
-        Provider::Kimi,
         Provider::Gemini,
         Provider::Anthropic,
         Provider::OpenAi,
@@ -285,6 +313,7 @@ fn no_quota_check_reads_as_a_neutral_note() {
             "not offered for Sign in with ChatGPT",
         ),
         (NoQuotaCheck::NoSource, "not offered by this provider"),
+        (NoQuotaCheck::NoReading, "none reported for this login"),
     ] {
         assert_eq!(why.to_string(), text);
         assert_eq!(QuotaError::NoCheck(why).to_string(), text);
@@ -324,7 +353,11 @@ async fn no_check_for_matches_fetch() {
         for base in bases {
             let checked = matches!(
                 provider,
-                Provider::ChatGpt | Provider::Copilot | Provider::OpenRouter
+                Provider::ChatGpt
+                    | Provider::Copilot
+                    | Provider::OpenRouter
+                    | Provider::Xai
+                    | Provider::Kimi
             ) || (provider == Provider::Custom
                 && base.is_some_and(|b| balance_hosts.contains(&b)));
             assert_eq!(
@@ -610,7 +643,7 @@ async fn errors_are_fixed_and_do_not_echo_bodies_or_poison_login_health() {
     for (status, expected) in [
         (401, QuotaError::Refused),
         (403, QuotaError::Refused),
-        (429, QuotaError::RateLimited),
+        (429, QuotaError::RateLimited { retry_after: None }),
         (500, QuotaError::Unavailable),
         (302, QuotaError::Unavailable),
         (200, QuotaError::InvalidResponse),
@@ -796,7 +829,7 @@ async fn refuses_redirects_even_to_same_origin() {
         socket.write_all(b"HTTP/1.1 302 Found\r\nLocation: /redirected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
         drop(socket);
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
                 .await
                 .is_err()
         );
@@ -902,4 +935,287 @@ async fn disconnect_waits_for_quota_refresh_and_queued_refresh_cannot_restore_se
     quota_task.await.unwrap();
     assert!(store.get(&key).unwrap().is_none());
     assert_eq!(store.writes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn chatgpt_falls_back_to_percent_left_and_reset_after_and_skips_empty_slots() {
+    let now: Timestamp = "2026-10-24T00:00:00Z".parse().unwrap();
+    let summary = parse_chatgpt(
+        &json!({"rate_limit": {
+            // A Pro plan: its weekly window comes as primary.
+            "primary_window": {"percent_remaining": 60, "reset_after_seconds": 3600,
+                               "limit_window_seconds": 604_800},
+            "secondary_window": {"reset_after_seconds": 60}
+        }}),
+        now,
+    )
+    .unwrap();
+    assert_eq!(summary.buckets.len(), 1);
+    let weekly = &summary.buckets[0];
+    assert_eq!(weekly.remaining_percent, Some(60.0));
+    assert_eq!(
+        weekly.resets_at,
+        Some(now + jiff::SignedDuration::from_hours(1))
+    );
+    assert_eq!(weekly.to_string().split(':').next(), Some("7-day"));
+    assert_eq!(
+        parse_chatgpt(
+            &json!({"rate_limit": {"primary_window": {"percent_remaining": 140}}}),
+            now
+        ),
+        Err(QuotaError::InvalidResponse)
+    );
+}
+
+#[test]
+fn copilot_leaves_out_the_zero_entitlement_placeholder() {
+    let summary = parse_copilot(&json!({
+        "quota_reset_date": "2030-01-01",
+        "quota_snapshots": {
+            "chat": {"entitlement": 0, "remaining": 0, "percent_remaining": 0, "unlimited": false},
+            "premium_interactions": {"entitlement": 300, "remaining": 67, "percent_remaining": 22.3}
+        }
+    }))
+    .unwrap()
+    .unwrap();
+    assert_eq!(summary.buckets.len(), 1);
+    assert_eq!(summary.buckets[0].kind, QuotaKind::PremiumRequests);
+    // Nothing metered at all is no reading, not a used-up allowance or a broken answer.
+    assert_eq!(
+        parse_copilot(&json!({"quota_snapshots": {
+            "chat": {"entitlement": 0, "remaining": 0, "percent_remaining": 0}
+        }})),
+        Ok(None)
+    );
+    assert_eq!(
+        parse_copilot(&json!({"chat": {}})),
+        Err(QuotaError::InvalidResponse)
+    );
+}
+
+#[tokio::test]
+async fn copilot_with_nothing_metered_is_no_reading() {
+    let (url, task) = server(vec![(
+        200,
+        r#"{"quota_snapshots":{"chat":{"entitlement":0,"remaining":0,"percent_remaining":0}}}"#
+            .into(),
+    )])
+    .await;
+    let (_, keeper) = setup(Some(oauth()), LoginEndpoints::default());
+    let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
+    assert_eq!(
+        quotas.fetch(Provider::Copilot, &key(), None).await,
+        Err(QuotaError::NoCheck(NoQuotaCheck::NoReading))
+    );
+    task.await.unwrap();
+}
+
+const KIMI: &str = r#"{"usages":{"limit_5h":{"used_ratio":0.625,"reset_time":"2030-01-01T00:00:00Z"},"limit_7d":{"used_ratio":0.125},"limit_month_total":{"used_ratio":0.5}},"user":{"membership":{"level":"must-not-escape"}}}"#;
+
+#[tokio::test]
+async fn kimi_reads_its_windows_with_the_subscription_token() {
+    let (url, task) = server(vec![(200, KIMI.into())]).await;
+    let (_, keeper) = setup(Some(oauth()), LoginEndpoints::default());
+    let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
+    let summary = quotas.fetch(Provider::Kimi, &key(), None).await.unwrap();
+    let lines: Vec<String> = summary.buckets.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        lines,
+        [
+            "5-hour: 38% remaining; resets 2030-01-01T00:00:00Z",
+            "7-day: 88% remaining",
+            "Monthly: 50% remaining",
+        ]
+    );
+    let requests = task.await.unwrap();
+    assert!(requests[0].starts_with("get /quota "));
+    assert!(requests[0].contains("authorization: bearer test-access"));
+    assert!(requests[0].contains("accept: application/json"));
+    assert!(!requests[0].contains("test-github-or-refresh"));
+}
+
+#[tokio::test]
+async fn kimi_and_grok_refresh_once_after_a_401() {
+    let renewed = json!({"access_token": "test-renewed", "refresh_token": "test-rotated",
+                         "expires_in": 3600})
+    .to_string();
+    for provider in [Provider::Kimi, Provider::Xai] {
+        let good = if provider == Provider::Kimi {
+            KIMI.as_bytes().to_vec()
+        } else {
+            grok::LIVE_MESSAGE.to_vec()
+        };
+        let (url, task) = raw_server(
+            vec![
+                (401, b"{}".to_vec(), String::new()),
+                (200, good, String::new()),
+            ],
+            None,
+        )
+        .await;
+        let (token_url, refresh_task) = server(vec![(200, renewed.clone())]).await;
+        let mut login = LoginEndpoints::default();
+        login.kimi.token_url.clone_from(&token_url);
+        login.xai.token_url = token_url;
+        let (store, keeper) = setup(Some(oauth()), login);
+        let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
+        assert!(
+            quotas.fetch(provider, &key(), None).await.is_ok(),
+            "{provider}"
+        );
+        let requests = task.await.unwrap();
+        assert!(requests[0].contains("authorization: bearer test-access"));
+        assert!(requests[1].contains("authorization: bearer test-renewed"));
+        assert_eq!(store.writes.load(Ordering::SeqCst), 1);
+        refresh_task.await.unwrap();
+    }
+}
+
+/// A gRPC-web answer: the data frame, then a trailer frame with this status.
+fn grpc_web(message: &[u8], status: u8) -> Vec<u8> {
+    let mut body = vec![0];
+    body.extend_from_slice(&u32::try_from(message.len()).unwrap().to_be_bytes());
+    body.extend_from_slice(message);
+    let trailer = format!("grpc-status: {status}\r\ngrpc-message: test-access\r\n");
+    body.push(0x80);
+    body.extend_from_slice(&u32::try_from(trailer.len()).unwrap().to_be_bytes());
+    body.extend_from_slice(trailer.as_bytes());
+    body
+}
+
+const GRPC_HEADERS: &str = "Content-Type: application/grpc-web+proto\r\n";
+
+#[tokio::test]
+async fn grok_reads_the_credits_meter_over_grpc_web() {
+    let (url, task) = raw_server(
+        vec![(200, grpc_web(&grok::LIVE_MESSAGE, 0), GRPC_HEADERS.into())],
+        None,
+    )
+    .await;
+    let (_, keeper) = setup(Some(oauth()), LoginEndpoints::default());
+    let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
+    let summary = quotas.fetch(Provider::Xai, &key(), None).await.unwrap();
+    let lines: Vec<String> = summary.buckets.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        lines,
+        [
+            "Credits: 75% remaining; resets 2026-09-07T19:59:29Z",
+            "Grok Build: 75% remaining; resets 2026-09-07T19:59:29Z",
+        ]
+    );
+    let requests = task.await.unwrap();
+    let request = &requests[0];
+    assert!(request.starts_with("post /quota "));
+    assert!(request.contains("authorization: bearer test-access"));
+    assert!(request.contains("content-type: application/grpc-web+proto"));
+    assert!(request.contains("x-grpc-web: 1"));
+    assert!(request.contains("content-length: 5"));
+    // No borrowed browser identity.
+    assert!(!request.contains("origin:"));
+    assert!(!request.contains("referer:"));
+}
+
+#[tokio::test]
+async fn a_refused_grok_meter_asks_xais_api_before_calling_the_login_refused() {
+    let refused_in_trailer = (200, grpc_web(&[], 16), GRPC_HEADERS.to_owned());
+    let refused_in_header = (200, Vec::new(), format!("{GRPC_HEADERS}grpc-status: 7\r\n"));
+    let forbidden = (403, b"test-access".to_vec(), String::new());
+    for meter in [refused_in_trailer, refused_in_header, forbidden] {
+        for (probe, expected) in [
+            (200, QuotaError::NoCheck(NoQuotaCheck::NoReading)),
+            (401, QuotaError::Refused),
+            (503, QuotaError::Unavailable),
+        ] {
+            let (url, task) = raw_server(
+                vec![
+                    meter.clone(),
+                    (probe, b"{\"data\":[]}".to_vec(), String::new()),
+                ],
+                None,
+            )
+            .await;
+            let (_, keeper) = setup(Some(oauth()), LoginEndpoints::default());
+            let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
+            assert_eq!(
+                quotas.fetch(Provider::Xai, &key(), None).await,
+                Err(expected),
+                "meter {} then probe {probe}",
+                meter.0
+            );
+            let requests = task.await.unwrap();
+            assert!(requests[1].starts_with("get /quota "));
+            assert!(requests[1].contains("authorization: bearer test-access"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn grok_rate_limits_and_bad_answers_are_fixed_errors() {
+    for (reply, expected) in [
+        (
+            (200, grpc_web(&[], 8), GRPC_HEADERS.to_owned()),
+            QuotaError::RateLimited { retry_after: None },
+        ),
+        (
+            (200, grpc_web(&[], 14), GRPC_HEADERS.to_owned()),
+            QuotaError::Unavailable,
+        ),
+        (
+            (200, b"{\"not\":\"grpc\"}".to_vec(), String::new()),
+            QuotaError::InvalidResponse,
+        ),
+        (
+            (200, grpc_web(&[10, 0], 0), GRPC_HEADERS.to_owned()),
+            QuotaError::NoCheck(NoQuotaCheck::NoReading),
+        ),
+    ] {
+        let (url, task) = raw_server(vec![reply], None).await;
+        let (_, keeper) = setup(Some(oauth()), LoginEndpoints::default());
+        let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
+        let error = quotas.fetch(Provider::Xai, &key(), None).await.unwrap_err();
+        assert_eq!(error, expected);
+        assert!(!format!("{error} {error:?}").contains("test-access"));
+        task.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn xai_and_kimi_api_keys_are_never_sent_to_the_subscription_meters() {
+    // No replies: the listener closes at once, so any request would fail loudly.
+    let (url, task) = server(vec![]).await;
+    for provider in [Provider::Xai, Provider::Kimi] {
+        let (store, keeper) = setup(
+            Some(Credential::ApiKey {
+                key: Secret::new("test-key"),
+            }),
+            LoginEndpoints::default(),
+        );
+        let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
+        assert_eq!(
+            quotas.fetch(provider, &key(), None).await,
+            Err(QuotaError::NoCheck(NoQuotaCheck::NoSource))
+        );
+        assert_eq!(store.writes.load(Ordering::SeqCst), 0);
+    }
+    assert_eq!(task.await.unwrap(), [] as [String; 0]);
+}
+
+#[tokio::test]
+async fn a_rate_limited_check_carries_retry_after_in_seconds_only() {
+    for (header, expected) in [
+        ("Retry-After: 120\r\n", Some(Duration::from_secs(120))),
+        ("Retry-After: Wed, 21 Oct 2030 07:28:00 GMT\r\n", None),
+        ("", None),
+    ] {
+        let (url, task) = raw_server(vec![(429, b"{}".to_vec(), header.into())], None).await;
+        let (_, keeper) = setup(Some(oauth()), LoginEndpoints::default());
+        let quotas = Quotas::with_endpoints(keeper, endpoints(&url));
+        assert_eq!(
+            quotas.fetch(Provider::Copilot, &key(), None).await,
+            Err(QuotaError::RateLimited {
+                retry_after: expected
+            })
+        );
+        task.await.unwrap();
+    }
 }

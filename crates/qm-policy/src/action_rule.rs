@@ -59,6 +59,8 @@ pub enum Effect {
     Started(TaskId),
     Steered(TaskId),
     Stopped(TaskId),
+    /// Finished work closed (`close_task`).
+    Closed(TaskId),
     Settled(TaskId),
     TaskChanged(TaskId),
     SettingChanged,
@@ -72,6 +74,7 @@ impl Effect {
             Self::Started(t) => Some(format!("Started: {t}")),
             Self::Steered(t) => Some(format!("Steered: {t}")),
             Self::Stopped(t) => Some(format!("Stopped: {t}")),
+            Self::Closed(t) => Some(format!("Closed: {t}")),
             Self::Settled(t) => Some(format!("Settled: {t}")),
             Self::TaskChanged(t) => Some(format!("Changed: {t}")),
             Self::Shown | Self::SettingChanged | Self::ScheduleAdded | Self::ScheduleCancelled => {

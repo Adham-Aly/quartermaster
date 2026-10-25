@@ -112,8 +112,8 @@ pub enum Command {
     OpenReport {
         task: TaskId,
     },
-    /// Take a finished report's card out of Actions without opening it. The task pane still
-    /// opens the report.
+    /// Take a finished report's card out of Actions without opening it. While its task is open,
+    /// the task pane still opens the report; once it is closed, the report goes.
     DismissReport {
         task: TaskId,
     },
@@ -1493,8 +1493,9 @@ pub struct SettingsAccount {
     /// Display-ready time of the last successful quota check; `None` means no successful reading yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_checked_at: Option<String>,
-    /// Why this account has no provider quota check ("not offered by this provider"); shown as
-    /// a neutral note, never as a problem. `None` when a check exists.
+    /// Why this account has no provider quota check ("not offered by this provider"), or that
+    /// its check found nothing metered ("none reported for this login"); shown as a neutral
+    /// note, never as a problem. `None` when a check exists and read something.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_note: Option<String>,
     /// Follows the `claude` login on this Mac: paused here, never disconnected.

@@ -42,7 +42,8 @@ pub struct StartCrewmateArgs {
     // The folder doesn't exist yet and the user asked for a new one: the app makes it first.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub create_folder: bool,
-    // An open task (T-n) the new crewmate joins. Leave it out: the crewmate gets a task of its own.
+    // An open task (T-n) the new crewmate joins. Leave it out: it joins the open task of the crewmate
+    // named in `builds_on` or `stronger_retry_of`, else gets a task of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join_task: Option<TaskLabelId>,
     pub kind: TaskKind,
@@ -134,7 +135,8 @@ pub struct SecondmateStartCrewmateArgs {
     // The folder doesn't exist yet and the user asked for a new one: the app makes it first.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub create_folder: bool,
-    // An open task (T-n) the new crewmate joins. Leave it out: the crewmate gets a task of its own.
+    // An open task (T-n) the new crewmate joins. Leave it out: it joins the open task of the crewmate
+    // named in `builds_on` or `stronger_retry_of`, else gets a task of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join_task: Option<TaskLabelId>,
     // The routed request this task serves, whose stored fields the app applies.
@@ -303,8 +305,8 @@ pub struct MessageTaskArgs {
 }
 
 tool! {
-    /// Stops a direct report's work and retires it: its worktree and branch are removed. A
-    /// plain-folder task's edits stay where they are.
+    /// Stops a direct report's work and retires it, as `close_task` does: it leaves the crew and
+    /// its worktree and branch are removed. A plain-folder task's edits stay where they are.
     StopTaskTool {
         name: "stop_task",
         class: Act,
@@ -418,8 +420,9 @@ pub struct TaskChanged {
 }
 
 tool! {
-    /// Closes a direct report's task and retires its worktree and branch. A plain-folder task
-    /// keeps its files where they are.
+    /// Closes a direct report's task and retires it: it leaves the crew, its worktree and branch
+    /// are removed, and the app's own files for it go once nothing needs them. A plain-folder
+    /// task keeps its files where they are.
     CloseTaskTool {
         name: "close_task",
         class: Act,

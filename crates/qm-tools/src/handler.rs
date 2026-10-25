@@ -579,8 +579,9 @@ pub struct StartRequest {
     /// starts saved before this field existed read as false.
     #[serde(default)]
     pub create_folder: bool,
-    /// The task the new crewmate joins; `None` makes it a task of its own. Deferred starts saved
-    /// before tasks held crewmates read as `None`.
+    /// The task the new crewmate joins. `None`: the open task of the crewmate it builds on or
+    /// retries, else a task of its own. Deferred starts saved before tasks held crewmates read as
+    /// `None`.
     #[serde(default)]
     pub label: Option<TaskLabelId>,
     pub kind: TaskKind,

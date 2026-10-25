@@ -9,8 +9,10 @@
 //!    deleted, except a delivered branch-only task's branch. Unmerged commits are left for git to
 //!    collect. A folder task has no worktree or branch: its files stay where they are, and nothing
 //!    is undone.
-//! 4. **Close** (one transaction): `closed` with its outcome, the crewmate retired, `task.closed`,
-//!    and `wait_over` for every task waiting on it.
+//! 4. **Close** (one transaction): `closed` with its outcome, the crewmate retired (it leaves the
+//!    crew), `task.closed`, and `wait_over` for every task waiting on it. Then the app's own files
+//!    for it go: its folder and scratchpad at once, its plan, evidence and report once nothing
+//!    needs them ([`crate::retention`]).
 //!
 //! Every step is idempotent: running `retire` again finishes an interrupted retirement (at
 //! startup too), and every status change is a compare-and-swap. A git failure leaves the task in
@@ -367,8 +369,10 @@ pub(crate) async fn retire(
     .await
     .map_err(|e| CloseError::Failed(e.to_string()))?;
     // The task's folder (its transcript too) and scratchpad go with the close: its outcome and
-    // answer are in the store. Its plan and evidence go once no open task reads them (the
-    // retention sweep, below). A failure is logged; the startup sweep removes what it leaves.
+    // answer are in the store. Its plan and evidence go once no open task reads them, and its
+    // report once you have read it (the retention sweep, below). Only the app's own files go:
+    // nothing a crewmate wrote elsewhere is touched. A failure is logged; the startup sweep
+    // removes what it leaves.
     let paths = svc.paths_of(&row);
     let removed = tokio::task::spawn_blocking(move || {
         qm_types::data_dir::remove_path(&paths.root)?;
