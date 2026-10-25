@@ -4,10 +4,11 @@
 //!
 //! - `accounts.usage`: the usage windows the engines report while they run (Claude's
 //!   `rate_limit_event` windows, ChatGPT's usage headers), kept by `settings_api::usage_feed`.
-//! - `accounts.quota`: the provider quota checks Settings ▸ Accounts runs (ChatGPT's windows,
-//!   Copilot's monthly allowances, OpenRouter's key budget, an API key's prepaid balance where
-//!   its provider reports one: `qm_auth::quota::BalanceSource`), converted here by
-//!   [`from_summary`]. Only numbers and reset times are stored, never a provider string.
+//! - `accounts.quota`: the provider quota checks Settings ▸ Accounts runs (ChatGPT's and Kimi
+//!   Code's windows, Grok's credits, Copilot's monthly allowances, OpenRouter's key budget, an API
+//!   key's prepaid balance where its provider reports one: `qm_auth::quota::BalanceSource`),
+//!   converted here by [`from_summary`]. Only numbers and reset times are stored, never a
+//!   provider string.
 //!
 //! A **balance** (any provider's) has no limit to measure it against, so it is measured against the
 //! balance at the last top-up: each check keeps that reference beside the balance, and a check
@@ -81,8 +82,9 @@ pub struct Stored {
     pub pools: Vec<Pool>,
 }
 
-/// A provider quota check's buckets as pools. Unlimited buckets can't run out, and code review
-/// and code completions don't serve agents, so they are left out; a bucket with no number is too.
+/// A provider quota check's buckets as pools. Unlimited buckets can't run out, and code review,
+/// code completions and a Grok product's share don't serve agents (or not alone), so they are
+/// left out; a bucket with no number is too.
 /// `previous` is the account's stored `accounts.quota`, for each balance's last top-up.
 pub fn from_summary(summary: &QuotaSummary, previous: Option<&str>) -> Stored {
     let previous = previous
@@ -113,6 +115,16 @@ pub fn from_summary(summary: &QuotaSummary, previous: Option<&str>) -> Stored {
                     (name, window.unwrap_or_default(), true)
                 }
                 QuotaKind::Chat => ("chat", window.unwrap_or(Span::Seconds(MONTH_SECONDS)), true),
+                QuotaKind::Monthly => (
+                    "monthly",
+                    window.unwrap_or(Span::Seconds(MONTH_SECONDS)),
+                    true,
+                ),
+                QuotaKind::Credits => (
+                    "credits",
+                    window.unwrap_or(Span::Seconds(MONTH_SECONDS)),
+                    true,
+                ),
                 QuotaKind::PremiumRequests => (
                     "premium_requests",
                     window.unwrap_or(Span::Seconds(MONTH_SECONDS)),
@@ -277,6 +289,9 @@ fn pool_label(span: Span, name: &str) -> String {
         (Span::Balance, _) => "prepaid budget".to_owned(),
         (_, "premium_requests") => "monthly premium requests".to_owned(),
         (_, "chat") => "monthly chat allowance".to_owned(),
+        (_, "monthly") => "monthly allowance".to_owned(),
+        (Span::Seconds(s), "credits") if s == 7 * 86_400 => "weekly credits".to_owned(),
+        (_, "credits") => "credits".to_owned(),
         (Span::Seconds(s), _) if s == 5 * 3_600 => "5-hour window".to_owned(),
         (Span::Seconds(s), _) if s == 7 * 86_400 => "7-day window".to_owned(),
         (Span::Seconds(s), _) if s % 86_400 == 0 => format!("{}-day window", s / 86_400),
@@ -462,6 +477,61 @@ mod tests {
         assert_eq!(
             read(Some(&usage), Some(&json), at(NOW)).0,
             Usage::Known { used_percent: 45.0 }
+        );
+    }
+
+    #[test]
+    fn grok_credits_and_kimis_monthly_allowance_are_pools_but_products_are_not() {
+        let week_end = Some(at("2026-10-27T00:00:00Z"));
+        let grok = from_summary(
+            &QuotaSummary::new(vec![
+                bucket(QuotaKind::Credits, |b| {
+                    b.remaining_percent = Some(25.0);
+                    b.window_seconds = Some(604_800);
+                    b.resets_at = week_end;
+                }),
+                bucket(
+                    QuotaKind::Product(qm_auth::quota::GrokProduct::GrokBuild),
+                    |b| b.remaining_percent = Some(0.0),
+                ),
+            ]),
+            None,
+        );
+        assert_eq!(grok.pools.len(), 1);
+        assert_eq!(grok.pools[0].name, "credits");
+        assert_eq!(grok.pools[0].span, Span::Seconds(604_800));
+        assert!(grok.pools[0].stops_account);
+        let json = serde_json::to_string(&grok).unwrap();
+        assert_eq!(
+            largest_line(None, Some(&json), at(NOW)).as_deref(),
+            Some("weekly credits 75% used")
+        );
+        let kimi = from_summary(
+            &QuotaSummary::new(vec![
+                bucket(QuotaKind::Secondary, |b| {
+                    b.remaining_percent = Some(10.0);
+                    b.window_seconds = Some(604_800);
+                    b.resets_at = week_end;
+                }),
+                bucket(QuotaKind::Monthly, |b| b.remaining_percent = Some(0.0)),
+            ]),
+            None,
+        );
+        let json = serde_json::to_string(&kimi).unwrap();
+        // A used-up monthly allowance with no reset time can't be shown to reset, so it ranks
+        // (the largest pool) but doesn't cut the account off on its own.
+        assert_eq!(
+            read(None, Some(&json), at(NOW)),
+            (
+                Usage::Known {
+                    used_percent: 100.0
+                },
+                false
+            )
+        );
+        assert_eq!(
+            largest_line(None, Some(&json), at(NOW)).as_deref(),
+            Some("monthly allowance 100% used")
         );
     }
 

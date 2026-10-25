@@ -1414,8 +1414,9 @@ pub struct SettingsAccount {
     /// Display-ready time of the last successful quota check; `None` means no successful reading yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_checked_at: Option<String>,
-    /// Why this account has no provider quota check ("not offered by this provider"); shown as
-    /// a neutral note, never as a problem. `None` when a check exists.
+    /// Why this account has no provider quota check ("not offered by this provider"), or that
+    /// its check found nothing metered ("none reported for this login"); shown as a neutral
+    /// note, never as a problem. `None` when a check exists and read something.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_note: Option<String>,
     /// Follows the `claude` login on this Mac: paused here, never disconnected.
