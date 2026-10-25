@@ -1,6 +1,11 @@
-//! Completed static reports belong in task details, not the Actions approval inbox. A review's
-//! report under normal autonomy also has a card in the Actions panel while it waits on your
-//! go-ahead ([`review_card`]; [`crate::tasks::review`]): Open, and Go ahead.
+//! Completed static reports: the task pane's Open report, and their cards in the Actions panel.
+//!
+//! A finished answer task's report (lookup, research, reproduce, teach) has a card
+//! ([`report_card`]: Open, Dismiss) until you open it, from the card or the task pane, or dismiss
+//! it; `tasks.report_read_at` records when. The card stays after the task closes, since its
+//! supervisor usually closes it as soon as it reports, and comes back if the task reports again.
+//! A review's report under normal autonomy has its own card while it waits on your go-ahead
+//! ([`review_card`]; [`crate::tasks::review`]): Open, and Go ahead.
 
 use crate::api::{ApiPart, Handled};
 use crate::tasks::TaskService;
@@ -13,6 +18,7 @@ use qm_types::api::{
     TaskDetail, Tone,
 };
 use qm_types::data_dir::TaskPaths;
+use qm_types::domain::{TaskKind, TaskOutcome, TaskStatus};
 use qm_types::ids::TaskId;
 use std::path::PathBuf;
 
@@ -55,6 +61,7 @@ impl ReportPart {
                     .status()
                     .await;
                 if result.is_ok_and(|status| status.success()) {
+                    self.mark_read(task).await;
                     return;
                 }
                 format!("{task}'s report couldn't be opened in your browser on this Mac.")
@@ -62,6 +69,20 @@ impl ReportPart {
             Err(problem) => problem,
         };
         self.note(&problem).await;
+    }
+
+    /// You opened or dismissed `task`'s report: its card leaves Actions.
+    async fn mark_read(&self, task: TaskId) {
+        let at = self.svc.deps().clock.now();
+        if let Err(e) = self
+            .svc
+            .deps()
+            .db
+            .call(move |conn| tasks::mark_report_read(conn, task, at))
+            .await
+        {
+            tracing::error!(error = %e, %task, "couldn't record that a report was read");
+        }
     }
 
     /// The Go ahead on a review's card.
@@ -149,9 +170,77 @@ pub(crate) fn review_card(
     card
 }
 
+/// The card's heading for a finished answer task's report.
+pub const REPORT_HEADING: &str = "Report ready";
+
+/// The longest piece of the answer a report's card quotes.
+const ANSWER_CHARS: usize = 160;
+
+/// Whether `row`'s report has a card in Actions until you read it: a finished answer task, still
+/// reported or closed with its answer. Whether it is unread is the store's
+/// ([`tasks::unread_reports`]); whether its page is there is [`report_page`]'s.
+pub(crate) fn has_report_card(row: &tasks::TaskRow) -> bool {
+    crate::reports::answers_with_report(row.kind)
+        && row.reported_at.is_some()
+        && (row.status == TaskStatus::Reported
+            || (row.status == TaskStatus::Closed && row.outcome == Some(TaskOutcome::Answered)))
+}
+
+/// The kinds whose reports get a card, for [`tasks::unread_reports`].
+pub(crate) fn card_kinds() -> Vec<TaskKind> {
+    TaskKind::ALL
+        .iter()
+        .copied()
+        .filter(|k| crate::reports::answers_with_report(*k))
+        .collect()
+}
+
+/// The card for a finished answer task's report you haven't read: the answer's first line, and
+/// Open and Dismiss.
+pub(crate) fn report_card(
+    task: TaskId,
+    kind: TaskKind,
+    title: &str,
+    project: &str,
+    report: Option<&ReportRow>,
+) -> Card {
+    let mut card = Card::new(CardKind::Report, REPORT_HEADING);
+    card.title = Some(format!("{task} {title}"));
+    card.note = Some(format!("· {project}"));
+    let mut lines = Vec::new();
+    if let Some(first) = report
+        .and_then(|r| r.answer.as_deref())
+        .and_then(|a| a.lines().map(str::trim).find(|l| !l.is_empty()))
+    {
+        lines.push(CardLine::new(
+            2,
+            vec![Styled::new(
+                qm_prompts::context_block::cut(first, ANSWER_CHARS),
+                Tone::Text,
+            )],
+        ));
+    }
+    lines.push(CardLine::new(
+        2,
+        vec![Styled::new(
+            format!(
+                "The {kind} is done. Open its report in your browser; once you open or dismiss \
+                 it, it leaves Actions. The task pane still opens it."
+            ),
+            Tone::Dim,
+        )],
+    ));
+    card.lines = lines;
+    card.buttons = vec![
+        CardButton::new("Open", 'o', CardAction::ReadReport { task }),
+        CardButton::new("Dismiss", 'd', CardAction::DismissReport { task }),
+    ];
+    card
+}
+
 /// No caller-supplied path, and no symlink in the entry point or any parent, including the
 /// artifacts root and data directory. Check parents before the leaf, without following links.
-fn report_page(paths: &TaskPaths) -> std::io::Result<PathBuf> {
+pub(crate) fn report_page(paths: &TaskPaths) -> std::io::Result<PathBuf> {
     let page = std::path::absolute(paths.artifacts.join("report").join("report.html"))?;
     let ancestors: Vec<_> = page.ancestors().collect();
     for path in ancestors.into_iter().rev() {
@@ -175,6 +264,10 @@ impl ApiPart for ReportPart {
         match command {
             Command::OpenReport { task } => Some(Box::pin(async move {
                 self.open(*task).await;
+                Handled::Changed
+            })),
+            Command::DismissReport { task } => Some(Box::pin(async move {
+                self.mark_read(*task).await;
                 Handled::Changed
             })),
             Command::ApproveReview { task } => Some(Box::pin(async move {
@@ -238,7 +331,7 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     #[test]
-    fn retained_reports_survive_closure_without_becoming_actions() {
+    fn retained_reports_stay_in_the_task_pane_and_finished_answers_get_a_card() {
         let task = TaskId::new(42).unwrap();
         let mut snapshot = Snapshot::default();
         surface(&mut snapshot, task, "Research results");
@@ -246,6 +339,7 @@ mod tests {
         assert!(!snapshot.crew[0].busy);
         assert!(!snapshot.crew[0].needs_you);
         assert!(snapshot.tasks[0].report_available);
+        // The task pane's view adds no card itself: the Actions panel builds the report's card.
         assert_eq!(snapshot.actions, [] as [qm_types::api::ActionItem; 0]);
         surface(&mut snapshot, task, "Research results");
         assert_eq!(snapshot.crew.len(), 1);
@@ -254,6 +348,44 @@ mod tests {
         snapshot.tasks[0].running = true;
         surface(&mut snapshot, task, "Research results");
         assert!(snapshot.tasks[0].running);
+
+        // A card while an answer kind's report is finished, and after its supervisor closes it
+        // with its answer; not while it works again, nor for kinds without a required report.
+        let mut conn = qm_store::connection::open_memory().unwrap();
+        qm_store::schema::migrate(&mut conn).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, delivery_mode,
+                 status, outcome, created_at, reported_at, closed_at, seq) VALUES
+             (1, 1, 1, 'lookup', 't', 'g', 'folder', 'reported', NULL, 1, 2, NULL, 1),
+             (2, 1, 1, 'research', 't', 'g', 'folder', 'closed', 'answered', 1, 2, 3, 2),
+             (3, 1, 1, 'teach', 't', 'g', 'folder', 'running', NULL, 1, 2, NULL, 3),
+             (4, 1, 1, 'reproduce', 't', 'g', 'folder', 'closed', 'discarded', 1, 2, 3, 4),
+             (5, 1, 1, 'lookup', 't', 'g', 'folder', 'running', NULL, 1, NULL, NULL, 5),
+             (6, 1, 1, 'review', 't', 'g', 'folder', 'reported', NULL, 1, 2, NULL, 6),
+             (7, 1, 1, 'build', 't', 'g', 'folder', 'reported', NULL, 1, 2, NULL, 7),
+             (8, 1, 1, 'plan', 't', 'g', 'folder', 'reported', NULL, 1, 2, NULL, 8);",
+        )
+        .unwrap();
+        let carded: Vec<u32> = (1..=8)
+            .filter(|&id| {
+                let row = tasks::load(&conn, TaskId::new(id).unwrap())
+                    .unwrap()
+                    .unwrap();
+                has_report_card(&row)
+            })
+            .collect();
+        assert_eq!(carded, [1, 2]);
+        let kinds = card_kinds();
+        assert_eq!(kinds.len(), 4);
+        for kind in [
+            TaskKind::Lookup,
+            TaskKind::Research,
+            TaskKind::Reproduce,
+            TaskKind::Teach,
+        ] {
+            assert!(kinds.contains(&kind), "{kind}");
+        }
     }
 
     #[test]

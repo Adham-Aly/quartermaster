@@ -384,6 +384,32 @@ pub fn with_status(conn: &Connection, status: TaskStatus) -> Result<Vec<TaskRow>
     collect(&mut stmt, params![status])
 }
 
+/// The tasks of `kinds` that reported and whose report the user hasn't opened or dismissed since,
+/// oldest first: never, or before the task last reported.
+pub fn unread_reports(conn: &Connection, kinds: &[TaskKind]) -> Result<Vec<TaskRow>, StoreError> {
+    let kinds = serde_json::Value::from(kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>());
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM tasks
+         WHERE kind IN (SELECT value FROM json_each(?1)) AND reported_at IS NOT NULL
+           AND (report_read_at IS NULL OR report_read_at < reported_at)
+         ORDER BY seq"
+    ))?;
+    collect(&mut stmt, params![json_text("kinds", &kinds)?])
+}
+
+/// Records that the user opened or dismissed `task`'s report now. Returns whether a row changed:
+/// a task that never reported has no report to read.
+pub fn mark_report_read(
+    conn: &Connection,
+    task: TaskId,
+    at: Timestamp,
+) -> Result<bool, StoreError> {
+    Ok(conn.execute(
+        "UPDATE tasks SET report_read_at = ?2 WHERE id = ?1 AND reported_at IS NOT NULL",
+        params![task, to_millis(at)],
+    )? == 1)
+}
+
 /// Every task, oldest first (for `find_tasks`, which filters in Rust).
 pub fn all(conn: &Connection) -> Result<Vec<TaskRow>, StoreError> {
     let mut stmt = conn.prepare(&format!("SELECT {COLUMNS} FROM tasks ORDER BY seq"))?;
@@ -1222,5 +1248,46 @@ mod branch_tests {
         assert!(set_branch(&conn, task, "fix/x", "fix/x-2").expect("update"));
         let row = load(&conn, task).expect("read").expect("row");
         assert_eq!(row.branch, "fix/x-2");
+    }
+
+    #[test]
+    fn a_report_is_unread_until_opened_and_again_once_the_task_reports_anew() {
+        let (conn, project, qm) = db();
+        let mut lookup = new_task(project, qm, Some("lookup/x"));
+        lookup.kind = TaskKind::Lookup;
+        let lookup = insert(&conn, &lookup).expect("insert");
+        let build = insert(&conn, &new_task(project, qm, Some("fix/x"))).expect("insert");
+        let kinds = [TaskKind::Lookup, TaskKind::Research];
+        let unread = |conn: &Connection| -> Vec<TaskId> {
+            unread_reports(conn, &kinds)
+                .expect("read")
+                .iter()
+                .map(|r| r.id)
+                .collect()
+        };
+        let at = |ms| Timestamp::from_millisecond(ms).expect("time");
+        // Nothing reported yet: nothing to read, and nothing is marked.
+        assert_eq!(unread(&conn), []);
+        assert!(!mark_report_read(&conn, lookup, at(5)).expect("mark"));
+        for task in [lookup, build] {
+            conn.execute(
+                "UPDATE tasks SET status = 'reported', reported_at = 10 WHERE id = ?1",
+                params![task],
+            )
+            .expect("report");
+        }
+        // Only the kinds asked for.
+        assert_eq!(unread(&conn), [lookup]);
+        assert!(mark_report_read(&conn, lookup, at(20)).expect("mark"));
+        assert_eq!(unread(&conn), []);
+        // It reports again: the new report is unread.
+        conn.execute(
+            "UPDATE tasks SET reported_at = 30 WHERE id = ?1",
+            params![lookup],
+        )
+        .expect("report again");
+        assert_eq!(unread(&conn), [lookup]);
+        assert!(mark_report_read(&conn, lookup, at(40)).expect("mark"));
+        assert_eq!(unread(&conn), []);
     }
 }

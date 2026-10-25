@@ -90,6 +90,8 @@ pub enum ActionKey {
     Plan { task: TaskId },
     /// A review task's report waiting on your go-ahead.
     Review { task: TaskId },
+    /// A finished answer task's report (lookup, research, reproduce, teach) you haven't opened.
+    Report { task: TaskId },
     /// An agent's question, by its message.
     Question { message: MessageId },
     /// A no-action notice, by its message.
@@ -114,6 +116,7 @@ pub enum ActionKind {
     Notice,
     Setup,
     Review,
+    Report,
 }
 
 /// Where an item's "Go to" takes you.

@@ -1,7 +1,6 @@
 //! A review's report under each autonomy: the static page, the wait on the user's go-ahead, its
 //! card, and what releases it (the card, `approve_review` on your turn, a switch to auto, a steer).
 use super::*;
-use crate::actions::ActionsPart;
 use crate::tasks::review;
 use qm_tools::defs::ApproveReviewArgs;
 use qm_tools::handler::TurnCx;
@@ -107,26 +106,6 @@ impl Delivery {
             .result
     }
 
-    async fn actions(&self) -> Vec<qm_types::api::ActionItem> {
-        let svc = self.svc();
-        let deps = svc.deps();
-        let held =
-            crate::held::HeldService::new(deps.db.clone(), deps.clock.clone(), Arc::new(NoSignal));
-        let part = ActionsPart::new(
-            held,
-            (deps.db.clone(), deps.clock.clone(), deps.data_dir.clone()),
-            AgentId::new(1),
-            svc.clone(),
-        );
-        let mut snapshot = Snapshot::default();
-        part.fill(&mut snapshot).await;
-        snapshot.actions
-    }
-
-    async fn assert_no_card(&self) {
-        assert_eq!(self.actions().await, [] as [qm_types::api::ActionItem; 0]);
-    }
-
     /// The review's status, whether it waits on the go-ahead, and the wakes its supervisor has.
     async fn state(&self) -> (TaskStatus, bool, Vec<(String, String)>) {
         self.fixture
@@ -158,12 +137,6 @@ impl Delivery {
         );
         delivery
     }
-}
-
-#[derive(Debug)]
-struct NoSignal;
-impl crate::held::WakeSignal for NoSignal {
-    fn signal(&self, _: AgentId) {}
 }
 
 /// The card of the review waiting on you: what it found, and Open and Go ahead.

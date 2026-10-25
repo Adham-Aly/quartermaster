@@ -49,6 +49,7 @@ pub(crate) fn rows_with(
         CardKind::Question => "?",
         CardKind::Plan => "☰",
         CardKind::Review => "✎",
+        CardKind::Report => "✓",
         _ => "⚑",
     };
     let mut heading = vec![(format!("{glyph} {}", card.heading), colour)];
