@@ -16,6 +16,7 @@
 //!   write rules.
 //! - [`limits`], [`action_rule`]: the orchestrators' limits and the effective-action rule.
 //! - [`watchdog`]: both watchdog ladders, on the app's `Clock`.
+//! - [`user_words`]: trimming the user's words that a brief or routed request carries.
 
 pub mod action_rule;
 pub mod base_branch;
@@ -31,5 +32,6 @@ pub mod release;
 pub mod repair;
 pub mod review;
 pub mod scope;
+pub mod user_words;
 pub mod verification;
 pub mod watchdog;
