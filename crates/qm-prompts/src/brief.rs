@@ -137,6 +137,8 @@ pub struct BriefFacts {
     pub goal: String,
     /// The user's own words, copied by the app (empty when there are none).
     pub user_words: String,
+    /// The supervisor left passages about other work out of them.
+    pub user_words_trimmed: bool,
     /// One-time instructions from the supervisor, for this task only.
     pub instructions: Vec<String>,
     pub constraints: Vec<BriefConstraint>,
@@ -330,7 +332,14 @@ fn section_user_words(out: &mut String, f: &BriefFacts) {
             first = false;
         }
     }
+    if f.user_words_trimmed {
+        out.push_str(TRIMMED_NOTE);
+    }
 }
+
+/// Said under the user's words when the supervisor left parts of their message out.
+const TRIMMED_NOTE: &str =
+    "Your supervisor left out parts of this message that were about other work.\n";
 
 fn section_instructions(out: &mut String, f: &BriefFacts) {
     let items: Vec<String> = f
@@ -869,6 +878,7 @@ mod report_tests {
             ports: PortBlock { base: 41_000 },
             goal: "answer".to_owned(),
             user_words: String::new(),
+            user_words_trimmed: false,
             instructions: vec![],
             constraints: vec![],
             tests_required: false,

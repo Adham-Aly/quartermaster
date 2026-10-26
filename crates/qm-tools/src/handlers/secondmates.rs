@@ -133,6 +133,7 @@ impl Handle for RouteToSecondmateTool {
             if let Some(branch) = &base_branch {
                 check_branch_name(branch)?;
             }
+            qm_policy::user_words::check_shape(&args.words_cut)?;
             cx.host
                 .route_to_secondmate(
                     cx.caller,
@@ -148,6 +149,8 @@ impl Handle for RouteToSecondmateTool {
                         premium: args.premium,
                         choice_message: args.choice_message,
                         later_steps: args.later_steps,
+                        words_message: args.words_message,
+                        words_cut: args.words_cut,
                     },
                 )
                 .await
@@ -241,6 +244,8 @@ pub(crate) fn prepare_secondmate_start(
         verification: args.verification,
         stronger_retry_of: args.stronger_retry_of,
         correlation: args.correlation,
+        words_message: args.words_message,
+        words_cut: args.words_cut,
     };
     check_start_shape(&request)?;
     // A secondmate's base branch isn't an override: the app fills it in and refuses one

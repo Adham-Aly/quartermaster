@@ -2,6 +2,7 @@ use super::*;
 use crate::turns::forget_tests::Fixture;
 use qm_types::{domain::TaskKind, ids::AgentId};
 
+mod chosen_words;
 mod pruned_words;
 
 fn caller() -> Caller {
@@ -39,6 +40,8 @@ fn request() -> StartRequest {
         verification: None,
         stronger_retry_of: None,
         correlation: None,
+        words_message: None,
+        words_cut: vec![],
     }
 }
 fn preference() -> qm_types::model_preference::ModelPreference {
@@ -839,7 +842,7 @@ async fn secondmate(f: &Fixture, svc: &TaskService) -> (Caller, qm_types::ids::C
         };
         let correlation = secondmates::insert_request(conn, &secondmates::NewRequest {
             secondmate: sm.id, turn: TurnId::new(1), request: "Do the work",
-            user_words: "frozen words", instructions: &[], base_branch: Some("main"),
+            user_words: "frozen words", user_words_cuts: &[], instructions: &[], base_branch: Some("main"),
             overrides: &overrides, at,
         })?;
         Ok((Caller { agent: sm.agent, role: Role::Secondmate, secondmate: Some(sm.id),

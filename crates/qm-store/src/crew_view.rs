@@ -71,8 +71,10 @@ pub struct BriefInputs {
     pub branch: Option<String>,
     pub port_base: Option<u16>,
     pub goal: String,
-    /// The user's own words, resolved (see [`user_words`]).
+    /// The user's own words, resolved (see [`resolved_words`]).
     pub user_words: String,
+    /// The supervisor left passages about other work out of them.
+    pub user_words_trimmed: bool,
     pub instructions: Vec<String>,
     pub constraints: Vec<StoredConstraint>,
     pub tests_required: bool,
@@ -185,6 +187,7 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
             column: "tasks.constraints",
             source,
         })?;
+    let words = resolved_words(conn, task)?;
     Ok(Some(BriefInputs {
         task,
         label: raw.label,
@@ -202,7 +205,8 @@ pub fn brief_inputs(conn: &Connection, task: TaskId) -> Result<Option<BriefInput
         branch: raw.branch,
         port_base,
         goal: raw.goal,
-        user_words: user_words(conn, task)?,
+        user_words: words.text,
+        user_words_trimmed: !words.cuts.is_empty(),
         instructions,
         constraints,
         tests_required: raw.tests_required,
@@ -237,17 +241,33 @@ struct RawBrief {
     project_delivery: DeliveryMode,
 }
 
-/// The user's own words for `task`, copied by the app: the stored message's text when the task
-/// names one, else the words stored on the row. A task started by an app event has none of its own;
-/// it inherits them from the task it retries, else the task it builds on (when the same supervisor
-/// started both), else the secondmate request it was routed from, else they're empty.
+/// The user's own words for a task, as its brief carries them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UserWords {
+    pub text: String,
+    /// The passages its supervisor left out of the message as being about other work; empty when
+    /// `text` is the message as it was.
+    pub cuts: Vec<String>,
+}
+
+/// The user's own words for `task`, copied by the app (see [`resolved_words`]).
 pub fn user_words(conn: &Connection, task: TaskId) -> Result<String, StoreError> {
+    Ok(resolved_words(conn, task)?.text)
+}
+
+/// The user's own words for `task`, copied by the app: the trimmed words when its supervisor left
+/// passages out, else the stored message's text when the task names one, else the words stored on
+/// the row. A task started by an app event has none of its own; it inherits them from the task it
+/// retries, else the task it builds on (when the same supervisor started both), else the
+/// secondmate request it was routed from, else they're empty.
+pub fn resolved_words(conn: &Connection, task: TaskId) -> Result<UserWords, StoreError> {
     let mut current = task;
     for _ in 0..WORDS_DEPTH {
         let row = conn
             .query_row(
                 "SELECT t.user_words, t.user_words_message_id, t.retry_of, t.builds_on,
-                        t.supervisor_id, b.supervisor_id, r.user_words
+                        t.supervisor_id, b.supervisor_id, r.user_words,
+                        t.user_words_cuts, r.user_words_cuts
                  FROM tasks AS t
                  LEFT JOIN tasks AS b ON b.id = t.builds_on
                  LEFT JOIN secondmate_requests AS r ON r.id = t.secondmate_request_id
@@ -255,36 +275,67 @@ pub fn user_words(conn: &Connection, task: TaskId) -> Result<String, StoreError>
                 params![current],
                 |r| {
                     Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, Option<qm_types::ids::MessageId>>(1)?,
+                        (
+                            r.get::<_, String>(0)?,
+                            r.get::<_, Option<qm_types::ids::MessageId>>(1)?,
+                            r.get::<_, Option<String>>(7)?,
+                        ),
                         r.get::<_, Option<TaskId>>(2)?,
                         r.get::<_, Option<TaskId>>(3)?,
                         r.get::<_, AgentId>(4)?,
                         r.get::<_, Option<AgentId>>(5)?,
-                        r.get::<_, Option<String>>(6)?,
+                        (
+                            r.get::<_, Option<String>>(6)?,
+                            r.get::<_, Option<String>>(8)?,
+                        ),
                     ))
                 },
             )
             .optional()?;
-        let Some((words, message, retry_of, builds_on, supervisor, builds_sup, request)) = row
+        let Some(((words, message, cuts), retry_of, builds_on, supervisor, builds_sup, request)) =
+            row
         else {
-            return Ok(String::new());
+            return Ok(UserWords::default());
         };
+        if let Some(cuts) = cuts {
+            return Ok(UserWords {
+                text: words,
+                cuts: parse_cuts("tasks.user_words_cuts", &cuts)?,
+            });
+        }
         if let Some(message) = message
             && let Some(text) = messages::text(conn, message)?
         {
-            return Ok(text);
+            return Ok(UserWords {
+                text,
+                cuts: Vec::new(),
+            });
         }
         if !words.trim().is_empty() {
-            return Ok(words);
+            return Ok(UserWords {
+                text: words,
+                cuts: Vec::new(),
+            });
         }
         let next = retry_of.or_else(|| builds_on.filter(|_| builds_sup == Some(supervisor)));
-        match next {
-            Some(next) => current = next,
-            None => return Ok(request.unwrap_or_default()),
-        }
+        let Some(next) = next else {
+            let (text, cuts) = request;
+            let text = text.unwrap_or_default();
+            let cuts = match cuts {
+                Some(cuts) if !text.trim().is_empty() => {
+                    parse_cuts("secondmate_requests.user_words_cuts", &cuts)?
+                }
+                _ => Vec::new(),
+            };
+            return Ok(UserWords { text, cuts });
+        };
+        current = next;
     }
-    Ok(String::new())
+    Ok(UserWords::default())
+}
+
+fn parse_cuts(column: &'static str, text: &str) -> Result<Vec<String>, StoreError> {
+    serde_json::from_str(text).map_err(|source| StoreError::Json { column, source })
 }
 
 /// The task `task` builds on or retries, with its latest reports; `None` if there is no such

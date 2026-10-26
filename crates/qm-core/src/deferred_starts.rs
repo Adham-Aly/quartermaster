@@ -37,6 +37,9 @@ struct Saved {
     user_message: Option<MessageId>,
     words: String,
     words_message: Option<MessageId>,
+    /// Passages left out of `words`; starts saved before trimming existed read as none.
+    #[serde(default)]
+    words_cuts: Vec<String>,
     /// Every task reference, including `builds_on/retry`, is an identity, not just a number.
     pins: Vec<(TaskId, i64)>,
     request_seq: Option<i64>,
@@ -203,22 +206,30 @@ impl TaskService {
                 tx.query_row("SELECT seq FROM secondmate_requests WHERE id = ?1", [correlation], |r| r.get(0)).optional()?
             } else { None };
             if request.correlation.is_some() && request_seq.is_none() { return Ok(Err(refuse("the routed request is unavailable"))); }
-            // Freeze the user's words now, before chat compaction or engine-owned chat drops them.
-            let (words, words_message) = if let Some(message) = user_message {
-                (qm_store::messages::text(tx, message)?.unwrap_or_default(), Some(message))
+            // Freeze the user's words now, before chat compaction or engine-owned chat drops them:
+            // the message the caller chose, else this turn's, with any cuts applied.
+            let chosen = match crate::user_words::choose(tx, caller.agent, request.words_message, user_message, &request.words_cut)? {
+                Ok(chosen) => chosen,
+                Err(r) => return Ok(Err(r.into())),
+            };
+            let (words, words_message, words_cuts) = if let Some(chosen) = chosen {
+                (chosen.text, chosen.message, chosen.cuts)
             } else {
                 let mut inherited = None;
                 for task in request.stronger_retry_of.into_iter().chain(request.builds_on) {
                     if let Some(row) = qm_store::tasks::load(tx, task)?
                         && (request.stronger_retry_of == Some(task) || row.supervisor == caller.agent) {
-                        inherited = Some((row.user_words, row.user_words_message)); break;
+                        inherited = Some((row.user_words, row.user_words_message, row.user_words_cuts)); break;
                     }
                 }
                 if let Some(words) = inherited { words } else if let Some(c) = request.correlation {
-                    let words = tx.query_row("SELECT user_words FROM secondmate_requests WHERE id = ?1", [c], |r| r.get(0)).optional()?.unwrap_or_default();
-                    (words, None)
-                } else { (String::new(), None) }
+                    let routed = qm_store::secondmates::load_request(tx, c)?;
+                    routed.map_or_else(Default::default, |r| (r.user_words, None, r.user_words_cuts))
+                } else { (String::new(), None, Vec::new()) }
             };
+            // The words are frozen above; the saved request no longer needs to name them.
+            request.words_message = None;
+            request.words_cut.clear();
             let typed_request = Some(request.clone());
             let inherited = match crate::secondmates::scope::apply_request_overrides(tx, &caller, &mut request)? {
                 Ok(authority) => authority,
@@ -256,7 +267,7 @@ impl TaskService {
                     Err(r) => return Ok(Err(r.into())),
                 }
             } else { None };
-            let saved = Saved { request, typed_request, delegated, base, role, secondmate, turn: caller.turn.map(|t| t.turn), user_message, words, words_message, pins, request_seq, started_task_seq: None };
+            let saved = Saved { request, typed_request, delegated, base, role, secondmate, turn: caller.turn.map(|t| t.turn), user_message, words, words_message, words_cuts, pins, request_seq, started_task_seq: None };
             let id = deferred::insert(tx, caller.agent, owner_seq, &encode(&trigger)?, &encode(&saved)?, at)?;
             Ok(Ok(view(deferred::get(tx, id)?.expect("just inserted"))?))
         }).await.map_err(|e| failed(&e))?
@@ -701,6 +712,7 @@ async fn fire(svc: &TaskService, row: &DeferredRow) -> Result<(), ToolFailure> {
         retry_tier: None,
         user_words: Some(saved.words),
         user_words_message: saved.words_message,
+        user_words_cuts: saved.words_cuts,
         deferred: Some(row.id),
     };
     start::start_when_ready(svc, &caller, saved.request, how).await?;

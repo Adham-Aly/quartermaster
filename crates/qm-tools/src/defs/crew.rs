@@ -77,6 +77,14 @@ pub struct StartCrewmateArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<i64>")]
     pub choice_message: Option<qm_types::ids::MessageId>,
+    // The user's message whose words the brief carries (numeric ID); omit for this turn's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<i64>")]
+    pub words_message: Option<qm_types::ids::MessageId>,
+    // Whole sentences, lines or clauses of those words, quoted exactly, to leave out: only parts
+    // about other work.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words_cut: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -168,6 +176,14 @@ pub struct SecondmateStartCrewmateArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<i64>")]
     pub choice_message: Option<qm_types::ids::MessageId>,
+    // The user's message whose words the brief carries (numeric ID); omit for this turn's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<i64>")]
+    pub words_message: Option<qm_types::ids::MessageId>,
+    // Whole sentences, lines or clauses of those words, quoted exactly, to leave out: only parts
+    // about other work.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words_cut: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<VerificationLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

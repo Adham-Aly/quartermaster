@@ -41,6 +41,8 @@ fn request(title: &str) -> StartRequest {
         verification: None,
         stronger_retry_of: None,
         correlation: None,
+        words_message: None,
+        words_cut: vec![],
     }
 }
 

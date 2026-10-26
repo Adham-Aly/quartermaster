@@ -13,7 +13,7 @@
 use crate::StoreError;
 use qm_types::error::Refusal;
 use qm_types::ids::{AgentId, MessageId};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// Requests shown in the recent context window, not a retention limit. Older original sources
 /// remain valid citations; merely seeing a request does not authorize any particular field.
@@ -92,6 +92,30 @@ pub fn verify(
             "model, tier, effort and premium choices must cite an actual user message in this conversation; use choice_message to name it",
         ))
     })
+}
+
+/// The words a brief or routed request copies from `message`: its chat text (which carries any
+/// attachment paths the app added), else its kept original once chat has dropped it. Refused unless
+/// `message` is an actual user message in `agent`'s own conversation.
+pub fn words_of(
+    conn: &Connection,
+    agent: AgentId,
+    message: MessageId,
+) -> Result<Result<String, Refusal>, StoreError> {
+    let original: Option<String> = conn
+        .query_row(
+            "SELECT text FROM user_message_sources WHERE id = ?1 AND agent_id = ?2",
+            params![message, agent],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(original) = original else {
+        return Ok(Err(Refusal::new(format!(
+            "words_message {} isn't one of the user's own messages in this conversation; use an id from <qm:user_message_sources> or find_user_requests",
+            message.get()
+        ))));
+    };
+    Ok(Ok(crate::messages::text(conn, message)?.unwrap_or(original)))
 }
 
 #[cfg(test)]

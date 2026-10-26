@@ -39,6 +39,9 @@ pub struct NewTask {
     pub goal: String,
     pub user_words: String,
     pub user_words_message: Option<MessageId>,
+    /// Passages an orchestrator left out of the message's words (`qm_policy::user_words`); empty
+    /// when `user_words` is the message as it was.
+    pub user_words_cuts: Vec<String>,
     /// `Vec<String>` as JSON.
     pub instructions: serde_json::Value,
     /// `Vec<Constraint>` as JSON.
@@ -77,6 +80,9 @@ pub struct TaskRow {
     pub goal: String,
     pub user_words: String,
     pub user_words_message: Option<MessageId>,
+    /// Passages an orchestrator left out of the message's words (`qm_policy::user_words`); empty
+    /// when `user_words` is the message as it was.
+    pub user_words_cuts: Vec<String>,
     pub instructions: serde_json::Value,
     pub constraints: serde_json::Value,
     pub tests_required: bool,
@@ -118,10 +124,23 @@ const COLUMNS: &str = "id, project_id, supervisor_id, kind, title, goal, user_wo
     retry_of, later_steps, secondmate_request_id, delivery_mode, verification_level,
     verification_source, base_branch, base_ref, base_commit, branch, port_base, status, outcome,
     waiting_on, pr_number, head_commit, escalations, created_at, started_at, reported_at,
-    closed_at, in_place, label_id, folder_label_id";
+    closed_at, in_place, label_id, folder_label_id, user_words_cuts";
 
 fn json_text(column: &'static str, v: &serde_json::Value) -> Result<String, StoreError> {
     serde_json::to_string(v).map_err(|source| StoreError::Json { column, source })
+}
+
+/// The cuts as stored: NULL when there are none.
+fn cuts_text(cuts: &[String]) -> Result<Option<String>, StoreError> {
+    if cuts.is_empty() {
+        return Ok(None);
+    }
+    serde_json::to_string(cuts)
+        .map(Some)
+        .map_err(|source| StoreError::Json {
+            column: "tasks.user_words_cuts",
+            source,
+        })
 }
 
 fn json_value(column: &'static str, s: &str) -> Result<serde_json::Value, StoreError> {
@@ -191,6 +210,7 @@ struct Raw {
     in_place: bool,
     label: Option<TaskLabelId>,
     folder_label: Option<TaskLabelId>,
+    user_words_cuts: Option<String>,
 }
 
 fn raw(r: &rusqlite::Row<'_>) -> rusqlite::Result<Raw> {
@@ -232,6 +252,7 @@ fn raw(r: &rusqlite::Row<'_>) -> rusqlite::Result<Raw> {
         in_place: r.get(34)?,
         label: r.get(35)?,
         folder_label: r.get(36)?,
+        user_words_cuts: r.get(37)?,
     })
 }
 
@@ -246,6 +267,13 @@ impl Raw {
             goal: self.goal,
             user_words: self.user_words,
             user_words_message: self.user_words_message,
+            user_words_cuts: match self.user_words_cuts {
+                Some(text) => serde_json::from_str(&text).map_err(|source| StoreError::Json {
+                    column: "tasks.user_words_cuts",
+                    source,
+                })?,
+                None => Vec::new(),
+            },
             instructions: json_value("tasks.instructions", &self.instructions)?,
             constraints: json_value("tasks.constraints", &self.constraints)?,
             tests_required: self.tests_required,
@@ -316,9 +344,10 @@ pub fn insert(conn: &Connection, task: &NewTask) -> Result<TaskId, StoreError> {
              user_words_message_id, instructions, constraints, tests_required, builds_on,
              parent_task_id, retry_of, later_steps, secondmate_request_id, delivery_mode,
              verification_level, verification_source, base_branch, base_ref, base_commit, branch,
-             port_base, status, escalations, created_at, seq, in_place, label_id, folder_label_id)
+             port_base, status, escalations, created_at, seq, in_place, label_id, folder_label_id,
+             user_words_cuts)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20, ?21, ?22, ?23, ?24, 'queued', ?25, ?26, ?27, ?28, ?29, ?29)",
+                 ?19, ?20, ?21, ?22, ?23, ?24, 'queued', ?25, ?26, ?27, ?28, ?29, ?29, ?30)",
         params![
             id,
             task.project,
@@ -351,6 +380,7 @@ pub fn insert(conn: &Connection, task: &NewTask) -> Result<TaskId, StoreError> {
             seq::next(task.at),
             task.in_place,
             label,
+            cuts_text(&task.user_words_cuts)?,
         ],
     )?;
     Ok(id)
@@ -1070,6 +1100,7 @@ mod branch_tests {
             goal: "g".to_owned(),
             user_words: String::new(),
             user_words_message: None,
+            user_words_cuts: Vec::new(),
             instructions: serde_json::json!([]),
             constraints: serde_json::json!([]),
             tests_required: false,

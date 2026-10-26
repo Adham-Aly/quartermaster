@@ -229,6 +229,8 @@ impl Fixture {
             verification: None,
             stronger_retry_of: None,
             correlation: None,
+            words_message: None,
+            words_cut: vec![],
         };
         let qm_tools::handler::ToolFailure::Refused(refusal) =
             svc.start_crewmate(&caller, request).await.unwrap_err()

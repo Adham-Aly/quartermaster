@@ -46,6 +46,10 @@ under `start`. Lasting model/effort/premium choices cite `choice_message`, an ac
 numeric ID. The core verifies user source and ownership/delegation, not semantic field intent:
 wording must still require a matching, unsuperseded user request within its original scope.
 
+A brief's (or routed request's) user words come from the turn's message unless the orchestrator
+names `words_message`; `words_cut` may only delete whole sentences, lines or clauses, as
+`qm_policy::user_words` checks, and the brief notes under the words when they were trimmed.
+
 ## Markers
 
 The model tells three sources apart: its supervisor and the app (both marked, `<qm:…>` tags) and

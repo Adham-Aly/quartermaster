@@ -2,7 +2,8 @@
 //!
 //! The app stamps the marker and a **fresh correlation ID**: a new `secondmate_requests` row whose
 //! ID is the correlation, never supplied by a model. The row carries your words (copied from your
-//! message on a turn you started; empty on an app-event turn), the Quartermaster's one-time
+//! message on a turn you started, or from the earlier message of yours the Quartermaster names,
+//! less any passages about other work it leaves out; empty otherwise), the Quartermaster's one-time
 //! instructions, and a base branch only from your turn. Model choices may instead cite an earlier
 //! actual user message. One `routed` wake (`routed:R-0193`) wakes the secondmate once.
 
@@ -11,7 +12,6 @@ use crate::inbox::{Inbox, Notify};
 use qm_git::{BaseRequest, GitError, Repo};
 use qm_policy::scope::check_own_secondmate;
 use qm_store::events::{self, NewEvent};
-use qm_store::messages;
 use qm_store::projects::{self, ProjectRow};
 use qm_store::secondmates::{self, NewRequest, RequestOverrides, StoredLaterStep};
 use qm_store::wakes::NewWake;
@@ -36,6 +36,7 @@ mod tests;
 pub fn wake_text(
     scope: &str,
     user_words: &str,
+    trimmed: bool,
     request: &str,
     instructions: &[String],
     base_branch: Option<&str>,
@@ -43,7 +44,12 @@ pub fn wake_text(
 ) -> String {
     let mut text = format!("Request in your scope ({scope}).");
     if !user_words.trim().is_empty() {
-        let _ = write!(text, " The user's words: \"{}\".", user_words.trim());
+        let whose = if trimmed {
+            "The user's words (parts about other work left out by the Quartermaster)"
+        } else {
+            "The user's words"
+        };
+        let _ = write!(text, " {whose}: \"{}\".", user_words.trim());
     }
     let _ = write!(text, "\nRequest: {request}");
     if !instructions.is_empty() {
@@ -105,7 +111,9 @@ impl SecondmateService {
                 .map_err(ToolFailure::Refused)?;
         }
         let caller_agent = caller.agent;
-        let (record, user_words, single) = self
+        let words_message = req.words_message;
+        let words_cut = req.words_cut.clone();
+        let (record, chosen, single) = self
             .db()
             .call(move |conn| {
                 let Some(record) = secondmates::load(conn, id)? else {
@@ -114,10 +122,17 @@ impl SecondmateService {
                 if let Err(r) = check_own_secondmate(caller_agent, id, record.parent) {
                     return Ok(Err(r.into()));
                 }
-                // Your words, already neutralised when stored.
-                let words = match message {
-                    Some(m) => messages::text(conn, m)?.unwrap_or_default(),
-                    None => String::new(),
+                // Your words, already neutralised when stored: the message chosen, else this
+                // turn's, less any passages about other work.
+                let words = match crate::user_words::choose(
+                    conn,
+                    caller_agent,
+                    words_message,
+                    message,
+                    &words_cut,
+                )? {
+                    Ok(chosen) => chosen.unwrap_or_default(),
+                    Err(r) => return Ok(Err(r.into())),
                 };
                 let single = match record.projects.as_slice() {
                     [(_, name)] => projects::active_by_name(conn, name)?,
@@ -165,7 +180,8 @@ impl SecondmateService {
                         secondmate: id,
                         turn: turn.turn,
                         request: &req.request,
-                        user_words: &user_words,
+                        user_words: &chosen.text,
+                        user_words_cuts: &chosen.cuts,
                         instructions: &req.instructions,
                         base_branch: req.base_branch.as_deref(),
                         overrides: &overrides,
@@ -187,6 +203,8 @@ impl SecondmateService {
                             "secondmate": id,
                             "correlation": correlation,
                             "base_branch": req.base_branch,
+                            "words_message": chosen.message,
+                            "words_cut": chosen.cuts,
                         }),
                         at,
                     },
@@ -200,7 +218,8 @@ impl SecondmateService {
                         payload: serde_json::json!({
                             "text": wake_text(
                                 &scope,
-                                &user_words,
+                                &chosen.text,
+                                !chosen.cuts.is_empty(),
                                 &req.request,
                                 &req.instructions,
                                 req.base_branch.as_deref(),

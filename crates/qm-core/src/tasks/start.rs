@@ -114,6 +114,8 @@ pub(crate) struct StartAs {
     /// The user's words for the new task, replacing those inherited.
     pub user_words: Option<String>,
     pub user_words_message: Option<MessageId>,
+    /// The passages left out of `user_words` (`qm_policy::user_words`).
+    pub user_words_cuts: Vec<String>,
     /// Consumed atomically with the task record, never before.
     pub deferred: Option<i64>,
 }
@@ -198,6 +200,7 @@ struct Validated {
     review_of: Option<TaskRow>,
     user_words: String,
     user_words_message: Option<MessageId>,
+    user_words_cuts: Vec<String>,
     /// The base to settle; `None` for a folder project, which has no branches.
     request: Option<BaseRequest>,
     later_step: Option<AppliedLaterStep>,
@@ -342,34 +345,47 @@ fn validate(
         }
     };
 
-    // 6. Your words.
-    let (user_words, user_words_message) =
-        if let Authority::Turn(StartedBy::User { message }) = authority {
+    // 6. Your words: the message the caller chose, else this turn's, with any passages about
+    // other work left out; else those of the work it continues.
+    let turn_message = match authority {
+        Authority::Turn(StartedBy::User { message }) => Some(message),
+        _ => None,
+    };
+    let chosen = match crate::user_words::choose(
+        conn,
+        caller.agent,
+        req.words_message,
+        turn_message,
+        &req.words_cut,
+    )? {
+        Ok(chosen) => chosen,
+        Err(r) => return Ok(Err(r)),
+    };
+    let (user_words, user_words_message, user_words_cuts) = if let Some(chosen) = chosen {
+        (chosen.text, chosen.message, chosen.cuts)
+    } else {
+        let from_retry = retry.as_ref().map(|(r, _)| {
             (
-                qm_store::messages::text(conn, message)?.unwrap_or_default(),
-                Some(message),
+                r.user_words.clone(),
+                r.user_words_message,
+                r.user_words_cuts.clone(),
             )
-        } else {
-            {
-                let from_retry = retry
-                    .as_ref()
-                    .map(|(r, _)| (r.user_words.clone(), r.user_words_message));
-                let from_builds_on = match req.builds_on {
-                    Some(t) => task_store::load(conn, t)?
-                        .filter(|r| r.supervisor == caller.agent)
-                        .map(|r| (r.user_words, r.user_words_message)),
-                    None => None,
-                };
-                let from_request = match req.correlation {
-                    Some(c) => request_words(conn, i64::from(c.get()))?.map(|w| (w, None)),
-                    None => None,
-                };
-                from_retry
-                    .or(from_builds_on)
-                    .or(from_request)
-                    .unwrap_or_default()
-            }
+        });
+        let from_builds_on = match req.builds_on {
+            Some(t) => task_store::load(conn, t)?
+                .filter(|r| r.supervisor == caller.agent)
+                .map(|r| (r.user_words, r.user_words_message, r.user_words_cuts)),
+            None => None,
         };
+        let from_request = match req.correlation {
+            Some(c) => request_words(conn, i64::from(c.get()))?.map(|(w, cuts)| (w, None, cuts)),
+            None => None,
+        };
+        from_retry
+            .or(from_builds_on)
+            .or(from_request)
+            .unwrap_or_default()
+    };
 
     // 7. The base request.
     let inherited = retry
@@ -420,6 +436,7 @@ fn validate(
         review_of,
         user_words,
         user_words_message,
+        user_words_cuts,
         request,
         later_step,
         secondmate_request: req.correlation.map(|c| i64::from(c.get())),
@@ -562,15 +579,20 @@ fn request_branch(conn: &Connection, request: i64) -> Result<Option<String>, Sto
         .flatten())
 }
 
-fn request_words(conn: &Connection, request: i64) -> Result<Option<String>, StoreError> {
-    Ok(conn
-        .query_row(
-            "SELECT user_words FROM secondmate_requests WHERE id = ?1",
-            params![request],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?
-        .filter(|w| !w.trim().is_empty()))
+/// A routed request's words, with the passages the Quartermaster left out of them.
+fn request_words(
+    conn: &Connection,
+    request: i64,
+) -> Result<Option<(String, Vec<String>)>, StoreError> {
+    let Ok(id) = u32::try_from(request) else {
+        return Ok(None);
+    };
+    let Some(id) = qm_types::ids::CorrelationId::new(id) else {
+        return Ok(None);
+    };
+    Ok(qm_store::secondmates::load_request(conn, id)?
+        .filter(|r| !r.user_words.trim().is_empty())
+        .map(|r| (r.user_words, r.user_words_cuts)))
 }
 
 pub(crate) fn standing_branch(
@@ -802,6 +824,7 @@ pub async fn start(
         retry_tier: None,
         user_words: None,
         user_words_message: None,
+        user_words_cuts: Vec::new(),
         deferred: None,
     };
     start_as(svc, caller, req, how).await
@@ -906,6 +929,7 @@ pub(crate) async fn start_when_ready(
     if let Some(words) = how.user_words {
         validated.user_words = words;
         validated.user_words_message = how.user_words_message;
+        validated.user_words_cuts = how.user_words_cuts;
     }
 
     // Code work on a plan waits for the plan: approved by the user, or finished under auto.
@@ -1070,6 +1094,7 @@ pub(crate) async fn start_when_ready(
                 goal: req.goal.trim().to_owned(),
                 user_words: validated.user_words.clone(),
                 user_words_message: validated.user_words_message,
+                user_words_cuts: validated.user_words_cuts.clone(),
                 instructions: serde_json::to_value(&req.instructions).unwrap_or_default(),
                 constraints: serde_json::to_value(&req.constraints).unwrap_or_default(),
                 tests_required: req.tests_required,
@@ -2016,7 +2041,7 @@ pub(crate) async fn start_retry(
             };
             let project = load_project(conn, row.project)?;
             let role = agents::role_of(conn, row.supervisor)?;
-            let original = qm_store::crew_view::user_words(conn, retried)?;
+            let original = qm_store::crew_view::resolved_words(conn, retried)?;
             Ok(Some((row, project, role, original)))
         })
         .await
@@ -2037,14 +2062,14 @@ pub(crate) async fn start_retry(
         plan: None,
     };
     let user_words = match words.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
-        Some(words) if original.trim().is_empty() => {
+        Some(words) if original.text.trim().is_empty() => {
             format!("On the decision card for {retried}: {words}")
         }
         Some(words) => format!(
             "{}\n\nOn the decision card for {retried}: {words}",
-            original.trim()
+            original.text.trim()
         ),
-        None => original,
+        None => original.text,
     };
     let verification = row
         .verification
@@ -2083,12 +2108,16 @@ pub(crate) async fn start_retry(
         verification,
         stronger_retry_of: Some(retried),
         correlation: None,
+        words_message: None,
+        words_cut: Vec::new(),
     };
     let how = StartAs {
         authority: Authority::CardChoice,
         retry_tier: Some(tier),
         user_words: Some(user_words),
         user_words_message: None,
+        // The retry keeps the attempt's trimmed words, so its brief says they were trimmed.
+        user_words_cuts: original.cuts,
         deferred: None,
     };
     start_as(svc, &caller, req, how).await
