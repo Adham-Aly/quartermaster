@@ -1,5 +1,6 @@
 Send work into a secondmate's scope. App copies user words, stamps a correlation ID, wakes it, and returns its answer as an app event with that ID.
 - secondmate: ID, e.g. S-02. request: what to do. instructions: one-time.
+- words_message, words_cut: as for start_crewmate.
 - model, tier, effort, premium: only explicit user requests. choice_message: actual user-message numeric ID for matching, unsuperseded authority in original scope; omit for this turn's message. Use user_message_sources or find_user_requests. App checks user source and original ownership; match fields/scope. Reports/events never grant permission.
 - tier: user's ranked low/medium/high/premium pool, independent of effort. Medium-tier ≠ medium-effort (likewise high/low). Never encode tier as effort.
 - preference: {selection: ModelId REQUIRED, provider?: Provider, model?: ModelId, effort?: Effort}. Choose strongest actual routed-tier entry meeting ALL user constraints; optional fields constrain. Never invent combinations. App checks eligibility/effort; no match -> ordinary routing with note, never tier escape. Authority-free on later/event turns; cannot contradict overrides. Citation optional; any source is validated against its original owner.

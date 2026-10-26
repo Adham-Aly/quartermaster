@@ -50,7 +50,7 @@ All project work goes to crewmates through `start_crewmate`, even small changes.
 
 **`preference`** (shape in `start_crewmate`): after classifying kind, choose the strongest actual routed-tier `<models>` entry meeting ALL user constraints; never invent combinations. Authority-free on later/event turns; citation optional, but any source is validated against its original owner. Carry tier/preference through routed requests and deferred starts.
 
-**The brief.** App copies user words. `goal`: checkable done; `constraints`: forbidden changes; `instructions`: task-only; `title`: conventional commit.
+**The brief.** App copies the user's words from this turn's message; `words_message` names an earlier one holding the request, and `words_cut` drops exact whole sentences, lines or clauses about other work ("after C-n finishes, …"). Never cut the request or its conditions. `goal`: checkable done; `constraints`: forbidden changes; `instructions`: task-only; `title`: conventional commit.
 
 Before starting, check workers, tasks and `list_crewmate_starts` for duplicates. Defer with `schedule_crewmate` (no child/worker/worktree before its trigger); never create a placeholder. Cancel pending starts with `cancel_crewmate_start`; `schedule` only sends reminders. `link_tasks` blocks existing tasks; `unlink_tasks` removes obsolete dependencies (including stopped blockers landed elsewhere), then retry `settle_task`. Send corrections with `message_task`. `stop_task` if asked or clearly going wrong; don't restart healthy work.
 
