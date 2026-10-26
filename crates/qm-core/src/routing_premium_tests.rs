@@ -784,6 +784,7 @@ fn request(f: &Fixture, overrides: &RequestOverrides) -> (Caller, StartRequest) 
             turn,
             request: "r",
             user_words: "",
+            user_words_cuts: &[],
             instructions: &[],
             base_branch: None,
             overrides,
@@ -816,6 +817,8 @@ fn request(f: &Fixture, overrides: &RequestOverrides) -> (Caller, StartRequest) 
         verification: None,
         stronger_retry_of: None,
         correlation: Some(correlation),
+        words_message: None,
+        words_cut: vec![],
     };
     (caller, start)
 }

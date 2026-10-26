@@ -100,6 +100,7 @@ pub fn check_start_shape(request: &StartRequest) -> Result<(), Refusal> {
     if request.constraints.iter().any(|c| c.text.trim().is_empty()) {
         return Err(Refusal::new("a constraint can't be empty"));
     }
+    qm_policy::user_words::check_shape(&request.words_cut)?;
     if request.builds_on.is_some()
         && request.stronger_retry_of.is_some()
         && request.builds_on == request.stronger_retry_of
@@ -146,6 +147,8 @@ pub(crate) fn prepare_start(
         verification: args.verification,
         stronger_retry_of: args.stronger_retry_of,
         correlation: None,
+        words_message: args.words_message,
+        words_cut: args.words_cut,
     };
     check_start_shape(&request)?;
     check_overrides(cx, &request)?;
@@ -360,6 +363,8 @@ mod tests {
             verification: None,
             stronger_retry_of: None,
             correlation: None,
+            words_message: None,
+            words_cut: vec![],
         };
         assert!(check_overrides(&cx, &request).is_err());
         request.choice_message = Some(MessageId::new(7));

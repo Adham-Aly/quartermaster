@@ -51,5 +51,6 @@ pub mod tool_host;
 pub mod turn_io;
 pub mod turns;
 pub mod updates;
+pub(crate) mod user_words;
 pub mod verification;
 pub mod watchdogs;

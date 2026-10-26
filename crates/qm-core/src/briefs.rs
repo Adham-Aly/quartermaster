@@ -1,9 +1,10 @@
 //! The crewmate's brief, written by the app, and its system prompt.
 //!
 //! [`write_brief`] gathers the facts the core recorded when the task started (the task row, its
-//! project, its supervisor, the user's words as the stored message holds them, and what it builds
-//! on), renders them with `qm_prompts::brief::render_brief`, and saves the text as
-//! `tasks/C-0042/brief.md` atomically, mode 0600, exactly as the runner then sends it.
+//! project, its supervisor, the user's words as the stored message holds them or as its supervisor
+//! trimmed them, and what it builds on), renders them with `qm_prompts::brief::render_brief`, and
+//! saves the text as `tasks/C-0042/brief.md` atomically, mode 0600, exactly as the runner then
+//! sends it.
 //!
 //! [`crewmate_system_prompt`] wraps `qm_prompts::brief::crewmate_prompt` for the engine the
 //! crewmate runs on: appended to Claude Code's own preset on Claude, the whole prompt elsewhere.
@@ -200,6 +201,7 @@ pub fn brief_facts(
         ports,
         goal: inputs.goal.clone(),
         user_words: inputs.user_words.clone(),
+        user_words_trimmed: inputs.user_words_trimmed,
         instructions: inputs.instructions.clone(),
         constraints: inputs
             .constraints

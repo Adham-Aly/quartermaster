@@ -20,6 +20,7 @@ fn plan_facts() -> BriefFacts {
         ports: PortBlock { base: 42000 },
         goal: "Plan the change".into(),
         user_words: String::new(),
+        user_words_trimmed: false,
         instructions: Vec::new(),
         constraints: Vec::new(),
         tests_required: false,

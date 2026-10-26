@@ -450,8 +450,11 @@ pub struct NewRequest<'a> {
     /// The routing turn.
     pub turn: TurnId,
     pub request: &'a str,
-    /// Your words, copied from your message on a turn you started; empty otherwise.
+    /// Your words, copied from your message on a turn you started, or from the message the
+    /// Quartermaster chose; empty otherwise.
     pub user_words: &'a str,
+    /// Passages the Quartermaster left out of those words; empty when they are the message as is.
+    pub user_words_cuts: &'a [String],
     pub instructions: &'a [String],
     pub base_branch: Option<&'a str>,
     pub overrides: &'a RequestOverrides,
@@ -467,6 +470,8 @@ pub struct RequestRow {
     pub turn: Option<TurnId>,
     pub request: String,
     pub user_words: String,
+    /// Passages left out of `user_words`; empty when they are the message as it was.
+    pub user_words_cuts: Vec<String>,
     pub instructions: Vec<String>,
     pub base_branch: Option<String>,
     pub overrides: RequestOverrides,
@@ -488,11 +493,21 @@ pub fn insert_request(
         column: "secondmate_requests.overrides",
         source,
     })?;
+    let cuts = if new.user_words_cuts.is_empty() {
+        None
+    } else {
+        Some(
+            serde_json::to_string(new.user_words_cuts).map_err(|source| StoreError::Json {
+                column: "secondmate_requests.user_words_cuts",
+                source,
+            })?,
+        )
+    };
     Ok(conn.query_row(
         "INSERT INTO secondmate_requests
              (secondmate_id, turn_id, request, user_words, instructions, base_branch, overrides,
-              status, created_at, seq, id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8, ?9, ?10)
+              status, created_at, seq, id, user_words_cuts)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8, ?9, ?10, ?11)
          RETURNING id",
         params![
             new.secondmate,
@@ -505,13 +520,14 @@ pub fn insert_request(
             to_millis(new.at),
             seq::next(new.at),
             ids::fresh(conn, "secondmate_requests", space::CORRELATION)?,
+            cuts,
         ],
         |r| r.get(0),
     )?)
 }
 
 const REQUEST_COLUMNS: &str = "id, secondmate_id, turn_id, request, user_words, instructions, \
-     base_branch, overrides, status, created_at";
+     base_branch, overrides, status, created_at, user_words_cuts";
 
 type RawRequest = (
     CorrelationId,
@@ -524,6 +540,7 @@ type RawRequest = (
     String,
     RequestStatus,
     i64,
+    Option<String>,
 );
 
 fn raw_request(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawRequest> {
@@ -538,6 +555,7 @@ fn raw_request(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawRequest> {
         r.get(7)?,
         r.get(8)?,
         r.get(9)?,
+        r.get(10)?,
     ))
 }
 
@@ -553,6 +571,7 @@ fn request_row(raw: RawRequest) -> Result<RequestRow, StoreError> {
         overrides,
         status,
         at,
+        cuts,
     ) = raw;
     Ok(RequestRow {
         id,
@@ -560,6 +579,13 @@ fn request_row(raw: RawRequest) -> Result<RequestRow, StoreError> {
         turn,
         request,
         user_words,
+        user_words_cuts: match cuts {
+            Some(text) => serde_json::from_str(&text).map_err(|source| StoreError::Json {
+                column: "secondmate_requests.user_words_cuts",
+                source,
+            })?,
+            None => Vec::new(),
+        },
         instructions: serde_json::from_str(&instructions).map_err(|source| StoreError::Json {
             column: "secondmate_requests.instructions",
             source,

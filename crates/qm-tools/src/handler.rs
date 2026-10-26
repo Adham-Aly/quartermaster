@@ -603,6 +603,13 @@ pub struct StartRequest {
     pub verification: Option<VerificationLevel>,
     pub stronger_retry_of: Option<TaskId>,
     pub correlation: Option<CorrelationId>,
+    /// The user's message whose words the brief carries, checked by the host; `None` for the
+    /// turn's own. Deferred starts saved before this field existed read as `None`.
+    #[serde(default)]
+    pub words_message: Option<MessageId>,
+    /// Passages to leave out of those words (`qm_policy::user_words`), checked by the host.
+    #[serde(default)]
+    pub words_cut: Vec<String>,
 }
 
 /// A proposed secondmate, after the handler's checks (`start_secondmate`).
@@ -628,6 +635,11 @@ pub struct RouteRequest {
     /// Actual user-message provenance for model/tier/effort/premium, checked by the host.
     pub choice_message: Option<MessageId>,
     pub later_steps: Vec<LaterStep>,
+    /// The user's message whose words the request carries, checked by the host; `None` for the
+    /// turn's own.
+    pub words_message: Option<MessageId>,
+    /// Passages to leave out of those words (`qm_policy::user_words`), checked by the host.
+    pub words_cut: Vec<String>,
 }
 
 /// A change to a secondmate's charter (`configure_secondmate`).

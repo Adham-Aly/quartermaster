@@ -44,6 +44,8 @@ pub mod startup;
 #[cfg(test)]
 mod unlink_tests;
 pub mod waits;
+#[cfg(test)]
+mod words_tests;
 
 use crate::api::{ApiPart, Handled};
 use crate::inbox::{Inbox, Notify, WakeSink};
