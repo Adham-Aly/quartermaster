@@ -22,6 +22,7 @@ fn request(title: &str) -> StartRequest {
         label: None,
         kind: TaskKind::Research,
         title: format!("test(core): {title}"),
+        name: None,
         goal: "Answer the question".into(),
         constraints: vec![],
         tests_required: false,

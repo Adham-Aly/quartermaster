@@ -61,7 +61,7 @@ pub(crate) async fn set_task_label(
                 {
                     was
                 }
-                None => task_labels::create(tx, Some(crewmate.get()), at)?,
+                None => task_labels::create(tx, Some(crewmate.get()), None, at)?,
             };
             let with = others_in(tx, label, crewmate)?;
             if task_store::set_label(tx, crewmate, label)? {

@@ -1,6 +1,7 @@
 //! Task labels: the `T-` labels that group crewmates (`C-`) working towards one thing.
 //!
-//! A label is only a number and when it was made. Whether it is open, and what it holds, comes from
+//! A label is a number, when it was made, and the name the crew list shows for it, if it was given
+//! one. Whether it is open, and what it holds, comes from
 //! the `tasks` rows that name it: `label_id` says which task a crewmate belongs to now, and
 //! `folder_label_id` which task's folders hold its artifacts and scratchpad (they differ only while
 //! a relabel waits to move them). A label no row names is deleted when closed crewmates are
@@ -19,6 +20,7 @@ use rusqlite::{Connection, params};
 pub fn create(
     conn: &Connection,
     preferred: Option<u32>,
+    name: Option<&str>,
     at: Timestamp,
 ) -> Result<TaskLabelId, StoreError> {
     let number = match preferred {
@@ -30,10 +32,36 @@ pub fn create(
         message: format!("{number} is out of range for a task ID"),
     })?;
     conn.execute(
-        "INSERT INTO task_labels (id, created_at, seq) VALUES (?1, ?2, ?3)",
-        params![id, to_millis(at), seq::next(at)],
+        "INSERT INTO task_labels (id, created_at, seq, name) VALUES (?1, ?2, ?3, ?4)",
+        params![id, to_millis(at), seq::next(at), name],
     )?;
     Ok(id)
+}
+
+/// Names `label`, unless it already has a name: a task keeps the name it started with.
+pub fn name_if_unnamed(
+    conn: &Connection,
+    label: TaskLabelId,
+    name: &str,
+) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE task_labels SET name = ?2 WHERE id = ?1 AND name IS NULL",
+        params![label, name],
+    )?;
+    Ok(())
+}
+
+/// `label`'s name, if it was given one.
+pub fn name(conn: &Connection, label: TaskLabelId) -> Result<Option<String>, StoreError> {
+    use rusqlite::OptionalExtension;
+    Ok(conn
+        .query_row(
+            "SELECT name FROM task_labels WHERE id = ?1",
+            params![label],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten())
 }
 
 /// Whether `label` exists.

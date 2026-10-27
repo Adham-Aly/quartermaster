@@ -413,11 +413,18 @@ impl App {
     }
 
     fn on_system_key(&mut self, code: KeyCode) -> bool {
-        if code != KeyCode::Char('s') {
-            return false;
+        match code {
+            KeyCode::Char('n' | ' ') => self.toggle_notifications(),
+            KeyCode::Char('s') => self.show(Screen::Setup),
+            _ => return false,
         }
-        self.show(Screen::Setup);
         true
+    }
+
+    /// Turns macOS notifications on or off.
+    fn toggle_notifications(&mut self) {
+        let enabled = !self.view.settings.model.notifications;
+        self.intend(Command::SetNotifications { enabled });
     }
 
     fn on_connect_key(&mut self, code: KeyCode, now: Instant) -> bool {
@@ -619,6 +626,7 @@ impl App {
                     self.set_project_autonomy(i, autonomy);
                 }
             }
+            SettingsHit::NotificationsSwitch => self.toggle_notifications(),
             SettingsHit::SetupCheck => self.show(Screen::Setup),
             SettingsHit::PinModel => self.open_picker(PickFor::PinModel, hit),
             SettingsHit::PinFallback => self.open_picker(PickFor::PinFallback, hit),

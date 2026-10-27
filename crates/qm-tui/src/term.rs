@@ -48,6 +48,10 @@ pub(crate) struct Term {
     pub(crate) background: Background,
     /// The colours this window is drawn with, fitted to its terminal (`theme::scoped` per frame).
     pub(crate) palette: Palette,
+    /// How this window draws the logo, when its terminal shows images.
+    pub(crate) logo: Option<crate::logo::Ink>,
+    /// Where the last frame showed the logo.
+    pub(crate) logos: Vec<crate::logo::Placed>,
 }
 
 impl Term {
@@ -70,6 +74,8 @@ impl Term {
             ssh: crate::input::clipboard::is_ssh(tty.as_deref(), connection.as_deref()),
             background: Background::Unknown,
             palette: Palette::DEFAULT,
+            logo: None,
+            logos: Vec::new(),
         }
     }
 }

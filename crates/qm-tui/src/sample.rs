@@ -16,7 +16,7 @@ use jiff::tz::TimeZone;
 use qm_types::api::{
     AccountBadge, ActionItem, ActionKey, ActionKind, ActionOpen, AgentContextView, AgentRef,
     Attention, Card, CardAction, CardButton, CardKind, CardLine, ChatLine, CompactingView,
-    CompactionNote, ContextBasisView, ContextOccupancy, CrewRow, CrewTask, DiffFile,
+    CompactionNote, ContextBasisView, ContextOccupancy, CrewPhase, CrewRow, CrewTask, DiffFile,
     DiffFileStatus, DiffHunk, DiffLine, DiffLineKind, HeldAnswer, HeldChoice, NoteOutcome,
     PointView, ProjectRow, ProjectTask, SessionLine, SessionLineKind, SessionView, Snapshot,
     Styled, TaskDetail, TaskRow, Tone, TurnTokens, Waiting,
@@ -65,6 +65,10 @@ pub const CONTEXT_UNKNOWN: &str = "context-unknown";
 /// The Bridge with the Actions inbox focused and a long list in it.
 pub const ACTIONS: &str = "actions";
 
+/// The Bridge before the first message: the conversation empty (with the logo, where the
+/// terminal shows images).
+pub const EMPTY: &str = "empty";
+
 /// Puts the sample worker session into `app`: C-0042's session in the Bridge sample's middle
 /// panel, the input focused and empty. Nothing waits for you.
 pub(crate) fn install_session(app: &mut App) {
@@ -95,6 +99,9 @@ pub fn session_view() -> SessionView {
     let mut view = SessionView::new(task(42));
     view.title = String::from("fix(auth): token refresh race");
     view.note = String::from("api-server · sonnet-5-5 · supervisor: Quartermaster");
+    view.model = Some(model_id("claude:sonnet-5-5"));
+    view.effort = Some(Effort::High);
+    view.place = String::from("api-server · qm/task-0042 ← main · supervisor: Quartermaster");
     view.lines = vec![
         brief,
         line(
@@ -181,6 +188,11 @@ pub(crate) fn install_from_env(app: &mut App) -> bool {
             install(app);
             app.snapshot.context = Vec::new();
         }
+        Ok(EMPTY) => {
+            install(app);
+            app.snapshot.conversation.clear();
+            app.snapshot.thinking = false;
+        }
         _ => return false,
     }
     true
@@ -241,6 +253,9 @@ pub fn secondmate_view() -> SessionView {
     let mut view = SessionView::new(secondmate_ref());
     view.title = String::from("secondmate");
     view.note = String::from("web-app frontend and its API client · idle");
+    view.model = Some(model_id("claude:opus-5-5"));
+    view.effort = Some(Effort::Medium);
+    view.place = String::from("web-app frontend and its API client");
     view.status = String::from("idle");
     view.subtitle = String::from("Charter · web-app: the frontend, its API client and its build");
     view.open = true;
@@ -348,25 +363,30 @@ pub fn snapshot() -> Snapshot {
 
 fn projects() -> Vec<ProjectRow> {
     let task = |n: u32, title: &str| ProjectTask::new(label_id(n), title);
-    let mut api = ProjectRow::new("api-server", DeliveryMode::DirectPr, Autonomy::Normal);
+    let mut api = ProjectRow::new("api-server", DeliveryMode::DirectPr, Autonomy::Normal)
+        .at("~/code/api-server", "main");
     api.active = true;
     api.tasks = vec![
         task(42, "fix(auth): token refresh race"),
         task(39, "feat(billing): prorate plan changes"),
+        task(41, "docs(api): refresh the endpoint docs"),
     ];
-    let mut web = ProjectRow::new("web-app", DeliveryMode::DirectPr, Autonomy::Auto);
+    let mut web = ProjectRow::new("web-app", DeliveryMode::DirectPr, Autonomy::Auto)
+        .at("~/code/web-app", "main");
     web.active = true;
     web.tasks = vec![
         task(45, "feat(upload): resumable uploads"),
         task(47, "fix(ci): flaky upload test"),
     ];
-    let mut dotfiles = ProjectRow::new("dotfiles", DeliveryMode::BranchOnly, Autonomy::Normal);
+    let mut dotfiles = ProjectRow::new("dotfiles", DeliveryMode::BranchOnly, Autonomy::Normal)
+        .at("~/dotfiles", "master");
     dotfiles.tasks = vec![task(48, "fix(zsh): slow prompt start")];
     vec![
         api,
         web,
         dotfiles,
-        ProjectRow::new("personal", DeliveryMode::BranchOnly, Autonomy::Normal),
+        ProjectRow::new("notes", DeliveryMode::Folder, Autonomy::Normal)
+            .at("~/Documents/notes", ""),
     ]
 }
 
@@ -385,35 +405,64 @@ fn crew() -> Vec<CrewRow> {
         row.busy = true;
         row
     };
-    // Each crewmate under its task: C-0046 reviews C-0042's fix in T-0042; S-02 runs two tasks.
-    let under = |mut row: CrewRow, n: u32, project: &str| {
-        row.task = Some(CrewTask::new(label_id(n), format!("T-{n:04} {project}")));
+    // Each crewmate under its task, named as the Quartermaster named it: C-0046 reviews C-0042's
+    // fix in T-0042; S-02 runs two tasks.
+    let under = |mut row: CrewRow, n: u32, (name, project): (&str, &str), phase: CrewPhase| {
+        row.kind = row
+            .label
+            .split_once(' ')
+            .map(|(_, kind)| kind.to_owned())
+            .unwrap_or_default();
+        row.task =
+            Some(CrewTask::new(label_id(n), format!("T-{n:04} {project}")).named(name, project));
+        row.phase = phase;
         row
     };
+    let reported = CrewRow::new(task(41), 1, "C-0041 docs", "reported");
     vec![
         CrewRow::new(AgentRef::Quartermaster, 0, "Quartermaster", "ready"),
         under(
             busy(CrewRow::new(task(42), 1, "C-0042 fix", "12m")),
             42,
-            "api-server",
+            ("Token refresh race", "api-server"),
+            CrewPhase::Working,
         ),
         under(
             CrewRow::new(task(46), 1, "C-0046 review", "2m"),
             42,
-            "api-server",
+            ("Token refresh race", "api-server"),
+            CrewPhase::Working,
         ),
-        under(approve, 39, "api-server"),
-        under(decide, 47, "web-app"),
+        under(
+            approve,
+            39,
+            ("Proration preview", "api-server"),
+            CrewPhase::Waiting,
+        ),
+        under(
+            decide,
+            47,
+            ("Flaky upload test", "web-app"),
+            CrewPhase::Waiting,
+        ),
+        under(
+            reported,
+            41,
+            ("API docs refresh", "api-server"),
+            CrewPhase::Done,
+        ),
         CrewRow::new(secondmate, 1, "S-02 web-app", "idle"),
         under(
             busy(CrewRow::new(task(45), 2, "C-0045 build", "3m")),
             45,
-            "web-app",
+            ("Resumable uploads", "web-app"),
+            CrewPhase::Working,
         ),
         under(
             CrewRow::new(task(48), 2, "C-0048 fix", "waits"),
             48,
-            "dotfiles",
+            ("Slow shell prompt", "dotfiles"),
+            CrewPhase::Waiting,
         ),
     ]
 }
@@ -777,10 +826,20 @@ fn tasks() -> Vec<TaskDetail> {
             Some("status"),
             vec![s("running", Tone::Ok), s(" 12m", Tone::Text)],
         ),
+        TaskRow::new(
+            Some("tokens"),
+            vec![s(
+                "in 2.5k · cache read 2.0M · cache write 106k · out 62k · $2.48 · 14 turns",
+                Tone::Text,
+            )],
+        ),
     ];
+    detail.kind = String::from("code");
     detail.activity = vec![
-        String::from("Bash cargo test auth"),
+        String::from("Read src/auth/refresh.rs"),
+        String::from("Bash cargo test auth  → 41 passed"),
         String::from("Edit src/auth/refresh.rs"),
+        String::from("delivery_check"),
     ];
     detail.running = true;
     vec![detail]
@@ -1114,6 +1173,7 @@ pub(crate) fn settings_with(login: SampleLogin) -> Settings {
         unavailable: None,
         tier_efforts: qm_types::config::TierEfforts::default(),
         autocompact_window: qm_types::config::AutocompactWindow::default(),
+        notifications: true,
         kind_tiers: sample_kind_tiers(),
     }
 }
@@ -1505,14 +1565,26 @@ fn held_item(card: Card, at: Timestamp) -> ActionItem {
     }
     .unwrap_or_else(|| card.heading.clone());
     let id = card.held.unwrap_or_else(|| HeldActionId::new(0));
-    ActionItem::new(
+    // The crewmate it waits for, named first in the card's title (`C-0039`).
+    let task = card
+        .title
+        .as_deref()
+        .and_then(|t| t.split_whitespace().next())
+        .and_then(|c| c.strip_prefix("C-"))
+        .and_then(|n| n.parse().ok())
+        .map(task_id);
+    let item = ActionItem::new(
         ActionKey::Held { id },
         kind,
         title.trim(),
         at,
         card,
         ActionOpen::Conversation,
-    )
+    );
+    match task {
+        Some(task) => item.with_task(task).with_from(AgentRef::Crewmate { task }),
+        None => item,
+    }
 }
 
 /// The inbox the core would build from the sample: a configuration prompt, then `items` and a

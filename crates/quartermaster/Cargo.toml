@@ -13,6 +13,7 @@ qm-core.workspace = true
 qm-engine.workspace = true
 qm-engine-claude.workspace = true
 qm-github.workspace = true
+qm-notify.workspace = true
 qm-providers.workspace = true
 qm-store.workspace = true
 qm-tools.workspace = true

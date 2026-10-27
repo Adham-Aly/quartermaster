@@ -23,6 +23,7 @@ fn request(title: &str) -> StartRequest {
         in_place: false,
         create_folder: false,
         label: None,
+        name: None,
         kind: TaskKind::Research,
         title: format!("test(core): {title}"),
         goal: "Answer the question".into(),

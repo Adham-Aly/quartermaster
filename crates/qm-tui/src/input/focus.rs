@@ -15,8 +15,8 @@ pub(crate) fn order(folded: bool, overlay: bool, session: bool) -> Vec<Pane> {
     };
     let mut order = vec![
         Pane::Projects,
-        Pane::Crew,
         Pane::Actions,
+        Pane::Crew,
         middle,
         Pane::Input,
     ];
@@ -81,6 +81,8 @@ impl App {
             self.set_input(String::new());
         } else if self.screen != Screen::Bridge {
             self.show(Screen::Bridge);
+        } else if self.focus == Pane::Projects && self.view.open_project.is_some() {
+            self.change(|app| &mut app.view.open_project, None);
         } else if session.is_some() {
             // Never an interrupt here: `i` on the session box stops the worker.
             self.leave_session();

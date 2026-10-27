@@ -42,6 +42,18 @@ pub struct Colors {
     pub bg: Option<[u8; 3]>,
     #[serde(default)]
     pub ansi: Vec<Option<[u8; 3]>>,
+    /// Whether the terminal takes 24-bit colour (`COLORTERM`), so the host may draw with the
+    /// app's own palette rather than the terminal's 16.
+    #[serde(default)]
+    pub truecolor: bool,
+    /// Whether the terminal shows images by the kitty graphics protocol, so the host may draw
+    /// the logo.
+    #[serde(default)]
+    pub graphics: bool,
+    /// One cell's size in pixels, `[width, height]`, when the terminal says: the logo is drawn
+    /// at it.
+    #[serde(default)]
+    pub cell_pixels: Option<[u16; 2]>,
 }
 
 /// The client's first frame: who it is and what its terminal can do.
@@ -63,6 +75,10 @@ pub struct Hello {
     pub term: String,
     #[serde(default)]
     pub colors: Colors,
+    /// The terminal app the client runs in, by its bundle ID (`com.mitchellh.ghostty`), when the
+    /// client knows it: notifications hold back while it is frontmost and a window in it has focus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_app: Option<String>,
 }
 
 impl Hello {
@@ -80,6 +96,7 @@ impl Hello {
             keyboard_enhanced: false,
             term: String::new(),
             colors: Colors::default(),
+            terminal_app: None,
         }
     }
 }
@@ -182,6 +199,9 @@ pub enum Control {
     Suspend,
     /// Restore the terminal and return.
     Exit { reason: ExitReason },
+    /// A notification was clicked and this is the window you used last: bring its own tab (or
+    /// tmux window) forward, so the click lands on Quartermaster and not on another tab.
+    Raise,
 }
 
 /// A key, independent of crossterm.
@@ -473,6 +493,9 @@ mod tests {
                 fg: Some([1, 2, 3]),
                 bg: None,
                 ansi: vec![Some([9, 9, 9]), None],
+                truecolor: true,
+                graphics: true,
+                cell_pixels: Some([16, 34]),
             }),
             Frame::Detach,
             Frame::Request(Request::Stop { force: true }),

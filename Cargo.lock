@@ -2348,6 +2348,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "qm-notify"
+version = "0.7.1"
+dependencies = [
+ "jiff",
+ "qm-types",
+ "rustix",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "qm-plans"
 version = "0.7.1"
 dependencies = [
@@ -2448,6 +2462,7 @@ dependencies = [
 name = "qm-tui"
 version = "0.7.1"
 dependencies = [
+ "base64 0.22.1",
  "crossterm",
  "jiff",
  "nix 0.31.3",
@@ -2494,6 +2509,7 @@ dependencies = [
  "qm-engine",
  "qm-engine-claude",
  "qm-github",
+ "qm-notify",
  "qm-providers",
  "qm-store",
  "qm-tools",

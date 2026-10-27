@@ -1086,6 +1086,7 @@ pub(crate) async fn start_when_ready(
             };
             let new = NewTask {
                 label,
+                name: req.name.clone(),
                 branch: branch.clone(),
                 project: project.id,
                 supervisor: caller.agent,
@@ -2042,11 +2043,12 @@ pub(crate) async fn start_retry(
             let project = load_project(conn, row.project)?;
             let role = agents::role_of(conn, row.supervisor)?;
             let original = qm_store::crew_view::resolved_words(conn, retried)?;
-            Ok(Some((row, project, role, original)))
+            let name = qm_store::task_labels::name(conn, row.label)?;
+            Ok(Some((row, project, role, original, name)))
         })
         .await
         .map_err(|e| failed(&e))?;
-    let Some((row, project, role, original)) = loaded else {
+    let Some((row, project, role, original, name)) = loaded else {
         return Err(refuse(format!("{retried} doesn't exist")));
     };
     let Some(project) = project else {
@@ -2090,6 +2092,8 @@ pub(crate) async fn start_retry(
         label: None,
         kind: row.kind,
         title: row.title.clone(),
+        // The retry is the same work, under the name it had.
+        name,
         goal: row.goal.clone(),
         constraints: serde_json::from_value(row.constraints.clone()).unwrap_or_default(),
         tests_required: row.tests_required,

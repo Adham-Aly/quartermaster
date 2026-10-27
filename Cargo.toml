@@ -21,6 +21,7 @@ members = [
     "crates/qm-auth",
     "crates/qm-tui",
     "crates/qm-plans",
+    "crates/qm-notify",
     "xtask",
 ]
 
@@ -48,6 +49,7 @@ qm-tools = { path = "crates/qm-tools" }
 qm-tui = { path = "crates/qm-tui" }
 qm-types = { path = "crates/qm-types" }
 qm-plans = { path = "crates/qm-plans" }
+qm-notify = { path = "crates/qm-notify" }
 
 # Serialisation and schemas.
 schemars = "1.2.3"

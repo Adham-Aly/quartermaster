@@ -54,8 +54,8 @@ impl Delivery {
             plan: None,
         };
         // Seed exactly as start does, but don't launch an engine in this fixture.
-        fs::create_dir_all(
-            svc.deps()
+        qm_types::data_dir::private_folder(
+            &svc.deps()
                 .data_dir
                 .task(caller.task.unwrap(), caller.task.unwrap().own_label())
                 .artifacts,
@@ -418,7 +418,7 @@ async fn four_answer_kinds_refuse_missing_or_template_then_deliver_and_surface()
 async fn retiring_a_read_report_removes_its_crew_row_and_artifacts_at_once() {
     let delivery = Delivery::new(TaskKind::Lookup).await;
     delivery.write_page();
-    fs::create_dir_all(delivery.artifacts().join("evidence")).unwrap();
+    qm_types::data_dir::private_folder(&delivery.artifacts().join("evidence")).unwrap();
     fs::write(delivery.artifacts().join("evidence/before.txt"), "seen").unwrap();
     // A file the crewmate made outside the data folder, as a user might ask for.
     let outside = std::env::temp_dir().join(format!("qm-outside-{}.txt", std::process::id()));
@@ -530,7 +530,7 @@ async fn unfinished_outcomes_and_other_kinds_do_not_require_html() {
         assert!(!result.is_error, "{kind}: {result:?}");
         assert!(!delivery.page().exists());
         // Even a page left in its folder gives a kind without a required report no card.
-        fs::create_dir_all(delivery.page().parent().unwrap()).unwrap();
+        qm_types::data_dir::private_folder(delivery.page().parent().unwrap()).unwrap();
         delivery.write_page();
         delivery.assert_no_card().await;
     }

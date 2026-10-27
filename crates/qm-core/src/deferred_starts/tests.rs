@@ -24,6 +24,7 @@ fn request() -> StartRequest {
         label: None,
         kind: TaskKind::Research,
         title: "test(core): investigate follow-up".into(),
+        name: None,
         goal: "Answer the question".into(),
         constraints: vec![],
         tests_required: false,

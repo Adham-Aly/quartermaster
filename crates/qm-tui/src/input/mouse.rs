@@ -177,7 +177,12 @@ impl App {
     /// What a left click on `hit` does.
     fn left_click(&mut self, hit: Hit, double: bool, now: Instant) {
         match hit {
-            Hit::Project(i) | Hit::ProjectTask(i) => {
+            Hit::Project(i) => {
+                self.change(|app| &mut app.view.selected_project, Some(i));
+                self.focus_pane(Pane::Projects);
+                self.toggle_project(i);
+            }
+            Hit::ProjectTask(i) => {
                 self.change(|app| &mut app.view.selected_project, Some(i));
                 self.focus_pane(Pane::Projects);
             }

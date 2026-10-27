@@ -1,6 +1,7 @@
 //! The Projects and System tabs. Projects shows your projects and how they deliver, with each
-//! one's autonomy, normal or auto (yours alone: no agent can change it); System shows this Mac and
-//! the entry to the setup check, with what it found wrong and how to fix it.
+//! one's autonomy, normal or auto (yours alone: no agent can change it); System shows this Mac, the
+//! notifications switch and the entry to the setup check, with what it found wrong and how to fix
+//! it.
 
 use super::paint::Painter;
 use super::{SettingsHit, section};
@@ -8,6 +9,7 @@ use crate::app::App;
 use crate::text::{cells, truncate, width};
 use crate::theme;
 use qm_types::api::SetupMark;
+use qm_types::attention::Health;
 use qm_types::domain::{Autonomy, DeliveryMode};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -106,7 +108,7 @@ fn setup_findings(app: &App, room: usize) -> Vec<Vec<(String, Style)>> {
 pub(super) fn draw_system(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let room = usize::from(area.width.saturating_sub(SYSTEM_COLUMN + 1));
     let findings = setup_findings(app, room);
-    let inner = section(area, 3 + cells(findings.len()));
+    let inner = section(area, 5 + cells(findings.len()));
     let x = inner.x + 1;
     let room = usize::from(inner.width.saturating_sub(2));
     let machine = if app.snapshot.machine.is_empty() {
@@ -124,8 +126,33 @@ pub(super) fn draw_system(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
     let right = inner.right().saturating_sub(1);
     let col = inner.x + SYSTEM_COLUMN;
 
-    // The setup check.
+    // Notifications.
     let y = inner.y + 2;
+    p.text(x, y, "Notifications", theme::strong());
+    let switch = if app.view.settings.model.notifications {
+        "● On"
+    } else {
+        "○ Off"
+    };
+    let left = p.button_left_of(right, y, switch, SettingsHit::NotificationsSwitch);
+    // The text stops where the wider of the two would start, so it holds still as you flip it.
+    let wider = u16::try_from(width("○ Off") - width(switch)).unwrap_or(0);
+    let (about, style) = notifications_about(
+        app.view.settings.model.notifications,
+        app.view.settings.notifier,
+    );
+    p.text(
+        col,
+        y,
+        &truncate(
+            about,
+            usize::from(left.saturating_sub(wider).saturating_sub(col + 1)),
+        ),
+        style,
+    );
+
+    // The setup check.
+    let y = inner.y + 4;
     p.text(x, y, "Setup check", theme::strong());
     let left = p.button_left_of(right, y, "Open", SettingsHit::SetupCheck);
     p.text(
@@ -143,6 +170,24 @@ pub(super) fn draw_system(p: &mut Painter<'_, '_>, area: Rect, app: &App) {
             at = p.text(at, row, &text, style);
         }
     }
+}
+
+/// The Notifications row's text: what they do, or what stops them while they are on.
+fn notifications_about(on: bool, health: Health) -> (&'static str, Style) {
+    let problem = match health {
+        _ if !on => None,
+        Health::TextHidden => Some("text hidden: set Show previews to Always"),
+        Health::Denied => Some("blocked: allow them in System Settings"),
+        Health::Failed => Some("can't start: the log says why"),
+        _ => None,
+    };
+    problem.map_or(
+        (
+            "a banner and the menu bar mark when something waits on you",
+            theme::text(),
+        ),
+        |problem| (problem, theme::warn()),
+    )
 }
 
 /// A mode's button text: `● normal` when it is the project's, `○ auto` when it isn't.
@@ -205,28 +250,82 @@ mod tests {
     }
 
     #[test]
-    fn former_system_shortcuts_do_not_change_settings_or_reach_the_prompt() {
+    fn system_keys_flip_notifications_without_reaching_the_prompt() {
         let mut app = App::new();
         app.view.settings.tab = Tab::System;
+        app.view.settings.model.notifications = true;
         app.open_popup(Popup::Settings);
         assert_eq!(app.take_commands(), [Command::RefreshQuotas]);
-        let before = app.view.settings.model.clone();
-        for code in [KeyCode::Char('n'), KeyCode::Char(' ')] {
-            app.on_key(KeyEvent::new(code, KeyModifiers::NONE), Instant::now());
-            assert_eq!(app.view.settings.model, before);
-            assert_eq!(
-                app.view.settings.pending,
-                [] as [super::super::sync::Pending; 0]
-            );
-            assert_eq!(app.take_commands(), [] as [Command; 0]);
-            assert_eq!(app.screen, Screen::Bridge);
-            assert_eq!(app.popup(), Some(Popup::Settings));
-            assert_eq!(app.draft.text, "");
-        }
+        app.on_key(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            Instant::now(),
+        );
+        assert_eq!(
+            app.take_commands(),
+            [Command::SetNotifications { enabled: false }]
+        );
+        assert!(!app.view.settings.model.notifications);
+        app.on_key(
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            Instant::now(),
+        );
+        assert_eq!(
+            app.take_commands(),
+            [Command::SetNotifications { enabled: true }]
+        );
+        assert_eq!(app.screen, Screen::Bridge);
+        assert_eq!(app.popup(), Some(Popup::Settings));
+        assert_eq!(app.draft.text, "");
     }
 
     #[test]
-    fn compact_system_setup_check_draws_and_opens_by_click_at_supported_sizes() {
+    fn the_notifications_row_says_what_stops_them_and_holds_still() {
+        let row = |on: bool, health: Health| {
+            let mut app = App::new();
+            app.view.settings.tab = Tab::System;
+            app.view.settings.model.notifications = on;
+            app.view.settings.notifier = health;
+            app.open_popup(Popup::Settings);
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let switch = app
+                .term
+                .drawn
+                .hits
+                .rect_of(Hit::Settings(SettingsHit::NotificationsSwitch))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..120)
+                .map(|x| buffer[(x, switch.y)].symbol())
+                .collect::<String>()
+        };
+        let hidden = row(true, Health::TextHidden);
+        assert!(
+            hidden.contains("text hidden: set Show previews to Always"),
+            "{hidden}"
+        );
+        assert!(row(true, Health::Denied).contains("blocked: allow them"));
+        // Off, a problem with them doesn't matter.
+        assert!(row(false, Health::TextHidden).contains("a banner and the menu bar mark"));
+        // Flipping the switch leaves the text where it was.
+        let text = |row: &str| {
+            row.split("●")
+                .next()
+                .unwrap()
+                .split("○")
+                .next()
+                .unwrap()
+                .trim_end()
+                .to_owned()
+        };
+        assert_eq!(
+            text(&row(true, Health::Ready)),
+            text(&row(false, Health::Ready))
+        );
+    }
+
+    #[test]
+    fn system_draws_notifications_and_the_setup_check_at_supported_sizes() {
         for (width, height) in [(150, 45), (120, 40), (119, 40), (100, 30)] {
             let mut app = App::new();
             app.view.settings.tab = Tab::System;
@@ -248,10 +347,18 @@ mod tests {
                 .iter()
                 .position(|row| row.contains("This Mac"))
                 .unwrap();
-            assert_eq!(usize::from(open.y), machine_y + 2);
+            assert_eq!(usize::from(open.y), machine_y + 4);
             assert!(rows[usize::from(open.y)].contains("Setup check"));
             assert!(rows[usize::from(open.y)].contains("Open"));
-            assert!(!rows.iter().any(|row| row.contains("Notifications")));
+            let switch = app
+                .term
+                .drawn
+                .hits
+                .rect_of(Hit::Settings(SettingsHit::NotificationsSwitch))
+                .expect("System draws the notifications switch");
+            assert_eq!(usize::from(switch.y), machine_y + 2);
+            assert!(rows[usize::from(switch.y)].contains("Notifications"));
+            assert!(rows[usize::from(switch.y)].contains("○ Off"));
             app.on_mouse(
                 MouseEvent {
                     kind: MouseEventKind::Down(MouseButton::Left),

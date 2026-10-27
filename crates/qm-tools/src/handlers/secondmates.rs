@@ -225,6 +225,9 @@ pub(crate) fn prepare_secondmate_start(
         label: args.join_task,
         kind: args.kind,
         title: args.title.trim().to_owned(),
+        name: args
+            .name
+            .map(|n| n.split_whitespace().collect::<Vec<_>>().join(" ")),
         goal: args.goal,
         constraints: args.constraints,
         tests_required: args.tests_required,

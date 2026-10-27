@@ -25,6 +25,8 @@ syntect.workspace = true
 # The setup check's embedded terminal pane.
 portable-pty.workspace = true
 vt100.workspace = true
+# The logo's image data, as the kitty graphics protocol takes it.
+base64.workspace = true
 
 [lints]
 workspace = true

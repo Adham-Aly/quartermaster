@@ -225,59 +225,65 @@ impl App {
             }
             return;
         }
+        if code == KeyCode::Enter {
+            // With nothing picked yet, Enter opens the first.
+            let picked = self.view.selected_project.filter(|&i| i < rows);
+            if let Some(i) = picked.or((rows > 0).then_some(0)) {
+                self.change(|app| &mut app.view.selected_project, Some(i));
+                self.toggle_project(i);
+            }
+            return;
+        }
         if let Some(at) = list_move(code, self.view.selected_project, rows) {
             self.change(|app| &mut app.view.selected_project, Some(at));
-            // Its line in the pane, below the tasks of the projects above it.
-            let line = at
-                + self.snapshot.projects[..at]
-                    .iter()
-                    .map(|p| p.tasks.len())
-                    .sum::<usize>();
-            self.keep_row_visible(Pane::Projects, line);
+            let lines = crate::widgets::projects::lines_of(self, at);
+            self.keep_row_visible(Pane::Projects, lines.end - 1);
+            self.keep_row_visible(Pane::Projects, lines.start);
         }
     }
 
     fn on_crew_key(&mut self, code: KeyCode, now: Instant) {
         self.show_selection();
-        // The agents, each with its line in the tree; a task's heading is passed over.
-        let rows = crate::widgets::crew::agent_lines(&self.snapshot.crew);
+        // The agents, each with its lines in the list as last drawn, in the order drawn.
+        let spots = self.term.drawn.crew_spots.clone();
         let current = self
             .view
             .selected_crew
-            .and_then(|agent| rows.iter().position(|&(_, a)| a == agent));
+            .and_then(|agent| spots.iter().position(|(_, a)| *a == agent));
         match code {
             KeyCode::Enter | KeyCode::Char('o') => {
                 if let Some(at) = current {
-                    self.open_crew(rows[at].1, true, now);
+                    self.open_crew(spots[at].1, true, now);
                 }
             }
             KeyCode::Char(' ') => {
                 if let Some(at) = current {
-                    self.open_menu_for_row(MenuTarget::Crew(rows[at].1));
+                    self.open_menu_for_row(MenuTarget::Crew(spots[at].1));
                 }
             }
             _ => {
-                if let Some(at) = list_move(code, current, rows.len()) {
-                    let (line, agent) = rows[at];
+                if let Some(at) = list_move(code, current, spots.len()) {
+                    let (lines, agent) = spots[at].clone();
                     self.select_crew(agent);
-                    // A task's first crewmate brings the heading above it into view too.
-                    let previous = at.checked_sub(1).map_or(0, |p| rows[p].0 + 1);
-                    if line > previous {
-                        self.keep_row_visible(Pane::Crew, line - 1);
-                    }
-                    self.keep_row_visible(Pane::Crew, line);
+                    // The last line, then the first, so a task's name above its crewmate shows.
+                    self.keep_row_visible(Pane::Crew, lines.end.saturating_sub(1));
+                    self.keep_row_visible(Pane::Crew, lines.start);
                 }
             }
         }
     }
 
     /// Scrolls a list pane so row `at` shows, using the last frame's box for its height.
-    fn keep_row_visible(&mut self, pane: Pane, at: usize) {
+    pub(crate) fn keep_row_visible(&mut self, pane: Pane, at: usize) {
         let Some(area) = self.term.drawn.hits.rect_of(Hit::Pane(pane)) else {
             return;
         };
-        let visible = usize::from(area.height.saturating_sub(2)).max(1);
         let max = self.term.drawn.scroll_max_of(pane);
+        // A Projects list that doesn't fit gives its last line to `↓ 4 more`.
+        let reserved = usize::from(pane == Pane::Projects && max > 0);
+        let visible = usize::from(area.height.saturating_sub(2))
+            .saturating_sub(reserved)
+            .max(1);
         let scroll = match pane {
             Pane::Projects => &mut self.view.projects_scroll,
             Pane::Crew => &mut self.view.crew_scroll,

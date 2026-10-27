@@ -243,3 +243,18 @@ fn a_drafts_words_never_reach_the_ui_file() {
     assert!(!text.contains("a secret plan"));
     assert!(!text.contains("tell the crew"));
 }
+
+#[test]
+fn an_action_card_does_not_come_back_empty() {
+    let home = Home::new();
+    fs::write(
+        home.file(),
+        r#"{"popups": [{"popup":"Help","anchor":"Centre"}, {"popup":"Action","anchor":"Centre"}]}"#,
+    )
+    .unwrap();
+    let (app, _persist) = open(&home);
+    assert_eq!(
+        app.view.popups.iter().map(|o| o.popup).collect::<Vec<_>>(),
+        [Popup::Help]
+    );
+}

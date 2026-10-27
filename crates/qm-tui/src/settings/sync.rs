@@ -38,6 +38,7 @@ impl Settings {
             tier_efforts: view.tier_efforts.clone(),
             autocompact_window: view.autocompact_window,
             kind_tiers: view.kind_tiers.clone(),
+            notifications: view.notifications,
         }
     }
 }

@@ -2,7 +2,8 @@
 //! status bar, the quit dialog, and the notice for a terminal too small to draw in.
 
 use crate::app::App;
-use crate::hit::{Hit, Hits, StatusItem};
+use crate::hit::{FrameMap, Hit, Hits, StatusItem};
+use crate::logo;
 use crate::popups::Popup;
 use crate::router::Screen;
 use crate::text::{cells, truncate, width};
@@ -35,18 +36,23 @@ const ACTIONS_HINTS: &str = "⏎ open · ↑↓ move · ⇥ next pane";
 
 /// The keys in an Actions item's detail.
 const ACTION_HINTS: &str = "←→ pick · ⏎ press · letters press · esc close";
-/// The menu button's label.
-const MENU: &str = "☰ Menu";
+/// The brand mark, which opens the menu: the logo where the terminal can show it, else this.
+const MARK: &str = "◆";
+/// The menu button's words, after the mark.
+const MENU: &str = "quartermaster";
+/// The cells the logo covers in the top bar, where the terminal shows images.
+const LOGO_SLOT: &str = "  ";
 
 /// Draws the top bar and the status bar, and returns the body area between them, or
 /// `None` when the terminal is too small (the notice is drawn instead).
-pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, hits: &mut Hits) -> Option<Rect> {
+pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, map: &mut FrameMap) -> Option<Rect> {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         draw_too_small(frame, area);
         return None;
     }
-    draw_top_bar(frame, Rect::new(area.x, area.y, area.width, 1), app, hits);
+    draw_top_bar(frame, Rect::new(area.x, area.y, area.width, 1), app, map);
+    let hits = &mut map.hits;
     let top = area.y + 1;
     let status_row = area.bottom() - 1;
     draw_status_bar(
@@ -75,9 +81,9 @@ fn draw_too_small(frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
-fn draw_top_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits) {
-    let x = draw_menu_button(frame, area, app, hits);
-    let x = draw_update_notice(frame, area, x, app, hits);
+fn draw_top_bar(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut FrameMap) {
+    let x = draw_menu_button(frame, area, app, map);
+    let x = draw_update_notice(frame, area, x, app, &mut map.hits);
 
     // This Mac and one badge per account, right-aligned, never over the tabs.
     let snapshot = &app.snapshot;
@@ -101,22 +107,43 @@ fn draw_top_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits) {
     }
 }
 
-/// The menu button at the top bar's left, ` ☰ Menu `, lit while the pointer is over it or its
-/// menu is open. When an entry has a badge, its dot sits just outside the button, on the default
-/// background: red on the button's fill or accent can't be read in most themes. The dot is part
-/// of the button's click region. Returns the column after it.
-fn draw_menu_button(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits) -> u16 {
+/// The menu button at the top bar's left, ` ◆ quartermaster ▾ `: the brand, which opens the menu.
+/// At rest it has no fill (the mark in the accent, the name bold, the arrow dim); while the
+/// pointer is over it or its menu is open it is lit like any hovered button. Where the terminal
+/// shows images the mark is the logo, two cells wide, left of the lit part (the teal logo would
+/// vanish on the teal fill). When an entry has a badge, its dot sits just outside the button, on
+/// the default background: red on the accent can't be read in most themes. The dot is part of
+/// the button's click region. Returns the column after it.
+fn draw_menu_button(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut FrameMap) -> u16 {
     let open = app
         .view
         .menu
         .as_ref()
         .is_some_and(|menu| menu.target == MenuTarget::Main);
     let lit = open || app.term.hover == Some(Hit::MenuButton);
-    let mut spans = vec![
-        Span::raw(" "),
-        Span::styled(format!(" {MENU} "), theme::button(lit)),
-    ];
-    let mut button_width = button::width_of(MENU);
+    if app.term.logo.is_some() {
+        return draw_logo_menu_button(frame, area, app, map, lit);
+    }
+    let hits = &mut map.hits;
+    let words = format!(" {MARK} {MENU} ▾ ");
+    let mut spans = vec![Span::raw(" ")];
+    if lit {
+        spans.push(Span::styled(
+            words.clone(),
+            theme::button(true).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        spans.extend([
+            Span::raw(" "),
+            Span::styled(MARK, theme::accent()),
+            Span::raw(" "),
+            Span::styled(MENU, theme::strong()),
+            Span::raw(" "),
+            Span::styled("▾", theme::dim()),
+            Span::raw(" "),
+        ]);
+    }
+    let mut button_width = cells(width(&words));
     if app.menu_badge() {
         spans.push(Span::styled(dropdown::BADGE, theme::badge()));
         button_width += 1;
@@ -124,6 +151,47 @@ fn draw_menu_button(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hit
     frame.render_widget(Line::from(spans), area);
     let x = area.x + 1;
     hits.add(Rect::new(x, area.y, button_width, 1), Hit::MenuButton);
+    x + button_width
+}
+
+/// [`draw_menu_button`] where the terminal shows images: ` LL quartermaster ▾ `, the two cells
+/// `LL` left blank for the logo.
+fn draw_logo_menu_button(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    map: &mut FrameMap,
+    lit: bool,
+) -> u16 {
+    let words = format!(" {MENU} ▾ ");
+    let mut spans = vec![Span::raw(" "), Span::raw(" "), Span::raw(LOGO_SLOT)];
+    if lit {
+        spans.push(Span::styled(
+            words.clone(),
+            theme::button(true).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        spans.extend([
+            Span::raw(" "),
+            Span::styled(MENU, theme::strong()),
+            Span::raw(" "),
+            Span::styled("▾", theme::dim()),
+            Span::raw(" "),
+        ]);
+    }
+    let slot = cells(width(LOGO_SLOT));
+    let mut button_width = 1 + slot + cells(width(&words));
+    if app.menu_badge() {
+        spans.push(Span::styled(dropdown::BADGE, theme::badge()));
+        button_width += 1;
+    }
+    frame.render_widget(Line::from(spans), area);
+    let logo = Rect::new(area.x + 2, area.y, slot, 1).intersection(area);
+    map.logos
+        .push(logo::reserve(frame.buffer_mut(), logo::Size::Mark, logo));
+    let x = area.x + 1;
+    map.hits
+        .add(Rect::new(x, area.y, button_width, 1), Hit::MenuButton);
     x + button_width
 }
 
