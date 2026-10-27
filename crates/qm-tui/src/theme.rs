@@ -1,9 +1,9 @@
-//! Colours and text styles, drawn only from the terminal's own 16-colour palette.
+//! Colours and text styles: the app's teal palette in 24-bit colour, or the terminal's own 16.
 //!
-//! Nothing here names an RGB value or a 256-colour index: every colour is one of the 16 the
-//! terminal's theme defines, or the terminal's default foreground and background. When the app
-//! enters full-screen mode it asks the terminal what those colours are ([`query`]) and fits each
-//! role to them ([`fit`]), so text reads in light and dark themes alike. The fitted [`Palette`]
+//! Widgets never name a colour; they use the roles below. When the app enters full-screen mode it
+//! asks the terminal what its colours are ([`query`]) and fits each role to them ([`fit`]), so text
+//! reads in light and dark themes alike. A terminal that takes 24-bit colour and reports its
+//! background gets the brand's teal set; any other gets one of its 16 colours per role. The fitted [`Palette`]
 //! belongs to the window's view state and is put in force for each frame with [`scoped`]; the role
 //! functions below read it. Where the terminal doesn't say, the roles are the ones tuned for a
 //! dark background: dim text and idle borders are bright black, the accent
@@ -53,6 +53,14 @@ pub(crate) fn fit_reported(colors: &qm_types::wire::Colors) -> Palette {
     Palette::fit(&fit::Reported::from_wire(colors))
 }
 
+/// How a window draws the logo for what its client reported: `None` unless the terminal shows
+/// kitty-protocol images and said how big a cell is.
+pub(crate) fn logo_ink(colors: &qm_types::wire::Colors) -> Option<crate::logo::Ink> {
+    let reported = fit::Reported::from_wire(colors);
+    let cell = reported.cell_pixels.filter(|_| reported.graphics)?;
+    Some(crate::logo::Ink { cell })
+}
+
 /// The background of the fill (rest buttons, the current tab, the selected row).
 pub(crate) fn fill_background() -> Color {
     palette().fill
@@ -95,9 +103,44 @@ pub(crate) fn diff_addition() -> Style {
     palette().addition
 }
 
-/// A warning.
+/// A warning: decisions, notices, waiting.
 pub(crate) fn warn() -> Style {
-    Style::new().fg(palette().accent)
+    Style::new().fg(palette().warn)
+}
+
+/// A warning chip (`○ waits`): warn on a faint tint of it, or plain warn in 16 colours.
+pub(crate) fn warn_chip() -> Style {
+    let p = palette();
+    let style = Style::new().fg(p.warn);
+    match p.warn_tint {
+        Some(tint) => style.bg(tint),
+        None => style,
+    }
+}
+
+/// A section heading or an idle box's title.
+pub(crate) fn title() -> Style {
+    Style::new().fg(palette().title)
+}
+
+/// A box's title in the box's border `style`: the title colour while the border is idle (the
+/// idle border is too faint for words), else the border's own colour.
+pub(crate) fn title_on(border: Style) -> Style {
+    if border == rule() || border == dim() {
+        title()
+    } else {
+        border
+    }
+}
+
+/// Inline code and paths.
+pub(crate) fn code() -> Style {
+    Style::new().fg(palette().code)
+}
+
+/// An idle border or rule: fainter than dim text where the palette allows.
+pub(crate) fn rule() -> Style {
+    Style::new().fg(palette().border)
 }
 
 /// An error.
@@ -122,14 +165,14 @@ pub(crate) fn strong() -> Style {
 }
 
 /// A pane border and title: accent when focused, the default colour when the pointer is over it
-/// (a click would focus it), dim otherwise.
+/// (a click would focus it), the rule colour otherwise.
 pub(crate) fn border(focused: bool, hovered: bool) -> Style {
     if focused {
         accent()
     } else if hovered {
         text()
     } else {
-        dim()
+        rule()
     }
 }
 
@@ -147,7 +190,7 @@ pub(crate) fn on_selection(style: Style) -> Style {
     let p = palette();
     let fg = match style.fg {
         None | Some(Color::Reset) => p.on_fill,
-        Some(dim) if dim == p.dim => p.on_fill,
+        Some(faint) if faint == p.dim || faint == p.border => p.on_fill,
         Some(other) => p.on_fill_glyph(other),
     };
     style.fg(fg).bg(p.fill)
@@ -187,6 +230,25 @@ pub(crate) fn selected() -> Style {
 /// A button: the fill at rest, the accent under the pointer (black on yellow in a dark theme).
 pub(crate) fn button(hovered: bool) -> Style {
     if hovered { on_accent() } else { filled() }
+}
+
+/// The pane's main button: bold text on the accent at rest, reversed under the pointer.
+pub(crate) fn primary_button(hovered: bool) -> Style {
+    let style = on_accent().add_modifier(Modifier::BOLD);
+    if hovered {
+        style.add_modifier(Modifier::REVERSED)
+    } else {
+        style
+    }
+}
+
+/// A button that stops something: error text at rest, reversed under the pointer.
+pub(crate) fn danger_button(hovered: bool) -> Style {
+    if hovered {
+        error().add_modifier(Modifier::REVERSED)
+    } else {
+        error()
+    }
 }
 
 /// Text on the accent; where no accent colour reads in this theme, the fill inverted.

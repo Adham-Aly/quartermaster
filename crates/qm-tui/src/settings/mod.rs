@@ -156,7 +156,8 @@ pub(crate) enum SettingsHit {
     ResetKinds,
     /// Projects: one of a project's two autonomy buttons (normal, auto).
     ProjectAutonomy(usize, qm_types::domain::Autonomy),
-    /// System: the setup check's "Open".
+    /// System: the notifications switch and the setup check's "Open".
+    NotificationsSwitch,
     SetupCheck,
     /// Connect: a provider row and its button, "Add key", and the login's buttons.
     Provider(usize),
@@ -318,6 +319,8 @@ pub(crate) enum Confirm {
 pub(crate) struct SettingsView {
     /// What the screens show: the core's settings, or the developer sample.
     pub(crate) model: Settings,
+    /// How the notifier is doing (System), from the host.
+    pub(crate) notifier: qm_types::attention::Health,
     /// `model` holds real data: the core's first snapshot (or the sample) has arrived.
     pub(crate) loaded: bool,
     /// Changes sent to the core that no snapshot has shown yet.
@@ -543,7 +546,10 @@ const fn hints(tab: Tab) -> (&'static str, &'static str) {
             "? task kinds",
             "space pin · c model · f fallback · q quartermaster · e effort · −/+ window · esc",
         ),
-        Tab::System => ("click to open", "s setup check · esc close"),
+        Tab::System => (
+            "click to change",
+            "n notifications · s setup check · esc close",
+        ),
         Tab::Projects => ("click to change", "a normal or auto · esc close"),
     }
 }

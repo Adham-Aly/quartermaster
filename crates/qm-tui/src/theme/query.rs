@@ -5,7 +5,9 @@
 //! attributes (DA1). Every terminal answers DA1, and answers in order, so once its answer arrives
 //! nothing else is coming: a terminal that ignores the colour queries costs no wait. Where the
 //! terminal says nothing about its background, `COLORFGBG` (set by some terminals) still tells a
-//! light background from a dark one.
+//! light background from a dark one. `COLORTERM` says whether it takes 24-bit colour. Two more
+//! questions ride along for the logo: whether the terminal shows kitty-protocol images (a query
+//! for a one-pixel image it answers `OK` to) and how many pixels a cell is (`CSI 16 t`).
 
 use super::fit::{Reported, Rgb};
 use nix::sys::termios::{self, SetArg, SpecialCharacterIndices};
@@ -29,7 +31,13 @@ pub(crate) fn ask() -> Reported {
             .and_then(|v| colorfgbg_is_light(&v));
         reported.bg = light.map(|light| if light { Rgb::WHITE } else { Rgb::BLACK });
     }
+    reported.truecolor = std::env::var("COLORTERM").is_ok_and(|v| takes_truecolor(&v));
     reported
+}
+
+/// Whether a `COLORTERM` value says the terminal takes 24-bit colour.
+fn takes_truecolor(colorterm: &str) -> bool {
+    matches!(colorterm.trim(), "truecolor" | "24bit")
 }
 
 /// Sends the queries to the controlling terminal and returns what came back before the DA1
@@ -52,12 +60,21 @@ fn ask_terminal() -> io::Result<Vec<u8>> {
     Ok(answers)
 }
 
-/// The queries: foreground, background, the 16 palette colours, then DA1.
+/// The id of the graphics query's image: the terminal names it in its answer.
+const GRAPHICS_QUERY_ID: u32 = 31;
+
+/// The queries: foreground, background, the 16 palette colours, kitty graphics, the cell's
+/// size in pixels, then DA1.
 fn queries() -> String {
     let mut out = String::from("\x1b]10;?\x1b\\\x1b]11;?\x1b\\");
     for index in 0..16 {
         let _ = write!(out, "\x1b]4;{index};?\x1b\\");
     }
+    // `a=q` only asks: nothing is stored or shown.
+    let _ = write!(
+        out,
+        "\x1b_Gi={GRAPHICS_QUERY_ID},s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[16t"
+    );
     out.push_str("\x1b[c");
     out
 }
@@ -88,9 +105,14 @@ fn has_da1(bytes: &[u8]) -> bool {
     })
 }
 
-/// The colours in the terminal's answers: OSC 10, 11 and 4 replies, ended by BEL or ST.
+/// The terminal's answers: OSC 10, 11 and 4 replies (ended by BEL or ST), the graphics query's
+/// `OK`, and the cell size (`CSI 6 ; height ; width t`).
 pub(crate) fn parse(bytes: &[u8]) -> Reported {
-    let mut reported = Reported::default();
+    let mut reported = Reported {
+        graphics: find(bytes, format!("\x1b_Gi={GRAPHICS_QUERY_ID};OK").as_bytes()).is_some(),
+        cell_pixels: cell_pixels(bytes),
+        ..Reported::default()
+    };
     let mut rest = bytes;
     while let Some(start) = find(rest, b"\x1b]") {
         rest = &rest[start + 2..];
@@ -117,6 +139,19 @@ pub(crate) fn parse(bytes: &[u8]) -> Reported {
         }
     }
     reported
+}
+
+/// The cell size in pixels, (width, height), from a `CSI 6 ; height ; width t` answer; `None`
+/// without one, or for a size no real font has.
+fn cell_pixels(bytes: &[u8]) -> Option<(u16, u16)> {
+    let start = find(bytes, b"\x1b[6;")? + 4;
+    let rest = &bytes[start..];
+    let end = rest.iter().position(|b| *b == b't')?;
+    let body = std::str::from_utf8(&rest[..end]).ok()?;
+    let (height, width) = body.split_once(';')?;
+    let (width, height) = (width.parse::<u16>().ok()?, height.parse::<u16>().ok()?);
+    let plausible = |n: u16| (2..=512).contains(&n);
+    (plausible(width) && plausible(height)).then_some((width, height))
 }
 
 /// The first position of `needle` in `haystack`.
@@ -170,6 +205,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn colorterm_says_truecolor() {
+        assert!(takes_truecolor("truecolor"));
+        assert!(takes_truecolor("24bit"));
+        assert!(!takes_truecolor(""));
+        assert!(!takes_truecolor("yes"));
+    }
+
+    #[test]
     fn parses_answers_ended_by_st_or_bel() {
         let answers = b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\\x1b]10;rgb:00/00/00\x07\
             \x1b]4;8;rgb:a0a0/a1a1/a7a7\x1b\\\x1b]4;3;rgb:c/b/1\x1b\\\x1b[?1;2;4c";
@@ -193,6 +236,21 @@ mod tests {
         );
         assert_eq!(parse_color("rgb:12345/0/0"), None);
         assert_eq!(parse_color("red"), None);
+    }
+
+    #[test]
+    fn reads_the_graphics_answer_and_the_cell_size() {
+        let reported = parse(b"\x1b]11;rgb:0/0/0\x1b\\\x1b_Gi=31;OK\x1b\\\x1b[6;34;16t\x1b[?62c");
+        assert!(reported.graphics);
+        assert_eq!(reported.cell_pixels, Some((16, 34)));
+        assert_eq!(reported.bg, Some(Rgb::BLACK));
+        // An error answer, or none, means no images.
+        let refused = parse(b"\x1b_Gi=31;ENOTSUPPORTED:no\x1b\\\x1b[?62c");
+        assert!(!refused.graphics);
+        assert_eq!(refused.cell_pixels, None);
+        assert_eq!(cell_pixels(b"\x1b[6;0;9t"), None);
+        assert_eq!(cell_pixels(b"\x1b[6;20;9"), None);
+        assert!(queries().contains("\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[16t\x1b[c"));
     }
 
     #[test]

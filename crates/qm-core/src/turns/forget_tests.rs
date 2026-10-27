@@ -213,6 +213,7 @@ impl Fixture {
             label: None,
             kind: qm_types::domain::TaskKind::Build,
             title: "new".into(),
+            name: None,
             goal: "new".into(),
             constraints: vec![],
             tests_required: false,

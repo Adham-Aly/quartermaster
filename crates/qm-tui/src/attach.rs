@@ -111,6 +111,10 @@ fn hello(cols: u16, rows: u16, colors: wire::Colors) -> Hello {
     hello.background = Background::Unknown;
     hello.colors = colors;
     hello.term = std::env::var("TERM").unwrap_or_default();
+    // macOS gives every process an app starts the app's bundle ID; over SSH it names the wrong Mac.
+    hello.terminal_app = std::env::var("__CFBundleIdentifier")
+        .ok()
+        .filter(|id| !id.is_empty() && !hello.ssh);
     hello
 }
 
@@ -128,12 +132,11 @@ pub async fn attach<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     let (mut read, mut write) = tokio::io::split(stream);
     let (cols, rows) = crossterm::terminal::size()?;
     let (host_cols, host_rows) = host_size(cols, rows, notice.as_ref());
-    write_frame(
-        &mut write,
-        &Frame::Hello(hello(host_cols, host_rows, guard.colors())),
-    )
-    .await
-    .map_err(|e| failed(&e))?;
+    let hello = hello(host_cols, host_rows, guard.colors());
+    let ssh = hello.ssh;
+    write_frame(&mut write, &Frame::Hello(hello))
+        .await
+        .map_err(|e| failed(&e))?;
     match read_frame(&mut read).await.map_err(|e| failed(&e))? {
         Some(Frame::Welcome(_)) => {}
         Some(Frame::Refuse(refuse)) => {
@@ -183,6 +186,8 @@ pub async fn attach<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                             .map_err(|e| failed(&e))?;
                     }
                     Some(Frame::Control(Control::Exit { reason })) => return Ok(Left::Told(reason)),
+                    // Over SSH the tab is on another Mac's terminal, out of reach.
+                    Some(Frame::Control(Control::Raise)) if !ssh => crate::raise::this_tab(),
                     None => return Ok(Left::Lost),
                     Some(_) => {}
                 },

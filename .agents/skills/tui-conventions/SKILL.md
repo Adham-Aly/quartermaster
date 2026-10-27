@@ -1,6 +1,6 @@
 ---
 name: tui-conventions
-description: How qm-tui screens are drawn and driven - the 16-colour palette roles in theme.rs, boxes, buttons, the Bridge geometry and fold, keys and mouse (hit map, hover, wheel, context menus, the app's own selection and copy), streaming text and terminal modes. Use when drawing or changing any screen, widget, key or mouse behaviour in the terminal UI, or when judging whether a screen looks right.
+description: How qm-tui screens are drawn and driven - the teal palette and its 16-colour fallback (roles in theme.rs), boxes, buttons, the Bridge geometry and fold, keys and mouse (hit map, hover, wheel, context menus, the app's own selection and copy), streaming text and terminal modes. Use when drawing or changing any screen, widget, key or mouse behaviour in the terminal UI, or when judging whether a screen looks right.
 ---
 
 # Terminal UI conventions
@@ -8,51 +8,75 @@ description: How qm-tui screens are drawn and driven - the 16-colour palette rol
 Be picky: compare every screen cell by cell at 150×45, 120×40, 119×40 and 100×30, in a light and
 a dark terminal theme, and fix what looks off (skill `run-by-hand`).
 
-## Colour: the terminal's 16 only
+## Colour: the teal palette, or the terminal's 16
 
-Never an RGB or 256-colour value. Use the roles in `crates/qm-tui/src/theme.rs`, never a `Color`
-directly in a widget. `Backend16` (`backend.rs`) sends 16-colour SGR codes (`30`–`37`, `90`–`97`,
-`40`–`47`, `100`–`107`); crossterm alone would send `38;5;n`.
+The brand is teal (`#27A493`, `#187A6D` on light backgrounds); every other colour is cool (slate,
+blue, violet), with a muted sand for warnings. Never brass or gold. Use the roles in
+`crates/qm-tui/src/theme.rs`, never a `Color` directly in a widget.
 
 On entering full-screen mode (and on every resume), `theme::detect` asks the terminal for its
 colours (OSC 10, 11 and 4 for all 16, ended by a DA1 query so a silent terminal costs no wait;
-`COLORFGBG` as the fallback; `theme/query.rs`). `theme/fit.rs` then gives each role the first of
-its colours that reads on that background (4.5:1, else 3:1, else the default text colour): a light
-theme whose yellow fades gets blue, a faint bright black gets a darker grey, and so on. The
-`Palette` lives on the window's state (`App::palette`) and `App::draw` puts it in force for the
-frame (`theme::scoped`); never cache a `Style` across frames, cache the role function instead. The table is the palette when the
-terminal says nothing; it is tuned for dark themes. Check a change in a light and a dark theme with
-tmux's `window-style` and `pane-colours[n]`, which tmux reports as the terminal's colours.
+`COLORFGBG` as the fallback) and reads `COLORTERM` (`theme/query.rs`). `theme/fit.rs` then picks:
 
-| Role | Style (dark default) | Used for |
+- **24-bit**, when `COLORTERM` is `truecolor` or `24bit` and the background was reported: the
+  `DARK` or `LIGHT` set (by the background's lightness), each colour moved toward white or black
+  until it reads on that background (`Rgb::reaching`). The fill is a tint of the accent.
+- **16 colours** otherwise: each role gets the first of its ANSI colours that reads on the
+  background (4.5:1, else 3:1, else the default text colour). The table is the palette when the
+  terminal says nothing; it is tuned for dark themes.
+
+`Backend16` (`backend.rs`) sends 16-colour SGR codes (`30`–`37`, `90`–`97`, `40`–`47`,
+`100`–`107`) for indexed colours and `38;2`/`48;2` only for the 24-bit roles; never `38;5`. The
+`Palette` lives on the window's state (`App::palette`) and `App::draw` puts it in force for the
+frame (`theme::scoped`); never cache a `Style` across frames, cache the role function instead.
+Check a change in a light and a dark theme, with and without `COLORTERM=truecolor`, using tmux's
+`window-style` and `pane-colours[n]`, which tmux reports as the terminal's colours.
+
+| Role | 24-bit (dark) · 16-colour default | Used for |
 |---|---|---|
 | text | default fg | body text |
-| `strong()` | default fg, bold | names (`you`, `quartermaster`), headings |
-| `dim()` | `DarkGray` (bright black) | secondary text, idle borders, hints |
-| `accent()` | `Yellow` | focus, the active input, approvals |
-| `warn()` | `Yellow` | decisions, notices, tier headings |
-| `ok()` | `Green` | running, ready, passed |
-| `diff_addition()` | readable green text, else text on green | diff additions only; never a neutral-colour fallback |
-| `error()` | `Red` | errors |
-| `badge()` | `Red` | the dot on a menu entry, a popup's title and beside the menu button (never on a fill or the accent): something there needs you |
-| `blue()` | `LightBlue` | a supervisor's marker in a session |
-| `violet()` | `Magenta` | a supervisor's name |
-| `filled()` | bright white on bright black | rest buttons (the menu button too), the current Settings tab, the selected row (keyboard) |
-| `button(true)` | black on yellow | a hovered button |
-| `button_on_selection()` | black on bright white | a button on a selected row |
-| `cursor()` | black on yellow | the cursor's cell in the prompt field |
+| `strong()` | default fg, bold | names (`you`, `quartermaster`), task titles, a cost |
+| `dim()` | slate `#71879A` · `DarkGray` | secondary text, hints |
+| `rule()` | faint slate `#2B3C49` · `DarkGray` | idle borders, rules, tree branches |
+| `title()` | light slate `#9FB2C0` · default fg | section headings, an idle box's title (`title_on`) |
+| `accent()` | teal · `Yellow` | focus, the active input, approvals, the brand mark |
+| `warn()` | sand `#D7B46A` · `Yellow` | decisions, notices, tier |
+| `warn_chip()` | sand on its tint · plain warn | counts and waiting chips (`Needs you 3`, `○ waits`) |
+| `ok()` | green · `Green` | running, ready, passed |
+| `code()` | mint `#7FD8C9` · `Yellow` | inline code, paths, writing tools |
+| `diff_addition()` | readable green text, else text on green | diff additions only |
+| `error()` | coral · `Red` | errors, the Stop button |
+| `badge()` | as error | the dot on a menu entry, a popup's title and beside the menu button (never on a fill or the accent): something there needs you |
+| `blue()` | `#6CB6FF` · `LightBlue` | reading tools, a supervisor's marker |
+| `violet()` | `#A99CF7` · `Magenta` | shell tools, the model, a supervisor's name |
+| `filled()` | text on the teal tint · bright white on bright black | rest buttons, the current Settings tab, the selected row (keyboard) |
+| `button(true)` | on-accent on teal · black on yellow | a hovered button |
+| `primary_button()` | on-accent on teal, bold | the pane's main button (`▸ Open session`) |
+| `danger_button()` | error text | a button that stops something (`■ Stop`) |
+| `button_on_selection()` | the fill inverted | a button on a selected row |
+| `cursor()` | on-accent on teal · black on yellow | the cursor's cell in the prompt field |
 | `selected()` | reversed | selected text in the prompt field |
 
-Accent and warn are the same colour; the words tell them apart. On the selected row, dim and
-default text take the fill's text colour, and a coloured glyph that can't be read on the fill
-takes its other brightness (`on_selection`). The app's own text selection is `REVERSED`.
-Map core `Tone`s with `theme::tone`.
+In 16 colours accent and warn are the same colour; the words tell them apart. On the selected
+row (and on any fill, such as the task pane's chips), dim and default text take the fill's text
+colour, and a coloured glyph that can't be read on the fill takes its other brightness
+(`on_selection`). A run with no colour of its own drawn over a border takes the border's colour,
+so clear the cells first (`Clear`). The app's own text selection is `REVERSED`. Map core `Tone`s
+with `theme::tone`. Tool names are coloured by family in `widgets/tools.rs`.
 
 ## Layout
 
-- Rows: top bar (the ` ☰ Menu ` button at the left, then the core's update notice when it has
+- Rows: top bar (the ` ◆ quartermaster ▾ ` menu button at the left, the `◆` mark in the accent, then the core's update notice when it has
   one and there's room, this Mac and the accounts at the right), the body, the status bar.
   Below 60×16 a too-small notice shows.
+- The logo (`logo.rs`, drawn from `assets/mark.svg`'s shapes at the exact pixel size): when the
+  client's terminal answers the kitty graphics query and reports its cell size (`Colors.graphics`,
+  `cell_pixels`), the top bar's `◆` becomes the image (2 cells), and every chat's header
+  (`widgets/chat_header.rs`: name and version, model and effort, where it works; the chat's
+  first rows, scrolling with it) leads with a 3-row copy while all its rows show. Widgets only
+  reserve blank cells (`logo::reserve` into `FrameMap.logos`); after the whole frame,
+  `logo::kept` drops any spot a menu, dialog or selection drew over, and the host sends only
+  changed placements. Elsewhere (tmux, Terminal.app) the `◆` stays.
 - Bridge columns: left 31 (20–60), a one-cell gap, the middle (never under 36), a gap, the task
   column 36 (24–70; `LEFT_DEFAULT`, `RIGHT_DEFAULT` in `app.rs`). Below 120 body columns the layout **folds**: no task column; the task pane opens as
   an overlay from the right edge with a ` ✕ `. Widths dragged on the dividers are saved
@@ -60,8 +84,20 @@ Map core `Tone`s with `theme::tone`.
   0600, saved on detach and stop; loading never fails; never logged). New shared state worth
   keeping across a server restart goes into `persist.rs` `State` and `Restored`.
 - Boxes: rounded borders, the title in the top border, one cell of padding inside, no gap rows
-  between boxes, boxes at the frame's edges. Border dim; accent when focused; text colour when
-  hovered. The input box is accent while focused or holding text.
+  between boxes, boxes at the frame's edges. Border in the rule colour (its title in the title
+  colour); accent when focused; text colour when hovered. The input box is accent while focused
+  or holding text. The left column has no boxes: Projects, Needs you (the Actions pane) and Crew
+  are sections, top to bottom and in that focus order (`bridge::section_block`), a heading
+  (accent and bold when focused) over rows inset one cell, a blank row between them
+  (`sidebar::INSET`). Each item in Needs you is a `▌` bar in its glyph's colour, its title
+  wrapped to two lines, then `kind · task name · age`, dim (`actions::lines`). While an item is
+  unseen the beacon (`widgets/beacon.rs`) is lit: the count's chip breathes, a beam sweeps the
+  heading's rule and the newest item's bar pulses; it settles once Needs you has focus or the
+  item is open. It moves only by redraws while drawn (`App::beaconing`), never terminal blink.
+- The task pane (`widgets/task.rs`): the status and kind as chips, the bold title, then ruled
+  sections (`─ Usage ───`, Routing, Workspace, Recent) built by grouping the core's labelled
+  `TaskRow`s; a label it doesn't place keeps its label column, so new core rows still show. When
+  the rows overflow, the buttons stay pinned to the bottom and only the rest scrolls.
 - Popups: Settings, Help and Update (`update.rs`) aren't screens; they open over the current
   screen (`popups.rs`) from the menu or `,` / `?` (Update also from its top-bar notice), and leave its focus alone, so closing (`Esc`, ` ✕ `, a click outside)
   goes back where you were. The window is `widgets/popup.rs` (`centered` places it, `draw`
@@ -74,14 +110,23 @@ Map core `Tone`s with `theme::tone`.
   projects hint under its title; `Esc` or any click closes it. A new popup or menu entry: see
   the notes at the top of `popups.rs`. A badge: make `App::entry_badge` true for the entry; the
   menu button follows (Update's comes from the core, `UpdateView::badge`).
-- The left column's trees: Crew is supervisor → task → crewmates (`widgets/crew.rs` `nodes`):
-  a crewmate row with `CrewRow::task` is drawn one level deeper, under a dim `◇ T-0042 project`
-  heading the core keeps its crewmates together for; headings have no status, no hit, and the
-  keys pass over them. Statuses align per supervisor and depth. Projects lists each project's
-  open tasks beneath it (`ProjectRow::tasks`, `├ T-0042 title`); a task line's hit
-  (`Hit::ProjectTask`) acts for its project. Guides (`│`, `├`, `└`) are dim. Heights come
-  from `widgets/sidebar.rs` `heights`: Projects takes up to a quarter, then any rows Actions
-  doesn't need; a narrow project row drops its autonomy, then its mode, before cutting the name.
+- The left column's lists: Crew is the Quartermaster, then tasks by phase (`Working · n`,
+  `Waiting · n`, `Done · n`, from `CrewRow::phase` and the flags), then `Secondmates · n`
+  (`widgets/crew.rs` `build`). A task shows by its name (`CrewTask::name`, which the
+  Quartermaster gives at start or the core derives from the title), then a dim
+  `T-0042 · project · kind · via S-02` line with a single crewmate's status at the right edge;
+  parts that don't fit are left out whole. A team lists its crewmates under it. A task whose
+  every crewmate waits in Needs you is left out. When the full list doesn't fit, each task is
+  one line (`compact`). The keys move through `FrameMap::crew_spots`. Projects is one line each,
+  `● api-server     PR · 3 tasks` (busy ones first, sorted in the core); a narrow line drops the
+  delivery, then `auto`, then the count, whole, before cutting the name. Enter or a click opens
+  one project's details under it (`View::open_project`, by name; `Esc` closes): place, settings,
+  then its tasks as Crew marks them (`crew::task_mark`); a detail line's hit (`Hit::ProjectTask`)
+  acts for its project. A list that doesn't fit counts itself in the heading and gives its last
+  line in view to `↓ 4 more, all quiet` (`keep_row_visible` leaves that line free). Guides
+  (`│`, `├`, `└`) are dim. Heights come from `widgets/sidebar.rs` `heights`: Projects takes up to
+  a quarter, Needs you up to half of the rest, Crew the remainder, and Projects grows into rows
+  Crew doesn't need. In the chat, agents' names are accent bold.
 - Settings' nested pickers, text fields and Connect view have a visible `← Back`, equivalent
   to `Esc`: dismiss the picker/field without saving, or return from Connect to Accounts (not cancel
   a running login). The Back row stays visible while content scrolls. Settings uses 48% of the
@@ -154,19 +199,27 @@ Map core `Tone`s with `theme::tone`.
 ## Text and terminal
 
 - Streaming text shows whole lines only (`widgets/stream.rs::committed`), so nothing reflows.
-- An agent thinking or busy shows the one busy indicator, `widgets/spinner.rs` (`⣾ thinking`, or
-  the glyph alone in the crew tree), never a widget's own. It redraws only while drawn: one cell,
-  8 steps a second, nothing when none is on screen. An age or running seconds count sets
+- An agent thinking or busy shows a busy indicator from `widgets/spinner.rs`, never a widget's
+  own (`spinner::for_agent`): Lookout `ө` for the Quartermaster, Insignia `✩` for secondmates,
+  and for crewmates one of `Spinner::POOL` (Helm, Porthole, Hatch, Wind Rose, Astrolabe,
+  Rosette), different for crewmates listed together, the same in its conversation and its row, plus
+  Asterism `⁂` for compacting and Compass Card `⊕` for a login. Conversations add the turn's
+  nautical verb (`ө Charting a course…`, `spinner::verb`, fixed for the turn). Each kind steps at
+  its own pace and redraws only while drawn (`App::spinning` bits), nothing when none is on screen. An age or running seconds count sets
   `App::ages_shown` when drawn, so ticks redraw once a second while one is on screen.
-- The context strip (`widgets/context_strip.rs`) sits between the middle column's box and the
-  input: 1–3 dim rows (one under 24 rows, two under 34) for the shown agent's context against its
-  auto-compact point, and its current or last turn. It drops parts rather than truncating, and
-  says "unknown" or "stale" rather than show a 0. Compaction notes sit in the chat by time.
+- The context strip (`widgets/context_strip.rs`) is one line in the middle column box's bottom
+  border, right-aligned (after a session's status): a bar, the shown agent's context against its
+  auto-compact point, and its turn's cost and calls. It drops parts from its end rather than
+  truncating, and says "unknown" or "stale" rather than show a 0. The full numbers (occupancy,
+  the task's totals, the turn by category) are the task pane's Usage section, for the
+  Quartermaster and secondmates too. Compaction notes sit in the chat by time.
 - Markdown in messages goes through `widgets/markdown.rs`.
 - Your own prompts sit in a dim rounded box (`conversation::prompt_box`), the header in its top
-  border, on the Bridge and in sessions. A run of tool calls in a session is one dim line,
-  `▸ 12 tool calls…` (the `…` while it is the newest thing in a running turn); a click or `e`
-  shows each call under `▾`. Which runs are expanded is shared UI state (`View::tool_groups`),
+  border, on the Bridge and in sessions. A run of tool calls in a session is one line,
+  `▸ Read 4  Bash 3  …  7 calls · 14s`: each tool's name in its family's colour with a dim count
+  (`+N` when they don't fit), the count and the run's duration at the right (`…` in place of the
+  duration while it is the newest thing in a running turn); a click or `e` shows each call under
+  `▾`, on `├`/`└` branches. Which runs are expanded is shared UI state (`View::tool_groups`),
   keyed by agent and the run's first line ID, never by screen position.
 - `terminal.rs` enters raw mode, the alternate screen, mouse capture with motion (SGR), bracketed
   paste, and synchronized updates per frame; it restores the terminal on drop, panic and suspend.

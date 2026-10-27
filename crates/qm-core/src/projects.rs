@@ -736,17 +736,23 @@ impl ProjectService {
 
     /// The projects pane's rows, each with its open tasks.
     async fn rows(&self) -> Result<Vec<qm_types::api::ProjectRow>, StoreError> {
+        let home = self.home();
         self.inner
             .db
-            .call(|conn| {
+            .call(move |conn| {
                 let working: HashSet<ProjectId> =
                     projects::with_work_running(conn)?.into_iter().collect();
                 let labels = projects::open_labels(conn)?;
-                Ok(projects::active(conn)?
+                let mut rows: Vec<qm_types::api::ProjectRow> = projects::active(conn)?
                     .into_iter()
                     .map(|p| {
+                        let base = match p.delivery {
+                            DeliveryMode::Folder => String::new(),
+                            _ => p.default_branch,
+                        };
                         let mut row =
-                            qm_types::api::ProjectRow::new(p.name, p.delivery, p.autonomy);
+                            qm_types::api::ProjectRow::new(p.name, p.delivery, p.autonomy)
+                                .at(tilde(&p.path, home.as_deref()), base);
                         row.active = working.contains(&p.id);
                         row.tasks = labels
                             .iter()
@@ -755,7 +761,10 @@ impl ProjectService {
                             .collect();
                         row
                     })
-                    .collect())
+                    .collect();
+                // Where work runs comes first; otherwise the order they were added.
+                rows.sort_by_key(|r| !r.active);
+                Ok(rows)
             })
             .await
     }

@@ -34,6 +34,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Whether the keyboard enhancement was pushed, so every way out (drop, panic, suspend) pops it.
 static ENHANCED: AtomicBool = AtomicBool::new(false);
+/// Whether the terminal shows images, so every way out takes the logo away with it.
+static GRAPHICS: AtomicBool = AtomicBool::new(false);
 
 /// Writes the sequences that enter full-screen mode: the alternate screen, mouse capture with
 /// motion tracking in SGR encoding, bracketed paste, focus reports, and, when `enhanced`, the keyboard
@@ -152,6 +154,7 @@ fn switch_on() -> io::Result<Colors> {
     enable_raw_mode()?;
     // Before anything else reads the terminal's input, which would swallow the answers.
     let colors = theme::detect();
+    GRAPHICS.store(colors.graphics, Ordering::SeqCst);
     // The query needs raw mode to read the terminal's answer.
     let enhanced = supports_keyboard_enhancement().unwrap_or(false);
     ENHANCED.store(enhanced, Ordering::SeqCst);
@@ -164,6 +167,10 @@ fn switch_on() -> io::Result<Colors> {
 fn restore() {
     let _ = disable_raw_mode();
     let enhanced = ENHANCED.swap(false, Ordering::SeqCst);
+    if GRAPHICS.swap(false, Ordering::SeqCst) {
+        // The host placed the logo; it isn't the shell's to keep.
+        let _ = io::stdout().write_all(crate::logo::forget().as_bytes());
+    }
     let _ = write_leave(&mut io::stdout(), enhanced);
 }
 

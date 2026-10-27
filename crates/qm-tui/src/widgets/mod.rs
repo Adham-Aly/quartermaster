@@ -3,8 +3,10 @@
 //! selected in the frame's `FrameMap`.
 
 pub(crate) mod actions;
+pub(crate) mod beacon;
 pub(crate) mod button;
 pub(crate) mod card;
+pub(crate) mod chat_header;
 pub(crate) mod context_strip;
 pub(crate) mod conversation;
 pub(crate) mod crew;
@@ -19,3 +21,4 @@ pub(crate) mod slash_menu;
 pub(crate) mod spinner;
 pub(crate) mod stream;
 pub(crate) mod task;
+pub(crate) mod tools;

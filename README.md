@@ -54,7 +54,7 @@ cargo xtask install
 | Needs | Notes |
 |---|---|
 | macOS 13 or later | Apple silicon or Intel |
-| Command Line Tools | `xcode-select --install` (provides `git`) |
+| Command Line Tools | `xcode-select --install` (provides `git`, and `swiftc` to build from source) |
 | Your git identity | `git config --global user.name` / `user.email`: commits are made as you |
 | Claude Code, logged in | `claude auth login` with a Claude subscription; version 2.1.303 or later, below 3.0 |
 | GitHub CLI, logged in | `gh auth login`: pull requests, pushes and CI (without it, projects build in place) |
@@ -86,6 +86,14 @@ One server runs per data directory. For a throwaway one:
 `QUARTERMASTER_HOME=$(mktemp -d) quartermaster --foreground`.
 
 **Settings ▸ Routing ▸ Autocompact** sets the conversation size at which every agent compacts (100k–1M, default 200k), on Claude and other models alike. For Quartermaster's Claude agents it replaces Claude Code's `/autocompact`; your own `claude` is unchanged.
+
+**Notifications.** When an agent waits on you (an approval, a review, a question), macOS shows a
+banner with the Quartermaster mark, and the mark in the menu bar counts what's waiting; its menu and
+a click on a banner bring your terminal forward, on the right tab in tmux, WezTerm and kitty (with remote control on), with
+the card open. Nothing is posted while you are looking at Quartermaster, and an answered request's
+banner is withdrawn. macOS asks for permission the first time; turn them off with the switch in
+**Settings ▸ System**, which also says when macOS blocks them or hides their text (set **Show
+previews** to **Always** in System Settings ▸ Notifications ▸ Quartermaster to see what's waiting).
 
 ## Code
 

@@ -1,275 +1,546 @@
-//! The crew tree: the Quartermaster at the root; below it its tasks (`T-`), each with its
-//! crewmates, then its secondmates, each with its own tasks and their crewmates. Agents carry a
-//! status glyph (the busy indicator while the agent is in a turn) and an aligned status column;
-//! a task's heading carries neither, only the guide lines that join it to its crewmates.
+//! The crew list: the Quartermaster, then the tasks in three groups (what is moving, what waits,
+//! what is done), then the secondmates.
+//!
+//! ```text
+//! ◆ Quartermaster          ready
+//! Working · 2
+//! ⎈ Token refresh race
+//!   T-0042 · api-server · fix · 12m
+//! ● Rate limit middleware
+//!   T-0045 · web-app · via S-02
+//!   ● C-0045 build              3m
+//!   ○ C-0049 review           waits
+//! Done · 1
+//! ✓ Find what fills Downloads
+//!   T-0050 · Downloads · research · reported
+//! Secondmates · 1
+//! ○ S-02 web-app                idle
+//! ```
+//!
+//! Each task is one entry under its name (two or three words the Quartermaster gave it, else made
+//! from its title), wrapped rather than cut, with a dim line saying which task it is, where, what
+//! kind of work and how it stands. A task with more than one crewmate lists them under it, each
+//! with its status. A busy crewmate's glyph is its own busy indicator (`spinner::for_agent`); a
+//! flag (`⚑`) says it waits on you. A task whose every crewmate waits on you for something that is
+//! in Needs you shows only there, so nothing is listed twice.
+//!
+//! When the column is too short for every entry, each task takes one line (`compact`).
 
 use crate::app::App;
-use crate::bridge::{ListRow, draw_list, empty_lines, pane_block, pane_style};
+use crate::bridge::{ListRow, draw_list, empty_lines, heading_style, section_block};
 use crate::hit::{FrameMap, Hit, Pane};
-use crate::text::{truncate, width};
+use crate::text::{truncate, width, wrap};
 use crate::theme;
 use crate::widgets::spinner;
-use qm_types::api::{AgentRef, CrewRow, Waiting};
-use qm_types::ids::TaskLabelId;
+use qm_types::api::{AgentRef, CrewPhase, CrewRow, CrewTask, Waiting};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::ops::Range;
 
-/// Draws the crew box into `area`.
-pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut FrameMap) {
-    let block = pane_block("Crew", pane_style(app, Pane::Crew));
-    let rows = rows(app, block.inner(area).width);
+/// Said under the Quartermaster while there is no crew.
+const NO_CREW: &str = "No crewmates yet.";
+
+/// The most lines a task's name wraps to.
+const NAME_LINES: usize = 2;
+
+/// Draws the crew section into `area`, one line per task when `compact`.
+pub(crate) fn draw(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    map: &mut FrameMap,
+    compact: bool,
+) {
+    let heading = Span::styled("Crew", heading_style(app, Pane::Crew));
+    let block = section_block(vec![heading], false);
+    let built = build(app, block.inner(area).width, compact);
+    map.crew_spots = built.spots;
     draw_list(
         frame,
         area,
         block,
-        rows,
+        built.rows,
         app.view.crew_scroll,
         Pane::Crew,
         map,
     );
 }
 
-/// One line of the tree as drawn: an agent's row, or the heading of a task over its crewmates.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Node<'a> {
-    pub(crate) depth: u8,
-    pub(crate) label: &'a str,
-    /// The agent's row; `None` on a task's heading.
-    pub(crate) row: Option<&'a CrewRow>,
+/// The list as drawn: its rows, and where each agent is in them, in the order the keys move.
+pub(crate) struct Built {
+    pub(crate) rows: Vec<ListRow>,
+    /// Each agent's lines: the lines to keep in view when it is selected (a task's name and
+    /// meta lines come with its first crewmate).
+    pub(crate) spots: Vec<(Range<usize>, AgentRef)>,
 }
 
-impl Node<'_> {
-    fn status(&self) -> &str {
-        self.row.map_or("", |r| r.status.as_str())
+/// The pane's row count at `inner_width`, which sizes the box.
+pub(crate) fn height(app: &App, inner_width: u16, compact: bool) -> usize {
+    build(app, inner_width, compact).rows.len()
+}
+
+/// One task as the list shows it: its crewmates' rows (under one supervisor), and who that is
+/// when it isn't the Quartermaster.
+struct Entry<'a> {
+    task: Option<&'a CrewTask>,
+    crew: Vec<&'a CrewRow>,
+    via: Option<&'a str>,
+}
+
+impl Entry<'_> {
+    /// The group it goes in: waiting on you counts as waiting; any crewmate still moving keeps it
+    /// working; done only when every one is.
+    fn phase(&self) -> CrewPhase {
+        if self.crew.iter().any(|r| waiting(r).is_some()) {
+            CrewPhase::Waiting
+        } else if self.crew.iter().any(|r| r.phase == CrewPhase::Working) {
+            CrewPhase::Working
+        } else if self.crew.iter().any(|r| r.phase == CrewPhase::Waiting) {
+            CrewPhase::Waiting
+        } else {
+            CrewPhase::Done
+        }
+    }
+
+    /// The words it is listed under: its name, else (from an older server) its row's label.
+    fn name(&self) -> &str {
+        self.task
+            .map(|t| t.name.as_str())
+            .filter(|n| !n.is_empty())
+            .or_else(|| self.task.map(|t| t.label.as_str()))
+            .unwrap_or_else(|| self.crew[0].label.as_str())
     }
 }
 
-/// The tree as drawn from the core's rows: a crewmate with a task one level deeper than its
-/// row says, under a heading drawn above the first of its task's crewmates that come together.
-pub(crate) fn nodes(crew: &[CrewRow]) -> Vec<Node<'_>> {
-    let mut out = Vec::with_capacity(crew.len());
-    // The heading the rows now go under: its depth and task.
-    let mut heading: Option<(u8, TaskLabelId)> = None;
+/// The core's crewmate rows as entries, in its order: consecutive rows of one task under one
+/// supervisor make one entry; a row without a task (an older server) is an entry of its own.
+fn entries(crew: &[CrewRow]) -> Vec<Entry<'_>> {
+    let mut out: Vec<Entry<'_>> = Vec::new();
+    let mut via: Option<&str> = None;
+    let mut last: Option<(u8, qm_types::ids::TaskLabelId)> = None;
     for row in crew {
-        let Some(task) = &row.task else {
-            heading = None;
-            out.push(Node {
-                depth: row.depth,
-                label: &row.label,
-                row: Some(row),
-            });
-            continue;
-        };
-        if heading != Some((row.depth, task.id)) {
-            heading = Some((row.depth, task.id));
-            out.push(Node {
-                depth: row.depth,
-                label: &task.label,
-                row: None,
-            });
+        match row.agent {
+            AgentRef::Quartermaster => continue,
+            AgentRef::Secondmate { .. } => {
+                via = row.label.split_whitespace().next();
+                last = None;
+                continue;
+            }
+            AgentRef::Crewmate { .. } => {}
         }
-        out.push(Node {
-            depth: row.depth.saturating_add(1),
-            label: &row.label,
-            row: Some(row),
-        });
+        let supervisor = if row.depth >= 2 { via } else { None };
+        let key = row.task.as_ref().map(|t| (row.depth, t.id));
+        match out.last_mut() {
+            Some(entry) if key.is_some() && key == last => entry.crew.push(row),
+            _ => out.push(Entry {
+                task: row.task.as_ref(),
+                crew: vec![row],
+                via: supervisor,
+            }),
+        }
+        last = key;
     }
     out
 }
 
-/// Where each agent is drawn: its line in [`nodes`], in the core's order.
-pub(crate) fn agent_lines(crew: &[CrewRow]) -> Vec<(usize, AgentRef)> {
-    nodes(crew)
+/// How task `label` reads in the crew list, for another list to show it the same way: its glyph,
+/// its name, and its status (a team's crew count) in its colour. `None` when no crewmate of it is
+/// listed.
+pub(crate) fn task_mark(
+    app: &App,
+    label: qm_types::ids::TaskLabelId,
+) -> Option<(Span<'static>, String, String, Style)> {
+    let entries = entries(&app.snapshot.crew);
+    let entry = entries
         .iter()
-        .enumerate()
-        .filter_map(|(i, node)| node.row.map(|row| (i, row.agent)))
-        .collect()
+        .find(|e| e.task.is_some_and(|t| t.id == label))?;
+    let first = entry.crew[0];
+    let single = entry.crew.len() == 1;
+    let glyph = if single {
+        row_glyph(app, first)
+    } else {
+        phase_glyph(entry)
+    };
+    let status = if single {
+        first.status.clone()
+    } else {
+        format!("{} crew", entry.crew.len())
+    };
+    Some((
+        glyph,
+        entry.name().to_owned(),
+        status,
+        status_style(first, single),
+    ))
 }
 
-/// The pane's rows at `inner_width`; their count sizes the box.
-pub(crate) fn rows(app: &App, inner_width: u16) -> Vec<ListRow> {
+/// Whether `entry` shows only in Needs you: each of its crewmates waits on you for an item there.
+fn in_needs_you(app: &App, entry: &Entry<'_>) -> bool {
+    entry.crew.iter().all(|row| {
+        let AgentRef::Crewmate { task } = row.agent else {
+            return false;
+        };
+        waiting(row).is_some() && app.snapshot.actions.iter().any(|a| a.task == Some(task))
+    })
+}
+
+/// The list's rows and spots at `inner_width`.
+pub(crate) fn build(app: &App, inner_width: u16, compact: bool) -> Built {
+    let inner = usize::from(inner_width);
+    let mut out = Built {
+        rows: Vec::new(),
+        spots: Vec::new(),
+    };
     let crew = &app.snapshot.crew;
-    if crew.is_empty() {
+    match crew.iter().find(|r| r.agent == AgentRef::Quartermaster) {
+        Some(qm) => {
+            let busy = qm
+                .busy
+                .then(|| spinner::glyph(app, spinner::Spinner::Lookout));
+            let glyph = busy.unwrap_or_else(|| Span::styled("◆", theme::accent()));
+            let status_style = if qm.status == "ready" {
+                theme::ok()
+            } else {
+                theme::dim()
+            };
+            push_agent(
+                app,
+                &mut out,
+                qm.agent,
+                glyph,
+                &qm.label,
+                (&qm.status, status_style),
+                inner,
+                0,
+                None,
+            );
+        }
         // The Quartermaster is always aboard, even before the core reports on it.
-        let mut out = vec![ListRow::plain(Line::from(vec![
+        None => out.rows.push(ListRow::plain(Line::from(vec![
             Span::styled("◆", theme::accent()),
             Span::raw(" Quartermaster"),
-        ]))];
-        out.extend(
-            empty_lines(&["No crewmates yet."], inner_width)
-                .into_iter()
-                .map(ListRow::plain),
-        );
+        ]))),
+    }
+    let shown: Vec<Entry<'_>> = entries(crew)
+        .into_iter()
+        .filter(|e| !in_needs_you(app, e))
+        .collect();
+    let secondmates: Vec<&CrewRow> = crew
+        .iter()
+        .filter(|r| matches!(r.agent, AgentRef::Secondmate { .. }))
+        .collect();
+    if shown.is_empty() && secondmates.is_empty() {
+        let quiet = entries(crew).is_empty();
+        if quiet {
+            out.rows.extend(
+                empty_lines(&[NO_CREW], inner_width)
+                    .into_iter()
+                    .map(ListRow::plain),
+            );
+        }
         return out;
     }
-    let tree = nodes(crew);
-    let width_in = usize::from(inner_width);
-    let columns = fit_columns(&tree, status_columns(&tree), width_in);
-    let mut out: Vec<ListRow> = tree
-        .iter()
-        .enumerate()
-        .map(|(i, node)| {
-            let Some(row) = node.row else {
-                return ListRow::plain(heading_line(&tree, i, width_in));
+    for (phase, word, style) in [
+        (CrewPhase::Working, "Working", theme::ok()),
+        (CrewPhase::Waiting, "Waiting", theme::title()),
+        (CrewPhase::Done, "Done", theme::title()),
+    ] {
+        let group: Vec<&Entry<'_>> = shown.iter().filter(|e| e.phase() == phase).collect();
+        if group.is_empty() {
+            continue;
+        }
+        out.rows.push(group_heading(word, style, group.len()));
+        for entry in group {
+            push_entry(app, &mut out, entry, inner, compact);
+        }
+    }
+    if !secondmates.is_empty() {
+        out.rows.push(group_heading(
+            "Secondmates",
+            theme::title(),
+            secondmates.len(),
+        ));
+        for row in secondmates {
+            let glyph = if row.busy {
+                spinner::glyph(app, spinner::Spinner::Insignia)
+            } else {
+                Span::styled("○", theme::dim())
             };
-            let hit = Hit::Crew(row.agent);
-            let selected =
-                (app.view.selected_crew == Some(row.agent)).then_some(!app.view.pointer_picked);
-            let hovered = selected != Some(true) && app.term.hover == Some(hit);
-            // A flag wins over the busy indicator, which then isn't drawn at all.
-            let busy = (row.busy && waiting(row).is_none()).then(|| spinner::glyph(app));
-            ListRow {
-                line: line(&tree, i, columns[i], hovered, busy),
-                hit: Some(hit),
-                selected,
-            }
-        })
-        .collect();
-    // The Quartermaster alone: still no crewmates, whatever its status says.
-    if crew.iter().all(|r| r.agent == AgentRef::Quartermaster) {
-        out.extend(
-            empty_lines(&["No crewmates yet."], inner_width)
-                .into_iter()
-                .map(ListRow::plain),
-        );
+            push_agent(
+                app,
+                &mut out,
+                row.agent,
+                glyph,
+                &row.label,
+                (&row.status, theme::dim()),
+                inner,
+                0,
+                None,
+            );
+        }
     }
     out
 }
 
-/// Caps the status columns so every status fits inside `inner_width`. Lines that align together
-/// move left together, as far as their widest status needs; a label that would then be cut keeps
-/// its line's column where its own status allows, so no label is cut further than its own status
-/// asks.
-fn fit_columns(nodes: &[Node<'_>], columns: Vec<usize>, inner_width: usize) -> Vec<usize> {
-    let groups: Vec<Option<(u8, Option<usize>)>> =
-        (0..nodes.len()).map(|i| align_group(nodes, i)).collect();
-    columns
-        .into_iter()
-        .enumerate()
-        .map(|(i, column)| {
-            let node = &nodes[i];
-            let widest = (0..nodes.len())
-                .filter(|&j| groups[j].is_some() && groups[j] == groups[i])
-                .map(|j| width(nodes[j].status()))
-                .max()
-                .unwrap_or(0);
-            let aligned = column.min(inner_width.saturating_sub(widest));
-            let end = prefix_width(node) + width(node.label);
-            let at = if aligned > end {
-                aligned
-            } else {
-                column.min(inner_width.saturating_sub(width(node.status())))
-            };
-            at.max(prefix_width(node) + 2)
-        })
-        .collect()
+/// A group's heading: `Working · 2`, the word in the group's colour and the count dim.
+fn group_heading(word: &str, style: Style, count: usize) -> ListRow {
+    ListRow::plain(Line::from(vec![
+        Span::styled(word.to_owned(), style.add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" · {count}"), theme::dim()),
+    ]))
 }
 
-/// The cells before a line's label: `◆ ` at the root, `├ ● ` at depth 1, two more per level.
-fn prefix_width(node: &Node<'_>) -> usize {
-    match node.depth {
-        0 => 2,
-        d => 2 * usize::from(d) + 2,
+/// Whether `agent`'s rows are selected (`Some(true)` filled), and whether the pointer is over
+/// them.
+fn picked(app: &App, agent: AgentRef) -> (Option<bool>, bool) {
+    let selected = (app.view.selected_crew == Some(agent)).then_some(!app.view.pointer_picked);
+    let hovered = selected != Some(true) && app.term.hover == Some(Hit::Crew(agent));
+    (selected, hovered)
+}
+
+fn label_style(hovered: bool) -> Style {
+    if hovered {
+        theme::text().add_modifier(Modifier::UNDERLINED)
+    } else {
+        theme::text()
     }
 }
 
-/// The index of each line's parent: the nearest earlier line one level up.
-fn parent_of(nodes: &[Node<'_>], i: usize) -> Option<usize> {
-    let depth = nodes[i].depth;
-    if depth == 0 {
-        return None;
+/// One agent's line, `indent` cells in: the glyph, its label and its status at the right edge;
+/// the label is cut to leave the status room. Its spot runs from `from` (earlier lines that come
+/// with it into view), else from its own line.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one line's parts, each different for each kind of row"
+)]
+fn push_agent(
+    app: &App,
+    out: &mut Built,
+    agent: AgentRef,
+    glyph: Span<'static>,
+    label: &str,
+    (status, status_style): (&str, Style),
+    inner: usize,
+    indent: usize,
+    from: Option<usize>,
+) {
+    let from = from.unwrap_or(out.rows.len());
+    let (selected, hovered) = picked(app, agent);
+    // Indent, glyph and space; then the label, at least one space, and the status.
+    let lead = indent + 2;
+    let room = inner.saturating_sub(lead + 1 + width(status)).max(1);
+    let label = truncate(label, room);
+    let gap = inner
+        .saturating_sub(lead + width(&label) + width(status))
+        .max(1);
+    let line = Line::from(vec![
+        Span::raw(" ".repeat(indent)),
+        glyph,
+        Span::raw(" "),
+        Span::styled(label, label_style(hovered)),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(status.to_owned(), status_style),
+    ]);
+    out.rows.push(ListRow {
+        line,
+        hit: Some(Hit::Crew(agent)),
+        selected,
+    });
+    out.spots.push((from..out.rows.len(), agent));
+}
+
+/// One task's lines: its name, then its meta line, then its crewmates when it has more than one;
+/// in `compact`, its name and status on one line.
+fn push_entry(app: &App, out: &mut Built, entry: &Entry<'_>, inner: usize, compact: bool) {
+    let first = entry.crew[0];
+    let single = entry.crew.len() == 1;
+    if compact {
+        let status = if single {
+            first.status.clone()
+        } else {
+            format!("{} crew", entry.crew.len())
+        };
+        let style = status_style(first, single);
+        let glyph = if single {
+            row_glyph(app, first)
+        } else {
+            phase_glyph(entry)
+        };
+        push_agent(
+            app,
+            out,
+            first.agent,
+            glyph,
+            entry.name(),
+            (&status, style),
+            inner,
+            0,
+            None,
+        );
+        return;
     }
-    nodes[..i].iter().rposition(|n| n.depth == depth - 1)
-}
-
-/// The agent line `i` reports to: its parent, or past a task's heading, the heading's parent.
-fn owner_of(nodes: &[Node<'_>], i: usize) -> Option<usize> {
-    let mut at = parent_of(nodes, i);
-    while let Some(j) = at {
-        if nodes[j].row.is_some() {
-            return Some(j);
-        }
-        at = parent_of(nodes, j);
-    }
-    None
-}
-
-/// The lines whose statuses share a column: agents at one depth reporting to one agent, so a
-/// supervisor's crewmates line up across its tasks. `None` for a task's heading, which has none.
-fn align_group(nodes: &[Node<'_>], i: usize) -> Option<(u8, Option<usize>)> {
-    nodes[i].row.map(|_| (nodes[i].depth, owner_of(nodes, i)))
-}
-
-/// The cell each line's status starts at: 2 cells after the longest prefix-plus-label among the
-/// lines it aligns with ([`align_group`]); a root's status one cell left of the column of the
-/// first agent reporting to it, or 2 after its label when it has none. A task's heading has no
-/// status, and its label moves no column.
-fn status_columns(nodes: &[Node<'_>]) -> Vec<usize> {
-    let groups: Vec<Option<(u8, Option<usize>)>> =
-        (0..nodes.len()).map(|i| align_group(nodes, i)).collect();
-    let group_column = |i: usize| {
-        (0..nodes.len())
-            .filter(|&j| groups[j].is_some() && groups[j] == groups[i])
-            .map(|j| prefix_width(&nodes[j]) + width(nodes[j].label))
-            .max()
-            .unwrap_or(0)
-            + 2
+    let from = out.rows.len();
+    // A single crewmate's lines all select it; a team's name and meta lines are plain, and come
+    // into view with its first crewmate.
+    let (hit, selected, hovered) = if single {
+        let (selected, hovered) = picked(app, first.agent);
+        (Some(Hit::Crew(first.agent)), selected, hovered)
+    } else {
+        (None, None, false)
     };
-    (0..nodes.len())
-        .map(|i| {
-            let node = &nodes[i];
-            let end = prefix_width(node) + width(node.label);
-            if node.depth > 0 {
-                return group_column(i);
-            }
-            let first_report =
-                (0..nodes.len()).find(|&j| nodes[j].row.is_some() && owner_of(nodes, j) == Some(i));
-            match first_report {
-                Some(report) => (group_column(report) - 1).max(end + 1),
-                None => end + 2,
-            }
-        })
-        .collect()
+    let glyph = if single {
+        row_glyph(app, first)
+    } else {
+        phase_glyph(entry)
+    };
+    let mut name = wrap(entry.name(), inner.saturating_sub(2).max(1));
+    if name.len() > NAME_LINES {
+        let rest = name[NAME_LINES - 1..].join(" ");
+        name.truncate(NAME_LINES - 1);
+        name.push(truncate(&rest, inner.saturating_sub(2).max(1)));
+    }
+    for (i, part) in name.into_iter().enumerate() {
+        let lead = if i == 0 {
+            vec![glyph.clone(), Span::raw(" ")]
+        } else {
+            vec![Span::raw("  ")]
+        };
+        let mut spans = lead;
+        spans.push(Span::styled(part, label_style(hovered)));
+        out.rows.push(ListRow {
+            line: Line::from(spans),
+            hit,
+            selected,
+        });
+    }
+    out.rows.push(ListRow {
+        line: meta_line(entry, inner),
+        hit,
+        selected,
+    });
+    if single {
+        out.spots.push((from..out.rows.len(), first.agent));
+        return;
+    }
+    for (i, row) in entry.crew.iter().enumerate() {
+        let label = match row.kind.as_str() {
+            "" => row.label.clone(),
+            kind => format!("{} {kind}", crewmate_number(row)),
+        };
+        push_agent(
+            app,
+            out,
+            row.agent,
+            row_glyph(app, row),
+            &label,
+            (&row.status, status_style(row, true)),
+            inner,
+            2,
+            (i == 0).then_some(from),
+        );
+    }
 }
 
-/// Whether no later sibling follows line `i` (it draws `└`, not `├`).
-fn is_last(nodes: &[Node<'_>], i: usize) -> bool {
-    let depth = nodes[i].depth;
-    nodes[i + 1..]
-        .iter()
-        .take_while(|n| n.depth >= depth)
-        .all(|n| n.depth > depth)
+/// `C-0042`, from a crewmate's row.
+fn crewmate_number(row: &CrewRow) -> String {
+    match row.agent {
+        AgentRef::Crewmate { task } => task.to_string(),
+        _ => row.label.clone(),
+    }
 }
 
-/// The guides before line `i`'s branch: for each level above it, `│ ` where that ancestor has a
-/// later sibling (its line runs on past this one), else blank.
-fn guides(nodes: &[Node<'_>], i: usize) -> String {
-    let mut ancestors = Vec::new();
-    let mut at = parent_of(nodes, i);
-    while let Some(j) = at {
-        if nodes[j].depth == 0 {
+/// The dim line under a task's name: `T-0042 · api-server · fix · via S-02`, with a single
+/// crewmate's status at the right edge in its flag's colour. Parts that don't fit are left out
+/// whole, never cut.
+fn meta_line(entry: &Entry<'_>, inner: usize) -> Line<'static> {
+    let first = entry.crew[0];
+    let single = entry.crew.len() == 1;
+    let room = inner.saturating_sub(2);
+    let status = if single { first.status.as_str() } else { "" };
+    // What fits beside the status: the parts that don't are left out whole, the kind first,
+    // then who it came through, then the project; the task's id stays.
+    let via = entry.via.map(|s| format!("via {s}"));
+    let mut parts: Vec<(u8, String)> = Vec::new();
+    if let Some(task) = entry.task {
+        parts.push((3, task.id.to_string()));
+        parts.push((2, task.project.clone()));
+    }
+    if single {
+        parts.push((0, first.kind.clone()));
+    }
+    if let Some(via) = via {
+        parts.push((1, via));
+    }
+    parts.retain(|(_, p)| !p.is_empty());
+    let sep = " · ";
+    let joined = |parts: &[(u8, String)]| {
+        parts
+            .iter()
+            .map(|(_, p)| p.as_str())
+            .collect::<Vec<_>>()
+            .join(sep)
+    };
+    let gap = usize::from(!status.is_empty());
+    for drop in 0..3 {
+        if width(&joined(&parts)) + gap + width(status) <= room {
             break;
         }
-        ancestors.push(j);
-        at = parent_of(nodes, j);
+        parts.retain(|(rank, _)| *rank != drop);
     }
-    ancestors
-        .iter()
-        .rev()
-        .map(|&j| if is_last(nodes, j) { "  " } else { "│ " })
-        .collect()
+    let text = truncate(&joined(&parts), room.saturating_sub(gap + width(status)));
+    let pad = if status.is_empty() {
+        0
+    } else {
+        room.saturating_sub(width(&text) + width(status))
+    };
+    let status_style = match waiting(first) {
+        Some(w) => waiting_style(w),
+        None => theme::dim(),
+    };
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(text, theme::dim()),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(status.to_owned(), status_style),
+    ])
 }
 
-/// The guides and branch before a line's glyph: `│ ├ `.
-fn branch_spans(nodes: &[Node<'_>], i: usize) -> Vec<Span<'static>> {
-    let branch = if is_last(nodes, i) { "└" } else { "├" };
-    vec![
-        Span::styled(guides(nodes, i), theme::dim()),
-        Span::styled(branch, theme::dim()),
-        Span::raw(" "),
-    ]
+/// A crewmate's glyph: its flag, else its busy indicator, else how its work stands.
+fn row_glyph(app: &App, row: &CrewRow) -> Span<'static> {
+    if let Some(w) = waiting(row) {
+        return Span::styled("⚑", waiting_style(w));
+    }
+    if row.busy {
+        return spinner::glyph(app, spinner::for_agent(&app.snapshot.crew, row.agent));
+    }
+    match row.phase {
+        CrewPhase::Done => Span::styled("✓", theme::ok()),
+        CrewPhase::Waiting => Span::styled("○", theme::dim()),
+        _ if RESTING.contains(&row.status.as_str()) => Span::styled("○", theme::dim()),
+        _ => Span::styled("●", theme::ok()),
+    }
+}
+
+/// A team's glyph, from its group.
+fn phase_glyph(entry: &Entry<'_>) -> Span<'static> {
+    if let Some(w) = entry.crew.iter().find_map(|r| waiting(r)) {
+        return Span::styled("⚑", waiting_style(w));
+    }
+    match entry.phase() {
+        CrewPhase::Done => Span::styled("✓", theme::ok()),
+        CrewPhase::Waiting => Span::styled("○", theme::dim()),
+        _ => Span::styled("●", theme::ok()),
+    }
+}
+
+/// A status's colour: its flag's while it waits on you, else dim.
+fn status_style(row: &CrewRow, single: bool) -> Style {
+    match waiting(row) {
+        Some(w) if single => waiting_style(w),
+        _ => theme::dim(),
+    }
 }
 
 /// What a row is waiting on you for, if anything (`needs_you` alone reads as an approval).
@@ -278,10 +549,8 @@ fn waiting(row: &CrewRow) -> Option<Waiting> {
         .or_else(|| row.needs_you.then_some(Waiting::Approval))
 }
 
-/// Statuses of agents doing nothing right now, drawn with a dim `○`: an idle secondmate, and a
-/// task that is queued, waits, has reported or has landed. A flagged row
-/// keeps its `⚑`; a busy row (in a turn) spins; every other row is working and gets the green
-/// `●`.
+/// Statuses of crewmates doing nothing right now, from a server that doesn't say their phase:
+/// drawn with a dim `○`.
 const RESTING: &[&str] = &["idle", "queued", "waits", "reported", "landed"];
 
 fn waiting_style(waiting: Waiting) -> Style {
@@ -291,81 +560,14 @@ fn waiting_style(waiting: Waiting) -> Style {
     }
 }
 
-/// A task's heading, `│ ├ ◇ T-0042 api-server`: a dim glyph and the task's words, cut to
-/// `inner_width`; it has no status.
-fn heading_line(nodes: &[Node<'_>], i: usize, inner_width: usize) -> Line<'static> {
-    let node = &nodes[i];
-    let mut spans = branch_spans(nodes, i);
-    spans.push(Span::styled("◇", theme::dim()));
-    spans.push(Span::raw(" "));
-    let room = inner_width.saturating_sub(prefix_width(node)).max(1);
-    spans.push(Span::styled(truncate(node.label, room), theme::text()));
-    Line::from(spans)
-}
-
-/// An agent's line of the tree, its status starting at cell `column`; `busy` is the busy
-/// indicator's glyph when the agent is in a turn, drawn in place of the row's own (a flag still
-/// wins).
-fn line(
-    nodes: &[Node<'_>],
-    i: usize,
-    column: usize,
-    hovered: bool,
-    busy: Option<Span<'static>>,
-) -> Line<'static> {
-    let node = &nodes[i];
-    let Some(row) = node.row else {
-        return Line::default();
-    };
-    let mut spans = Vec::new();
-    if node.depth == 0 {
-        spans.push(busy.unwrap_or_else(|| Span::styled("◆", theme::accent())));
-        spans.push(Span::raw(" "));
-    } else {
-        spans.extend(branch_spans(nodes, i));
-        let glyph = match (waiting(row), busy) {
-            (Some(w), _) => Span::styled("⚑", waiting_style(w)),
-            (None, Some(busy)) => busy,
-            (None, None) if RESTING.contains(&row.status.as_str()) => {
-                Span::styled("○", theme::dim())
-            }
-            (None, None) => Span::styled("●", theme::ok()),
-        };
-        spans.push(glyph);
-        spans.push(Span::raw(" "));
-    }
-    let label_style = if hovered {
-        theme::text().add_modifier(Modifier::UNDERLINED)
-    } else {
-        theme::text()
-    };
-    // A label too long for its status column is cut, keeping a space before the status.
-    let room = column.saturating_sub(prefix_width(node) + 1);
-    let label = if width(&row.label) > room {
-        truncate(&row.label, room)
-    } else {
-        row.label.clone()
-    };
-    let used = prefix_width(node) + width(&label);
-    spans.push(Span::styled(label, label_style));
-    spans.push(Span::raw(" ".repeat(column.saturating_sub(used).max(1))));
-    let status_style = match waiting(row) {
-        Some(w) => waiting_style(w),
-        None if row.agent == AgentRef::Quartermaster && row.status == "ready" => theme::ok(),
-        None => theme::dim(),
-    };
-    spans.push(Span::styled(row.status.clone(), status_style));
-    Line::from(spans)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{agent_lines, nodes};
+    use super::{Built, build};
     use crate::app::App;
     use crate::sample;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use qm_types::api::{AgentRef, CrewRow, CrewTask};
-    use qm_types::ids::{SecondmateId, TaskId, TaskLabelId};
+    use qm_types::api::AgentRef;
+    use qm_types::ids::{SecondmateId, TaskId};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::time::Instant;
@@ -376,12 +578,7 @@ mod tests {
         }
     }
 
-    fn under(mut row: CrewRow, n: u32, words: &str) -> CrewRow {
-        row.task = Some(CrewTask::new(TaskLabelId::new(n).unwrap(), words));
-        row
-    }
-
-    /// The sample Bridge with nothing in a turn, so no line holds the moving busy indicator.
+    /// The sample Bridge with nothing in a turn, so no line holds a moving busy indicator.
     fn app() -> App {
         let mut app = App::new();
         sample::install(&mut app);
@@ -391,7 +588,7 @@ mod tests {
         app
     }
 
-    /// The Crew box's lines inside its border, trailing blanks dropped.
+    /// The Crew section's rows under its heading, to the column's foot.
     fn crew_box(app: &mut App, w: u16, h: u16) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
@@ -402,16 +599,19 @@ mod tests {
             .collect();
         let top = lines
             .iter()
-            .position(|l| l.starts_with("╭─ Crew "))
-            .expect("the crew box is drawn");
-        lines[top + 1..]
+            .position(|l| l.starts_with(" Crew "))
+            .expect("the crew section is drawn");
+        let mut out: Vec<String> = lines[top + 1..]
             .iter()
-            .take_while(|l| !l.starts_with('╰'))
             .map(|l| {
-                let inside: String = l.chars().skip(2).take(27).collect();
+                let inside: String = l.chars().skip(1).take(29).collect();
                 inside.trim_end().to_owned()
             })
-            .collect()
+            .collect();
+        while out.last().is_some_and(String::is_empty) {
+            out.pop();
+        }
+        out
     }
 
     fn key(app: &mut App, code: KeyCode) {
@@ -422,148 +622,107 @@ mod tests {
     }
 
     #[test]
-    fn crewmates_sit_under_their_task_beneath_each_supervisor() {
+    fn tasks_are_listed_by_name_in_their_groups() {
         let mut app = app();
-        assert_eq!(
-            crew_box(&mut app, 150, 45),
-            [
-                "◆ Quartermaster     ready",
-                "├ ◇ T-0042 api-server",
-                "│ ├ ● C-0042 fix    12m",
-                "│ └ ● C-0046 review 2m",
-                "├ ◇ T-0039 api-server",
-                "│ └ ⚑ C-0039 feat   approve",
-                "├ ◇ T-0047 web-app",
-                "│ └ ⚑ C-0047 fix    decide",
-                "└ ○ S-02 web-app  idle",
-                "  ├ ◇ T-0045 web-app",
-                "  │ └ ● C-0045 build  3m",
-                "  └ ◇ T-0048 dotfiles",
-                "    └ ○ C-0048 fix    waits",
-            ]
-        );
-    }
-
-    #[test]
-    fn a_task_gets_a_heading_under_each_supervisor_and_rows_without_one_stay_flat() {
-        let qm = CrewRow::new(AgentRef::Quartermaster, 0, "Quartermaster", "ready");
-        let sm = AgentRef::Secondmate {
-            id: SecondmateId::new(2).unwrap(),
-        };
-        let crew = vec![
-            qm,
-            under(
-                CrewRow::new(crewmate(1), 1, "C-0001 fix", "1m"),
-                7,
-                "T-0007 app",
-            ),
-            under(
-                CrewRow::new(crewmate(2), 1, "C-0002 review", "2m"),
-                7,
-                "T-0007 app",
-            ),
-            // From a server that doesn't group: drawn where its row says.
-            CrewRow::new(crewmate(3), 1, "C-0003 build", "3m"),
-            CrewRow::new(sm, 1, "S-02 web", "idle"),
-            // The same task under the secondmate gets a heading of its own there.
-            under(
-                CrewRow::new(crewmate(4), 2, "C-0004 fix", "4m"),
-                7,
-                "T-0007 app",
-            ),
+        let lines = crew_box(&mut app, 150, 60);
+        let want = [
+            "◆ Quartermaster         ready",
+            "Working · 2",
+            "● Token refresh race",
+            "  T-0042 · api-server",
+            "  ● C-0042 fix            12m",
+            "  ● C-0046 review          2m",
+            "● Resumable uploads",
+            "  T-0045 · web-app         3m",
+            "Waiting · 2",
+            "⚑ Flaky upload test",
+            "  T-0047 · web-app     decide",
+            "○ Slow shell prompt",
+            "  T-0048 · dotfiles     waits",
+            "Done · 1",
+            "✓ API docs refresh",
+            "  T-0041             reported",
+            "Secondmates · 1",
+            "○ S-02 web-app           idle",
         ];
-        let tree = nodes(&crew);
-        let drawn: Vec<(u8, &str, bool)> = tree
-            .iter()
-            .map(|n| (n.depth, n.label, n.row.is_some()))
-            .collect();
-        assert_eq!(
-            drawn,
-            [
-                (0, "Quartermaster", true),
-                (1, "T-0007 app", false),
-                (2, "C-0001 fix", true),
-                (2, "C-0002 review", true),
-                (1, "C-0003 build", true),
-                (1, "S-02 web", true),
-                (2, "T-0007 app", false),
-                (3, "C-0004 fix", true),
-            ]
-        );
-        assert_eq!(
-            agent_lines(&crew),
-            [
-                (0, AgentRef::Quartermaster),
-                (2, crewmate(1)),
-                (3, crewmate(2)),
-                (4, crewmate(3)),
-                (5, sm),
-                (7, crewmate(4)),
-            ]
-        );
+        assert_eq!(lines[..want.len()], want, "{lines:#?}");
     }
 
     #[test]
-    fn the_keys_move_between_agents_passing_over_task_headings() {
+    fn a_wider_column_shows_more_and_a_compact_one_a_line_each() {
         let mut app = app();
-        crew_box(&mut app, 150, 45);
+        let wide = build(&app, 40, false);
+        let text = |built: &Built| -> Vec<String> {
+            built
+                .rows
+                .iter()
+                .map(|l| l.line.spans.iter().map(|s| s.content.as_ref()).collect())
+                .collect()
+        };
+        let wide = text(&wide);
+        assert!(
+            wide.contains(&"  T-0045 · web-app · build · via S-02 3m".to_owned()),
+            "{wide:#?}"
+        );
+        assert!(wide.contains(&"  T-0047 · web-app · fix          decide".to_owned()));
+        let compact = text(&build(&app, 29, true));
+        assert!(
+            compact.contains(&"● Token refresh race   2 crew".to_owned()),
+            "{compact:#?}"
+        );
+        assert!(compact.iter().all(|l| !l.starts_with("  T-")));
+        // Every row still has its spot.
+        app.snapshot
+            .crew
+            .retain(|r| r.agent == AgentRef::Quartermaster);
+        assert_eq!(text(&build(&app, 29, false))[1], "No crewmates yet.");
+    }
+
+    #[test]
+    fn a_task_whose_every_crewmate_waits_in_needs_you_is_left_out_of_the_list() {
+        let mut app = app();
+        // The sample's approval waits on C-0039, so T-0039 shows only in Needs you.
+        let lines = crew_box(&mut app, 150, 60);
+        assert!(!lines.iter().any(|l| l.contains("Proration")), "{lines:#?}");
+        assert!(
+            !app.term
+                .drawn
+                .crew_spots
+                .iter()
+                .any(|s| s.1 == crewmate(39))
+        );
+        // Once it's answered elsewhere and gone from Needs you, the task is back in Waiting.
+        app.snapshot
+            .actions
+            .retain(|a| a.task != Some(TaskId::new(39).unwrap()));
+        let lines = crew_box(&mut app, 150, 60);
+        assert!(
+            lines.contains(&"⚑ Proration preview".to_owned()),
+            "{lines:#?}"
+        );
+        assert!(lines.contains(&"Waiting · 3".to_owned()));
+    }
+
+    #[test]
+    fn the_keys_move_through_the_list_as_it_is_drawn() {
+        let mut app = app();
+        crew_box(&mut app, 150, 60);
         app.select_crew(AgentRef::Quartermaster);
-        let mut seen = Vec::new();
-        for _ in 0..9 {
+        let spots: Vec<AgentRef> = app.term.drawn.crew_spots.iter().map(|s| s.1).collect();
+        let mut seen = vec![AgentRef::Quartermaster];
+        for _ in 1..spots.len() {
             key(&mut app, KeyCode::Down);
             seen.push(app.view.selected_crew.expect("a row stays selected"));
         }
+        assert_eq!(seen, spots);
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.view.selected_crew, spots.last().copied());
+        key(&mut app, KeyCode::Home);
+        assert_eq!(app.view.selected_crew, Some(AgentRef::Quartermaster));
         let sm = AgentRef::Secondmate {
             id: SecondmateId::new(2).unwrap(),
         };
-        assert_eq!(
-            seen,
-            [
-                crewmate(42),
-                crewmate(46),
-                crewmate(39),
-                crewmate(47),
-                sm,
-                crewmate(45),
-                crewmate(48),
-                crewmate(48),
-                crewmate(48),
-            ]
-        );
-        key(&mut app, KeyCode::Up);
-        assert_eq!(app.view.selected_crew, Some(crewmate(45)));
-        key(&mut app, KeyCode::Home);
-        assert_eq!(app.view.selected_crew, Some(AgentRef::Quartermaster));
-    }
-
-    #[test]
-    fn a_deep_label_is_cut_only_as_far_as_its_own_status_needs() {
-        let mut app = app();
-        // S-02's C-0045 decides; a sibling under it has a long status.
-        let sm_task = app.snapshot.crew[6].task.clone();
-        app.snapshot.crew[6].status = "decide".to_owned();
-        let mut sibling = app.snapshot.crew[6].clone();
-        sibling.agent = crewmate(49);
-        sibling.label = "C-0049 review".to_owned();
-        sibling.status = "reported".to_owned();
-        sibling.task = sm_task;
-        app.snapshot.crew.insert(7, sibling);
-        let lines = crew_box(&mut app, 150, 45);
-        assert_eq!(lines[10], "  │ ├ ● C-0045 build decide");
-        assert_eq!(lines[11], "  │ └ ○ C-0049 re… reported");
-    }
-
-    #[test]
-    fn a_long_heading_is_cut_to_the_pane_and_keeps_no_status_column() {
-        let mut app = app();
-        // C-0042 and C-0046, both in T-0042.
-        for row in &mut app.snapshot.crew[1..3] {
-            let task = row.task.as_mut().expect("in a task");
-            "T-0042 a-project-with-a-very-long-name".clone_into(&mut task.label);
-        }
-        let lines = crew_box(&mut app, 150, 45);
-        assert_eq!(lines[1], "├ ◇ T-0042 a-project-with-…");
-        // The crewmates' statuses still follow their own labels.
-        assert_eq!(lines[2], "│ ├ ● C-0042 fix    12m");
+        assert_eq!(spots.last(), Some(&sm), "the secondmates come last");
+        assert!(spots.contains(&crewmate(42)));
     }
 }

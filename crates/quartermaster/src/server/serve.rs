@@ -157,7 +157,7 @@ mod tests {
         let (client, core_end) = qm_types::api::link();
         let (handle, commands) = qm_tui::host::control();
         let (tx, windows) = windows();
-        tokio::spawn(qm_tui::host::serve(client, windows, commands));
+        tokio::spawn(qm_tui::host::serve(client, windows, commands, None));
         let shared = Shared::new(handle, tx, 0, nix::unistd::getuid().as_raw());
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {

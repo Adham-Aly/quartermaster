@@ -66,9 +66,11 @@ mod draft_sync;
 mod hit;
 pub mod host;
 mod input;
+mod logo;
 mod persist;
 mod placeholder;
 mod popups;
+mod raise;
 mod router;
 #[doc(hidden)]
 pub mod sample;

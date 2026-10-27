@@ -160,7 +160,7 @@ impl Writer {
                 }
             }
             Event::Code(text) => {
-                let mut style = theme::accent();
+                let mut style = theme::code();
                 if self.link.is_some() {
                     style = style.add_modifier(Modifier::UNDERLINED);
                 }

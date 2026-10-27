@@ -88,6 +88,8 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
         out.push(c);
         used += w;
     }
+    // "the …" reads as a gap: the ellipsis follows the last word.
+    out.truncate(out.trim_end().len());
     out.push('…');
     out
 }
@@ -127,7 +129,7 @@ pub(crate) fn wrap_styled<S: Copy + PartialEq>(
     let mut rows: Vec<Vec<(char, S)>> = Vec::new();
     let mut row: Vec<(char, S)> = Vec::new();
     let mut row_width = 0;
-    for (word, space) in words {
+    for (word, space) in keep_arrows_on(words) {
         let word_width: usize = word.iter().map(|&(c, _)| char_width(c)).sum();
         let gap = usize::from(row_width > 0);
         if row_width + gap + word_width <= max {
@@ -160,6 +162,23 @@ pub(crate) fn wrap_styled<S: Copy + PartialEq>(
 
 /// A word of styled characters, and the style of the space before it (none for the first).
 type Word<S> = (Vec<(char, S)>, Option<S>);
+
+/// The words with each lone arrow joined to the word after it, so a row never ends in one
+/// (`qm/task-0042` then `← main`).
+fn keep_arrows_on<S: Copy>(words: Vec<Word<S>>) -> Vec<Word<S>> {
+    let mut out = Vec::with_capacity(words.len());
+    let mut words = words.into_iter();
+    while let Some((mut word, space)) = words.next() {
+        if let [(arrow @ ('←' | '→'), style)] = word[..]
+            && let Some((next, next_space)) = words.next()
+        {
+            word = vec![(arrow, style), (' ', next_space.unwrap_or(style))];
+            word.extend(next);
+        }
+        out.push((word, space));
+    }
+    out
+}
 
 /// Joins adjacent characters of the same style into runs.
 fn merge_runs<S: Copy + PartialEq>(chars: Vec<(char, S)>) -> Vec<(String, S)> {
@@ -240,4 +259,37 @@ pub(crate) fn wrap_parts<S: Copy + PartialEq>(
         rows.push(merge_runs(row));
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_keeps_short_text_and_ends_cut_text_on_a_word() {
+        assert_eq!(truncate("the tools", 9), "the tools");
+        assert_eq!(truncate("the tools", 8), "the too…");
+        // A cut that ends on a space: the ellipsis follows the word, not the gap.
+        assert_eq!(
+            truncate("Claude Code and the GitHub CLI", 21),
+            "Claude Code and the…"
+        );
+        assert_eq!(truncate("anything", 0), "");
+    }
+
+    #[test]
+    fn a_row_never_ends_in_an_arrow() {
+        let rows = |text: &str, max| -> Vec<String> {
+            wrap_styled(&[(text.to_owned(), ())], max)
+                .into_iter()
+                .map(|row| row.into_iter().map(|(t, ())| t).collect())
+                .collect()
+        };
+        assert_eq!(
+            rows("fix/upload-retry-on-slow-tmp ← main", 30),
+            ["fix/upload-retry-on-slow-tmp", "← main"]
+        );
+        assert_eq!(rows("a ← b", 30), ["a ← b"]);
+        assert_eq!(rows("ends in →", 30), ["ends in →"]);
+    }
 }

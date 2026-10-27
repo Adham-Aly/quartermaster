@@ -1,10 +1,10 @@
-//! The terminal backend: crossterm's, except that colours go out as the 16-colour SGR codes
+//! The terminal backend: crossterm's, except that named colours go out as the 16-colour SGR codes
 //! (`30`–`37`, `90`–`97`, `40`–`47`, `100`–`107`).
 //!
 //! crossterm writes even the 16 named colours in 256-colour form (`ESC[38;5;15m` for white). The
-//! app uses only the terminal's 16 colours, never a 256-colour value, so a terminal maps every
-//! colour through its own palette. This backend draws
-//! cells itself and hands everything else to [`CrosstermBackend`].
+//! app never uses a 256-colour value: in 16-colour mode a terminal maps every colour through its
+//! own palette, and the 24-bit palette (only with `COLORTERM`) goes out as `38;2`/`48;2`. This
+//! backend draws cells itself and hands everything else to [`CrosstermBackend`].
 
 use crossterm::cursor::MoveTo;
 use crossterm::queue;

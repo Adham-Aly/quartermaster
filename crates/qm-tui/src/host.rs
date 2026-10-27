@@ -10,6 +10,10 @@
 //! Windows reach the host as byte streams over [`Conn`]: a `tokio::io::duplex` in-process, a
 //! socket later. The host ends when the UI quits, the core closes, or (once no more streams can
 //! arrive) its last window leaves.
+//!
+//! For notifications (`qm-notify`), the host publishes what is waiting on you, with where you are
+//! looking (which windows have focus, in which terminal app), and opens a request's card when its
+//! notification is clicked.
 
 use crate::app::{App, Quit};
 use crate::backend::Backend16;
@@ -18,7 +22,8 @@ use crate::draft_sync::DraftSync;
 use crate::persist::Persister;
 use crate::term::{Background, Term};
 use crate::terminal::draw_synchronized;
-use qm_types::api::{Command, CoreClient, Update};
+use qm_types::api::{ActionKey, Command, CoreClient, Update};
+use qm_types::attention::{Health, HostEnd, Looking, Waiting, WaitingItem};
 use qm_types::data_dir::DataDir;
 use qm_types::wire::{
     self, Control, ExitReason, Frame, Hello, Refuse, Welcome, read_frame, write_frame,
@@ -29,7 +34,7 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 /// How often the time-based parts are checked.
@@ -72,6 +77,12 @@ struct Window {
     reader: JoinHandle<()>,
     /// Frames were dropped because it stopped reading: the next frame must repaint everything.
     stalled: bool,
+    /// What the window's terminal holds of the logo.
+    logo: crate::logo::Shown,
+    /// The terminal says this window has focus (assumed until it says otherwise).
+    focused: bool,
+    /// The terminal app it runs in, by bundle ID, when the client knows it.
+    app: Option<String>,
 }
 
 impl Window {
@@ -86,6 +97,8 @@ impl Window {
         // next frame draws every cell.
         let _ = self.terminal.resize(Rect::new(0, 0, cols, rows));
         self.stalled = false;
+        // The terminal is cleared and may have dropped what was sent: send the logo afresh.
+        self.logo.reset();
     }
 }
 
@@ -193,11 +206,18 @@ pub struct Commands(mpsc::UnboundedReceiver<Ctl>);
 ///
 /// # Errors
 /// As [`run`].
-pub async fn serve(client: CoreClient, windows: Windows, control: Commands) -> io::Result<()> {
+/// `attention`, when given, is told what waits on you and hears notification clicks.
+pub async fn serve(
+    client: CoreClient,
+    windows: Windows,
+    control: Commands,
+    attention: Option<HostEnd>,
+) -> io::Result<()> {
     Box::pin(drive(
         client,
         windows,
         Some(control),
+        attention,
         DataDir::resolve().ok(),
     ))
     .await
@@ -210,25 +230,33 @@ pub async fn serve(client: CoreClient, windows: Windows, control: Commands) -> i
 /// A terminal that can't be set up for a window is turned away; this itself does not fail except
 /// on a broken runtime.
 pub async fn run(client: CoreClient, windows: Windows) -> io::Result<()> {
-    Box::pin(drive(client, windows, None, DataDir::resolve().ok())).await
+    Box::pin(drive(client, windows, None, None, DataDir::resolve().ok())).await
 }
 
 async fn drive(
     mut client: CoreClient,
     mut windows: Windows,
     control: Option<Commands>,
+    attention: Option<HostEnd>,
     data_dir: Option<DataDir>,
 ) -> io::Result<()> {
     if client.send(Command::Refresh).is_err() {
         return Ok(());
     }
     let mut app = App::new();
+    app.home = data_dir
+        .as_ref()
+        .map(|dir| dir.root().to_string_lossy().into_owned());
     // What you left (layout, popups, drafts) comes back; a sample fixture then replaces the picture.
     let drafts = data_dir.as_ref().map(DraftSync::open);
     let persist = data_dir.map(|dir| Persister::open(&dir, &mut app));
     crate::sample::install_from_env(&mut app);
     app.detachable = control.is_some();
     let mut control = control.map(|c| c.0);
+    let (waiting, mut opened, mut health) = match attention {
+        Some(end) => (Some(end.waiting), Some(end.opened), Some(end.health)),
+        None => (None, None, None),
+    };
 
     let (inbox_tx, mut inbox) = mpsc::unbounded_channel::<Msg>();
     let mut host = Host {
@@ -242,6 +270,9 @@ async fn drive(
         persist,
         pending_quit: None,
         exit_reason: ExitReason::Quit,
+        waiting,
+        terminal: None,
+        focused_last: None,
     };
     let mut accepting = true;
     let mut tick = tokio::time::interval(TICK);
@@ -255,6 +286,8 @@ async fn drive(
             },
             Some(msg) = inbox.recv() => host.on_msg(msg),
             Some(ctl) = recv_ctl(&mut control) => host.on_ctl(ctl, &mut client),
+            Some(key) = recv_opened(&mut opened) => host.on_opened(&key),
+            Some(now) = recv_health(&mut health) => host.on_health(now),
             update = client.recv() => match update {
                 Some(update) => host.on_update(update),
                 None => host.app.finish(),
@@ -292,6 +325,7 @@ async fn drive(
         host.suspend_requests();
         host.detach_requests();
         host.remember(Instant::now());
+        host.publish_waiting();
     }
     if let Some(reply) = host.pending_quit.take() {
         let _ = reply.1.send(QuitOutcome::Closing);
@@ -320,6 +354,32 @@ struct Host {
     pending_quit: Option<(ExitReason, oneshot::Sender<QuitOutcome>)>,
     /// Why the windows are told to leave when the host ends.
     exit_reason: ExitReason,
+    /// Where what waits on you is published for the notifier; `None` without one.
+    waiting: Option<watch::Sender<Waiting>>,
+    /// The terminal app of the window focused last, which a notification click brings forward.
+    terminal: Option<String>,
+    /// The window focused last, whose tab a notification click brings forward.
+    focused_last: Option<u64>,
+}
+
+/// Waits for a notification click; never, without a notifier.
+async fn recv_opened(opened: &mut Option<mpsc::UnboundedReceiver<ActionKey>>) -> Option<ActionKey> {
+    match opened {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Waits for the notifier's health to change; never, without a notifier (or once it has gone).
+async fn recv_health(health: &mut Option<watch::Receiver<Health>>) -> Option<Health> {
+    let Some(rx) = health.as_mut() else {
+        return std::future::pending().await;
+    };
+    if rx.changed().await.is_ok() {
+        return Some(*rx.borrow_and_update());
+    }
+    *health = None;
+    None
 }
 
 /// Waits for a control message; never, without a server.
@@ -331,6 +391,61 @@ async fn recv_ctl(control: &mut Option<mpsc::UnboundedReceiver<Ctl>>) -> Option<
 }
 
 impl Host {
+    /// A notification was clicked: its card opens (in every window, as the app is shared), and
+    /// the window you used last brings its tab forward (the notifier brings its app forward).
+    fn on_opened(&mut self, key: &ActionKey) {
+        self.app.open_action_key(key);
+        // The window focused last, or else the newest one.
+        let at = self
+            .windows
+            .iter()
+            .position(|w| Some(w.id) == self.focused_last)
+            .or_else(|| self.windows.len().checked_sub(1));
+        if let Some(at) = at {
+            self.windows[at].send(Frame::Control(Control::Raise));
+        }
+    }
+
+    /// The notifier is doing differently: Settings ▸ System says so.
+    fn on_health(&mut self, health: Health) {
+        self.app.view.settings.notifier = health;
+        self.app.redraw();
+    }
+
+    /// Tells the notifier what waits on you and where you are looking, when that changed.
+    fn publish_waiting(&self) {
+        let Some(waiting) = &self.waiting else {
+            return;
+        };
+        let items = self
+            .app
+            .snapshot
+            .actions
+            .iter()
+            .map(|item| {
+                WaitingItem::new(item.key.clone(), item.kind, &item.title, item.at)
+                    .with_from(item.from.map(crate::session::draw::agent_label))
+            })
+            .collect();
+        let focused: Vec<&Window> = self.windows.iter().filter(|w| w.focused).collect();
+        let looking = if focused.is_empty() {
+            Looking::Away
+        } else if focused.iter().any(|w| w.app.is_none()) {
+            Looking::Here
+        } else {
+            Looking::In(focused.iter().filter_map(|w| w.app.clone()).collect())
+        };
+        let now = Waiting::new(self.app.snapshot.settings.notifications, items, looking)
+            .with_terminal(self.terminal.clone());
+        waiting.send_if_modified(|was| {
+            let changed = *was != now;
+            if changed {
+                *was = now;
+            }
+            changed
+        });
+    }
+
     fn on_ctl(&mut self, ctl: Ctl, client: &mut CoreClient) {
         match ctl {
             Ctl::Status(reply) => {
@@ -487,6 +602,7 @@ impl Host {
         term.ssh = hello.ssh;
         term.size = (cols, rows);
         term.palette = crate::theme::fit_reported(&hello.colors);
+        term.logo = crate::theme::logo_ink(&hello.colors);
         term.background = match hello.background {
             wire::Background::Light => Background::Light,
             wire::Background::Dark => Background::Dark,
@@ -501,7 +617,14 @@ impl Host {
             writer,
             reader,
             stalled: false,
+            logo: crate::logo::Shown::default(),
+            focused: true,
+            app: hello.terminal_app.clone().filter(|a| !a.is_empty()),
         };
+        if window.app.is_some() {
+            self.terminal.clone_from(&window.app);
+        }
+        self.focused_last = Some(id);
         window.send(Frame::Welcome(Welcome::new(id, env!("CARGO_PKG_VERSION"))));
         self.windows.push(window);
         self.app.redraw();
@@ -513,6 +636,18 @@ impl Host {
         };
         match frame {
             Frame::Input(event) => {
+                let window = &mut self.windows[at];
+                match event {
+                    wire::InputEvent::FocusGained => {
+                        window.focused = true;
+                        self.focused_last = Some(window.id);
+                        if window.app.is_some() {
+                            self.terminal.clone_from(&window.app);
+                        }
+                    }
+                    wire::InputEvent::FocusLost => window.focused = false,
+                    _ => {}
+                }
                 let event = convert::from_wire(event);
                 self.with_window(at, |app| app.on_event(event, Instant::now()));
             }
@@ -521,7 +656,11 @@ impl Host {
                 self.app.redraw();
             }
             Frame::Colors(colors) => {
-                self.windows[at].term.palette = crate::theme::fit_reported(&colors);
+                let window = &mut self.windows[at];
+                window.term.palette = crate::theme::fit_reported(&colors);
+                window.term.logo = crate::theme::logo_ink(&colors);
+                // Sent after the terminal was entered again (or its cells changed size).
+                window.logo.reset();
                 self.app.redraw();
             }
             Frame::Detach => {
@@ -619,6 +758,10 @@ impl Host {
             // Outside the synchronized update, so the terminal acts on it at once.
             bytes.extend_from_slice(osc52.as_bytes());
         }
+        if drawn.is_ok() {
+            // After the frame, which drew the blank cells the logo goes over.
+            bytes.extend(window.logo.update(app.term.logo, &app.term.logos));
+        }
         std::mem::swap(&mut self.app.term, &mut self.windows[at].term);
         if drawn.is_ok() && !bytes.is_empty() {
             self.windows[at].send(Frame::Output(bytes));
@@ -690,7 +833,7 @@ mod tests {
     async fn typing_in_one_window_shows_in_the_other() {
         let (client, mut core) = qm_types::api::link();
         let (tx, windows) = mpsc::unbounded_channel();
-        let host = tokio::spawn(drive(client, windows, None, None));
+        let host = tokio::spawn(drive(client, windows, None, None, None));
         let mut a = window(&tx, 100, 30).await;
         let mut b = window(&tx, 80, 24).await;
         let first_a = drawn(&mut a).await;

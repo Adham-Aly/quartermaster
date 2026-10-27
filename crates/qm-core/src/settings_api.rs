@@ -313,6 +313,10 @@ impl ApiPart for SettingsPart {
                 let effort = *effort;
                 Box::pin(async move { inner.set_quartermaster_effort(effort).await })
             }
+            Command::SetNotifications { enabled } => {
+                let enabled = *enabled;
+                Box::pin(async move { inner.set_notifications(enabled).await })
+            }
             Command::SetAutocompactWindow { tokens } => {
                 let tokens = *tokens;
                 Box::pin(async move { inner.set_autocompact_window(tokens).await })
@@ -498,6 +502,21 @@ impl Inner {
                     "The Quartermaster's effort couldn't be saved: {e}"
                 ))
                 .await
+            }
+        }
+    }
+
+    /// Turns macOS notifications on or off; the UI host reads the setting from each snapshot, so
+    /// this applies at once.
+    async fn set_notifications(&self, enabled: bool) -> Handled {
+        match self
+            .save_config(|c| c.notifications.enabled = enabled)
+            .await
+        {
+            Ok(()) => Handled::Changed,
+            Err(e) => {
+                self.note(&format!("The notifications setting couldn't be saved: {e}"))
+                    .await
             }
         }
     }
@@ -1061,18 +1080,8 @@ impl Inner {
             }
         }
 
-        view.pin = match &config.routing.always_use {
-            Some(pin) => PinSetting::new(true, Some(pin.model.clone()), pin.fallback.clone()),
-            None => PinSetting::default(),
-        };
-        view.tier_efforts = config.tiers.clone();
-        view.autocompact_window = config.compaction.autocompact_window;
+        config_view(&mut view, &config);
         view.kind_tiers = kind_tier_rows(&config.routing.kinds, &view.models);
-        view.quartermaster = match &config.quartermaster.model {
-            QuartermasterModel::Model(m) => QuartermasterChoice::Model(m.clone()),
-            QuartermasterModel::Auto => QuartermasterChoice::Auto,
-        };
-        view.quartermaster_effort = config.quartermaster.effort;
         view.quartermaster_now =
             seat.and_then(|s| Some(QuartermasterNow::new(s.model?, s.effort?)));
         view.providers = SUBSCRIPTION_LOGINS
@@ -1120,6 +1129,22 @@ struct Login<'a> {
     base_url: Option<&'a str>,
     /// Who it signed in as, when known (`qm_auth::identity`).
     identity: Option<String>,
+}
+
+/// The settings that come straight from `config.toml`.
+fn config_view(view: &mut SettingsView, config: &Config) {
+    view.pin = match &config.routing.always_use {
+        Some(pin) => PinSetting::new(true, Some(pin.model.clone()), pin.fallback.clone()),
+        None => PinSetting::default(),
+    };
+    view.tier_efforts = config.tiers.clone();
+    view.autocompact_window = config.compaction.autocompact_window;
+    view.notifications = config.notifications.enabled;
+    view.quartermaster = match &config.quartermaster.model {
+        QuartermasterModel::Model(m) => QuartermasterChoice::Model(m.clone()),
+        QuartermasterModel::Auto => QuartermasterChoice::Auto,
+    };
+    view.quartermaster_effort = config.quartermaster.effort;
 }
 
 /// Who a login waits for.
