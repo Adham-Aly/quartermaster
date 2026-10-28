@@ -271,7 +271,7 @@ fn an_older_versions_artifacts_are_filed_under_their_task() {
     touch(&flat(15).join("report/report.html"));
     touch(&flat(16).join("report/report.html"));
     touch(&flat(17).join("plan/plan.md"));
-    // C-15 is open, C-16 closed with its report's card unread, C-17 forgotten.
+    // C-15 is open, C-16 closed with its report's card undismissed, C-17 forgotten.
     let facts = Facts {
         unread_reports: vec![id(16)],
         open: vec![open(15, TaskKind::Plan, None, None)],
@@ -295,7 +295,7 @@ fn an_older_versions_artifacts_are_filed_under_their_task() {
     );
     assert!(fs::symlink_metadata(flat(17)).is_err());
 
-    // Once C-15 closes, the links and all its files go; C-16's unread report stays.
+    // Once C-15 closes, the links and all its files go; C-16's undismissed report stays.
     let closed = Facts {
         unread_reports: vec![id(16)],
         ..Facts::default()
@@ -369,7 +369,7 @@ fn plan_staging_and_temporaries_go_after_an_hour() {
 }
 
 #[test]
-fn a_closed_tasks_report_stays_while_its_card_is_unread_then_goes_with_its_folder() {
+fn a_closed_tasks_report_stays_until_its_card_is_dismissed_then_goes_with_its_folder() {
     let home = Home::new("reports");
     let data = &home.data;
     let paths = data.task(id(14), id(14).own_label());
@@ -378,7 +378,7 @@ fn a_closed_tasks_report_stays_while_its_card_is_unread_then_goes_with_its_folde
     touch(&report.join("assets/chart.svg"));
     touch(&paths.plan.join("plan.md"));
     touch(&paths.evidence.join("run.log"));
-    // The task is closed (not in `open`), but you haven't opened or dismissed its report yet.
+    // The task is closed (not in `open`). Opening its report leaves the card undismissed.
     let facts = Facts {
         unread_reports: vec![id(14)],
         ..Facts::default()
@@ -391,7 +391,7 @@ fn a_closed_tasks_report_stays_while_its_card_is_unread_then_goes_with_its_folde
         assert!(!paths.evidence.exists());
     }
 
-    // Once you have read it (or the task is forgotten), the report goes, and its folders with it.
+    // Once you dismiss its card (or the task is forgotten), the report goes, and its folders with it.
     apply(data, &Facts::default(), SystemTime::now(), When::Running);
     assert!(!report.exists());
     assert!(!paths.artifacts.exists());
@@ -399,29 +399,29 @@ fn a_closed_tasks_report_stays_while_its_card_is_unread_then_goes_with_its_folde
 }
 
 #[test]
-fn an_open_crewmates_report_stays_and_a_read_closed_ones_goes_at_once() {
-    let home = Home::new("read-reports");
+fn an_open_crewmates_dismissed_report_stays_and_a_closed_ones_goes_at_once() {
+    let home = Home::new("dismissed-reports");
     let data = &home.data;
     let open_report = data
         .task(id(18), id(18).own_label())
         .artifacts
         .join("report");
-    let read_report = data
+    let dismissed_report = data
         .task(id(19), id(19).own_label())
         .artifacts
         .join("report");
-    for report in [&open_report, &read_report] {
+    for report in [&open_report, &dismissed_report] {
         touch(&report.join("report.html"));
         touch(&report.join("template.html"));
     }
-    // C-18 is still open (reported, waiting on its supervisor); C-19 closed and read.
+    // Both cards are dismissed; C-18 is still open (waiting on its supervisor), C-19 closed.
     let facts = Facts {
         open: vec![open(18, TaskKind::Research, None, None)],
         ..Facts::default()
     };
     apply(data, &facts, SystemTime::now(), When::Running);
     assert!(open_report.join("report.html").is_file());
-    assert!(!read_report.exists());
+    assert!(!dismissed_report.exists());
     assert!(!data.task(id(19), id(19).own_label()).artifacts.exists());
 }
 
@@ -445,17 +445,17 @@ impl Clock for GatedClock {
 }
 
 #[tokio::test]
-async fn an_opened_closed_report_goes_after_the_browser_had_time_to_load_it() {
-    let home = Home::new("opened");
+async fn a_dismissed_closed_report_goes_immediately_without_a_grace_period() {
+    let home = Home::new("dismissed");
     let data = home.data.clone();
     let db = Db::open(&home.base.join("state.db")).unwrap();
-    // C-22 closed with its answer, and you have just opened its report.
+    // C-22 closed with its answer; its report card has not been dismissed.
     db.call(|conn| {
         conn.execute_batch(
             "PRAGMA foreign_keys = OFF;
              INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, delivery_mode,
                  status, outcome, created_at, reported_at, report_read_at, closed_at, seq)
-             VALUES (22, 1, 1, 'lookup', 't', 'g', 'folder', 'closed', 'answered', 1, 2, 3, 3, 1);",
+             VALUES (22, 1, 1, 'lookup', 't', 'g', 'folder', 'closed', 'answered', 1, 2, NULL, 3, 1);",
         )?;
         Ok(())
     })
@@ -467,10 +467,23 @@ async fn an_opened_closed_report_goes_after_the_browser_had_time_to_load_it() {
         .join("report/report.html");
     touch(&page);
     let clock = Arc::new(GatedClock::default());
-    after_report_read(db, data.clone(), clock.clone(), true);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(page.is_file(), "kept while the browser loads it");
-    clock.wake.notify_one();
+    // Opening the page does not mark it dismissed: startup and periodic sweeps keep it.
+    for when in [When::Startup, When::Running] {
+        sweep(&db, &data, clock.as_ref(), when).await;
+        assert!(page.is_file(), "kept until the card is dismissed");
+    }
+    db.call(|conn| {
+        assert!(qm_store::tasks::mark_report_read(
+            conn,
+            id(22),
+            jiff::Timestamp::from_millisecond(4).unwrap(),
+        )?);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    after_report_dismissed(db, data.clone(), clock);
+    // Never wake the gated clock: dismissal cleanup must not sleep.
     for _ in 0..250 {
         if !page.exists() {
             break;

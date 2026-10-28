@@ -74,7 +74,7 @@ every crate ── qm-types (which depends on none of ours) · xtask: std only
   terminal belongs to the UI, so nothing is logged there.
 - `seat/`, `secondmates/S-n/`, `tasks/C-n/` (a crewmate's worktree, brief, jobs; goes at close; each has
   `transcript/`, the provider engine's durable sessions), `artifacts/T-n/C-n/` (`report/` until closed and its card
-  read; `plan/`, `evidence/` while read; `qm-core` `retention.rs`), `attachments/`, `drafts/`, `ui.json` (UI state,
+  dismissed; `plan/`, `evidence/` while read; `qm-core` `retention.rs`), `attachments/`, `drafts/`, `ui.json` (UI state,
   never logged; `tui.toml` is only read once for old widths), `plan-endpoint.json` (the plan pages' loopback port,
   kept so pages rendered before a restart still send), `Quartermaster.app` (the notifier's helper, installed and
   ad-hoc signed by the server while notifications are on; it connects back on `notifier.sock`).

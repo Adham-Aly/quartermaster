@@ -7,6 +7,15 @@
 >
 > Then run `quartermaster`. To update later, run the same command again.
 
+## What's new in 0.9.0
+
+Changes since [0.8.0](https://github.com/Adham-Aly/quartermaster/releases/tag/v0.8.0):
+
+- **Reports stay until you dismiss them.** Opening a finished report no longer removes its card,
+  deletes its files or removes its completed crewmate from Crew. Open it as often as you like,
+  including after restarting Quartermaster. Use **Dismiss** to remove the card and completed
+  crewmate and delete the report artifact. Execution resources still retire normally.
+
 ## What's new in 0.8.0
 
 Changes since [0.7.1](https://github.com/Adham-Aly/quartermaster/releases/tag/v0.7.1):

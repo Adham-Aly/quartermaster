@@ -422,8 +422,8 @@ pub fn with_status(conn: &Connection, status: TaskStatus) -> Result<Vec<TaskRow>
     collect(&mut stmt, params![status])
 }
 
-/// The tasks of `kinds` that reported and whose report the user hasn't opened or dismissed since,
-/// oldest first: never, or before the task last reported.
+/// The tasks of `kinds` that reported and whose report card the user hasn't dismissed since,
+/// oldest first. Despite its name, `report_read_at` records dismissal, never opening a report.
 pub fn unread_reports(conn: &Connection, kinds: &[TaskKind]) -> Result<Vec<TaskRow>, StoreError> {
     let kinds = serde_json::Value::from(kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>());
     let mut stmt = conn.prepare(&format!(
@@ -435,8 +435,8 @@ pub fn unread_reports(conn: &Connection, kinds: &[TaskKind]) -> Result<Vec<TaskR
     collect(&mut stmt, params![json_text("kinds", &kinds)?])
 }
 
-/// Records that the user opened or dismissed `task`'s report now. Returns whether a row changed:
-/// a task that never reported has no report to read.
+/// Records that the user dismissed `task`'s report card now, in `report_read_at`; opening the
+/// report must not call this. Returns whether a row changed: an unreported task has no card to dismiss.
 pub fn mark_report_read(
     conn: &Connection,
     task: TaskId,
@@ -1306,7 +1306,7 @@ mod branch_tests {
                 .collect()
         };
         let at = |ms| Timestamp::from_millisecond(ms).expect("time");
-        // Nothing reported yet: nothing to read, and nothing is marked.
+        // Nothing reported yet: no card to dismiss, and nothing is marked.
         assert_eq!(unread(&conn), []);
         assert!(!mark_report_read(&conn, lookup, at(5)).expect("mark"));
         for task in [lookup, build] {
@@ -1320,7 +1320,7 @@ mod branch_tests {
         assert_eq!(unread(&conn), [lookup]);
         assert!(mark_report_read(&conn, lookup, at(20)).expect("mark"));
         assert_eq!(unread(&conn), []);
-        // It reports again: the new report is unread.
+        // It reports again: the new report card is undismissed.
         conn.execute(
             "UPDATE tasks SET reported_at = 30 WHERE id = ?1",
             params![lookup],

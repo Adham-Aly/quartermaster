@@ -1,11 +1,12 @@
 //! The crew tree and the task pane, display-ready.
 //!
 //! [`load`] reads `qm_store::crew_view::crew_data` and builds the rows under the Quartermaster's
-//! root row (which `api.rs` writes): its open crewmates at depth 1, then its secondmates at depth
-//! 1, each followed by its own open crewmates at depth 2. Under each supervisor the crewmates are
+//! root row (which `api.rs` writes): its visible crewmates at depth 1, then its secondmates at depth
+//! 1, each followed by its own visible crewmates at depth 2. Open tasks and closed answered reports
+//! awaiting explicit dismissal stay visible. Under each supervisor the crewmates are
 //! kept together by task (`T-`), tasks in the order their oldest crewmate there was made and
 //! crewmates oldest first, and each row carries its task's heading ([`CrewTask`]), which the tree
-//! draws above them: supervisor → task → crewmates. A task with no open crewmate has no rows, so
+//! draws above them: supervisor → task → crewmates. A task with no visible crewmate has no rows, so
 //! it drops out. Each crewmate gets a [`TaskDetail`] for the task pane, with token use summed over
 //! its turns.
 //!
@@ -198,7 +199,7 @@ fn phase(task: &OpenTask) -> CrewPhase {
             CrewPhase::Waiting
         }
         TaskStatus::Settling if task.pending_merge => CrewPhase::Waiting,
-        TaskStatus::Reported | TaskStatus::Landed => CrewPhase::Done,
+        TaskStatus::Reported | TaskStatus::Landed | TaskStatus::Closed => CrewPhase::Done,
         _ => CrewPhase::Working,
     }
 }
@@ -251,8 +252,9 @@ pub fn status_word(task: &OpenTask, now: Timestamp) -> (String, Option<Waiting>)
         TaskStatus::Settling if task.pending_merge => (word("approve"), Some(Waiting::Approval)),
         TaskStatus::Settling => (word("settling"), None),
         TaskStatus::Landed => (word("landed"), None),
-        // Never loaded (the store leaves them out); worded plainly should one slip through.
-        TaskStatus::Closed | TaskStatus::Failed | TaskStatus::Stopped | TaskStatus::Discarded => {
+        TaskStatus::Closed => (word("closed"), None),
+        // Side exits are never loaded; worded plainly should one slip through.
+        TaskStatus::Failed | TaskStatus::Stopped | TaskStatus::Discarded => {
             (task.status.to_string(), None)
         }
     }
@@ -555,6 +557,91 @@ mod tests {
         )
         .expect("seed tasks");
         conn
+    }
+
+    #[test]
+    fn closed_answered_crewmates_stay_grouped_and_nonrunning_until_dismissed() {
+        let conn = grouped_fixture();
+        conn.execute_batch(
+            "UPDATE tasks SET kind = 'research', status = 'closed', outcome = 'answered',
+                              closed_at = 10, reported_at = 9 WHERE id IN (3, 6);
+             UPDATE tasks SET kind = 'lookup', reported_at = 7 WHERE id = 7;
+             INSERT INTO agents (id, role, supervisor_id, task_id, home, status,
+                                 created_at, retired_at, seq)
+             VALUES (10, 'crewmate', 1, 3, '/retired/3', 'retired', 3, 10, 3),
+                    (11, 'crewmate', 9, 6, '/retired/6', 'retired', 6, 10, 6),
+                    (12, 'crewmate', 1, 7, '/retired/7', 'retired', 7, 10, 7);",
+        )
+        .expect("close answered reports and retire agents");
+        let data = crew_view::crew_data(&conn).expect("load crew");
+        let view = build(&data, Timestamp::UNIX_EPOCH, None);
+        let crewmates: Vec<_> = view
+            .crew
+            .iter()
+            .filter_map(|row| match row.agent {
+                AgentRef::Crewmate { task } => Some((task, row.depth)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            crewmates,
+            [(1, 1), (3, 1), (2, 1), (7, 1), (4, 2), (6, 2), (5, 2)]
+                .map(|(id, depth)| (TaskId::new(id).expect("task id"), depth))
+        );
+        assert_eq!(view.crew[0].task, view.crew[1].task);
+        assert_eq!(view.crew[5].task, view.crew[6].task);
+        for id in [3, 6, 7] {
+            let task = TaskId::new(id).expect("task id");
+            let row = view
+                .crew
+                .iter()
+                .find(|row| row.agent == AgentRef::Crewmate { task })
+                .expect("closed crewmate row");
+            assert_eq!(row.phase, CrewPhase::Done);
+            assert_eq!(row.status, "closed");
+            assert!(!row.busy);
+            assert!(!row.needs_you);
+            assert_eq!(row.waiting, None);
+            assert!(!view.tasks.iter().find(|d| d.task == task).unwrap().running);
+            let stored = data.tasks.iter().find(|t| t.task == task).unwrap();
+            assert_eq!(
+                stored.agent.as_ref().unwrap().status,
+                qm_types::domain::AgentStatus::Retired
+            );
+            qm_store::tasks::mark_report_read(
+                &conn,
+                task,
+                Timestamp::from_millisecond(10).expect("dismissal time"),
+            )
+            .expect("dismiss report");
+        }
+        assert_eq!(view.attention.running, 0);
+        let dismissed = build(
+            &crew_view::crew_data(&conn).expect("reload after dismissal"),
+            Timestamp::UNIX_EPOCH,
+            None,
+        );
+        assert_eq!(dismissed.tasks.len(), 4);
+        for id in [3, 6, 7] {
+            assert!(
+                !dismissed
+                    .tasks
+                    .iter()
+                    .any(|d| d.task == TaskId::new(id).expect("task id"))
+            );
+            assert!(!dismissed.crew.iter().any(|row| {
+                row.agent
+                    == AgentRef::Crewmate {
+                        task: TaskId::new(id).expect("task id"),
+                    }
+            }));
+        }
+        // T-7 had only a closed report: dismissing it removes the entire heading.
+        assert!(!dismissed.crew.iter().any(|row| {
+            row.task
+                .as_ref()
+                .is_some_and(|t| t.id == TaskLabelId::new(7).expect("label id"))
+        }));
     }
 
     #[test]

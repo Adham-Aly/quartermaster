@@ -4,6 +4,49 @@ use crate::parent_channel;
 use qm_types::ids::EventId;
 
 #[test]
+fn pending_reports_survive_cap_and_explicit_forgetting_until_dismissed() {
+    for explicit in [false, true] {
+        for kind in ["lookup", "research", "reproduce", "teach", "build"] {
+            for (reported, dismissed, outcome, pending) in [
+                (Some(20), None, "answered", true),
+                (Some(20), Some(10), "answered", true),
+                (Some(20), Some(20), "answered", false),
+                (Some(20), Some(30), "answered", false),
+                (None, None, "answered", false),
+                (Some(20), None, "failed", false),
+            ] {
+                let mut conn = working();
+                conn.execute(
+                    "INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal,
+                         delivery_mode, status, outcome, created_at, closed_at, reported_at,
+                         report_read_at, seq)
+                     VALUES (1, 1, 1, ?1, 'report', 'goal', 'folder', 'closed', ?2, 1, 30, ?3, ?4, 1)",
+                    params![kind, outcome, reported, dismissed],
+                ).expect("closed task");
+                conn.execute_batch(
+                    "INSERT INTO reports (id, task_id, agent_id, source, final_text, created_at, seq)
+                     VALUES (1, 1, 1, 'final_text', 'answer', 20, 1);",
+                ).expect("report");
+                let forgotten = if explicit {
+                    forget_closed_task_details(&mut conn)
+                } else {
+                    forget_closed_tasks(&mut conn, 0)
+                }
+                .expect("forget");
+                let protected = pending && kind != "build";
+                assert_eq!(
+                    forgotten.is_empty(),
+                    protected,
+                    "{kind}, {reported:?}, {dismissed:?}, {outcome}, explicit={explicit}"
+                );
+                assert_eq!(count(&conn, "reports"), i64::from(protected));
+                assert_eq!(count(&conn, "pragma_foreign_key_check"), 0);
+            }
+        }
+    }
+}
+
+#[test]
 fn forgetting_removes_only_the_deleted_held_actions_unowned_card_links() {
     for explicit in [false, true] {
         let mut conn = routed_history();

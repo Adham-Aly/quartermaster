@@ -2245,7 +2245,7 @@ checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
 
 [[package]]
 name = "qm-auth"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
  "jiff",
@@ -2264,7 +2264,7 @@ dependencies = [
 
 [[package]]
 name = "qm-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "jiff",
  "qm-auth",
@@ -2292,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "qm-engine"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "jiff",
  "libproc",
@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "qm-engine-claude"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
  "jiff",
@@ -2323,7 +2323,7 @@ dependencies = [
 
 [[package]]
 name = "qm-git"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "nix 0.31.3",
  "qm-types",
@@ -2333,7 +2333,7 @@ dependencies = [
 
 [[package]]
 name = "qm-github"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
  "http",
@@ -2349,7 +2349,7 @@ dependencies = [
 
 [[package]]
 name = "qm-notify"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "jiff",
  "qm-types",
@@ -2363,7 +2363,7 @@ dependencies = [
 
 [[package]]
 name = "qm-plans"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
  "pulldown-cmark",
@@ -2379,7 +2379,7 @@ dependencies = [
 
 [[package]]
 name = "qm-policy"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "qm-types",
  "serde",
@@ -2387,7 +2387,7 @@ dependencies = [
 
 [[package]]
 name = "qm-prompts"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "jiff",
  "qm-policy",
@@ -2396,7 +2396,7 @@ dependencies = [
 
 [[package]]
 name = "qm-providers"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2424,7 +2424,7 @@ dependencies = [
 
 [[package]]
 name = "qm-routing"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "qm-types",
  "serde",
@@ -2433,7 +2433,7 @@ dependencies = [
 
 [[package]]
 name = "qm-store"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "jiff",
  "qm-types",
@@ -2447,7 +2447,7 @@ dependencies = [
 
 [[package]]
 name = "qm-tools"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "jiff",
  "qm-engine",
@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "qm-tui"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
  "crossterm",
@@ -2481,7 +2481,7 @@ dependencies = [
 
 [[package]]
 name = "qm-types"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
  "jiff",
@@ -2499,7 +2499,7 @@ dependencies = [
 
 [[package]]
 name = "quartermaster"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "crossterm",
  "jiff",
@@ -4504,7 +4504,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.8.0"
+version = "0.9.0"
 
 [[package]]
 name = "yaml-rust"

@@ -9,7 +9,7 @@
 //! |---|---|
 //! | `artifacts/T-t/C-n/plan/` | C-n is open, or an open crewmate that can change code builds on C-n and has no copy of the plan yet |
 //! | `artifacts/T-t/C-n/evidence/` | C-n is open, or an open crewmate builds on or retries C-n |
-//! | `artifacts/T-t/C-n/report/` | C-n is open, or its report's card still waits for you to open or dismiss it |
+//! | `artifacts/T-t/C-n/report/` | C-n is open, or its report's card has not been dismissed |
 //! | `artifacts/T-t/C-n/`, `artifacts/T-t/` | while it holds anything |
 //! | a link `artifacts/T-t/C-n` or `scratchpad/T-t/C-n`, left when C-n moved to another task | C-n is open |
 //! | `scratchpad/T-t/C-n/` (in the scratch root) | C-n is open |
@@ -18,9 +18,9 @@
 //!
 //! [`sweep`] applies the table. It runs at startup (before any session opens, so a transcript no
 //! one names goes at once and an older layout's files move in), after a
-//! task closes, after you open or dismiss a closed task's report ([`after_report_read`]), and
+//! task closes, after you dismiss a report ([`after_report_dismissed`]), and
 //! every [`SWEEP_EVERY`], which also takes what a retired secondmate or `/clear`
-//! left behind. Away from
+//! left behind. Opening a report never consumes it. Away from
 //! startup a transcript no one names is kept for [`TEMP_AFTER`], so a session that has just
 //! started but not yet been recorded is never touched. A damaged transcript that its owner names
 //! is kept. Nothing here follows a link: a link is removed itself, and a folder whose ancestors
@@ -78,17 +78,10 @@ fn log_failure(e: &StoreError) {
     tracing::warn!(error = %e, "couldn't read what the kept files belong to; nothing removed");
 }
 
-/// How long a report you opened stays, so your browser has loaded it before it goes.
-pub const OPENED_REPORT_GRACE: Duration = Duration::from_mins(1);
-
-/// You opened (`opened`) or dismissed a report: once its task is closed, nothing needs the page
-/// any more, so a sweep takes it; after [`OPENED_REPORT_GRACE`] if you opened it. Runs in the
-/// background.
-pub fn after_report_read(db: Db, data: DataDir, clock: Arc<dyn Clock>, opened: bool) {
+/// You dismissed a report: once its task is closed, nothing needs the page any more, so a
+/// background sweep takes it immediately. Opening a report does not trigger cleanup.
+pub fn after_report_dismissed(db: Db, data: DataDir, clock: Arc<dyn Clock>) {
     tokio::spawn(async move {
-        if opened {
-            clock.sleep(OPENED_REPORT_GRACE).await;
-        }
         sweep(&db, &data, clock.as_ref(), When::Running).await;
     });
 }

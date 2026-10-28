@@ -370,7 +370,7 @@ pub(crate) async fn retire(
     .map_err(|e| CloseError::Failed(e.to_string()))?;
     // The task's folder (its transcript too) and scratchpad go with the close: its outcome and
     // answer are in the store. Its plan and evidence go once no open task reads them, and its
-    // report once you have read it (the retention sweep, below). Only the app's own files go:
+    // report once you have dismissed its card (the retention sweep, below). Only the app's own files go:
     // nothing a crewmate wrote elsewhere is touched. A failure is logged; the startup sweep
     // removes what it leaves.
     let paths = svc.paths_of(&row);
