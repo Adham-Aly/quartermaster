@@ -146,6 +146,103 @@ async fn a_stronger_retry_joins_the_task_of_the_work_it_retries() {
 }
 
 #[tokio::test]
+async fn retry_card_guidance_is_rendered_without_original_source_words() {
+    const ORIGINAL: &str = "Original user prompt: count every line in notes.txt.";
+    const GUIDANCE: &str = "Check the empty-file case too.";
+    const INSTRUCTION: &str = "Explain how you checked the answer";
+
+    for (original, words) in [
+        (ORIGINAL, Some("  Check the empty-file case too. \n")),
+        ("", Some(GUIDANCE)),
+        (ORIGINAL, None),
+        (ORIGINAL, Some(" \n\t ")),
+    ] {
+        let f = Fixture::new().await;
+        let (svc, scheduler) = f.task_service();
+        let first = start(
+            &svc,
+            &qm(),
+            StartRequest {
+                instructions: vec![INSTRUCTION.into()],
+                ..request("retry with direct guidance")
+            },
+        )
+        .await;
+        set_status(&f, first.crewmate, "failed").await;
+        f.db()
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE tasks SET user_words = ?2 WHERE id = ?1",
+                    rusqlite::params![first.crewmate, original],
+                )?;
+                conn.execute_batch(
+                    "INSERT INTO placements (canonical, tier, created_at, seq)
+                     VALUES ('stronger', 'premium', 0, 900);",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let retry = svc
+            .start_retry(
+                first.crewmate,
+                qm_types::domain::Tier::Premium,
+                words.map(str::to_owned),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retry.task, first.task);
+        let mut inputs = svc
+            .db()
+            .call(move |conn| qm_store::crew_view::brief_inputs(conn, retry.crewmate))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(inputs.goal, "Answer the question");
+        assert_eq!(inputs.instructions[0], INSTRUCTION);
+        assert_eq!(inputs.user_words.contains(ORIGINAL), !original.is_empty());
+        // Queued tasks have not acquired runtime ports or a branch base yet.
+        inputs.port_base = Some(41_000);
+        inputs.base_ref = Some("origin/main".into());
+        inputs.base_commit = Some("a".repeat(40).parse().unwrap());
+        inputs.branch = Some("qm/test".into());
+        let facts = crate::briefs::brief_facts(&inputs, None).unwrap();
+        let rendered = qm_prompts::brief::render_brief(&facts);
+        assert!(rendered.contains("Answer the question"), "{rendered}");
+        assert!(rendered.contains(INSTRUCTION), "{rendered}");
+        assert!(!rendered.contains(ORIGINAL), "{rendered}");
+        assert!(!rendered.contains("## The user's own words"), "{rendered}");
+        if words.is_some_and(|w| !w.trim().is_empty()) {
+            assert_eq!(inputs.instructions.len(), 2);
+            assert_eq!(
+                inputs.instructions[1],
+                format!(
+                    "Direct user retry guidance (decision card for {}): {GUIDANCE}",
+                    first.crewmate
+                )
+            );
+            assert!(
+                rendered.contains("Direct user retry guidance"),
+                "{rendered}"
+            );
+            assert!(rendered.contains(GUIDANCE), "{rendered}");
+        } else {
+            assert_eq!(inputs.instructions, vec![INSTRUCTION.to_owned()]);
+            assert!(
+                !rendered.contains("Direct user retry guidance"),
+                "{rendered}"
+            );
+            assert!(!rendered.contains(GUIDANCE), "{rendered}");
+        }
+
+        drop(svc);
+        scheduler.abort();
+        let _ = scheduler.await;
+    }
+}
+
+#[tokio::test]
 async fn join_task_wins_and_a_finished_task_gives_a_task_of_its_own() {
     let f = Fixture::new().await;
     let (svc, scheduler) = f.task_service();

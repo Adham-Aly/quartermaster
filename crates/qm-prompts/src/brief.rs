@@ -10,7 +10,7 @@
 //!
 //! The whole brief sits inside one supervisor marker (`<qm:supervisor from="quartermaster"
 //! task="C-0042">`). Every piece of text that didn't come from this module (the goal,
-//! the user's words, instructions, constraints, the summary and answer it builds on) is
+//! the goal, instructions, constraints, the summary and answer it builds on) is
 //! neutralised with [`qm_policy::markers::neutralise`] here, so nothing in it can open or close a
 //! marker, whatever the caller passed.
 //!
@@ -34,7 +34,7 @@ use crate::index;
 #[path = "brief_tests.rs"]
 mod tests;
 
-/// Where free text (the user's words, a builds-on summary) wraps, in characters per line,
+/// Where free text (the goal, a builds-on summary) wraps, in characters per line,
 /// counting the `> "` quote prefix.
 pub const WRAP: usize = 88;
 
@@ -135,10 +135,6 @@ pub struct BriefFacts {
     pub ports: PortBlock,
     /// The supervisor's goal: its understanding of done.
     pub goal: String,
-    /// The user's own words, copied by the app (empty when there are none).
-    pub user_words: String,
-    /// The supervisor left passages about other work out of them.
-    pub user_words_trimmed: bool,
     /// One-time instructions from the supervisor, for this task only.
     pub instructions: Vec<String>,
     pub constraints: Vec<BriefConstraint>,
@@ -160,7 +156,6 @@ pub fn render_brief(f: &BriefFacts) -> String {
     let _ = writeln!(out, "<qm:supervisor from=\"{from}\" task=\"{}\">", f.task);
     header(&mut out, f);
     section_goal(&mut out, f);
-    section_user_words(&mut out, f);
     section_instructions(&mut out, f);
     section_constraints(&mut out, f);
     section_builds_on(&mut out, f);
@@ -309,37 +304,6 @@ fn section_goal(out: &mut String, f: &BriefFacts) {
     out.push_str("\n## Goal\n");
     push_block(out, &neutralise(f.goal.trim()));
 }
-
-fn section_user_words(out: &mut String, f: &BriefFacts) {
-    let words = neutralise(f.user_words.trim());
-    if words.is_empty() {
-        return;
-    }
-    out.push_str(
-        "\n## The user's own words (copied by the app; these outrank everything else here)\n",
-    );
-    let quoted = format!("\"{words}\"");
-    let mut first = true;
-    for line in quoted.lines() {
-        if line.trim().is_empty() {
-            out.push_str(">\n");
-            continue;
-        }
-        for piece in wrap(line, WRAP - 3) {
-            out.push_str(if first { "> " } else { ">  " });
-            out.push_str(&piece);
-            out.push('\n');
-            first = false;
-        }
-    }
-    if f.user_words_trimmed {
-        out.push_str(TRIMMED_NOTE);
-    }
-}
-
-/// Said under the user's words when the supervisor left parts of their message out.
-const TRIMMED_NOTE: &str =
-    "Your supervisor left out parts of this message that were about other work.\n";
 
 fn section_instructions(out: &mut String, f: &BriefFacts) {
     let items: Vec<String> = f
@@ -877,8 +841,6 @@ mod report_tests {
             pr_target: None,
             ports: PortBlock { base: 41_000 },
             goal: "answer".to_owned(),
-            user_words: String::new(),
-            user_words_trimmed: false,
             instructions: vec![],
             constraints: vec![],
             tests_required: false,

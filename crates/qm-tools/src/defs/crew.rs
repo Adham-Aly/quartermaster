@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 tool! {
     /// Starts a task. The app checks: the project is registered, the kind is valid, `builds_on` is
-    /// checked as a fact, your words are copied by the app from your message, overrides need user
+    /// checked as a fact, source words are stored as provenance, overrides need user
     /// authority (model choices can cite an earlier actual message), and the model comes from routing.
     StartCrewmateTool {
         name: "start_crewmate",
@@ -81,7 +81,8 @@ pub struct StartCrewmateArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<i64>")]
     pub choice_message: Option<qm_types::ids::MessageId>,
-    // The user's message whose words the brief carries (numeric ID); omit for this turn's.
+    // Source user message stored as provenance (numeric ID); omit for this turn's.
+    // Its words are not pasted into the brief; author the task in goal and instructions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<i64>")]
     pub words_message: Option<qm_types::ids::MessageId>,
@@ -105,7 +106,7 @@ pub struct StartCrewmateArgs {
 ///
 /// `correlation` names the routed request the task serves. The app then applies what the stored
 /// request carries, all of it authorised on the Quartermaster's turn that routed it: its base
-/// branch, your words, and its model, effort, premium and later steps. It sets
+/// branch, source-word provenance, and its model, effort, premium and later steps. It sets
 /// `tasks.secondmate_request_id`. Own overrides need a direct user turn, except model/effort/premium
 /// may cite an earlier actual user message through `choice_message`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -184,7 +185,8 @@ pub struct SecondmateStartCrewmateArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<i64>")]
     pub choice_message: Option<qm_types::ids::MessageId>,
-    // The user's message whose words the brief carries (numeric ID); omit for this turn's.
+    // Source user message stored as provenance (numeric ID); omit for this turn's.
+    // Its words are not pasted into the brief; author the task in goal and instructions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<i64>")]
     pub words_message: Option<qm_types::ids::MessageId>,

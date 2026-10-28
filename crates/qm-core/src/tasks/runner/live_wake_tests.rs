@@ -848,3 +848,83 @@ async fn ordinary_debounce_is_not_reset_by_tool_boundary_checks() {
     assert!(crew.side.commands.try_recv().is_err());
     crew.done().await;
 }
+
+#[tokio::test]
+async fn user_turn_followups_deliver_only_the_supervisors_curated_message() {
+    const ORIGINAL: &str = "Fix upload retries. Also start unrelated billing work afterwards.";
+    const CURATED: &str = "Retry the upload test with the corrected timeout.";
+    for secondmate in [false, true] {
+        let mut crew = Crew::new(secondmate).await;
+        let mut caller = supervisor(secondmate);
+        let agent = caller.agent;
+        let message = crew
+            .fixture
+            .db()
+            .call(move |conn| {
+                qm_store::messages::insert(
+                    conn,
+                    &qm_store::messages::NewMessage {
+                        agent,
+                        source: qm_types::domain::MessageSource::You,
+                        kind: qm_types::domain::MessageKind::Message,
+                        text: ORIGINAL,
+                        options: &[],
+                        replies_to: None,
+                        turn: None,
+                        at: Timestamp::UNIX_EPOCH,
+                    },
+                )
+            })
+            .await
+            .unwrap();
+        caller.turn = Some(TurnCx {
+            turn: TurnId::new(1),
+            started_by: StartedBy::User { message },
+        });
+        crew.runner
+            .svc
+            .message_task(&caller, task(), CURATED.into())
+            .await
+            .unwrap();
+        let side = &mut crew.side;
+        let engine = async {
+            let SessionCommand::StartTurn { input } = command(side).await else {
+                panic!("expected the followup turn");
+            };
+            let [InputBlock::Text { text }] = input.blocks.as_slice() else {
+                panic!("expected one curated supervisor block: {input:?}");
+            };
+            assert!(text.contains(CURATED), "{text}");
+            assert!(!text.contains(ORIGINAL), "{text}");
+            assert!(!text.contains("billing"), "{text}");
+            assert!(!text.contains("The user added"), "{text}");
+            side.events.send(EngineEvent::TurnStarted).await.unwrap();
+            side.events.send(ended()).await.unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(crew.runner.turn(NextTurn::App), engine);
+        })
+        .await
+        .unwrap();
+        crew.fixture
+            .db()
+            .call(move |conn| {
+                let delivered: String = conn.query_row(
+                    "SELECT text FROM messages WHERE agent_id = 3 AND source = 'supervisor'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                assert_eq!(delivered, CURATED);
+                let sources = qm_store::user_message_sources::search(conn, agent, None, None)?;
+                assert_eq!(
+                    sources.iter().find(|s| s.id == message).unwrap().text,
+                    ORIGINAL
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(crew.state(WakeKind::Steer).await, (1, 1, 1));
+        crew.done().await;
+    }
+}

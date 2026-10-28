@@ -875,7 +875,8 @@ impl TaskService {
     }
 
     /// Choice 2 on a decision card: a new crewmate retrying `retried` at exactly `tier`, on the
-    /// authority of your card choice, with your words in its brief.
+    /// authority of your card choice, with any direct user card guidance in its instructions.
+    /// Original user words remain stored provenance, not rendered task text.
     pub async fn start_retry(
         &self,
         retried: TaskId,

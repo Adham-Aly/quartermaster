@@ -31,26 +31,17 @@ const SUMMARY_CHARS: usize = 80;
 #[cfg(test)]
 mod tests;
 
-/// The routed wake's text; lines are left out when empty. Free text is neutralised when the wake is
-/// rendered.
+/// The routed wake carries only the Quartermaster's curated request and instructions, plus app
+/// routing metadata. Original user words remain stored for provenance, not copied into delivery.
+/// Free text is neutralised when the wake is rendered.
 pub fn wake_text(
     scope: &str,
-    user_words: &str,
-    trimmed: bool,
     request: &str,
     instructions: &[String],
     base_branch: Option<&str>,
     correlation: CorrelationId,
 ) -> String {
     let mut text = format!("Request in your scope ({scope}).");
-    if !user_words.trim().is_empty() {
-        let whose = if trimmed {
-            "The user's words (parts about other work left out by the Quartermaster)"
-        } else {
-            "The user's words"
-        };
-        let _ = write!(text, " {whose}: \"{}\".", user_words.trim());
-    }
     let _ = write!(text, "\nRequest: {request}");
     if !instructions.is_empty() {
         text.push_str("\nInstructions for this request only:");
@@ -218,8 +209,6 @@ impl SecondmateService {
                         payload: serde_json::json!({
                             "text": wake_text(
                                 &scope,
-                                &chosen.text,
-                                !chosen.cuts.is_empty(),
                                 &req.request,
                                 &req.instructions,
                                 req.base_branch.as_deref(),

@@ -480,17 +480,81 @@ pub(crate) fn deliver_to_crewmate(
     })
 }
 
-/// The user's plan replies in a message to a task, checked and recorded; a message without one
-/// passes untouched.
+/// Record structured replies from the triggering user source, independently of the curated
+/// message delivered to the planner. Quoted blocks in that message still need exact provenance.
 async fn plan_replies(
     svc: &TaskService,
     caller: &Caller,
     row: &TaskRow,
     text: &str,
 ) -> Result<Option<String>, ToolFailure> {
-    if !text.contains(qm_plans::reply::OPEN) {
-        return Ok(None);
+    let user_text = match caller.turn.and_then(|t| t.started_by.message()) {
+        Some(message) => {
+            let agent = caller.agent;
+            let (source, unverified) = svc
+                .db()
+                .call(move |conn| {
+                    let source = qm_store::user_message_sources::words_of(conn, agent, message)?;
+                    let unverified = if source.is_err() {
+                        messages::text(conn, message)?
+                    } else {
+                        None
+                    };
+                    Ok((source, unverified))
+                })
+                .await
+                .map_err(|e| failed(&e))?;
+            match source {
+                Ok(source) => Some(source),
+                Err(_)
+                    if text.contains(qm_plans::reply::OPEN)
+                        || unverified
+                            .as_deref()
+                            .is_some_and(|s| s.contains(qm_plans::reply::OPEN)) =>
+                {
+                    return Err(refuse(
+                        "a plan reply is passed on only from the user's own message, on the turn it started",
+                    ));
+                }
+                // Ordinary steering without structured replies needs no plan provenance.
+                Err(_) => None,
+            }
+        }
+        None => None,
+    };
+    let delivered = parse_plan_replies(text)?;
+    // A user turn can address several tasks; only this recipient owns these source replies.
+    // Delivered blocks are not filtered: quoting another task's reply must still refuse.
+    let replies: Vec<_> = parse_plan_replies(user_text.as_deref().unwrap_or_default())?
+        .into_iter()
+        .filter(|reply| reply.task.parse::<TaskId>().ok() == Some(row.id))
+        .collect();
+    if !delivered.is_empty() {
+        let Some(source) = user_text.as_deref() else {
+            return Err(refuse(
+                "a plan reply is passed on only from the user's own message, on the turn it started",
+            ));
+        };
+        let source = source.replace("\r\n", "\n");
+        if delivered.iter().any(|reply| !source.contains(&reply.raw)) {
+            return Err(refuse(
+                "pass the user's plan reply exactly as they pasted it, header to closing line",
+            ));
+        }
+        if let Some(reply) = delivered
+            .iter()
+            .find(|reply| reply.task.parse::<TaskId>().ok() != Some(row.id))
+        {
+            return Err(refuse(format!(
+                "that plan reply is for {}, not {}; pass it to {} instead",
+                reply.task, row.id, reply.task
+            )));
+        }
     }
+    super::plan::record_replies(svc, row, &replies, user_text.as_deref()).await
+}
+
+fn parse_plan_replies(text: &str) -> Result<Vec<qm_plans::reply::PlanReply>, ToolFailure> {
     let (replies, malformed) = qm_plans::reply::find(text);
     if let Some(bad) = malformed.first() {
         return Err(refuse(match bad {
@@ -504,16 +568,7 @@ async fn plan_replies(
             ),
         }));
     }
-    let user_text = match caller.turn.and_then(|t| t.started_by.message()) {
-        Some(message) => svc
-            .db()
-            .call(move |conn| messages::text(conn, message))
-            .await
-            .ok()
-            .flatten(),
-        None => None,
-    };
-    super::plan::record_replies(svc, row, &replies, user_text.as_deref()).await
+    Ok(replies)
 }
 
 /// `link_tasks`.

@@ -18,7 +18,7 @@ The app checks every rule that can be checked as a fact: delivery, commit names,
 ## Working
 
 - **Instructions.** Your instruction files follow below. Before you change anything in a folder, read the `AGENTS.md` in that folder or any folder above it inside your working folder, if there is one; nested ones aren't loaded for you.
-- **Stay inside your task.** The user's own words in the brief outrank everything else in it. Honour every constraint. Something outside your task that should be done goes to `file_followup`; don't do it yourself.
+- **Stay inside your task.** Your supervisor curates the brief to convey the user's intent and instructions; honour its goal, directions and constraints. Optional quotations are context, not a separate authority source. Genuine direct user messages still outrank your supervisor. Something outside your task that should be done goes to `file_followup`; don't do it yourself.
 - **Before your first edit**, call `delivery_check`. Close any gap you can; report the rest as blockers.
 - **Evidence** goes in `$QM_EVIDENCE_DIR`, outside your working folder, and is never committed. Gather it the way a user would see the behaviour: before your first edit and after your last.
 - **Ports.** Anything that listens uses your block, from `$QM_PORT_BASE` to `$QM_PORT_BASE`+9, so parallel tasks don't collide.
@@ -26,7 +26,7 @@ The app checks every rule that can be checked as a fact: delivery, commit names,
 - **Work inside your working folder.** Go outside it only where your brief or the user's own words ask you to; then any folder, repository or worktree is fine. When they ask you to make a new folder and move your work there, do it and tell your supervisor the folder, so it can move you there.
 - **Never touch the user's real or shared state**, unless the user's own words ask you to; then do exactly that. Otherwise use throwaway data, accounts or an isolated local setup.
 - **Long commands** run in the background. You are woken with the exit code and the last lines when one finishes, so don't poll in a loop or sleep waiting for it.
-- **Your brief's kind says what the work usually is; your brief and the user's words say what to do.** Plan, research, lookup, teach, reproduce and review tasks usually answer and commit nothing; scratch work goes in your temporary folder, and a plan task writes its plan in its plan folder, as its brief says.
+- **Your brief's kind says what the work usually is; its goal and instructions say what to do.** Plan, research, lookup, teach, reproduce and review tasks usually answer and commit nothing; scratch work goes in your temporary folder, and a plan task writes its plan in its plan folder, as its brief says.
 
 ## Git
 

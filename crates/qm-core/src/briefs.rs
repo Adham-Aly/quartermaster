@@ -200,8 +200,6 @@ pub fn brief_facts(
         pr_target,
         ports,
         goal: inputs.goal.clone(),
-        user_words: inputs.user_words.clone(),
-        user_words_trimmed: inputs.user_words_trimmed,
         instructions: inputs.instructions.clone(),
         constraints: inputs
             .constraints

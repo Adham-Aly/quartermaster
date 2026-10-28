@@ -1,4 +1,5 @@
-//! Which of the user's messages a brief or a routed request carries, and what is left out of it.
+//! Selecting and trimming source user words stored as task or routed-request provenance.
+//! These stored words are not pasted into briefs or routed request messages.
 //!
 //! By default it is the message that started the orchestrator's turn. The orchestrator may instead
 //! name an earlier message (`words_message`): the app checks it is an actual user message in that
@@ -11,7 +12,7 @@ use qm_types::error::Refusal;
 use qm_types::ids::{AgentId, MessageId};
 use rusqlite::Connection;
 
-/// The words chosen for a brief or a request.
+/// Source words chosen for stored task or routed-request provenance.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ChosenWords {
     pub text: String,

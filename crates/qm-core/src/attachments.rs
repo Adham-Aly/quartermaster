@@ -12,8 +12,8 @@
 //! [Image #1]: ~/.quartermaster/attachments/message-42/image-1.png
 //! ```
 //!
-//! The path is then part of what you said: the chat shows it, the agent you wrote to reads it, a
-//! brief's copy of your words carries it, and orchestrators pass it on in briefs and messages.
+//! The path is then part of what you said: the chat shows it and the agent you wrote to reads it.
+//! Orchestrators must pass needed image references on in curated briefs and messages.
 //! Agents never get image bytes from the app; a crewmate opens the file with its file reader. This
 //! is the same for the Quartermaster, a secondmate or a crewmate.
 //!

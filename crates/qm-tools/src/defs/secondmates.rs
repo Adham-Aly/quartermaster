@@ -30,7 +30,8 @@ pub struct StartSecondmateArgs {
 
 tool! {
     /// Sends a request into one of the Quartermaster's own secondmates' scope; the app stamps the
-    /// marker and a correlation ID, and carries your words, the one-time instructions, and
+    /// marker and a correlation ID, stores source-word provenance, and sends the authored request,
+    /// the one-time instructions, and
     /// overrides with user authority (model choices may cite an earlier actual user message).
     RouteToSecondmateTool {
         name: "route_to_secondmate",
@@ -65,7 +66,8 @@ pub struct RouteToSecondmateArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<i64>")]
     pub choice_message: Option<qm_types::ids::MessageId>,
-    // The user's message whose words the request carries (numeric ID); omit for this turn's.
+    // Source user message stored as provenance (numeric ID); omit for this turn's.
+    // Its words are not pasted into the request; author the task in request and instructions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<i64>")]
     pub words_message: Option<qm_types::ids::MessageId>,

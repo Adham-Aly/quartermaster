@@ -104,8 +104,8 @@ impl StartHook for NoStartHook {
 }
 
 /// What a start may carry beyond the tool's arguments: the authority (a card choice for
-/// [`TaskService::start_retry`]), the exact tier a retry routes at, and the words its brief
-/// carries.
+/// [`TaskService::start_retry`]), the exact tier a retry routes at, and its stored user-word
+/// provenance.
 #[derive(Clone, Debug)]
 pub(crate) struct StartAs {
     pub authority: Authority,
@@ -2027,7 +2027,8 @@ pub(crate) fn worktree_failure(task: TaskId, e: &GitError) -> String {
 
 /// Choice 2 on a decision card: a new crewmate retrying `retried` at exactly `tier`, with the
 /// authority of your card choice (`escalations + 1`, refused at two), the failed attempt's branch
-/// and report in its brief (it names `retry_of`), and your words.
+/// and report in its brief (it names `retry_of`), and any direct user card guidance in instructions.
+/// Original user words stay stored as provenance, not copied into task instructions.
 pub(crate) async fn start_retry(
     svc: &TaskService,
     retried: TaskId,
@@ -2063,7 +2064,16 @@ pub(crate) async fn start_retry(
         secondmate,
         plan: None,
     };
-    let user_words = match words.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+    let guidance = words.as_deref().map(str::trim).filter(|w| !w.is_empty());
+    // Only direct card guidance becomes task text; the original words remain provenance.
+    let mut instructions: Vec<String> =
+        serde_json::from_value(row.instructions.clone()).unwrap_or_default();
+    if let Some(words) = guidance {
+        instructions.push(format!(
+            "Direct user retry guidance (decision card for {retried}): {words}"
+        ));
+    }
+    let user_words = match guidance {
         Some(words) if original.text.trim().is_empty() => {
             format!("On the decision card for {retried}: {words}")
         }
@@ -2100,7 +2110,7 @@ pub(crate) async fn start_retry(
         // The retry builds on the failed attempt (`retry_of`), so its brief carries that
         // attempt's branch and report rather than what the attempt itself built on.
         builds_on: None,
-        instructions: serde_json::from_value(row.instructions.clone()).unwrap_or_default(),
+        instructions,
         later_steps: Vec::new(),
         model: None,
         preference: None,
@@ -2120,7 +2130,7 @@ pub(crate) async fn start_retry(
         retry_tier: Some(tier),
         user_words: Some(user_words),
         user_words_message: None,
-        // The retry keeps the attempt's trimmed words, so its brief says they were trimmed.
+        // Keep the attempt's provenance cuts without rendering its source words.
         user_words_cuts: original.cuts,
         deferred: None,
     };
