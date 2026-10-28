@@ -11,6 +11,10 @@
 
 Changes since [0.8.0](https://github.com/Adham-Aly/quartermaster/releases/tag/v0.8.0):
 
+- **Friendly names instead of internal IDs.** Tasks, crewmates and secondmates now appear by
+  name throughout Crew, task panes, sessions, Actions, notifications and plan-page headers. Copy ID
+  menus are gone. Your own text, code, paths and diagnostic output stay unchanged; internal routing
+  and approval targets still use the same IDs.
 - **Curated briefs and follow-ups.** The Quartermaster and secondmates now write self-contained
   instructions tailored to each recipient instead of having your original messages pasted into
   briefs and routed requests. They preserve your intent, constraints, permissions and attachments,
