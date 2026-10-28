@@ -1,4 +1,5 @@
-//! Trimming the user's words before they go into a brief or a routed request.
+//! Trimming source user words stored as task or routed-request provenance.
+//! These stored words are not pasted into briefs or routed request messages.
 //!
 //! An orchestrator may leave out parts of the user's message that are about other work (another
 //! task, another crewmate, what to do after something else finishes). The rule keeps that a pure

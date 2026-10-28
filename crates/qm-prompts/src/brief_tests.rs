@@ -1,4 +1,4 @@
-//! Regression tests for the planning instructions delivered to crewmates.
+//! Regression tests for authored task briefs and planning instructions delivered to crewmates.
 
 use super::*;
 
@@ -19,13 +19,58 @@ fn plan_facts() -> BriefFacts {
         pr_target: None,
         ports: PortBlock { base: 42000 },
         goal: "Plan the change".into(),
-        user_words: String::new(),
-        user_words_trimmed: false,
         instructions: Vec::new(),
         constraints: Vec::new(),
         tests_required: false,
         builds_on: None,
         repair_attempts: 0,
+    }
+}
+
+#[test]
+fn every_kind_and_supervisor_renders_authored_task_without_a_source_words_section() {
+    for &kind in TaskKind::ALL {
+        for supervisor in [
+            BriefSupervisor::Quartermaster,
+            BriefSupervisor::Secondmate(SecondmateId::new(2).expect("nonzero secondmate ID")),
+        ] {
+            let mut facts = plan_facts();
+            facts.kind = kind;
+            facts.supervisor = supervisor;
+            facts.goal = "Count the lines in the assigned file".into();
+            facts.instructions = vec!["Report the count and how you checked it".into()];
+            let brief = render_brief(&facts);
+            let from = match supervisor {
+                BriefSupervisor::Quartermaster => "quartermaster".to_owned(),
+                BriefSupervisor::Secondmate(id) => id.to_string(),
+            };
+            assert!(brief.starts_with(&format!(
+                "<qm:supervisor from=\"{from}\" task=\"{}\">\n",
+                facts.task
+            )));
+            assert!(brief.ends_with("</qm:supervisor>\n"));
+            assert!(brief.contains("## Goal\nCount the lines in the assigned file\n"));
+            assert!(brief.contains(
+                "## Instructions for this task only (from your supervisor)\n- Report the count and how you checked it"
+            ));
+            for forbidden in [
+                "## The user's own words",
+                "copied by the app",
+                "these outrank",
+                "Your supervisor left out parts of this message",
+            ] {
+                assert!(
+                    !brief.contains(forbidden),
+                    "unexpected {forbidden:?} for {kind} / {supervisor:?}"
+                );
+            }
+
+            facts.instructions = vec!["  ".into()];
+            let brief = render_brief(&facts);
+            assert!(brief.contains("Count the lines in the assigned file"));
+            assert!(!brief.contains("## Instructions for this task only"));
+            assert!(!brief.contains("## The user's own words"));
+        }
     }
 }
 

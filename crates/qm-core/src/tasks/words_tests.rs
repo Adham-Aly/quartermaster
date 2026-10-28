@@ -1,5 +1,5 @@
-//! Which of the user's messages a crewmate's brief carries, and what the supervisor may leave out
-//! of it, through the real start transaction and the brief's own inputs.
+//! User-message provenance and cuts stay stored through the real start transaction,
+//! but the rendered brief contains the supervisor-authored task, not copied source words.
 use super::*;
 use crate::turns::forget_tests::Fixture;
 use qm_prompts::brief::render_brief;
@@ -27,7 +27,7 @@ fn request(title: &str) -> StartRequest {
         constraints: vec![],
         tests_required: false,
         builds_on: None,
-        instructions: vec![],
+        instructions: vec!["Explain how you checked the answer".into()],
         later_steps: vec![],
         model: None,
         preference: None,
@@ -85,7 +85,7 @@ async fn say(f: &Fixture, agent: i64, source: MessageSource, text: &'static str)
         .unwrap()
 }
 
-/// The words `task`'s brief carries, whether they were trimmed, and the brief's text.
+/// The stored words and trimming flag, plus the separately authored rendered brief.
 async fn brief(svc: &TaskService, task: TaskId) -> (String, bool, String) {
     let inputs = svc
         .db()
@@ -95,7 +95,7 @@ async fn brief(svc: &TaskService, task: TaskId) -> (String, bool, String) {
         .unwrap();
     let mut facts = crate::briefs::brief_facts(&inputs, None);
     if facts.is_err() {
-        // A queued task has no ports yet; the words section doesn't depend on them.
+        // A queued task has no ports yet; these rendering checks do not depend on them.
         let mut ready = inputs.clone();
         ready.port_base = Some(41_000);
         ready.base_ref = Some("origin/main".into());
@@ -104,6 +104,27 @@ async fn brief(svc: &TaskService, task: TaskId) -> (String, bool, String) {
         facts = crate::briefs::brief_facts(&ready, None);
     }
     let text = render_brief(&facts.unwrap());
+    assert!(text.contains("Answer the question"), "{text}");
+    assert!(
+        text.contains("Explain how you checked the answer"),
+        "{text}"
+    );
+    for forbidden in [
+        REQUEST,
+        LATEST,
+        MIXED,
+        "Count the lines in notes.txt.",
+        "Report the number only.",
+        "foobar",
+        "## The user's own words",
+        "copied by the app",
+        "Your supervisor left out parts of this message",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "unexpected {forbidden:?}: {text}"
+        );
+    }
     (inputs.user_words, inputs.user_words_trimmed, text)
 }
 
@@ -123,7 +144,7 @@ async fn count_tasks(svc: &TaskService) -> i64 {
 }
 
 #[tokio::test]
-async fn by_default_the_brief_carries_the_message_that_started_the_turn() {
+async fn default_source_is_stored_but_only_authored_task_is_rendered() {
     let f = Fixture::new().await;
     let (svc, scheduler) = f.task_service();
     say(&f, 1, MessageSource::You, REQUEST).await;
@@ -135,7 +156,7 @@ async fn by_default_the_brief_carries_the_message_that_started_the_turn() {
     let (words, trimmed, text) = brief(&svc, started.crewmate).await;
     assert_eq!(words, LATEST);
     assert!(!trimmed);
-    assert!(text.contains("## The user's own words (copied by the app; these outrank"));
+    assert!(!text.contains(LATEST));
     assert_eq!(
         stored(&svc, started.crewmate).await.user_words_message,
         Some(latest)
@@ -169,7 +190,7 @@ async fn the_supervisor_can_choose_an_earlier_message_of_the_users() {
     assert_eq!(row.user_words_message, Some(earlier));
     assert_eq!(row.user_words_cuts, Vec::<String>::new());
 
-    // An app-event turn (a crewmate finishing) can still carry the user's earlier request.
+    // An app-event turn can still store the user's earlier request as provenance.
     let later = svc
         .start_crewmate(
             &qm(None),
@@ -208,13 +229,6 @@ async fn passages_about_other_work_are_left_out_and_kept_on_record() {
         "Count the lines in notes.txt. Report the number only."
     );
     assert!(trimmed);
-    assert!(
-        text.contains(
-            "> \"Count the lines in notes.txt. Report the number only.\"\n\
-             Your supervisor left out parts of this message that were about other work.\n"
-        ),
-        "{text}"
-    );
     assert!(!text.contains("foobar"), "{text}");
     let row = stored(&svc, started.crewmate).await;
     assert_eq!(row.user_words_message, Some(mixed));
@@ -227,7 +241,7 @@ async fn passages_about_other_work_are_left_out_and_kept_on_record() {
         .unwrap();
     assert_eq!(original.as_deref(), Some(MIXED));
 
-    // Work that continues it on an app-event turn inherits the trimmed words, still marked.
+    // Follow-up work inherits the stored trimmed words and cuts, without rendering them.
     let follow = svc
         .start_crewmate(
             &qm(None),
@@ -244,6 +258,9 @@ async fn passages_about_other_work_are_left_out_and_kept_on_record() {
         "Count the lines in notes.txt. Report the number only."
     );
     assert!(trimmed);
+    let row = stored(&svc, follow.crewmate).await;
+    assert_eq!(row.user_words_message, Some(mixed));
+    assert_eq!(row.user_words_cuts, vec![cut.to_owned()]);
     drop(svc);
     scheduler.abort();
     let _ = scheduler.await;

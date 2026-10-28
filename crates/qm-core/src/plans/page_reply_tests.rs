@@ -163,21 +163,54 @@ impl Page {
             .unwrap()
     }
 
-    /// The Quartermaster passing `text` to the planner on the turn the user's message `text`
-    /// started: the paste path.
+    /// The Quartermaster passing the user's original block unchanged.
     async fn paste(&self, text: &str) -> Result<(), String> {
-        let words = text.to_owned();
+        self.curate(
+            text,
+            text,
+            AgentId::new(1),
+            qm_types::domain::MessageSource::You,
+        )
+        .await
+    }
+
+    /// Keep the triggering source separate from the supervisor's chosen delivery text.
+    async fn curate(
+        &self,
+        source: &str,
+        text: &str,
+        owner: AgentId,
+        origin: qm_types::domain::MessageSource,
+    ) -> Result<(), String> {
+        self.curate_to(self.task, source, text, owner, origin).await
+    }
+
+    async fn curate_to(
+        &self,
+        task: TaskId,
+        source: &str,
+        text: &str,
+        owner: AgentId,
+        origin: qm_types::domain::MessageSource,
+    ) -> Result<(), String> {
+        let words = source.to_owned();
         let message = self
             .fixture
             .db()
             .call(move |conn| {
-                conn.execute(
-                    "INSERT INTO messages (id, agent_id, source, kind, text, created_at, seq)
-                     VALUES (50, 1, 'you', 'message', ?1, 5, 50)",
-                    [&words],
-                )?;
-                qm_store::seq::observe_all(conn)?;
-                Ok(MessageId::new(50))
+                qm_store::messages::insert(
+                    conn,
+                    &qm_store::messages::NewMessage {
+                        agent: owner,
+                        source: origin,
+                        kind: qm_types::domain::MessageKind::Message,
+                        text: &words,
+                        options: &[],
+                        replies_to: None,
+                        turn: None,
+                        at: jiff::Timestamp::UNIX_EPOCH,
+                    },
+                )
             })
             .await
             .unwrap();
@@ -193,7 +226,7 @@ impl Page {
             plan: None,
         };
         self.svc
-            .message_task(&caller, self.task, text.to_owned())
+            .message_task(&caller, task, text.to_owned())
             .await
             .map(drop)
             .map_err(|e| e.render())
@@ -256,6 +289,281 @@ async fn the_page_and_paste_paths_deliver_the_same_text() {
         (a.pending_reply, a.last_answered_round, a.user_rounds),
         (b.pending_reply, b.last_answered_round, b.user_rounds)
     );
+}
+
+#[tokio::test]
+async fn curated_plain_text_records_the_original_user_reply_without_copying_it() {
+    let page = Page::new().await;
+    let text = "Use sled and leave WAL off for now.";
+    page.curate(
+        &page.reply(1),
+        text,
+        AgentId::new(1),
+        qm_types::domain::MessageSource::You,
+    )
+    .await
+    .unwrap();
+    let (planner, wakes, _) = page.delivered().await;
+    assert_eq!(planner, [text]);
+    assert_eq!(wakes, 1);
+    assert_eq!(page.status().await, "running");
+    let state = page.state();
+    assert!(state.pending_reply);
+    assert_eq!((state.last_answered_round, state.user_rounds), (1, 1));
+    assert_eq!(page.send(&page.body()).await.status, Status::Duplicate);
+}
+
+#[tokio::test]
+async fn curated_text_cannot_hide_invalid_source_blocks() {
+    for case in [
+        "round",
+        "plan",
+        "unclosed",
+        "too_long",
+        "auto",
+        "drafting",
+        "page_sent",
+    ] {
+        let page = Page::new().await;
+        let reply = page.reply(1);
+        let (source, expected) = match case {
+            "round" => (page.reply(2), "is for round 2"),
+            "plan" => (
+                reply.replace(&page.state().uid, "0123456789abcdef01234567"),
+                "older plan",
+            ),
+            "unclosed" => (reply.replace("</plan-reply>", ""), "no closing line"),
+            "too_long" => (
+                reply.replace("keep WAL off for now", &"x".repeat(33_000)),
+                "over 32000",
+            ),
+            "auto" => {
+                page.fixture
+                    .db()
+                    .call(|conn| {
+                        conn.execute("UPDATE projects SET autonomy = 'auto' WHERE id = 1", [])?;
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
+                (reply, "auto autonomy")
+            }
+            "drafting" => {
+                update(&page.dir, |s| s.stage = Stage::Drafting).unwrap();
+                (reply, "writing its next round")
+            }
+            "page_sent" => {
+                update(&page.dir, |s| s.page_claim = Some(1)).unwrap();
+                (reply, "already sent from the plan page")
+            }
+            _ => unreachable!(),
+        };
+        let error = page
+            .curate(
+                &source,
+                "Use sled.",
+                AgentId::new(1),
+                qm_types::domain::MessageSource::You,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains(expected), "{case}: {error}");
+        assert!(page.delivered().await.0.is_empty(), "{case}");
+        assert_eq!(page.status().await, "waiting", "{case}");
+        assert!(!page.state().pending_reply, "{case}");
+        assert_eq!(page.state().user_rounds, 0, "{case}");
+    }
+}
+
+#[tokio::test]
+async fn quoted_blocks_still_require_an_exact_owned_user_source() {
+    for case in [
+        "changed",
+        "foreign",
+        "app",
+        "invented",
+        "foreign_plain",
+        "app_plain",
+    ] {
+        let page = Page::new().await;
+        let reply = page.reply(1);
+        let source = if case == "invented" {
+            "Use sled."
+        } else {
+            &reply
+        };
+        let text = if case == "changed" {
+            reply.replace("sled", "sqlite")
+        } else if case.ends_with("_plain") {
+            "Use sled.".to_owned()
+        } else {
+            reply.clone()
+        };
+        let owner = AgentId::new(if case.starts_with("foreign") { 3 } else { 1 });
+        let origin = if case.starts_with("app") {
+            qm_types::domain::MessageSource::App
+        } else {
+            qm_types::domain::MessageSource::You
+        };
+        let error = page.curate(source, &text, owner, origin).await.unwrap_err();
+        assert!(
+            error.contains("user's own message") || error.contains("exactly as they pasted"),
+            "{case}: {error}"
+        );
+        assert_eq!(page.delivered().await.0, Vec::<String>::new());
+        assert!(!page.state().pending_reply);
+        assert_eq!(page.state().user_rounds, 0);
+    }
+}
+
+#[tokio::test]
+async fn an_app_event_cannot_supply_a_structured_reply_but_can_steer_normally() {
+    let page = Page::new().await;
+    let caller = Caller {
+        agent: AgentId::new(1),
+        role: Role::Quartermaster,
+        turn: Some(TurnCx {
+            turn: TurnId::new(1),
+            started_by: StartedBy::AppEvent,
+        }),
+        task: None,
+        secondmate: None,
+        plan: None,
+    };
+    let error = page
+        .svc
+        .message_task(&caller, page.task, page.reply(1))
+        .await
+        .unwrap_err()
+        .render();
+    assert!(error.contains("user's own message"), "{error}");
+    assert!(!page.state().pending_reply);
+    assert_eq!(page.delivered().await.0, Vec::<String>::new());
+    page.svc
+        .message_task(&caller, page.task, "Check the cache boundary.".into())
+        .await
+        .unwrap();
+    assert_eq!(page.delivered().await.0, ["Check the cache boundary."]);
+    assert_eq!(page.state().user_rounds, 0);
+}
+
+#[tokio::test]
+async fn unrelated_source_replies_allow_ordinary_steering_but_not_wrong_task_quotes() {
+    for build in [false, true] {
+        let page = Page::new().await;
+        if build {
+            page.fixture
+                .db()
+                .call(|conn| {
+                    conn.execute("UPDATE tasks SET kind = 'build' WHERE id = 3", [])?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
+        let source = format!(
+            "{}\nTell C-0003 to rerun tests.",
+            page.reply(1).replace(&page.task.to_string(), "C-0099")
+        );
+        let error = page.paste(&source).await.unwrap_err();
+        assert!(error.contains("not C-0003"), "{error}");
+        assert_eq!(page.delivered().await.0, Vec::<String>::new());
+        assert_eq!(page.status().await, "waiting");
+        page.curate(
+            &source,
+            "Rerun tests.",
+            AgentId::new(1),
+            qm_types::domain::MessageSource::You,
+        )
+        .await
+        .unwrap();
+        let (messages, wakes, _) = page.delivered().await;
+        assert_eq!(messages, ["Rerun tests."]);
+        assert_eq!(wakes, 1);
+        assert_eq!(page.status().await, "running");
+        assert!(!page.state().pending_reply);
+        assert_eq!(page.state().user_rounds, 0);
+
+        // A source explicitly targeting this build is still invalid, even when curated.
+        if build {
+            let error = page
+                .curate(
+                    &page.reply(1),
+                    "Use sled.",
+                    AgentId::new(1),
+                    qm_types::domain::MessageSource::You,
+                )
+                .await
+                .unwrap_err();
+            assert!(error.contains("isn't one"), "{error}");
+            assert_eq!(page.delivered().await.0, ["Rerun tests."]);
+            assert_eq!(page.state().user_rounds, 0);
+        }
+    }
+}
+
+#[tokio::test]
+async fn multi_target_source_records_only_the_recipient_plan() {
+    let page = Page::new().await;
+    let other = TaskId::new(2).unwrap();
+    page.fixture
+        .db()
+        .call(|conn| {
+            conn.execute_batch(
+                "UPDATE tasks SET kind = 'plan', status = 'waiting', waiting_on = '{\"plan\":\"reply\"}' WHERE id = 2;
+                 INSERT INTO agents (id, role, supervisor_id, task_id, home, status, created_at, seq)
+                 VALUES (4, 'crewmate', 1, 2, '/c4', 'idle', 1, 4);",
+            )?;
+            qm_store::seq::observe_all(conn)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let other_dir = page.svc.deps().data_dir.task(other, other.own_label()).plan;
+    fs::create_dir_all(other_dir.parent().unwrap()).unwrap();
+    create(&other_dir).unwrap();
+    update(&other_dir, |s| {
+        s.stage = Stage::WithUser;
+        s.round = 2;
+    })
+    .unwrap();
+    let other_uid = load(&other_dir).unwrap().unwrap().uid;
+    let other_reply = page
+        .reply(2)
+        .replace(&page.task.to_string(), &other.to_string())
+        .replace(&page.state().uid, &other_uid);
+    let source = format!("{}\n{other_reply}", page.reply(1));
+    // Even with a matching source block, forwarding both targets' blocks is not allowed.
+    let error = page.paste(&source).await.unwrap_err();
+    assert!(error.contains("not C-0003"), "{error}");
+    assert_eq!(page.delivered().await.0, Vec::<String>::new());
+    assert_eq!(page.state().user_rounds, 0);
+    assert_eq!(load(&other_dir).unwrap().unwrap().user_rounds, 0);
+    page.curate(
+        &source,
+        "Use sled.",
+        AgentId::new(1),
+        qm_types::domain::MessageSource::You,
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.delivered().await.0, ["Use sled."]);
+    assert_eq!(page.state().user_rounds, 1);
+    assert!(!load(&other_dir).unwrap().unwrap().pending_reply);
+
+    page.curate_to(
+        other,
+        &source,
+        &other_reply,
+        AgentId::new(1),
+        qm_types::domain::MessageSource::You,
+    )
+    .await
+    .unwrap();
+    let state = load(&other_dir).unwrap().unwrap();
+    assert!(state.pending_reply);
+    assert_eq!((state.last_answered_round, state.user_rounds), (2, 1));
+    assert_eq!(page.state().user_rounds, 1);
 }
 
 #[tokio::test]

@@ -11,6 +11,11 @@
 
 Changes since [0.8.0](https://github.com/Adham-Aly/quartermaster/releases/tag/v0.8.0):
 
+- **Curated briefs and follow-ups.** The Quartermaster and secondmates now write self-contained
+  instructions tailored to each recipient instead of having your original messages pasted into
+  briefs and routed requests. They preserve your intent, constraints, permissions and attachments,
+  quoting exact wording only when useful. Model-choice authority still comes from verified original
+  user messages, not paraphrased instructions.
 - **Reports stay until you dismiss them.** Opening a finished report no longer removes its card,
   deletes its files or removes its completed crewmate from Crew. Open it as often as you like,
   including after restarting Quartermaster. Use **Dismiss** to remove the card and completed

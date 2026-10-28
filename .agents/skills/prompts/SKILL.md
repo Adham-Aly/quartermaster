@@ -46,9 +46,18 @@ under `start`. Lasting model/effort/premium choices cite `choice_message`, an ac
 numeric ID. The core verifies user source and ownership/delegation, not semantic field intent:
 wording must still require a matching, unsuperseded user request within its original scope.
 
-A brief's (or routed request's) user words come from the turn's message unless the orchestrator
-names `words_message`; `words_cut` may only delete whole sentences, lines or clauses, as
-`qm_policy::user_words` checks, and the brief notes under the words when they were trimmed.
+Orchestrators author optimal, self-contained briefs, routed requests and follow-ups for each
+recipient, rather than relying on automatic verbatim relay. Preserve every applicable user
+constraint, scope, permission, prohibition, path and attachment, including earlier context and
+corrections; split tasks without losing shared conditions. Quote only when exact wording helps
+(e.g. structured plan answers); never require wholesale copying or invent authorization.
+
+Retained `words_message` and `words_cut` fields are internal source provenance for authority, not
+the recipient's task text. The former selects an earlier user-message source; the latter may
+remove only unrelated whole sentences, lines or clauses (`qm_policy::user_words`), never the
+request or its conditions. They neither replace authored instructions nor grant permission.
+Keep `choice_message` separate: a curated paraphrase is not authority for model/effort/premium
+choices, and citations must still match an unsuperseded original request and its scope.
 
 ## Markers
 

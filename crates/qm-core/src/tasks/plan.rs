@@ -512,10 +512,9 @@ async fn steer(svc: &TaskService, row: &TaskRow, text: &str) -> Result<(), ToolF
         .map(drop)
 }
 
-/// The plan replies in a supervisor's message to a plan task, checked against the plan and the
-/// user's own message: each must be for this plan's current round and appear word for word in
-/// `user_text`, the message of the user's that started the supervisor's turn. On success the plan
-/// records the reply; the text then goes to the planner as usual.
+/// Structured replies from the triggering user source, checked against this plan's current
+/// task, identity and round. The supervisor's curated delivery text is independent: recording
+/// the original reply never copies it into the planner's message.
 pub(crate) async fn record_replies(
     svc: &TaskService,
     row: &TaskRow,
