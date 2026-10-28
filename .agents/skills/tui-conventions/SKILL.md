@@ -119,8 +119,8 @@ with `theme::tone`. Tool names are coloured by family in `widgets/tools.rs`.
   navigation, not app-owned labels or Copy ID menus. Secondmates use their full friendly
   `CrewRow::label` / `SessionView::title` (the record's name), never a parsed ID prefix;
   context-free or missing-name fallbacks say `Secondmate`. Use `presentation::Presenter::agent`
-  for standing-agent labels and `metadata` for app-owned supervisor notes/place text, preserving
-  paths. Use `app_message` for app/session messages so raw failure diagnostics stay verbatim.
+  for standing-agent labels; the core projects session supervisor names, so notes/place stay
+  verbatim. Use `app_message` for app/session messages so raw failure diagnostics stay verbatim.
   A team lists its crewmates by kind (numbered within a repeated kind) under its task name.
   Authored prose/titles/names, code/diffs, real paths, raw tool output, full briefs, protocol
   payloads and editable input are never scrubbed. A task whose

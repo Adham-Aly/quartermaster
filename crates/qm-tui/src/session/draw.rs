@@ -135,18 +135,15 @@ fn session_pane(
     if inner.height == 0 || inner.width == 0 {
         return;
     }
-    let rows_area = header(frame, inner, app, agent, view);
+    let rows_area = header(frame, inner, agent, view);
     map.session_rows = Some(rows_area);
     let lines = view.map_or(&[][..], |v| v.lines.as_slice());
     let chats = view.map_or(&[][..], |v| v.conversation.as_slice());
     // The chat's header leads its rows, once the core's view has said what to put in it.
     let top = view.map_or_else(Vec::new, |v| {
-        let mut facts = chat_header::Facts::session(app, v);
-        if matches!(v.agent, AgentRef::Crewmate { .. }) {
-            facts.place = facts
-                .place
-                .map(|place| crate::presentation::Presenter(&app.snapshot).metadata(&place));
-        }
+        // The core has already projected supervisor names. Do not reinterpret an authored
+        // project, branch or supervisor name just because it resembles an internal ID.
+        let facts = chat_header::Facts::session(app, v);
         chat_header::rows(app, &facts, rows_area.width)
     });
     if lines.is_empty() && chats.is_empty() {
@@ -211,13 +208,7 @@ fn session_pane(
 /// background (on the 16-colour bright-black fill it can't be read in a light theme) or, for a
 /// secondmate, its charter's first line (dim), then a blank row. They never take more than a
 /// third of the box: the note goes first, then the rest. Returns what is left for the lines.
-fn header(
-    frame: &mut Frame<'_>,
-    inner: Rect,
-    app: &App,
-    agent: AgentRef,
-    view: Option<&SessionView>,
-) -> Rect {
+fn header(frame: &mut Frame<'_>, inner: Rect, agent: AgentRef, view: Option<&SessionView>) -> Rect {
     let max = usize::from(inner.width);
     // The chat's header says where it works and on what; a view from before it had one says it
     // here.
@@ -225,14 +216,7 @@ fn header(
         .filter(|v| v.place.is_empty())
         .map(|v| v.note.as_str())
         .filter(|n| !n.is_empty())
-        .map(|note| {
-            let note = if matches!(agent, AgentRef::Crewmate { .. }) {
-                crate::presentation::Presenter(&app.snapshot).metadata(note)
-            } else {
-                note.to_owned()
-            };
-            Line::styled(truncate(&note, max), theme::dim())
-        });
+        .map(|note| Line::styled(truncate(note, max), theme::dim()));
     let banner: Vec<Line<'static>> =
         match view.map(|v| v.subtitle.as_str()).filter(|s| !s.is_empty()) {
             Some(subtitle) => vec![Line::styled(truncate(subtitle, max), theme::dim())],

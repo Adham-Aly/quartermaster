@@ -371,25 +371,25 @@ mod tests {
     }
 
     #[test]
-    fn session_header_formats_supervisor_metadata_but_preserves_paths_and_charter() {
+    fn session_header_keeps_projected_names_paths_and_authored_charter() {
         let mut app = App::new();
         sample::install_session(&mut app);
         let view = app.snapshot.session.as_mut().unwrap();
-        view.place = "tasks/C-0042 · supervisor: S-02".into();
+        view.place = "tasks/C-0042 · supervisor: Web S-99".into();
         view.subtitle = "Authored S-02 charter".into();
         view.lines.clear();
         let shown = screen(&mut app, 150, 45).join("\n");
         assert!(
-            shown.contains("tasks/C-0042 · supervisor: web-app"),
+            shown.contains("tasks/C-0042 · supervisor: Web S-99"),
             "{shown}"
         );
         assert!(shown.contains("Authored S-02 charter"), "{shown}");
         let view = app.snapshot.session.as_mut().unwrap();
         view.place.clear();
-        view.note = "tasks/C-0042 · supervisor: S-02".into();
+        view.note = "tasks/C-0042 · supervisor: Web S-99".into();
         let shown = screen(&mut app, 150, 45).join("\n");
         assert!(
-            shown.contains("tasks/C-0042 · supervisor: web-app"),
+            shown.contains("tasks/C-0042 · supervisor: Web S-99"),
             "{shown}"
         );
         assert!(shown.contains("Authored S-02 charter"), "{shown}");
