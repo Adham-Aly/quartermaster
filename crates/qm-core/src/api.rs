@@ -19,7 +19,7 @@ use qm_policy::markers::neutralise;
 use qm_prompts::context_block::cut;
 use qm_store::db::Db;
 use qm_store::events::{self, NewEvent, NoticeCause, NoticeChoice, NoticeState};
-use qm_store::messages::{self, MessageRow, NewMessage, TurnOrigin};
+use qm_store::messages::{self, Acknowledgement, MessageRow, NewMessage, TurnOrigin};
 use qm_types::BoxFuture;
 use qm_types::api::{
     AgentRef, Card, CardAction, CardButton, CardKind, CardLine, ChatLine, Command, CoreServer,
@@ -395,8 +395,8 @@ pub(crate) async fn load_conversation(
 pub(crate) struct ConversationData {
     /// The newest lines, oldest first, acknowledgements left out.
     pub rows: Vec<MessageRow>,
-    /// The newest acknowledgement beside each of your messages.
-    pub acknowledgements: BTreeMap<MessageId, String>,
+    /// The newest acknowledgement beside each of your messages, including its provenance.
+    pub acknowledgements: BTreeMap<MessageId, Acknowledgement>,
     pub origins: BTreeMap<TurnId, TurnOrigin>,
     /// The app's notes drawn on one line (a plan reply sent from its page).
     pub one_line: BTreeSet<MessageId>,
@@ -445,7 +445,10 @@ fn chat_line(data: &ConversationData, status: &SeatStatus, row: &MessageRow) -> 
     let mut line = ChatLine::new(row.id, row.source, row.kind, row.at, row.text.clone());
     match row.source {
         MessageSource::You => {
-            line.acknowledgement = data.acknowledgements.get(&row.id).cloned();
+            if let Some(acknowledgement) = data.acknowledgements.get(&row.id) {
+                line.acknowledgement = Some(acknowledgement.text.clone());
+                line.acknowledgement_by_app = acknowledgement.source == MessageSource::App;
+            }
             line.queued = status.queued.contains(&row.id);
         }
         MessageSource::Agent => {
@@ -801,6 +804,63 @@ mod tests {
                 })
                 .await
                 .unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn loaded_chat_marks_only_the_latest_app_acknowledgement_as_metadata() {
+        let f = Fixture::new().await;
+        let message = f.store_message("keep the references").await;
+        let status = SeatStatus::default();
+        let before = f.conversation.load().await.unwrap();
+        let line = &chat_lines(&before, &status)[0];
+        assert_eq!(line.acknowledgement, None);
+        assert!(!line.acknowledgement_by_app);
+        for source in [
+            MessageSource::App,
+            MessageSource::Agent,
+            MessageSource::App,
+            MessageSource::Supervisor,
+            MessageSource::You,
+        ] {
+            let text = "Keep C-0042 and T-0017";
+            let acknowledgement = f
+                .conversation
+                .db
+                .call(move |conn| {
+                    messages::insert(
+                        conn,
+                        &NewMessage {
+                            agent: AgentId::new(1),
+                            source,
+                            kind: MessageKind::Acknowledgement,
+                            text,
+                            options: &[],
+                            replies_to: Some(message),
+                            turn: None,
+                            at: jiff::Timestamp::UNIX_EPOCH,
+                        },
+                    )
+                })
+                .await
+                .unwrap();
+            let data = f.conversation.load().await.unwrap();
+            let shown = snapshot(&data, &status, "test");
+            assert_eq!(shown.conversation.len(), 1);
+            let line = &shown.conversation[0];
+            assert_eq!(line.id, message);
+            assert_eq!(line.acknowledgement.as_deref(), Some(text));
+            assert_eq!(line.acknowledgement_by_app, source == MessageSource::App);
+            // Projecting for display never changes the stored acknowledgement.
+            let stored = f
+                .conversation
+                .db
+                .call(move |conn| messages::get(conn, acknowledgement))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.source, source);
+            assert_eq!(stored.text, text);
         }
     }
 

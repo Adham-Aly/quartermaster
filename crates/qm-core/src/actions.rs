@@ -85,7 +85,7 @@ impl ActionsPart {
                     let mut item = ActionItem::new(
                         ActionKey::Held { id: row.id },
                         kind,
-                        row.title.clone(),
+                        card.title.clone().unwrap_or_else(|| card.heading.clone()),
                         row.created_at,
                         card,
                         ActionOpen::Conversation,
@@ -107,6 +107,30 @@ impl ActionsPart {
         items.extend(self.reports().await);
         items.extend(self.questions_and_notices().await);
 
+        // Read retained task rows, not the live crew snapshot: an unread report can outlive
+        // its worker and still needs a friendly source label.
+        let tasks: Vec<_> = items.iter().map(|item| item.task).collect();
+        match self
+            .db
+            .call(move |conn| {
+                tasks
+                    .into_iter()
+                    .map(|task| {
+                        task.map(|task| source_label(conn, task))
+                            .transpose()
+                            .map(Option::flatten)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .await
+        {
+            Ok(labels) => {
+                for (item, label) in items.iter_mut().zip(labels) {
+                    item.from_label = label;
+                }
+            }
+            Err(e) => tracing::error!(error = %e, "couldn't read inbox source names"),
+        }
         order(config, items)
     }
 
@@ -472,6 +496,16 @@ fn agent_ref(
     })
 }
 
+/// A retained task's friendly source, including after it has left the crew tree.
+fn source_label(conn: &Connection, task: TaskId) -> Result<Option<String>, qm_store::StoreError> {
+    let Some(row) = task_store::load(conn, task)? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        qm_store::task_labels::name(conn, row.label)?.unwrap_or(row.title),
+    ))
+}
+
 fn first_line(text: &str) -> String {
     text.lines()
         .map(str::trim)
@@ -509,6 +543,40 @@ mod tests {
 
     /// More pending requests than any screen shows.
     const PENDING: usize = 250;
+
+    #[test]
+    fn closed_unread_report_sources_use_retained_names_or_authored_titles() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        qm_store::schema::migrate(&mut conn).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+            INSERT INTO task_labels (id, name, created_at, seq) VALUES (8, 'Auth refresh', 0, 1);
+            INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, delivery_mode,
+                status, outcome, created_at, reported_at, closed_at, seq, label_id) VALUES
+            (42, 1, 1, 'research', 'authored T-0042 and C-0047', 'g', 'folder',
+                'closed', 'answered', 0, 1, 2, 1, 8);",
+        )
+        .unwrap();
+        let task = TaskId::new(42).unwrap();
+        assert_eq!(
+            source_label(&conn, task).unwrap().as_deref(),
+            Some("Auth refresh")
+        );
+        assert_eq!(
+            qm_store::crew_view::crew_data(&conn).unwrap().tasks.len(),
+            0
+        );
+        conn.execute("UPDATE task_labels SET name = NULL WHERE id = 8", [])
+            .unwrap();
+        assert_eq!(
+            source_label(&conn, task).unwrap().as_deref(),
+            Some("authored T-0042 and C-0047")
+        );
+        assert_eq!(
+            task_store::load(&conn, task).unwrap().unwrap().status,
+            TaskStatus::Closed
+        );
+    }
 
     #[test]
     fn configuration_comes_first_then_newest_first_and_nothing_is_cut() {

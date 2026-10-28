@@ -400,8 +400,12 @@ impl fmt::Debug for Submit {
 /// What the page shows besides `plan.md`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Meta {
-    /// `C-0042`.
+    /// Protocol identity (`C-0042` or `T-0042`), used unchanged for replies and submission.
+    /// Never use this as a display label.
     pub task: String,
+    /// Friendly task label for page metadata only. When absent or blank, use the authored
+    /// plan title, or "Plan" if there is no title. This never changes reply identity.
+    pub task_label: Option<String>,
     /// The plan's random id, 24 hex digits: the key for the reply and the browser's storage.
     pub plan_uid: String,
     /// The round this page is for, from 1.

@@ -399,6 +399,25 @@ impl Worker {
     }
 }
 
+/// The collapsed brief's display title, for both existing and newly recorded sessions.
+/// Stored rows and full brief detail stay intact; authored supervisor messages stay verbatim.
+pub(super) fn display_text(row: &sessions::SessionLineRow) -> String {
+    if row.kind == LineKind::Supervisor
+        && row.detail.is_some()
+        && let Some(task) = row.task
+        && let Some(title) = row
+            .text
+            .strip_prefix(&format!("Brief · {task} · "))
+            .or_else(|| {
+                row.text
+                    .strip_prefix(&format!("Brief · {} · ", task.own_label()))
+            })
+    {
+        return format!("Brief · {title}");
+    }
+    row.text.clone()
+}
+
 /// A wake's first sentence, cut to [`WAKE_LINE_CHARS`].
 fn first_sentence(text: &str) -> String {
     let text = text.trim();

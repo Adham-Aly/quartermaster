@@ -233,6 +233,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits
         .map(str::to_owned)
         .or_else(|| app.term.flash.as_ref().map(|f| f.text.clone()));
     if let Some(notice) = notice {
+        let notice = crate::presentation::Presenter(&app.snapshot).metadata(&notice);
         left.push(Span::styled(notice, theme::accent()));
     } else if app.popup() == Some(Popup::Settings) {
         // The tab's own hint row: what the mouse does.

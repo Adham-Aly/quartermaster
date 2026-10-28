@@ -70,6 +70,7 @@ mod logo;
 mod persist;
 mod placeholder;
 mod popups;
+mod presentation;
 mod raise;
 mod router;
 #[doc(hidden)]

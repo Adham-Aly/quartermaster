@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 fn meta() -> Meta {
     Meta {
         task: "T-42".into(),
+        task_label: None,
         plan_uid: "0123456789abcdef01234567".into(),
         round: 1,
         project: "test".into(),
@@ -55,6 +56,37 @@ fn starter_is_valid_and_preserves_custom_markup() {
         assert!(first.html.contains(marker), "missing {marker}");
     }
     assert!(!first.html.contains("data-question="));
+}
+
+#[test]
+fn authored_ids_paths_and_tool_output_are_not_redacted() {
+    let authored = "<p class=\"author-prose\">Review T-42 with C-0042.</p><pre>/artifacts/T-42/C-0042/plan/plan.html\nTool output: task T-42, crewmate C-0042</pre>";
+    let source = document(authored).replace("<h1>Plan</h1>", "<h1>Cache plan</h1>");
+    let mut m = meta();
+    for state in [
+        PageState::Open,
+        PageState::Final,
+        PageState::Approved { at: "14:02".into() },
+    ] {
+        m.state = state;
+        let html = compose_html(&source, &Assets::new(), &m).unwrap().html;
+        assert!(
+            html.contains(authored),
+            "authored bytes must survive composition"
+        );
+        let header = html
+            .split("<header")
+            .nth(1)
+            .unwrap()
+            .split("</header>")
+            .next()
+            .unwrap();
+        assert!(header.contains("class=\"page-meta\"><span>Cache plan</span>"));
+        assert!(!header.contains("T-42"));
+        assert!(!header.contains("C-0042"));
+        assert!(html.contains("<title>Cache plan</title>"));
+        assert!(html.contains("\"task\":\"T-42\""));
+    }
 }
 
 #[test]

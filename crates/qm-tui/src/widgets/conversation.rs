@@ -134,7 +134,8 @@ pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, map: &mut Frame
     }
     let agent = AgentRef::Quartermaster;
     let mut rows = header;
-    rows.extend(self::rows(
+    rows.extend(rows_presented(
+        &crate::presentation::Presenter(&app.snapshot),
         &app.snapshot.conversation,
         &context_strip::chat_notes(app, agent),
         inner.width,
@@ -175,7 +176,25 @@ impl Voices<'static> {
 /// agent's reply to the message right above sits directly under it, and one-line notes in a run
 /// stack.
 /// Compaction notes sit between the messages by time.
+#[cfg(test)]
 pub(crate) fn rows(
+    chats: &[ChatLine],
+    notes: &[&CompactionNote],
+    width: u16,
+    voices: &Voices<'_>,
+) -> Vec<Row> {
+    rows_presented(
+        &crate::presentation::Presenter(&qm_types::api::Snapshot::default()),
+        chats,
+        notes,
+        width,
+        voices,
+    )
+}
+
+/// Snapshot-aware metadata labels, applied to individual messages before any row geometry.
+pub(crate) fn rows_presented(
+    presenter: &crate::presentation::Presenter<'_>,
     chats: &[ChatLine],
     notes: &[&CompactionNote],
     width: u16,
@@ -191,7 +210,8 @@ pub(crate) fn rows(
         if after_note || (i > 0 && !answers(&chats[i - 1], chat) && !stacked) {
             out.push(Row::plain(Line::default()));
         }
-        out.extend(message_rows(chat, width, voices));
+        let shown = presenter.chat(chat);
+        out.extend(message_rows(&shown, width, voices));
     }
     let first = out.is_empty();
     out.extend(context_strip::notes_before(&mut notes, None, width, first));
@@ -527,12 +547,12 @@ mod tests {
         let at_note = drawn.iter().position(|r| r.starts_with('✓')).unwrap();
         // A blank row before the run, none inside it, one after it; no header for either note.
         assert_eq!(drawn[at_note - 1], "");
-        assert!(drawn[at_note + 1].starts_with("✓ Plan reply sent from the page · C-0051"));
+        assert!(drawn[at_note + 1].starts_with("✓ Plan reply sent from the page · crewmate"));
         assert_eq!(drawn[at_note + 2], "");
         assert!(drawn[at_note + 3].starts_with("app "));
         let first = &drawn[at_note];
         assert_eq!(width(first), 80);
-        assert!(first.starts_with(&format!("✓ {sent}")));
+        assert!(first.starts_with("✓ Plan reply sent from the page · task round 2"));
         assert!(first.ends_with(&format!(" {time}")));
 
         let row = one_line_row(&chats[1], 40);

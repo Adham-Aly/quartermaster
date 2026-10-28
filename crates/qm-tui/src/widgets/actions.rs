@@ -20,7 +20,7 @@ use crate::router::Screen;
 use crate::text::{truncate, width, wrap};
 use crate::theme;
 use crate::widgets::beacon;
-use qm_types::api::{ActionItem, ActionKind, AgentRef, CardKind};
+use qm_types::api::{ActionItem, ActionKind, CardKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -152,41 +152,14 @@ pub(crate) fn glyph(item: &ActionItem) -> (&'static str, Style) {
     }
 }
 
-/// Who asked, as a short label: the task, `QM`, `S-n`, or nothing for the app's own prompts.
-pub(crate) fn source(item: &ActionItem) -> Option<String> {
-    if let Some(task) = item.task {
-        return Some(task.to_string());
-    }
-    match item.from? {
-        AgentRef::Quartermaster => Some("QM".to_owned()),
-        AgentRef::Secondmate { id } => Some(id.to_string()),
-        AgentRef::Crewmate { task } => Some(task.to_string()),
-    }
+/// Who asked: retained friendly name, live crew name, then a generic crewmate label.
+pub(crate) fn source(app: &App, item: &ActionItem) -> Option<String> {
+    crate::presentation::Presenter(&app.snapshot).source(item)
 }
 
-/// Who asked, in words: the asking task's name (`Token refresh race`), else its number, the
-/// `Quartermaster`, `S-n`, or nothing for the app's own prompts.
+/// The list and overlay use the same source, never an ID fallback.
 fn asker(app: &App, item: &ActionItem) -> Option<String> {
-    let task = item.task.or(match item.from {
-        Some(AgentRef::Crewmate { task }) => Some(task),
-        _ => None,
-    });
-    if let Some(task) = task {
-        let name = app
-            .snapshot
-            .crew
-            .iter()
-            .find(|r| r.agent == AgentRef::Crewmate { task })
-            .and_then(|r| r.task.as_ref())
-            .map(|t| t.name.clone())
-            .filter(|n| !n.is_empty());
-        return Some(name.unwrap_or_else(|| task.to_string()));
-    }
-    match item.from? {
-        AgentRef::Quartermaster => Some("Quartermaster".to_owned()),
-        AgentRef::Secondmate { id } => Some(id.to_string()),
-        AgentRef::Crewmate { task } => Some(task.to_string()),
-    }
+    source(app, item)
 }
 
 /// How long ago, in one short word: `now`, `3m`, `2h`, `4d`.

@@ -50,11 +50,10 @@ fn size(facts: &serde_json::Value) -> String {
     format!("+{} \u{2212}{}", n("additions"), n("deletions"))
 }
 
-fn base_card(row: &HeldRow, task: qm_types::ids::TaskId) -> Card {
+fn base_card(row: &HeldRow) -> Card {
     let mut card = Card::new(CardKind::Approval, APPROVAL_HEADING);
     card.held = Some(row.id);
-    card.title = Some(task.to_string());
-    card.lines = vec![CardLine::new(2, vec![s(row.title.clone(), Tone::Text)])];
+    card.title = Some(crate::held::display_title(row));
     card
 }
 
@@ -76,8 +75,8 @@ impl HeldCardBuilder for MergeCards {
     #[allow(clippy::too_many_lines)]
     fn card(&self, row: &HeldRow, facts: &serde_json::Value) -> Card {
         match &row.payload {
-            HeldPayload::Merge(MergePayload::PullRequest { task, pr, head, .. }) => {
-                let mut card = base_card(row, *task);
+            HeldPayload::Merge(MergePayload::PullRequest { pr, head, .. }) => {
+                let mut card = base_card(row);
                 let checks = match (
                     facts
                         .get("checks_passed")
@@ -133,13 +132,13 @@ impl HeldCardBuilder for MergeCards {
                 card
             }
             HeldPayload::Merge(MergePayload::InPlace {
-                task,
+                task: _,
                 branch,
                 head,
                 checkout,
                 target_branch,
             }) => {
-                let mut card = base_card(row, *task);
+                let mut card = base_card(row);
                 card.lines.push(CardLine::new(
                     2,
                     vec![s(
@@ -165,7 +164,7 @@ impl HeldCardBuilder for MergeCards {
                 card
             }
             HeldPayload::Push(p) => {
-                let mut card = base_card(row, p.task);
+                let mut card = base_card(row);
                 card.lines.push(CardLine::new(
                     2,
                     vec![s(
@@ -189,7 +188,7 @@ impl HeldCardBuilder for MergeCards {
             _ => {
                 let mut card = Card::new(CardKind::Approval, APPROVAL_HEADING);
                 card.held = Some(row.id);
-                card.title = Some(row.title.clone());
+                card.title = Some(crate::held::display_title(row));
                 card.buttons = vec![approve(), reject()];
                 card
             }
@@ -206,7 +205,7 @@ impl HeldCardBuilder for GithubWriteCards {
         let mut card = Card::new(CardKind::Approval, APPROVAL_HEADING);
         card.held = Some(row.id);
         if let HeldPayload::GithubWrite(p) = &row.payload {
-            card.title = Some(p.task.to_string());
+            card.title = Some(crate::held::display_title(row));
             let what = match p.action {
                 GithubWriteAction::OpenIssue => format!(
                     "open an issue in {}: “{}”",
@@ -241,7 +240,7 @@ impl HeldCardBuilder for GithubWriteCards {
                     .push(CardLine::new(2, vec![s(preview, Tone::Dim)]));
             }
         } else {
-            card.title = Some(row.title.clone());
+            card.title = Some(crate::held::display_title(row));
         }
         card.buttons = vec![approve(), reject()];
         card
@@ -258,11 +257,11 @@ impl HeldCardBuilder for ReleaseTagCards {
         let mut card = Card::new(CardKind::Approval, APPROVAL_HEADING);
         card.held = Some(row.id);
         let HeldPayload::ReleaseTag(p) = &row.payload else {
-            card.title = Some(row.title.clone());
+            card.title = Some(crate::held::display_title(row));
             card.buttons = vec![reject()];
             return card;
         };
-        card.title = Some(p.task.to_string());
+        card.title = Some(crate::held::display_title(row));
         let field = |name: &str, value: String| {
             CardLine::new(
                 2,

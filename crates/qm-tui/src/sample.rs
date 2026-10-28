@@ -89,7 +89,7 @@ pub fn session_view() -> SessionView {
         1,
         SessionLineKind::Supervisor,
         2,
-        "Brief · C-0042 · fix(auth): token refresh race",
+        "Brief · fix(auth): token refresh race",
     );
     brief.detail = Some(String::from(
         "# Brief · C-0042 · fix(auth): token refresh race\n\nThe token refresh in api-server \
@@ -155,7 +155,7 @@ pub fn session_view() -> SessionView {
     view.status = String::from("running 14m · job J3 idle");
     view.turn_running = true;
     view.open = true;
-    view.placeholder = String::from("message C-0042 directly…");
+    view.placeholder = String::from("message this crewmate directly…");
     view
 }
 
@@ -234,6 +234,7 @@ pub fn secondmate_view() -> SessionView {
         "Started C-0045 from `sm/web-app` on a medium model. I'll report back when its PR is up.",
     );
     started.acknowledgement = Some(String::from("Started: C-0045"));
+    started.acknowledgement_by_app = true;
     let asked = ChatLine::new(
         MessageId::new(13),
         MessageSource::You,
@@ -250,6 +251,7 @@ pub fn secondmate_view() -> SessionView {
     );
     reply.context = Some(String::from("reply"));
     reply.acknowledgement = Some(String::from("Steered: C-0045"));
+    reply.acknowledgement_by_app = true;
     let mut view = SessionView::new(secondmate_ref());
     view.title = String::from("secondmate");
     view.note = String::from("web-app frontend and its API client · idle");
@@ -348,7 +350,7 @@ pub fn snapshot() -> Snapshot {
     out.crew = crew();
     out.conversation = conversation();
     out.tasks = tasks();
-    out.actions = actions(vec![held_item(approval_card(), at(14, 2))]);
+    out.actions = actions(vec![held_item(approval_card(), task_id(39), at(14, 2))]);
     out.context = context();
     // What the core answers when the approval card's Diff is pressed (the sample ignores the
     // core's snapshots, so it carries the answer already).
@@ -481,6 +483,7 @@ fn conversation() -> Vec<ChatLine> {
          is solid, go ahead and fix it",
     );
     yours.acknowledgement = Some(String::from("Started: C-0042"));
+    yours.acknowledgement_by_app = true;
     let mut reply = ChatLine::new(
         MessageId::new(2),
         MessageSource::Agent,
@@ -497,7 +500,7 @@ fn conversation() -> Vec<ChatLine> {
 fn approval_card() -> Card {
     let mut card = Card::new(CardKind::Approval, "Approval needed");
     card.held = Some(HeldActionId::new(1));
-    card.title = Some(String::from("C-0039"));
+    card.title = Some(String::from("feat(billing): proration preview"));
     card.lines = vec![
         CardLine::new(2, vec![s("feat(billing): proration preview", Tone::Text)]),
         CardLine::new(
@@ -549,7 +552,7 @@ pub fn chat() -> Snapshot {
     let mut out = snapshot();
     out.conversation = chat_conversation();
     out.actions = actions(vec![
-        held_item(approval_card(), at(14, 2)),
+        held_item(approval_card(), task_id(39), at(14, 2)),
         notice_item(),
         question_item(),
         plan_item(),
@@ -588,6 +591,7 @@ fn chat_conversation() -> Vec<ChatLine> {
         "tell 42 a unit test that reproduces the race is enough, skip the full e2e run",
     );
     steered.acknowledgement = Some(String::from("Steered: C-0042"));
+    steered.acknowledgement_by_app = true;
 
     let mut noted = you(4, 14, 13, "don't ping me for lint-only CI failures");
     noted.acknowledgement = Some(String::from("Noted for next time"));
@@ -686,7 +690,7 @@ fn question_item() -> ActionItem {
 fn plan_item() -> ActionItem {
     let page = "/tmp/quartermaster/plans/T-0044/plan.html";
     let mut card = Card::new(CardKind::Plan, "Plan questions");
-    card.title = Some(String::from("C-0044 plan(auth): session store"));
+    card.title = Some(String::from("plan(auth): session store"));
     card.note = Some(String::from("· api-server · round 2"));
     card.lines = vec![
         CardLine::new(
@@ -725,7 +729,7 @@ fn plan_item() -> ActionItem {
 fn review_item() -> ActionItem {
     let task = task_id(45);
     let mut card = Card::new(CardKind::Review, "Review ready");
-    card.title = Some(String::from("C-0045 review(auth): token refresh race"));
+    card.title = Some(String::from("review(auth): token refresh race"));
     card.note = Some(String::from("· api-server"));
     card.lines = vec![
         CardLine::new(
@@ -765,7 +769,7 @@ fn review_item() -> ActionItem {
 fn report_item() -> ActionItem {
     let task = task_id(46);
     let mut card = Card::new(CardKind::Report, "Report ready");
-    card.title = Some(String::from("C-0046 lookup(auth): where tokens refresh"));
+    card.title = Some(String::from("lookup(auth): where tokens refresh"));
     card.note = Some(String::from("· api-server"));
     card.lines = vec![
         CardLine::new(
@@ -1217,7 +1221,7 @@ pub(crate) fn install_decision(app: &mut App) {
 pub fn decision_card() -> Card {
     let mut card = Card::new(CardKind::Decision, "Decision");
     card.held = Some(HeldActionId::new(2));
-    card.title = Some(String::from("C-0047 fix(ci): flaky upload test"));
+    card.title = Some(String::from("fix(ci): flaky upload test"));
     card.note = Some(String::from("· api-server · high · opus-5-5"));
     card.lines = vec![
         CardLine::new(
@@ -1269,8 +1273,8 @@ pub fn decision_card() -> Card {
 pub fn decision() -> Snapshot {
     let mut out = snapshot();
     out.actions = actions(vec![
-        held_item(approval_card(), at(14, 2)),
-        held_item(decision_card(), at(14, 9)),
+        held_item(approval_card(), task_id(39), at(14, 2)),
+        held_item(decision_card(), task_id(47), at(14, 9)),
     ]);
     out
 }
@@ -1301,10 +1305,8 @@ pub(crate) fn install_diff(app: &mut App) {
 #[doc(hidden)]
 pub fn diff() -> qm_types::api::DiffView {
     use DiffLineKind::{Addition as A, Deletion as D};
-    let mut view = qm_types::api::DiffView::new(
-        HeldActionId::new(1),
-        "C-0039 · feat(billing): proration preview",
-    );
+    let mut view =
+        qm_types::api::DiffView::new(HeldActionId::new(1), "feat(billing): proration preview");
     let proration = diff_proration();
     let tests = diff_file(
         DiffFileStatus::Added,
@@ -1548,7 +1550,7 @@ fn diff_hunk(
 
 /// A held action's item, as the core lists it: an approval is titled with its first line, a
 /// decision with its card's title.
-fn held_item(card: Card, at: Timestamp) -> ActionItem {
+fn held_item(card: Card, task: TaskId, at: Timestamp) -> ActionItem {
     let kind = match card.kind {
         CardKind::Approval => ActionKind::Approval,
         _ => ActionKind::Decision,
@@ -1565,14 +1567,6 @@ fn held_item(card: Card, at: Timestamp) -> ActionItem {
     }
     .unwrap_or_else(|| card.heading.clone());
     let id = card.held.unwrap_or_else(|| HeldActionId::new(0));
-    // The crewmate it waits for, named first in the card's title (`C-0039`).
-    let task = card
-        .title
-        .as_deref()
-        .and_then(|t| t.split_whitespace().next())
-        .and_then(|c| c.strip_prefix("C-"))
-        .and_then(|n| n.parse().ok())
-        .map(task_id);
     let item = ActionItem::new(
         ActionKey::Held { id },
         kind,
@@ -1581,10 +1575,7 @@ fn held_item(card: Card, at: Timestamp) -> ActionItem {
         card,
         ActionOpen::Conversation,
     );
-    match task {
-        Some(task) => item.with_task(task).with_from(AgentRef::Crewmate { task }),
-        None => item,
-    }
+    item.with_task(task).with_from(AgentRef::Crewmate { task })
 }
 
 /// The inbox the core would build from the sample: a configuration prompt, then `items` and a

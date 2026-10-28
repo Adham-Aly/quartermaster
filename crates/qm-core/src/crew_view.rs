@@ -158,9 +158,7 @@ fn push_group(
     }
 }
 
-/// A task's heading over `members`, its crewmates under one supervisor: `T-0042 api-server`, with
-/// `+1` for each further project they work in (`T-0042 api-server +1`); and its name, as it was
-/// given, else made from its oldest crewmate's title.
+/// A task's friendly heading over its crewmates under one supervisor, and project summary.
 fn heading(label: TaskLabelId, members: &[&OpenTask]) -> CrewTask {
     let mut projects: Vec<&str> = Vec::new();
     for task in members {
@@ -175,11 +173,6 @@ fn heading(label: TaskLabelId, members: &[&OpenTask]) -> CrewTask {
     if projects.len() > 1 {
         project = format!("{project} +{}", projects.len() - 1);
     }
-    let words = if project.is_empty() {
-        label.to_string()
-    } else {
-        format!("{label} {project}")
-    };
     let name = members
         .iter()
         .find_map(|t| t.label_name.clone())
@@ -189,7 +182,7 @@ fn heading(label: TaskLabelId, members: &[&OpenTask]) -> CrewTask {
                 .map(|t| qm_policy::names::task_name_from_title(&t.title))
         })
         .unwrap_or_default();
-    CrewTask::new(label, words).named(name, project)
+    CrewTask::new(label, name.clone()).named(name, project)
 }
 
 /// Where a task's work is, for the crew list's groups.
@@ -217,9 +210,10 @@ fn push_task(
     let mut row = CrewRow::new(
         AgentRef::Crewmate { task: task.task },
         depth,
-        format!("{} {}", task.task, task.kind),
+        task.kind.to_string(),
         status.clone(),
     );
+    let task_name = heading.name.clone();
     row.task = Some(heading);
     row.kind = task.kind.to_string();
     row.phase = phase(task);
@@ -233,8 +227,9 @@ fn push_task(
         .filter(|t| t.label == task.label && t.task != task.task)
         .map(|t| t.task)
         .collect();
-    view.tasks
-        .push(detail(task, &with, &status, waiting, now, started));
+    view.tasks.push(detail(
+        task, &task_name, &with, &status, waiting, now, started,
+    ));
 }
 
 /// The status word the tree shows for a task, and the flag it carries.
@@ -279,6 +274,7 @@ pub fn minutes_label(minutes: i64) -> String {
 /// The task pane, rows in display order.
 fn detail(
     task: &OpenTask,
+    task_name: &str,
     with: &[TaskId],
     status: &str,
     waiting: Option<Waiting>,
@@ -291,11 +287,11 @@ fn detail(
     d.rows
         .push(TaskRow::new(Some("project"), text(task.project.clone())));
     // The task this crewmate works towards (its heading in the crew tree), and who else is in it.
-    let mut in_task = task.label.to_string();
-    if !with.is_empty() {
-        let names: Vec<String> = with.iter().map(ToString::to_string).collect();
-        in_task = format!("{in_task} · with {}", names.join(", "));
-    }
+    let in_task = match with.len() {
+        0 => task_name.to_owned(),
+        1 => format!("{task_name} · with 1 collaborator"),
+        n => format!("{task_name} · with {n} collaborators"),
+    };
     d.rows.push(TaskRow::new(Some("task"), text(in_task)));
 
     let agent = task.agent.as_ref();
@@ -522,6 +518,44 @@ mod tests {
         assert_eq!(branch.value[0].text, "qm/task-0002 ← main");
     }
 
+    #[test]
+    fn friendly_task_details_count_collaborators_without_touching_authored_words() {
+        let conn = grouped_fixture();
+        conn.execute(
+            "UPDATE task_labels SET name = 'Auth refresh' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE tasks SET title = 'fix: authored T-0042 and C-0047' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        let data = crew_view::crew_data(&conn).unwrap();
+        let view = build(&data, Timestamp::UNIX_EPOCH, None);
+        let first = &view.crew[0];
+        assert_eq!(
+            first.agent,
+            AgentRef::Crewmate {
+                task: TaskId::new(1).unwrap()
+            }
+        );
+        assert_eq!(first.label, "fix");
+        let heading = first.task.as_ref().unwrap();
+        assert_eq!(heading.id, TaskLabelId::new(1).unwrap());
+        assert_eq!(heading.label, "Auth refresh");
+        assert_eq!(heading.project, "app");
+        let detail = &view.tasks[0];
+        assert_eq!(detail.title, "fix: authored T-0042 and C-0047");
+        let task_row = detail
+            .rows
+            .iter()
+            .find(|r| r.label.as_deref() == Some("task"))
+            .unwrap();
+        assert_eq!(task_row.value[0].text, "Auth refresh · with 1 collaborator");
+        assert_eq!(data.tasks[0].title, detail.title);
+    }
+
     /// A fixture with two projects, a secondmate, and crewmates in tasks across them, oldest first:
     /// C-1 (T-1, app), C-2 (T-2, app), C-3 (T-1, app), C-4 (secondmate, T-4, web),
     /// C-5 (secondmate, T-5, app), C-6 (secondmate, T-4, app), C-7 (T-7, closed).
@@ -666,14 +700,14 @@ mod tests {
             [
                 // The Quartermaster's: T-1's two crewmates together, then T-2; closed C-7's task
                 // has no rows, so it drops out.
-                (1, "C-0001 fix".to_owned(), task("T-0001 app")),
-                (1, "C-0003 review".to_owned(), task("T-0001 app")),
-                (1, "C-0002 build".to_owned(), task("T-0002 app")),
+                (1, "fix".to_owned(), task("One")),
+                (1, "review".to_owned(), task("One")),
+                (1, "build".to_owned(), task("Two")),
                 (1, "S-02 web".to_owned(), None),
                 // The secondmate's tasks across projects: T-4 (web, then app) before T-5.
-                (2, "C-0004 build".to_owned(), task("T-0004 web +1")),
-                (2, "C-0006 review".to_owned(), task("T-0004 web +1")),
-                (2, "C-0005 fix".to_owned(), task("T-0005 app")),
+                (2, "build".to_owned(), task("Four")),
+                (2, "review".to_owned(), task("Four")),
+                (2, "fix".to_owned(), task("Five")),
             ]
         );
         // Every crewmate shown still has its task pane.

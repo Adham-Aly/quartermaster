@@ -320,7 +320,14 @@ async fn the_task_pane_shows_each_crewmates_task_and_who_shares_it() {
             .unwrap();
         row.value.iter().map(|s| s.text.as_str()).collect()
     };
-    assert_eq!(task_row(3), "T-0004 · with C-0004");
-    assert_eq!(task_row(4), "T-0004 · with C-0003");
-    assert_eq!(task_row(5), "T-0005");
+    assert_eq!(task_row(3), "Task · with 1 collaborator");
+    assert_eq!(task_row(4), "Task · with 1 collaborator");
+    assert_eq!(task_row(5), "Task");
+    // Friendly display strings do not replace the typed selection/grouping IDs.
+    for (id, expected_label) in [(3, label(4)), (4, label(4)), (5, label(5))] {
+        let agent = AgentRef::Crewmate { task: crewmate(id) };
+        let row = view.crew.iter().find(|row| row.agent == agent).unwrap();
+        assert_eq!(row.task.as_ref().unwrap().id, expected_label);
+        assert!(view.tasks.iter().any(|pane| pane.task == crewmate(id)));
+    }
 }

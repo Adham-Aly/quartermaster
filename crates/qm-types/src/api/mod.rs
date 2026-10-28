@@ -936,6 +936,10 @@ impl CrewRow {
 /// One line of a conversation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent, additive chat display flags"
+)]
 pub struct ChatLine {
     pub id: MessageId,
     pub source: MessageSource,
@@ -945,6 +949,10 @@ pub struct ChatLine {
     /// The acknowledgement shown beside your message ("Steered: C-0042"), if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acknowledgement: Option<String>,
+    /// The acknowledgement is app-generated metadata, not authored prose. False when its
+    /// provenance is unknown (including snapshots from older servers); preserve that text.
+    #[serde(default)]
+    pub acknowledgement_by_app: bool,
     /// Dim words after the time in the header ("after C-0043 reported", "reply").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
@@ -980,6 +988,7 @@ impl ChatLine {
             at,
             text: text.into(),
             acknowledgement: None,
+            acknowledgement_by_app: false,
             context: None,
             card: None,
             queued: false,
@@ -1137,11 +1146,18 @@ pub struct CardLine {
     pub indent: u16,
     #[serde(default)]
     pub spans: Vec<Styled>,
+    /// Opaque authored/tool output: display text without metadata substitution, regardless of tone.
+    #[serde(default)]
+    pub verbatim: bool,
 }
 
 impl CardLine {
     pub fn new(indent: u16, spans: Vec<Styled>) -> Self {
-        Self { indent, spans }
+        Self {
+            indent,
+            spans,
+            verbatim: false,
+        }
     }
 }
 
@@ -1844,6 +1860,57 @@ impl CoreServer {
     /// Sends an update; fails only if the UI is gone.
     pub fn send(&self, update: Update) -> Result<(), LinkClosed> {
         self.updates.send(update).map_err(|_| LinkClosed)
+    }
+}
+
+#[cfg(test)]
+mod chat_tests {
+    use super::*;
+
+    #[test]
+    fn acknowledgement_provenance_defaults_to_authored_and_round_trips() {
+        let mut line = ChatLine::new(
+            MessageId::new(1),
+            MessageSource::You,
+            MessageKind::Message,
+            Timestamp::UNIX_EPOCH,
+            "hello",
+        );
+        assert!(!line.acknowledgement_by_app);
+        line.acknowledgement = Some("Keep C-0042 T-0017".into());
+        let mut legacy = serde_json::to_value(&line).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("acknowledgement_by_app");
+        assert_eq!(serde_json::from_value::<ChatLine>(legacy).unwrap(), line);
+        for by_app in [false, true] {
+            line.acknowledgement_by_app = by_app;
+            let encoded = serde_json::to_value(&line).unwrap();
+            assert_eq!(serde_json::from_value::<ChatLine>(encoded).unwrap(), line);
+        }
+    }
+}
+
+#[cfg(test)]
+mod card_line_tests {
+    use super::*;
+
+    #[test]
+    fn verbatim_defaults_to_false_and_round_trips() {
+        let mut line = CardLine::new(
+            2,
+            vec![Styled::new("fatal: bad revision 'C-0042'", Tone::Error)],
+        );
+        assert!(!line.verbatim);
+        let mut legacy = serde_json::to_value(&line).unwrap();
+        legacy.as_object_mut().unwrap().remove("verbatim");
+        assert_eq!(serde_json::from_value::<CardLine>(legacy).unwrap(), line);
+        for verbatim in [false, true] {
+            line.verbatim = verbatim;
+            let encoded = serde_json::to_value(&line).unwrap();
+            assert_eq!(serde_json::from_value::<CardLine>(encoded).unwrap(), line);
+        }
     }
 }
 

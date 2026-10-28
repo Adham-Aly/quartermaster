@@ -516,6 +516,9 @@ fn render_from(
     let sends_to = submit.as_ref().map(|s| s.port);
     let meta = qm_plans::Meta {
         task: task.to_string(),
+        // These inputs have no friendly task name. Use the authored page title for display,
+        // on initial renders and refreshes alike; never substitute it for protocol identity.
+        task_label: None,
         plan_uid: state.uid.clone(),
         round: state.round.max(1),
         project: project.to_owned(),
@@ -646,6 +649,101 @@ pub fn copy_for_build(from: &Path, to: &Path) -> io::Result<()> {
         let _ = qm_types::data_dir::remove_path(&staging);
     }
     made
+}
+
+#[cfg(test)]
+mod display_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn render_and_rerender_hide_ids_without_changing_identity_or_authored_content() {
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "qm-plan-display-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        )));
+        let dir = &scratch.0;
+        let task: TaskId = "T-0042".parse().unwrap();
+        let mut state = create(dir).unwrap();
+        state.stage = Stage::WithUser;
+        state.round = 1;
+        state.page_token = PageToken::fresh();
+        assert!(state.page_token.is_some());
+        let technical = "# Private technical handoff\n\nDo not show this prose.";
+        let authored = "<article><h1>Cache plan</h1><h2 id=\"approach\">Approach</h2><p>For T-0042 and C-0042.</p><pre>/artifacts/T-0042/C-0042/plan/plan.html\nTool output: T-0042 C-0042</pre></article>";
+        fs::write(dir.join(PLAN_FILE), technical).unwrap();
+        fs::write(dir.join(PAGE_FILE), authored).unwrap();
+        let rendered = render(dir, task, "project", &state, BTreeMap::new(), Some(41049)).unwrap();
+        rendered.record(&mut state);
+        save(dir, &state).unwrap();
+
+        let inspect =
+            |port: Option<u16>| {
+                let html = fs::read_to_string(dir.join(PAGE_FILE)).unwrap();
+                let header = html
+                    .split("<header")
+                    .nth(1)
+                    .unwrap()
+                    .split("</header>")
+                    .next()
+                    .unwrap();
+                assert!(header.contains("class=\"page-meta\"><span>Cache plan</span>"));
+                assert!(!header.contains("T-0042"));
+                assert!(!header.contains("C-0042"));
+                assert!(html.contains("<title>Cache plan</title>"));
+                assert!(html.contains("<p>For T-0042 and C-0042.</p>"));
+                assert!(html.contains(
+                    "/artifacts/T-0042/C-0042/plan/plan.html\nTool output: T-0042 C-0042"
+                ));
+                assert!(!html.contains("Private technical handoff"));
+                assert_eq!(authored_source(dir).unwrap(), authored);
+                assert_eq!(fs::read_to_string(dir.join(PLAN_FILE)).unwrap(), technical);
+                let json = html
+                    .split("id=\"plan-meta\">")
+                    .nth(1)
+                    .unwrap()
+                    .split("</script>")
+                    .next()
+                    .unwrap();
+                let meta: serde_json::Value = serde_json::from_str(json).unwrap();
+                assert_eq!(meta["task"], task.to_string());
+                assert_eq!(meta["plan"], state.uid);
+                assert_eq!(meta["round"], 1);
+                if let Some(port) = port {
+                    assert_eq!(
+                        meta["submit"]["url"],
+                        format!("http://127.0.0.1:{port}/v1/plan-reply")
+                    );
+                    assert_eq!(
+                        meta["submit"]["token"],
+                        state.page_token.as_ref().unwrap().reveal()
+                    );
+                } else {
+                    assert!(meta.get("submit").is_none());
+                }
+            };
+        inspect(Some(41049));
+        assert!(rerender(dir, task, "project", Some(41050)).unwrap());
+        inspect(Some(41050));
+        update(dir, |s| {
+            s.stage = Stage::Approved;
+            s.approved_at = Some("14:30".into());
+        })
+        .unwrap();
+        assert!(
+            render_saved(dir, task, "project", Some(41050), |s| s
+                .fingerprints
+                .clone())
+            .unwrap()
+        );
+        inspect(None);
+    }
 }
 
 #[cfg(test)]

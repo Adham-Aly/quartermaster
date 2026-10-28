@@ -22,10 +22,9 @@ pub(crate) fn assemble(parsed: &Parsed, meta: &Meta) -> String {
         let shown = format!("data-updated=\"{}\"", escape(&section.id));
         body = body.replacen(&hidden, &shown, 1);
     }
-    let title = checked
-        .title
-        .clone()
-        .unwrap_or_else(|| format!("Plan for {}", meta.task));
+    let label = meta.task_label.as_deref().filter(|s| !s.trim().is_empty());
+    let title = checked.title.as_deref().or(label).unwrap_or("Plan");
+    let label = label.unwrap_or(title);
 
     let mut scripts = vec![PLAN_JS.to_owned()];
     let mut styles = vec![CSS.to_owned(), highlight::css().to_owned()];
@@ -57,7 +56,7 @@ pub(crate) fn assemble(parsed: &Parsed, meta: &Meta) -> String {
     let head = format!(
         "<meta http-equiv=\"Content-Security-Policy\" content=\"{}\">\n<title>{}</title>\n<style>\n{}</style>\n<script>{THEME_JS}</script>",
         escape(&csp),
-        escape(&title),
+        escape(title),
         styles.join("\n")
     );
     let mut runtime = String::new();
@@ -69,7 +68,10 @@ pub(crate) fn assemble(parsed: &Parsed, meta: &Meta) -> String {
         TEMPLATE,
         &[
             ("head", head),
-            ("header", header(&title, meta, checked.questions.len())),
+            (
+                "header",
+                header(title, label, meta, checked.questions.len()),
+            ),
             ("banner", banner(meta, checked.questions.len())),
             ("outline", outline(parsed)),
             ("body", body),
@@ -121,7 +123,7 @@ fn state_word(state: &PageState) -> &'static str {
     }
 }
 
-fn header(title: &str, meta: &Meta, questions: usize) -> String {
+fn header(title: &str, label: &str, meta: &Meta, questions: usize) -> String {
     let status = match &meta.state {
         PageState::Open => format!(
             "{questions} question{} open",
@@ -134,7 +136,7 @@ fn header(title: &str, meta: &Meta, questions: usize) -> String {
     format!(
         "<h1 class=\"page-title\">{}</h1>\n<p class=\"page-meta\"><span>{}</span> · <span>round {}</span> · <span>{}</span> · <span class=\"status status-{}\">{}</span></p>",
         escape(title),
-        escape(&meta.task),
+        escape(label),
         meta.round,
         escape(&meta.project),
         state_word(&meta.state),

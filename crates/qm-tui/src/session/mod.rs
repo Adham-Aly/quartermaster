@@ -312,13 +312,10 @@ mod tests {
         assert!(rows[0].contains("quartermaster ▾"), "{}", rows[0]);
         let title = &rows[1];
         assert!(title.starts_with(" Projects "), "{title}");
-        assert!(
-            title.contains("╭─ C-0042 · fix(auth): token refresh race "),
-            "{title}"
-        );
+        assert!(title.contains("╭─ Token refresh race "), "{title}");
         assert!(title.contains(" ← Quartermaster ─╮"), "{title}");
         assert!(
-            title.ends_with("╭─ C-0042 ─────────────────────────╮"),
+            title.ends_with("╭─ Token refresh race ─────────────╮"),
             "{title}"
         );
         assert!(rows.iter().any(|r| r.starts_with(" Crew ")));
@@ -328,7 +325,7 @@ mod tests {
         );
         assert!(
             rows.iter()
-                .any(|r| r.contains("› message C-0042 directly…"))
+                .any(|r| r.contains("› message Token refresh race directly…"))
         );
         assert!(!rows.iter().any(|r| r.contains("╭─ Quartermaster ")));
     }

@@ -115,9 +115,9 @@ pub fn decision_card(row: &HeldRow) -> Card {
     } else {
         Card::new(CardKind::Decision, "Decision")
     };
-    let (title, note) = split_title(&row.title);
+    let (_, note) = split_title(&row.title);
     card.held = Some(row.id);
-    card.title = Some(title);
+    card.title = Some(crate::held::display_title(row));
     card.note = note;
     card.lines = decision(row).map(lines).unwrap_or_default();
     card.buttons = row

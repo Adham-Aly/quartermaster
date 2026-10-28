@@ -95,9 +95,9 @@ fn pressable(item: &ActionItem) -> Vec<usize> {
 }
 
 /// The overlay's line above the card: who asks, about what, and when.
-fn meta(item: &ActionItem, now: jiff::Timestamp) -> String {
+fn meta(app: &App, item: &ActionItem, now: jiff::Timestamp) -> String {
     let mut parts = Vec::new();
-    if let Some(source) = crate::widgets::actions::source(item) {
+    if let Some(source) = crate::widgets::actions::source(app, item) {
         parts.push(source);
     }
     parts.push(crate::widgets::actions::age(item.at, now));
@@ -108,10 +108,11 @@ fn meta(item: &ActionItem, now: jiff::Timestamp) -> String {
 fn rows(app: &App, item: &ActionItem, width: u16) -> Vec<Row> {
     let pressed = app.view.action_pressed.as_ref() == Some(&item.key);
     let buttons = buttons(item, app.view.action_button, app.term.hover);
-    let text = truncate(&meta(item, jiff::Timestamp::now()), usize::from(width));
+    let text = truncate(&meta(app, item, jiff::Timestamp::now()), usize::from(width));
     let mut out = vec![Row::plain(Line::from(Span::styled(text, theme::dim())))];
+    let shown = crate::presentation::Presenter(&app.snapshot).card(&item.card);
     out.extend(card::rows_with(
-        &item.card,
+        &shown,
         width,
         &buttons,
         app.term.hover,
@@ -1141,7 +1142,7 @@ mod popup_tests {
         let rows = screen(&mut app, 150, 45);
         assert!(
             rows.iter()
-                .any(|r| r.contains("your guidance for C-0047 fix(ci): flaky upload test")),
+                .any(|r| r.contains("your guidance for fix(ci): flaky upload test")),
             "{rows:#?}"
         );
     }

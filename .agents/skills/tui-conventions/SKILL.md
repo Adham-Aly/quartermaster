@@ -114,8 +114,11 @@ with `theme::tone`. Tool names are coloured by family in `widgets/tools.rs`.
   `Waiting · n`, `Done · n`, from `CrewRow::phase` and the flags), then `Secondmates · n`
   (`widgets/crew.rs` `build`). A task shows by its name (`CrewTask::name`, which the
   Quartermaster gives at start or the core derives from the title), then a dim
-  `T-0042 · project · kind · via S-02` line with a single crewmate's status at the right edge;
-  parts that don't fit are left out whole. A team lists its crewmates under it. A task whose
+  `project · kind · via S-02` line with a single crewmate's status at the right edge;
+  parts that don't fit are left out whole. Task and crewmate IDs stay in typed navigation, not
+  app-owned labels. A team lists its crewmates by kind (numbered within a repeated kind) under
+  its task name. Authored prose/titles, real paths, tool output, full briefs and editable input
+  are never scrubbed. A task whose
   every crewmate waits in Needs you is left out. When the full list doesn't fit, each task is
   one line (`compact`). The keys move through `FrameMap::crew_spots`. Projects is one line each,
   `● api-server     PR · 3 tasks` (busy ones first, sorted in the core); a narrow line drops the

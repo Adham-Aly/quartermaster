@@ -5,21 +5,21 @@
 //! ◆ Quartermaster          ready
 //! Working · 2
 //! ⎈ Token refresh race
-//!   T-0042 · api-server · fix · 12m
+//!   api-server · fix · 12m
 //! ● Rate limit middleware
-//!   T-0045 · web-app · via S-02
-//!   ● C-0045 build              3m
-//!   ○ C-0049 review           waits
+//!   web-app · via S-02
+//!   ● build                     3m
+//!   ○ review                 waits
 //! Done · 1
 //! ✓ Find what fills Downloads
-//!   T-0050 · Downloads · research · reported
+//!   Downloads · research · reported
 //! Secondmates · 1
 //! ○ S-02 web-app                idle
 //! ```
 //!
 //! Each task is one entry under its name (two or three words the Quartermaster gave it, else made
-//! from its title), wrapped rather than cut, with a dim line saying which task it is, where, what
-//! kind of work and how it stands. A task with more than one crewmate lists them under it, each
+//! from its title), wrapped rather than cut, with a dim line saying where it works, what kind
+//! of work and how it stands. A task with more than one crewmate lists them by kind under it, each
 //! with its status. A busy crewmate's glyph is its own busy indicator (`spinner::for_agent`); a
 //! flag (`⚑`) says it waits on you. A task whose every crewmate waits on you for something that is
 //! in Needs you shows only there, so nothing is listed twice.
@@ -104,14 +104,39 @@ impl Entry<'_> {
         }
     }
 
-    /// The words it is listed under: its name, else (from an older server) its row's label.
-    fn name(&self) -> &str {
-        self.task
-            .map(|t| t.name.as_str())
-            .filter(|n| !n.is_empty())
-            .or_else(|| self.task.map(|t| t.label.as_str()))
-            .unwrap_or_else(|| self.crew[0].label.as_str())
+    /// The words it is listed under, never the legacy ID-bearing metadata label.
+    fn name<'a>(&self, app: &'a App) -> &'a str {
+        crewmate_name(app, self.crew[0].agent)
     }
+}
+
+/// A friendly crewmate/task name for app-owned chrome. Authored names and titles are kept as-is;
+/// legacy `CrewRow::label` and `CrewTask::label` are metadata, not names.
+pub(crate) fn crewmate_name(app: &App, agent: AgentRef) -> &str {
+    app.snapshot
+        .crew
+        .iter()
+        .find(|row| row.agent == agent)
+        .and_then(|row| row.task.as_ref())
+        .map(|task| task.name.as_str())
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            app.snapshot
+                .tasks
+                .iter()
+                .find(|detail| AgentRef::Crewmate { task: detail.task } == agent)
+                .map(|detail| detail.title.as_str())
+                .filter(|title| !title.is_empty())
+        })
+        .or_else(|| {
+            app.snapshot
+                .session
+                .as_ref()
+                .filter(|view| view.agent == agent)
+                .map(|view| view.title.as_str())
+                .filter(|title| !title.is_empty())
+        })
+        .unwrap_or("Crewmate")
 }
 
 /// The core's crewmate rows as entries, in its order: consecutive rows of one task under one
@@ -170,7 +195,7 @@ pub(crate) fn task_mark(
     };
     Some((
         glyph,
-        entry.name().to_owned(),
+        entry.name(app).to_owned(),
         status,
         status_style(first, single),
     ))
@@ -373,7 +398,7 @@ fn push_entry(app: &App, out: &mut Built, entry: &Entry<'_>, inner: usize, compa
             out,
             first.agent,
             glyph,
-            entry.name(),
+            entry.name(app),
             (&status, style),
             inner,
             0,
@@ -395,7 +420,7 @@ fn push_entry(app: &App, out: &mut Built, entry: &Entry<'_>, inner: usize, compa
     } else {
         phase_glyph(entry)
     };
-    let mut name = wrap(entry.name(), inner.saturating_sub(2).max(1));
+    let mut name = wrap(entry.name(app), inner.saturating_sub(2).max(1));
     if name.len() > NAME_LINES {
         let rest = name[NAME_LINES - 1..].join(" ");
         name.truncate(NAME_LINES - 1);
@@ -425,9 +450,17 @@ fn push_entry(app: &App, out: &mut Built, entry: &Entry<'_>, inner: usize, compa
         return;
     }
     for (i, row) in entry.crew.iter().enumerate() {
-        let label = match row.kind.as_str() {
-            "" => row.label.clone(),
-            kind => format!("{} {kind}", crewmate_number(row)),
+        // Ordinals distinguish workers doing the same kind of work without exposing IDs.
+        let kind = worker_kind(row);
+        let count = entry.crew.iter().filter(|r| worker_kind(r) == kind).count();
+        let label = if count > 1 {
+            let number = entry.crew[..=i]
+                .iter()
+                .filter(|r| worker_kind(r) == kind)
+                .count();
+            format!("{kind} {number}")
+        } else {
+            kind.to_owned()
         };
         push_agent(
             app,
@@ -443,15 +476,16 @@ fn push_entry(app: &App, out: &mut Built, entry: &Entry<'_>, inner: usize, compa
     }
 }
 
-/// `C-0042`, from a crewmate's row.
-fn crewmate_number(row: &CrewRow) -> String {
-    match row.agent {
-        AgentRef::Crewmate { task } => task.to_string(),
-        _ => row.label.clone(),
+/// A worker's friendly role, including rows from older servers without a kind.
+fn worker_kind(row: &CrewRow) -> &str {
+    if row.kind.is_empty() {
+        "Crewmate"
+    } else {
+        &row.kind
     }
 }
 
-/// The dim line under a task's name: `T-0042 · api-server · fix · via S-02`, with a single
+/// The dim line under a task's name: `api-server · fix · via S-02`, with a single
 /// crewmate's status at the right edge in its flag's colour. Parts that don't fit are left out
 /// whole, never cut.
 fn meta_line(entry: &Entry<'_>, inner: usize) -> Line<'static> {
@@ -459,12 +493,11 @@ fn meta_line(entry: &Entry<'_>, inner: usize) -> Line<'static> {
     let single = entry.crew.len() == 1;
     let room = inner.saturating_sub(2);
     let status = if single { first.status.as_str() } else { "" };
-    // What fits beside the status: the parts that don't are left out whole, the kind first,
-    // then who it came through, then the project; the task's id stays.
+    // What fits beside the status: omit whole parts, the kind first, then who it came
+    // through, then the project. The task's name is already above; no ID chip is needed.
     let via = entry.via.map(|s| format!("via {s}"));
     let mut parts: Vec<(u8, String)> = Vec::new();
     if let Some(task) = entry.task {
-        parts.push((3, task.id.to_string()));
         parts.push((2, task.project.clone()));
     }
     if single {
@@ -629,19 +662,19 @@ mod tests {
             "◆ Quartermaster         ready",
             "Working · 2",
             "● Token refresh race",
-            "  T-0042 · api-server",
-            "  ● C-0042 fix            12m",
-            "  ● C-0046 review          2m",
+            "  api-server",
+            "  ● fix                   12m",
+            "  ● review                 2m",
             "● Resumable uploads",
-            "  T-0045 · web-app         3m",
+            "  web-app · via S-02       3m",
             "Waiting · 2",
             "⚑ Flaky upload test",
-            "  T-0047 · web-app     decide",
+            "  web-app · fix        decide",
             "○ Slow shell prompt",
-            "  T-0048 · dotfiles     waits",
+            "  dotfiles · via S-02   waits",
             "Done · 1",
             "✓ API docs refresh",
-            "  T-0041             reported",
+            "  api-server · docs  reported",
             "Secondmates · 1",
             "○ S-02 web-app           idle",
         ];
@@ -661,10 +694,10 @@ mod tests {
         };
         let wide = text(&wide);
         assert!(
-            wide.contains(&"  T-0045 · web-app · build · via S-02 3m".to_owned()),
+            wide.contains(&"  web-app · build · via S-02          3m".to_owned()),
             "{wide:#?}"
         );
-        assert!(wide.contains(&"  T-0047 · web-app · fix          decide".to_owned()));
+        assert!(wide.contains(&"  web-app · fix                   decide".to_owned()));
         let compact = text(&build(&app, 29, true));
         assert!(
             compact.contains(&"● Token refresh race   2 crew".to_owned()),
@@ -701,6 +734,81 @@ mod tests {
             "{lines:#?}"
         );
         assert!(lines.contains(&"Waiting · 3".to_owned()));
+    }
+
+    #[test]
+    fn labels_hide_metadata_ids_but_keep_names_and_typed_targets() {
+        let mut app = app();
+        // Two workers of the same kind remain distinguishable without their IDs.
+        app.snapshot
+            .crew
+            .iter_mut()
+            .find(|r| r.agent == crewmate(46))
+            .unwrap()
+            .kind = "fix".to_owned();
+        let built = build(&app, 40, false);
+        let shown: Vec<String> = built.rows.iter().map(|r| r.line.to_string()).collect();
+        assert!(shown.iter().any(|s| s.contains("fix 1")), "{shown:#?}");
+        assert!(shown.iter().any(|s| s.contains("fix 2")), "{shown:#?}");
+        assert!(
+            shown
+                .iter()
+                .all(|s| !s.contains("T-0042") && !s.contains("C-0042") && !s.contains("C-0046"))
+        );
+        for agent in [crewmate(42), crewmate(46)] {
+            assert!(built.spots.iter().any(|(_, a)| *a == agent));
+            assert!(
+                built
+                    .rows
+                    .iter()
+                    .any(|r| r.hit == Some(crate::hit::Hit::Crew(agent)))
+            );
+        }
+        // Authored names are not globally scrubbed.
+        app.snapshot
+            .crew
+            .iter_mut()
+            .find(|r| r.agent == crewmate(42))
+            .unwrap()
+            .task
+            .as_mut()
+            .unwrap()
+            .name = "Explain T-0042 and C-0046".to_owned();
+        for compact in [false, true] {
+            let built = build(&app, 60, compact);
+            assert!(
+                built
+                    .rows
+                    .iter()
+                    .any(|r| r.line.to_string().contains("Explain T-0042 and C-0046"))
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_metadata_labels_never_become_display_names() {
+        let mut app = App::new();
+        let agent = crewmate(123);
+        let mut row = qm_types::api::CrewRow::new(agent, 1, "C-0123 fix", "idle");
+        row.task = Some(qm_types::api::CrewTask::new(
+            qm_types::ids::TaskLabelId::new(123).unwrap(),
+            "T-0123 project",
+        ));
+        app.snapshot.crew.push(row);
+        for compact in [false, true] {
+            let built = build(&app, 40, compact);
+            let shown: String = built.rows.iter().map(|r| r.line.to_string()).collect();
+            assert!(shown.contains("Crewmate"));
+            assert!(!shown.contains("T-0123") && !shown.contains("C-0123"));
+            assert!(built.spots.iter().any(|(_, a)| *a == agent));
+        }
+        app.snapshot.crew[0].task = None;
+        assert!(
+            build(&app, 40, false)
+                .rows
+                .iter()
+                .all(|r| !r.line.to_string().contains("C-0123"))
+        );
     }
 
     #[test]

@@ -18,7 +18,6 @@ use std::time::Instant;
 const OPEN_SESSION: &str = "Open session";
 const SHOW_TASK: &str = "Show task";
 const INTERRUPT: &str = "Interrupt";
-const COPY_TASK_ID: &str = "Copy task ID";
 const COPY_ID: &str = "Copy ID";
 const COPY_NAME: &str = "Copy name";
 const OPEN_ACTION: &str = "Open";
@@ -49,7 +48,7 @@ pub(crate) fn items(target: MenuTarget, snapshot: &Snapshot) -> Vec<&'static str
     let turn_running = snapshot.turn_running;
     match target {
         MenuTarget::Crew(AgentRef::Crewmate { .. }) => {
-            vec![OPEN_SESSION, SHOW_TASK, INTERRUPT, COPY_TASK_ID]
+            vec![OPEN_SESSION, SHOW_TASK, INTERRUPT]
         }
         MenuTarget::Crew(AgentRef::Secondmate { .. }) => vec![OPEN_SESSION, COPY_ID],
         MenuTarget::Crew(AgentRef::Quartermaster) if turn_running => vec![INTERRUPT],
@@ -189,9 +188,6 @@ impl App {
             (OPEN_SESSION, MenuTarget::Crew(agent)) => self.open_worker_session(agent),
             (SHOW_TASK, MenuTarget::Crew(agent)) => self.open_crew(agent, false, now),
             (INTERRUPT, MenuTarget::Crew(agent)) => self.command(Command::Interrupt { agent }),
-            (COPY_TASK_ID, MenuTarget::Crew(AgentRef::Crewmate { task })) => {
-                self.copy(&task.to_string(), now);
-            }
             (COPY_ID, MenuTarget::Crew(AgentRef::Secondmate { id })) => {
                 self.copy(&id.to_string(), now);
             }
@@ -258,6 +254,51 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn crewmate_menu_hides_copy_id_but_keeps_typed_actions_and_other_copy_entries() {
+        use qm_types::ids::{SecondmateId, TaskId};
+        let mut app = App::new();
+        crate::sample::install(&mut app);
+        let agent = AgentRef::Crewmate {
+            task: TaskId::new(42).unwrap(),
+        };
+        let target = MenuTarget::Crew(agent);
+        assert_eq!(
+            items(target, &app.snapshot),
+            [OPEN_SESSION, SHOW_TASK, INTERRUPT]
+        );
+        app.open_menu_for_row(target);
+        let menu = app.view.menu.as_ref().unwrap();
+        assert_eq!(menu.target, target);
+        assert_eq!(
+            rows(&app, menu).iter().map(|r| r.label).collect::<Vec<_>>(),
+            [OPEN_SESSION, SHOW_TASK, INTERRUPT]
+        );
+        app.choose_menu_item(2, Instant::now());
+        assert_eq!(app.take_commands(), [Command::Interrupt { agent }]);
+        app.open_menu_for_row(target);
+        app.choose_menu_item(0, Instant::now());
+        assert!(
+            app.take_commands()
+                .contains(&Command::ViewSession { agent: Some(agent) })
+        );
+        let secondmate = AgentRef::Secondmate {
+            id: SecondmateId::new(2).unwrap(),
+        };
+        assert_eq!(
+            items(MenuTarget::Crew(secondmate), &app.snapshot),
+            [OPEN_SESSION, COPY_ID]
+        );
+        assert_eq!(
+            items(MenuTarget::Project(0), &app.snapshot).last(),
+            Some(&COPY_NAME)
+        );
+        assert_eq!(
+            items(MenuTarget::Action(0), &app.snapshot).last(),
+            Some(&COPY_TITLE)
+        );
     }
 
     #[test]

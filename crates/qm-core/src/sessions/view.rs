@@ -57,7 +57,7 @@ pub async fn load(
 /// The view from the stored facts.
 pub fn build(
     agent: AgentRef,
-    task: TaskId,
+    _task: TaskId,
     header: &SessionHeader,
     rows: &[SessionLineRow],
     now: Timestamp,
@@ -72,9 +72,12 @@ pub fn build(
     view.status = status(header, now);
     view.open = is_open(header.status) && !is_exiting(header.status);
     view.placeholder = if view.open {
-        format!("message {task} directly…")
+        "message this crewmate directly…".to_owned()
     } else {
-        format!("{task} is {}, so it takes no more messages.", header.status)
+        format!(
+            "This crewmate is {}, so it takes no more messages.",
+            header.status
+        )
     };
     view.lines = rows.iter().map(line).collect();
     view
@@ -147,7 +150,7 @@ fn line(row: &SessionLineRow) -> SessionLine {
         u64::try_from(row.id).unwrap_or_default(),
         kind,
         row.at,
-        row.text.clone(),
+        super::recorder::display_text(row),
     );
     line.detail.clone_from(&row.detail);
     line
@@ -210,4 +213,75 @@ pub async fn load_secondmate(
 /// `s` on one line, its whitespace runs collapsed.
 fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qm_types::ids::AgentId;
+
+    #[test]
+    fn session_projections_hide_only_the_brief_wrapper_and_placeholder_ids() {
+        let task = TaskId::new(42).unwrap();
+        let agent = AgentRef::Crewmate { task };
+        let authored = "authored T-0042 and C-0047";
+        let detail = "# Brief · C-0042 in T-0042\nCode: let id = \"C-0047\";";
+        let mut header = SessionHeader {
+            agent: AgentId::new(1),
+            task,
+            title: authored.into(),
+            status: TaskStatus::Running,
+            since: Timestamp::UNIX_EPOCH,
+            project: "app".into(),
+            model: None,
+            effort: None,
+            branch: None,
+            folder: "/work/T-0042/C-0042".into(),
+            agent_status: AgentStatus::Running,
+            supervisor: (Role::Quartermaster, None),
+            jobs: vec![],
+        };
+        let row = SessionLineRow {
+            id: 1,
+            agent: header.agent,
+            task: Some(task),
+            turn: None,
+            kind: LineKind::Supervisor,
+            text: format!("Brief · {task} · {authored}"),
+            detail: Some(detail.into()),
+            message: None,
+            at: Timestamp::UNIX_EPOCH,
+        };
+        let original = row.text.clone();
+        let mut rows = vec![row];
+        for kind in [
+            LineKind::Agent,
+            LineKind::You,
+            LineKind::Tool,
+            LineKind::App,
+        ] {
+            let mut row = rows[0].clone();
+            row.kind = kind;
+            rows.push(row);
+        }
+        let view = build(agent, task, &header, &rows, Timestamp::UNIX_EPOCH);
+        assert_eq!(view.agent, agent);
+        assert_eq!(view.title, authored);
+        assert_eq!(view.placeholder, "message this crewmate directly…");
+        assert!(view.place.contains("/work/T-0042/C-0042"));
+        assert_eq!(view.lines[0].text, format!("Brief · {authored}"));
+        assert_eq!(view.lines[0].detail.as_deref(), Some(detail));
+        assert!(view.lines[1..].iter().all(|line| line.text == original));
+        assert_eq!(
+            rows[0].text, original,
+            "the stored brief title is untouched"
+        );
+        header.status = TaskStatus::Closed;
+        let view = build(agent, task, &header, &rows, Timestamp::UNIX_EPOCH);
+        assert!(!view.open);
+        assert_eq!(
+            view.placeholder,
+            "This crewmate is closed, so it takes no more messages."
+        );
+    }
 }

@@ -145,7 +145,7 @@ pub(crate) fn review_card(
     who: &str,
 ) -> Card {
     let mut card = Card::new(CardKind::Review, REVIEW_HEADING);
-    card.title = Some(format!("{task} {title}"));
+    card.title = Some(title.to_owned());
     card.note = Some(format!("· {project}"));
     let mut lines = Vec::new();
     if let Some(report) = report {
@@ -228,7 +228,7 @@ pub(crate) fn report_card(
     report: Option<&ReportRow>,
 ) -> Card {
     let mut card = Card::new(CardKind::Report, REPORT_HEADING);
-    card.title = Some(format!("{task} {title}"));
+    card.title = Some(title.to_owned());
     card.note = Some(format!("· {project}"));
     let mut lines = Vec::new();
     if let Some(first) = report
@@ -349,7 +349,7 @@ fn surface(snapshot: &mut Snapshot, task: TaskId, title: &str) {
     if !snapshot.crew.iter().any(|row| row.agent == agent) {
         snapshot
             .crew
-            .push(CrewRow::new(agent, 1, format!("{task} report"), "reported"));
+            .push(CrewRow::new(agent, 1, title, "reported"));
     }
 }
 
@@ -361,6 +361,25 @@ mod delivery_tests;
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn report_card_projections_keep_authored_titles_and_routing_targets() {
+        let task = TaskId::new(42).unwrap();
+        let title = "research: authored T-0042 and C-0047";
+        let report = report_card(task, TaskKind::Research, title, "app", None);
+        assert_eq!(report.title.as_deref(), Some(title));
+        assert_eq!(report.buttons[0].action, CardAction::ReadReport { task });
+        assert_eq!(report.buttons[1].action, CardAction::DismissReport { task });
+        let review = review_card(task, title, "app", None, "the Quartermaster");
+        assert_eq!(review.title.as_deref(), Some(title));
+        assert_eq!(review.buttons[0].action, CardAction::OpenReport { task });
+        assert_eq!(review.buttons[1].action, CardAction::ApproveReview { task });
+        let mut snapshot = Snapshot::default();
+        surface(&mut snapshot, task, title);
+        assert_eq!(snapshot.crew[0].label, title);
+        assert_eq!(snapshot.crew[0].agent, AgentRef::Crewmate { task });
+        assert_eq!(snapshot.tasks[0].task, task);
+    }
 
     #[test]
     fn an_open_tasks_report_shows_in_its_task_pane_and_finished_answers_get_a_card() {
