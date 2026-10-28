@@ -3,7 +3,7 @@
 
 use qm_types::api::{ActionItem, AgentRef, Card, CardKind, ChatLine, Snapshot, Tone};
 use qm_types::domain::MessageSource;
-use qm_types::ids::TaskId;
+use qm_types::ids::{SecondmateId, TaskId};
 
 pub(crate) struct Presenter<'a>(pub(crate) &'a Snapshot);
 
@@ -13,10 +13,11 @@ impl<'a> Presenter<'a> {
             .actions
             .iter()
             .find_map(|item| {
-                (item.task == Some(task) || item.from == Some(AgentRef::Crewmate { task }))
-                    .then_some(item.from_label.as_deref())
-                    .flatten()
-                    .filter(|name| !name.is_empty())
+                (!matches!(item.from, Some(AgentRef::Secondmate { .. }))
+                    && (item.task == Some(task) || item.from == Some(AgentRef::Crewmate { task })))
+                .then_some(item.from_label.as_deref())
+                .flatten()
+                .filter(|name| !name.is_empty())
             })
             .or_else(|| {
                 self.0
@@ -29,10 +30,47 @@ impl<'a> Presenter<'a> {
             })
     }
 
+    fn secondmate(&self, id: SecondmateId) -> Option<&'a str> {
+        let agent = AgentRef::Secondmate { id };
+        self.0
+            .actions
+            .iter()
+            .filter(|item| item.from == Some(agent))
+            .find_map(|item| item.from_label.as_deref().filter(|s| !s.is_empty()))
+            .or_else(|| {
+                self.0
+                    .crew
+                    .iter()
+                    .find(|row| row.agent == agent)
+                    .map(|row| row.label.as_str())
+                    .filter(|s| !s.is_empty())
+            })
+            .or_else(|| {
+                self.0
+                    .session
+                    .as_ref()
+                    .filter(|view| view.agent == agent)
+                    .map(|view| view.title.as_str())
+                    .filter(|s| !s.is_empty())
+            })
+    }
+
+    /// Friendly display labels only; the original `AgentRef` still routes every action.
+    pub(crate) fn agent(&self, agent: AgentRef) -> String {
+        match agent {
+            AgentRef::Crewmate { task } => self.crewmate(task).unwrap_or("Crewmate").to_owned(),
+            AgentRef::Secondmate { id } => self.secondmate(id).unwrap_or("Secondmate").to_owned(),
+            AgentRef::Quartermaster => "Quartermaster".to_owned(),
+        }
+    }
+
     /// Source labels use retained names first, including reports no longer in the live crew.
     pub(crate) fn source(&self, item: &ActionItem) -> Option<String> {
         if let Some(name) = item.from_label.as_ref().filter(|name| !name.is_empty()) {
             return Some(name.clone());
+        }
+        if let Some(agent @ AgentRef::Secondmate { .. }) = item.from {
+            return Some(self.agent(agent));
         }
         let task = item.task.or(match item.from {
             Some(AgentRef::Crewmate { task }) => Some(task),
@@ -41,10 +79,15 @@ impl<'a> Presenter<'a> {
         if let Some(task) = task {
             return Some(self.crewmate(task).unwrap_or("Crewmate").to_owned());
         }
-        item.from.map(crate::session::draw::agent_label)
+        item.from.map(|agent| self.agent(agent))
     }
 
     fn reference(&self, prefix: u8, number: u32) -> &str {
+        if prefix == b'S' {
+            return SecondmateId::new(number)
+                .and_then(|id| self.secondmate(id))
+                .unwrap_or("secondmate");
+        }
         if prefix == b'T' {
             if let Some(name) = self
                 .0
@@ -88,7 +131,7 @@ impl<'a> Presenter<'a> {
                 }
                 if !code
                     && !path
-                    && matches!(bytes[i], b'T' | b'C')
+                    && matches!(bytes[i], b'T' | b'C' | b'S')
                     && bytes.get(i + 1) == Some(&b'-')
                     && (i == 0 || !identifier(bytes[i - 1]))
                 {
@@ -118,6 +161,20 @@ impl<'a> Presenter<'a> {
         out
     }
 
+    /// Failure reasons in these generated templates are opaque engine diagnostics. Only the
+    /// wake summary before the delimiter is app-owned metadata.
+    pub(crate) fn app_message(&self, text: &str) -> String {
+        if text.starts_with("The turn stopped early: ") {
+            return text.to_owned();
+        }
+        if let Some(rest) = text.strip_prefix("A turn after ")
+            && let Some((short, reason)) = rest.split_once(" stopped: ")
+        {
+            return format!("A turn after {} stopped: {reason}", self.metadata(short));
+        }
+        self.metadata(text)
+    }
+
     pub(crate) fn chat(&self, chat: &ChatLine) -> ChatLine {
         let mut shown = chat.clone();
         if chat.acknowledgement_by_app {
@@ -125,7 +182,7 @@ impl<'a> Presenter<'a> {
         }
         shown.context = chat.context.as_deref().map(|s| self.metadata(s));
         if chat.source == MessageSource::App {
-            shown.text = self.metadata(&chat.text);
+            shown.text = self.app_message(&chat.text);
         }
         shown
     }
@@ -143,7 +200,7 @@ impl<'a> Presenter<'a> {
                 }
             }
         }
-        if card.kind == CardKind::Notice {
+        if card.kind == CardKind::Notice && !card.note_verbatim {
             shown.note = card.note.as_deref().map(|s| self.metadata(s));
         }
         if let Some(answered) = &card.answered
@@ -189,6 +246,46 @@ mod tests {
             p.metadata("C-0042, café (T-0017)"),
             "Token refresh, café (Token refresh)"
         );
+    }
+
+    #[test]
+    fn secondmate_names_are_display_only_and_do_not_alias_their_crewmates() {
+        let mut snapshot = crate::sample::snapshot();
+        let id = SecondmateId::new(2).unwrap();
+        let agent = AgentRef::Secondmate { id };
+        let task = TaskId::new(42).unwrap();
+        let item = ActionItem::new(
+            ActionKey::Held {
+                id: qm_types::ids::HeldActionId::new(999),
+            },
+            ActionKind::Decision,
+            "Review the work",
+            jiff::Timestamp::UNIX_EPOCH,
+            Card::new(CardKind::Decision, "Decision"),
+            ActionOpen::Session { agent },
+        )
+        .with_from(agent)
+        .with_task(task)
+        .with_from_label("Web team");
+        snapshot.actions.push(item.clone());
+        let original = snapshot.clone();
+        let p = Presenter(&snapshot);
+        assert_eq!(p.agent(agent), "Web team");
+        assert_eq!(p.source(&item).as_deref(), Some("Web team"));
+        assert_eq!(
+            p.metadata("S-02 steered C-0042; S-99 retired"),
+            "Web team steered Token refresh race; secondmate retired"
+        );
+        let technical = "secondmates/S-02/charter.md S-02.log `S-02`";
+        assert_eq!(p.metadata(technical), technical);
+        assert_eq!(snapshot, original);
+        snapshot.crew.clear();
+        assert_eq!(
+            Presenter(&snapshot).metadata("C-0042 reported to S-02"),
+            "crewmate reported to Web team"
+        );
+        snapshot.actions.clear();
+        assert_eq!(Presenter(&snapshot).agent(agent), "Secondmate");
     }
 
     #[test]
@@ -266,6 +363,152 @@ mod tests {
         assert!(
             popup.contains("Token refresh is no longer ready"),
             "{popup}"
+        );
+        assert_eq!(app.snapshot, original);
+    }
+
+    #[test]
+    fn after_press_preserves_held_diagnostic_in_card_and_flash_but_formats_refusal() {
+        for (reason, verbatim, expected) in [
+            (
+                "fatal: bad revision 'C-0042'",
+                true,
+                "fatal: bad revision 'C-0042'",
+            ),
+            (
+                "C-0042 is no longer ready",
+                false,
+                "Token refresh is no longer ready",
+            ),
+        ] {
+            let mut app = app_with_metadata();
+            let card = &mut app.snapshot.actions[0].card;
+            card.kind = CardKind::Decision;
+            card.held = Some(qm_types::ids::HeldActionId::new(7));
+            card.answered = None;
+            card.buttons.push(CardButton::new(
+                "Approve",
+                'a',
+                CardAction::Answer {
+                    answer: qm_types::api::HeldAnswer::Approve,
+                },
+            ));
+            let mut line = CardLine::new(2, vec![Styled::new(reason, Tone::Error)]);
+            line.verbatim = verbatim;
+            card.lines = vec![line];
+            let original = app.snapshot.clone();
+            let now = std::time::Instant::now();
+            app.open_action(0);
+            app.press_action_button(0, now);
+            let commands = app.take_commands();
+            assert_eq!(
+                commands,
+                vec![qm_types::api::Command::AnswerHeld {
+                    held: qm_types::ids::HeldActionId::new(7),
+                    answer: qm_types::api::HeldAnswer::Approve,
+                }]
+            );
+            app.snapshot.actions[0].card.answered = Some("Working on it…".into());
+            app.after_press(now);
+            app.snapshot.actions[0].card.answered = None;
+            app.after_press(now);
+            assert!(app.view.action_pressed.is_none());
+            let shown = frame(&mut app);
+            assert!(shown.contains(&format!("Not done: {expected}")), "{shown}");
+            // One occurrence on the card, one in the status bar.
+            assert_eq!(shown.matches(expected).count(), 2, "{shown}");
+            assert_eq!(app.term.flash.as_ref().unwrap().verbatim, verbatim);
+            assert_eq!(app.snapshot, original);
+            app.flash("C-0042 is no longer ready", now);
+            assert!(!app.term.flash.as_ref().unwrap().verbatim);
+            let shown = frame(&mut app);
+            assert!(
+                shown.contains("Token refresh is no longer ready"),
+                "{shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_app_messages_preserve_reason_and_format_only_wake_short() {
+        use qm_types::domain::MessageKind;
+        use qm_types::ids::MessageId;
+        let mut app = app_with_metadata();
+        let diagnostic = "fatal: bad revision 'C-0042'; T-0017 stopped: C-0042";
+        for (text, expected) in [
+            (
+                format!("The turn stopped early: {diagnostic}"),
+                format!("The turn stopped early: {diagnostic}"),
+            ),
+            (
+                format!("A turn after C-0042 reported for T-0017 stopped: {diagnostic}"),
+                format!(
+                    "A turn after Token refresh reported for Token refresh stopped: {diagnostic}"
+                ),
+            ),
+        ] {
+            let chat = ChatLine::new(
+                MessageId::new(20),
+                MessageSource::App,
+                MessageKind::Message,
+                jiff::Timestamp::UNIX_EPOCH,
+                &text,
+            );
+            let mut expected_chat = chat.clone();
+            expected_chat.text = expected.clone();
+            assert_eq!(Presenter(&app.snapshot).chat(&chat), expected_chat);
+            app.snapshot.conversation = vec![chat];
+            let original = app.snapshot.clone();
+            let shown = frame(&mut app);
+            // The wake prefix makes the longer diagnostic wrap across two chat rows.
+            assert!(shown.contains("fatal: bad revision 'C-0042'"), "{shown}");
+            assert!(shown.contains("T-0017 stopped: C-0042"), "{shown}");
+            assert_eq!(app.snapshot, original);
+        }
+        let presenter = Presenter(&app.snapshot);
+        assert_eq!(
+            presenter.app_message("A turn after C-0042 stopped unexpectedly"),
+            "A turn after Token refresh stopped unexpectedly"
+        );
+        assert_eq!(
+            presenter.app_message("The turn stopped early for C-0042"),
+            "The turn stopped early for Token refresh"
+        );
+        assert_eq!(
+            presenter.app_message(&format!("A turn after an app event stopped: {diagnostic}")),
+            format!("A turn after an app event stopped: {diagnostic}")
+        );
+    }
+
+    #[test]
+    fn failed_notice_notes_remain_raw_and_leave_typed_data_unchanged() {
+        let mut app = app_with_metadata();
+        let diagnostic = "fatal: bad revision 'C-0042'; T-0017";
+        let mut card = Card::new(CardKind::Notice, "Something went wrong");
+        card.note = Some(format!("· {diagnostic}"));
+        card.note_verbatim = true;
+        card.buttons = vec![
+            CardButton::new("Ask again", 'a', CardAction::AskAgain),
+            CardButton::new("Leave it", 'l', CardAction::LeaveIt),
+        ];
+        let message = qm_types::ids::MessageId::new(21);
+        let item = &mut app.snapshot.actions[0];
+        item.key = ActionKey::Notice { message };
+        item.card = card.clone();
+        item.anchor = Some(message);
+        assert_eq!(Presenter(&app.snapshot).card(&card), card);
+        let original = app.snapshot.clone();
+        app.open_action(0);
+        let shown = frame(&mut app);
+        assert!(shown.contains(diagnostic), "{shown}");
+        assert_eq!(app.snapshot, original);
+        app.press_action_button(0, std::time::Instant::now());
+        assert_eq!(
+            app.take_commands(),
+            vec![qm_types::api::Command::AnswerNotice {
+                message,
+                answer: qm_types::api::NoticeAnswer::AskAgain,
+            }]
         );
         assert_eq!(app.snapshot, original);
     }

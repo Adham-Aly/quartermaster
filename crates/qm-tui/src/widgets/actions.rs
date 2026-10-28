@@ -279,7 +279,7 @@ mod tests {
                 // The newest you haven't seen pulses, here at its first step.
                 "▏ Staging deploys in the",
                 "▏ nightly report?",
-                "▏ question · S-02",
+                "▏ question · web-app",
                 "▌ feat(billing): proration",
                 "▌ preview",
                 // The title names the task already, so it isn't repeated.

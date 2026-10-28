@@ -228,12 +228,20 @@ fn draw_update_notice(
 fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App, hits: &mut Hits) {
     let mut left: Vec<Span<'static>> = vec![Span::raw(" ")];
     // The quit notice wins over a flash, which replaces the counts.
+    let presenter = crate::presentation::Presenter(&app.snapshot);
     let notice = app
         .quit_notice()
-        .map(str::to_owned)
-        .or_else(|| app.term.flash.as_ref().map(|f| f.text.clone()));
+        .map(|text| presenter.metadata(text))
+        .or_else(|| {
+            app.term.flash.as_ref().map(|flash| {
+                if flash.verbatim {
+                    flash.text.clone()
+                } else {
+                    presenter.metadata(&flash.text)
+                }
+            })
+        });
     if let Some(notice) = notice {
-        let notice = crate::presentation::Presenter(&app.snapshot).metadata(&notice);
         left.push(Span::styled(notice, theme::accent()));
     } else if app.popup() == Some(Popup::Settings) {
         // The tab's own hint row: what the mouse does.

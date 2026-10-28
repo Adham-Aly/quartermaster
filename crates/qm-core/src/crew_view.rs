@@ -76,7 +76,7 @@ pub fn build(data: &CrewData, now: Timestamp, started: Option<Timestamp>) -> Cre
         let mut row = CrewRow::new(
             AgentRef::Secondmate { id: secondmate.id },
             1,
-            format!("{} {}", secondmate.id, secondmate.name),
+            secondmate.name.clone(),
             status,
         );
         row.busy = secondmate.working;
@@ -679,6 +679,26 @@ mod tests {
     }
 
     #[test]
+    fn secondmate_rows_use_authored_names_and_keep_typed_ids() {
+        let conn = grouped_fixture();
+        let name = "Reviewer S-02";
+        conn.execute("UPDATE secondmates SET name = ?1 WHERE id = 2", [name])
+            .unwrap();
+        let data = crew_view::crew_data(&conn).unwrap();
+        let view = build(&data, Timestamp::UNIX_EPOCH, None);
+        let secondmate = &data.secondmates[0];
+        let row = view
+            .crew
+            .iter()
+            .find(|row| row.agent == AgentRef::Secondmate { id: secondmate.id })
+            .unwrap();
+        assert_eq!(row.label, name);
+        assert_ne!(row.label, "the web app", "scope is not a name");
+        assert_eq!(row.status, SECONDMATE_IDLE);
+        assert_eq!(data.secondmates[0].name, name);
+    }
+
+    #[test]
     fn crewmates_come_together_under_their_task_beneath_each_supervisor() {
         let conn = grouped_fixture();
         let data = crew_view::crew_data(&conn).expect("load crew");
@@ -703,7 +723,7 @@ mod tests {
                 (1, "fix".to_owned(), task("One")),
                 (1, "review".to_owned(), task("One")),
                 (1, "build".to_owned(), task("Two")),
-                (1, "S-02 web".to_owned(), None),
+                (1, "web".to_owned(), None),
                 // The secondmate's tasks across projects: T-4 (web, then app) before T-5.
                 (2, "build".to_owned(), task("Four")),
                 (2, "review".to_owned(), task("Four")),

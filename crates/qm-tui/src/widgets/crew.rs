@@ -7,14 +7,14 @@
 //! ⎈ Token refresh race
 //!   api-server · fix · 12m
 //! ● Rate limit middleware
-//!   web-app · via S-02
+//!   web-app · via web-app
 //!   ● build                     3m
 //!   ○ review                 waits
 //! Done · 1
 //! ✓ Find what fills Downloads
 //!   Downloads · research · reported
 //! Secondmates · 1
-//! ○ S-02 web-app                idle
+//! ○ web-app                idle
 //! ```
 //!
 //! Each task is one entry under its name (two or three words the Quartermaster gave it, else made
@@ -149,7 +149,7 @@ fn entries(crew: &[CrewRow]) -> Vec<Entry<'_>> {
         match row.agent {
             AgentRef::Quartermaster => continue,
             AgentRef::Secondmate { .. } => {
-                via = row.label.split_whitespace().next();
+                via = Some(row.label.as_str());
                 last = None;
                 continue;
             }
@@ -298,7 +298,7 @@ pub(crate) fn build(app: &App, inner_width: u16, compact: bool) -> Built {
                 &mut out,
                 row.agent,
                 glyph,
-                &row.label,
+                &crate::presentation::Presenter(&app.snapshot).agent(row.agent),
                 (&row.status, theme::dim()),
                 inner,
                 0,
@@ -485,7 +485,7 @@ fn worker_kind(row: &CrewRow) -> &str {
     }
 }
 
-/// The dim line under a task's name: `api-server · fix · via S-02`, with a single
+/// The dim line under a task's name: `api-server · fix · via web-app`, with a single
 /// crewmate's status at the right edge in its flag's colour. Parts that don't fit are left out
 /// whole, never cut.
 fn meta_line(entry: &Entry<'_>, inner: usize) -> Line<'static> {
@@ -666,17 +666,17 @@ mod tests {
             "  ● fix                   12m",
             "  ● review                 2m",
             "● Resumable uploads",
-            "  web-app · via S-02       3m",
+            "  web-app · via web-app    3m",
             "Waiting · 2",
             "⚑ Flaky upload test",
             "  web-app · fix        decide",
             "○ Slow shell prompt",
-            "  dotfiles · via S-02   waits",
+            "  dotfiles              waits",
             "Done · 1",
             "✓ API docs refresh",
             "  api-server · docs  reported",
             "Secondmates · 1",
-            "○ S-02 web-app           idle",
+            "○ web-app                idle",
         ];
         assert_eq!(lines[..want.len()], want, "{lines:#?}");
     }
@@ -694,7 +694,7 @@ mod tests {
         };
         let wide = text(&wide);
         assert!(
-            wide.contains(&"  web-app · build · via S-02          3m".to_owned()),
+            wide.contains(&"  web-app · build · via web-app       3m".to_owned()),
             "{wide:#?}"
         );
         assert!(wide.contains(&"  web-app · fix                   decide".to_owned()));
@@ -782,6 +782,39 @@ mod tests {
                     .iter()
                     .any(|r| r.line.to_string().contains("Explain T-0042 and C-0046"))
             );
+        }
+    }
+
+    #[test]
+    fn secondmate_names_keep_all_words_and_authored_id_mentions() {
+        let mut app = app();
+        let agent = AgentRef::Secondmate {
+            id: SecondmateId::new(2).unwrap(),
+        };
+        app.snapshot
+            .crew
+            .iter_mut()
+            .find(|row| row.agent == agent)
+            .unwrap()
+            .label = "Web app S-02 notes".into();
+        for compact in [false, true] {
+            let built = build(&app, 80, compact);
+            assert!(
+                built
+                    .rows
+                    .iter()
+                    .any(|row| row.hit == Some(crate::hit::Hit::Crew(agent))
+                        && row.line.to_string().contains("Web app S-02 notes"))
+            );
+            assert!(built.spots.iter().any(|(_, target)| *target == agent));
+            if !compact {
+                assert!(
+                    built
+                        .rows
+                        .iter()
+                        .any(|row| row.line.to_string().contains("via Web app S-02 notes"))
+                );
+            }
         }
     }
 

@@ -35,7 +35,9 @@ pub(crate) fn draw(
         Some(agent @ AgentRef::Crewmate { .. }) => {
             super::crew::crewmate_name(app, agent).to_owned()
         }
-        Some(AgentRef::Secondmate { id }) => id.to_string(),
+        Some(agent @ AgentRef::Secondmate { .. }) => {
+            crate::presentation::Presenter(&app.snapshot).agent(agent)
+        }
         _ => String::from("Task"),
     };
     let style = pane_style(app, Pane::Task);
@@ -183,7 +185,7 @@ fn detail_rows(app: &App, agent: AgentRef, detail: &TaskDetail, max: u16) -> Vec
     push_section(
         &mut out,
         "Workspace",
-        workspace(app, detail, max_cells),
+        workspace(detail, max_cells),
         max_cells,
     );
     push_section(&mut out, "Recent", recent(detail, max_cells), max_cells);
@@ -275,7 +277,7 @@ fn routing(detail: &TaskDetail, max: usize) -> Vec<Row> {
 
 /// Workspace: the project, the branch or folder, verification, then any row this build doesn't
 /// place, with its label.
-fn workspace(app: &App, detail: &TaskDetail, max: usize) -> Vec<Row> {
+fn workspace(detail: &TaskDetail, max: usize) -> Vec<Row> {
     let mut out = Vec::new();
     if let Some(row) = find(detail, "project") {
         push_glyph(&mut out, "●", theme::warn(), &runs_of(row), max);
@@ -303,19 +305,9 @@ fn workspace(app: &App, detail: &TaskDetail, max: usize) -> Vec<Row> {
         push_glyph(&mut out, "✓", theme::accent(), &runs, max);
     }
     if let Some(row) = find(detail, "task") {
-        let value: String = row.value.iter().map(|s| s.text.as_str()).collect();
-        // Older snapshots used this row solely for IDs. New ones carry a friendly name
-        // and collaborator count; keep that useful context verbatim.
-        let legacy = value
-            .split(" · ")
-            .next()
-            .is_some_and(|word| word.parse::<qm_types::ids::TaskLabelId>().is_ok());
-        let value = if legacy {
-            crate::presentation::Presenter(&app.snapshot).metadata(&value)
-        } else {
-            value
-        };
-        push_labelled(&mut out, Some("task"), &[(value, theme::text())], max);
+        // The core supplies a friendly name and collaborator count. An ID-shaped authored
+        // name is still a name, not evidence that this is legacy metadata.
+        push_labelled(&mut out, Some("task"), &runs_of(row), max);
     }
     for row in &detail.rows {
         if let Some(label) = row.label.as_deref()
@@ -643,10 +635,13 @@ mod layout_tests {
             }
         }
         app.snapshot.tasks[0].title = "Investigate T-0042 and C-0042".to_owned();
+        app.snapshot.tasks[0]
+            .rows
+            .retain(|row| row.label.as_deref() != Some("task"));
         app.snapshot.tasks[0].rows.push(TaskRow::new(
             Some("task"),
             vec![qm_types::api::Styled::new(
-                "T-0099 · with C-0077",
+                "T-0099 · with 1 collaborator",
                 Tone::Text,
             )],
         ));
@@ -664,8 +659,8 @@ mod layout_tests {
         assert!(shown.contains("Investigate T-0042 and C-0042"));
         assert!(shown.contains("/repo/T-0042/C-0042"));
         assert!(shown.contains("C-0042 kept"));
-        assert!(!shown.contains("T-0099") && !shown.contains("C-0077"));
-        // Render-only hiding: the ID metadata remains available in the snapshot.
+        assert!(shown.contains("T-0099 · with 1 collaborator"));
+        // Authored names, even ID-shaped ones, are kept verbatim in the friendly task row.
         assert!(find(&app.snapshot.tasks[0], "task").is_some());
         app.snapshot.crew.clear();
         assert_eq!(

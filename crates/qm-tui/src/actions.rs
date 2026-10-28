@@ -274,17 +274,24 @@ impl App {
                     .any(|s| s.tone == qm_types::api::Tone::Error)
             })
             .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|s| s.text.as_str())
-                    .collect::<String>()
+                (
+                    line.spans
+                        .iter()
+                        .map(|s| s.text.as_str())
+                        .collect::<String>(),
+                    line.verbatim,
+                )
             });
         self.reset_press();
         self.redraw();
-        self.flash(
-            reason.map_or_else(|| NOT_TAKEN.to_owned(), |why| format!("Not done: {why}")),
-            now,
+        let (text, verbatim) = reason.map_or_else(
+            || (NOT_TAKEN.to_owned(), false),
+            |(why, verbatim)| (format!("Not done: {why}"), verbatim),
         );
+        self.flash(text, now);
+        if let Some(flash) = &mut self.term.flash {
+            flash.verbatim = verbatim;
+        }
     }
 
     /// After a snapshot: drops a selection whose item went (moving it to the nearest one), and

@@ -21,7 +21,7 @@ use qm_types::clock::Clock;
 use qm_types::data_dir::DataDir;
 use qm_types::domain::{PlanMode, Role, TaskKind, TaskStatus};
 use qm_types::ids::{AgentId, TaskId};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::sync::Arc;
 
 /// The inbox's part. It handles no command: every button maps to one the other parts take.
@@ -107,19 +107,15 @@ impl ActionsPart {
         items.extend(self.reports().await);
         items.extend(self.questions_and_notices().await);
 
-        // Read retained task rows, not the live crew snapshot: an unread report can outlive
-        // its worker and still needs a friendly source label.
-        let tasks: Vec<_> = items.iter().map(|item| item.task).collect();
+        // Read retained records, not the live crew snapshot: unread reports and held actions
+        // can outlive their worker and still need a friendly source label.
+        let sources: Vec<_> = items.iter().map(|item| (item.from, item.task)).collect();
         match self
             .db
             .call(move |conn| {
-                tasks
+                sources
                     .into_iter()
-                    .map(|task| {
-                        task.map(|task| source_label(conn, task))
-                            .transpose()
-                            .map(Option::flatten)
-                    })
+                    .map(|(from, task)| source_label(conn, from, task))
                     .collect::<Result<Vec<_>, _>>()
             })
             .await
@@ -202,7 +198,8 @@ impl ActionsPart {
                         .map(|p| p.name)
                         .unwrap_or_default();
                     let report = qm_store::reports::latest_clear(conn, row.id)?;
-                    out.push((row, project, report));
+                    let who = review_supervisor(conn, row.supervisor)?;
+                    out.push((row, project, report, who));
                 }
                 Ok(out)
             })
@@ -215,12 +212,8 @@ impl ActionsPart {
             }
         };
         let mut out = Vec::new();
-        for (row, project, report) in rows {
+        for (row, project, report, who) in rows {
             let task = row.id;
-            let who = match self.tasks.supervisor_label(row.supervisor).await.as_str() {
-                "quartermaster" => "the Quartermaster".to_owned(),
-                other => other.to_owned(),
-            };
             let card =
                 crate::reports::api::review_card(task, &row.title, &project, report.as_ref(), &who);
             let title = format!("{} · {}", card.heading, row.title);
@@ -496,8 +489,35 @@ fn agent_ref(
     })
 }
 
-/// A retained task's friendly source, including after it has left the crew tree.
-fn source_label(conn: &Connection, task: TaskId) -> Result<Option<String>, qm_store::StoreError> {
+/// The review card's supervisor is presentation, not the marker/protocol supervisor label.
+fn review_supervisor(conn: &Connection, agent: AgentId) -> Result<String, qm_store::StoreError> {
+    match agents::role_of(conn, agent)? {
+        Some((Role::Secondmate, id)) => Ok(id
+            .map(|id| source_label(conn, Some(AgentRef::Secondmate { id }), None))
+            .transpose()?
+            .flatten()
+            .unwrap_or_else(|| "Secondmate".to_owned())),
+        _ => Ok("the Quartermaster".to_owned()),
+    }
+}
+
+/// A retained source's friendly name, including after it has left the crew tree.
+fn source_label(
+    conn: &Connection,
+    from: Option<AgentRef>,
+    task: Option<TaskId>,
+) -> Result<Option<String>, qm_store::StoreError> {
+    if let Some(AgentRef::Secondmate { id }) = from {
+        // `secondmates::load` excludes retired records; a held action may still need its name.
+        return Ok(conn
+            .query_row("SELECT name FROM secondmates WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?);
+    }
+    let Some(task) = task else {
+        return Ok(None);
+    };
     let Some(row) = task_store::load(conn, task)? else {
         return Ok(None);
     };
@@ -544,6 +564,174 @@ mod tests {
     /// More pending requests than any screen shows.
     const PENDING: usize = 250;
 
+    #[derive(Debug)]
+    struct NoSignal;
+
+    impl crate::held::WakeSignal for NoSignal {
+        fn signal(&self, _: AgentId) {}
+    }
+
+    fn actions_fixture(db: &Db, seat: AgentId) -> (ActionsPart, tokio::task::JoinHandle<()>) {
+        let clock: Arc<dyn Clock> = Arc::new(qm_types::clock::SystemClock);
+        let data = DataDir::new("/nonexistent/qm-action-test");
+        let (scheduler, scheduler_job) = crate::scheduler::Scheduler::spawn(Arc::clone(&clock));
+        let tasks = TaskService::wire(crate::tasks::TaskWiring {
+            db: db.clone(),
+            clock: Arc::clone(&clock),
+            data_dir: data.clone(),
+            home: std::env::temp_dir(),
+            engines: std::collections::BTreeMap::new(),
+            supervisor: Arc::new(qm_engine::supervisor::OsSupervisor::new(None)),
+            inbox: crate::inbox::Inbox::new(),
+            scheduler,
+            config: tokio::sync::watch::channel(qm_types::config::Config::default()).1,
+            health: Arc::new(qm_auth::LoginHealth::new()),
+            chat: Arc::new(crate::api::Conversation::new(
+                db.clone(),
+                Arc::clone(&clock),
+                seat,
+            )),
+            seat_agent: seat,
+            setup: tokio::sync::watch::channel(crate::setup_check::SetupFacts::default()).1,
+            probe: None,
+            monitor: crate::context_monitor::ContextMonitor::new(Arc::clone(&clock)),
+        });
+        let held_service = HeldService::new(db.clone(), Arc::clone(&clock), Arc::new(NoSignal));
+        (
+            ActionsPart::new(held_service, (db.clone(), clock, data), seat, tasks),
+            scheduler_job,
+        )
+    }
+
+    #[tokio::test]
+    async fn secondmate_questions_and_held_actions_use_retained_names_not_scope_or_ids() {
+        let path = std::env::temp_dir().join(format!(
+            "qm-action-secondmate-{}-{}.db",
+            std::process::id(),
+            jiff::Timestamp::now().as_nanosecond()
+        ));
+        let db = Db::open(&path).unwrap();
+        let seat = AgentId::new(1);
+        let (mate, held) = db
+            .call(move |conn| {
+                conn.execute_batch(
+                    "INSERT INTO agents (id, role, home, status, created_at, seq)
+                 VALUES (1, 'quartermaster', '/h', 'idle', 0, 1);",
+                )?;
+                let mate = secondmates::insert(
+                    conn,
+                    &secondmates::NewSecondmate {
+                        name: "Reviewer S-03",
+                        scope: "Review changes, not a display name",
+                        projects: &[],
+                        standing_branch: None,
+                        parent: seat,
+                        data_dir: &DataDir::new("/nonexistent/qm-action-test"),
+                        at: jiff::Timestamp::UNIX_EPOCH,
+                    },
+                )?;
+                messages::insert(
+                    conn,
+                    &messages::NewMessage {
+                        agent: mate.agent,
+                        source: qm_types::domain::MessageSource::Agent,
+                        kind: qm_types::domain::MessageKind::Question,
+                        text: "Authored S-04?",
+                        options: &[],
+                        replies_to: None,
+                        turn: None,
+                        at: jiff::Timestamp::UNIX_EPOCH,
+                    },
+                )?;
+                let held = HeldService::insert(
+                    conn,
+                    &qm_store::held::NewHeld {
+                        payload: qm_store::held::HeldPayload::Secondmate(
+                            qm_store::held::SecondmatePayload {
+                                name: "Authored S-05".into(),
+                                scope: "Authored S-06".into(),
+                                base_branch: None,
+                            },
+                        ),
+                        choices: vec![],
+                        title: "Create secondmate: Authored S-05".into(),
+                        task: None,
+                        asked_by: Some(mate.agent),
+                        at: jiff::Timestamp::UNIX_EPOCH,
+                    },
+                )?;
+                Ok((mate.id, held))
+            })
+            .await
+            .unwrap();
+        let (actions, scheduler_job) = actions_fixture(&db, seat);
+        let items = actions.build(&Snapshot::default()).await;
+        assert_eq!(items.len(), 2);
+        for item in &items {
+            assert_eq!(item.from, Some(AgentRef::Secondmate { id: mate }));
+            assert_eq!(item.from_label.as_deref(), Some("Reviewer S-03"));
+        }
+        assert!(items.iter().any(|i| i.title == "Authored S-04?"));
+        db.call(move |conn| secondmates::retire(conn, mate, jiff::Timestamp::UNIX_EPOCH))
+            .await
+            .unwrap();
+        let items = actions.build(&Snapshot::default()).await;
+        assert_eq!(items.len(), 1, "only the held action survives retirement");
+        assert_eq!(items[0].key, ActionKey::Held { id: held });
+        assert_eq!(items[0].from, Some(AgentRef::Secondmate { id: mate }));
+        assert_eq!(items[0].from_label.as_deref(), Some("Reviewer S-03"));
+        assert_eq!(items[0].title, "Create secondmate: Authored S-05");
+        drop(actions);
+        scheduler_job.abort();
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn review_instructions_use_retained_supervisor_names_without_changing_targets() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        qm_store::schema::migrate(&mut conn).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO secondmates (id, name, scope, created_at, seq, retired_at)
+             VALUES (2, 'Reviewer S-03', 'not the name', 0, 1, 1);
+             INSERT INTO agents (id, role, supervisor_id, secondmate_id, home, status, created_at, seq)
+             VALUES (9, 'secondmate', 1, 2, '/h', 'retired', 0, 1);",
+        ).unwrap();
+        let who = review_supervisor(&conn, AgentId::new(9)).unwrap();
+        assert_eq!(who, "Reviewer S-03");
+        let task = TaskId::new(42).unwrap();
+        assert_eq!(
+            source_label(
+                &conn,
+                Some(AgentRef::Secondmate {
+                    id: qm_types::ids::SecondmateId::new(2).unwrap()
+                }),
+                Some(task)
+            )
+            .unwrap()
+            .as_deref(),
+            Some("Reviewer S-03")
+        );
+        let card = crate::reports::api::review_card(task, "Authored S-04", "app", None, &who);
+        assert!(
+            card.lines[0].spans[0]
+                .text
+                .contains("Go ahead lets Reviewer S-03")
+        );
+        assert_eq!(card.title.as_deref(), Some("Authored S-04"));
+        assert_eq!(card.buttons[1].action, CardAction::ApproveReview { task });
+        assert_eq!(
+            review_supervisor(&conn, AgentId::new(1)).unwrap(),
+            "the Quartermaster"
+        );
+        conn.execute("DELETE FROM secondmates", []).unwrap();
+        assert_eq!(
+            review_supervisor(&conn, AgentId::new(9)).unwrap(),
+            "Secondmate"
+        );
+    }
+
     #[test]
     fn closed_unread_report_sources_use_retained_names_or_authored_titles() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -559,7 +747,7 @@ mod tests {
         .unwrap();
         let task = TaskId::new(42).unwrap();
         assert_eq!(
-            source_label(&conn, task).unwrap().as_deref(),
+            source_label(&conn, None, Some(task)).unwrap().as_deref(),
             Some("Auth refresh")
         );
         assert_eq!(
@@ -569,7 +757,7 @@ mod tests {
         conn.execute("UPDATE task_labels SET name = NULL WHERE id = 8", [])
             .unwrap();
         assert_eq!(
-            source_label(&conn, task).unwrap().as_deref(),
+            source_label(&conn, None, Some(task)).unwrap().as_deref(),
             Some("authored T-0042 and C-0047")
         );
         assert_eq!(

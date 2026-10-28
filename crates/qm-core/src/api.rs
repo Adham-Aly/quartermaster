@@ -490,6 +490,7 @@ pub(crate) fn notice_card(notice: &NoticeState, your_text: &str) -> Card {
     };
     let mut card = Card::new(CardKind::Notice, heading);
     card.note = Some(note);
+    card.note_verbatim = notice.cause == NoticeCause::Failed;
     card.lines = vec![CardLine::new(
         2,
         vec![Styled::new(
@@ -804,6 +805,56 @@ mod tests {
                 })
                 .await
                 .unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn notice_card_marks_only_failed_notes_as_verbatim_without_changing_source_data() {
+        let f = Fixture::new().await;
+        let your_text = "Keep C-0042 and T-0017";
+        let message = f.store_message(your_text).await;
+        f.conversation.db.call(move |conn| {
+            conn.execute("INSERT INTO turns (id, agent_id, started_by, message_id, started_at, ended_at, status, seq) VALUES (1, 1, 'user', ?1, 1, 2, 'failed', 2)", [message])?;
+            Ok(())
+        }).await.unwrap();
+        let diagnostic = "fatal: bad revision 'C-0042'; T-0017 stopped: C-0042";
+        for (notice, verbatim, note) in [
+            (Notice::NoAction, false, NO_ACTION_NOTE.to_owned()),
+            (
+                Notice::Failed {
+                    reason: diagnostic.to_owned(),
+                },
+                true,
+                format!("· {diagnostic}"),
+            ),
+        ] {
+            f.conversation
+                .notice(f.conversation.agent(), TurnId::new(1), message, notice)
+                .await
+                .unwrap();
+            let source = f.conversation.notices().await;
+            let card = notice_card(&source[&message], your_text);
+            assert_eq!(card.note_verbatim, verbatim);
+            assert_eq!(card.note.as_deref(), Some(note.as_str()));
+            assert_eq!(card.kind, CardKind::Notice);
+            assert_eq!(card.held, None);
+            assert_eq!(card.answered, None);
+            assert_eq!(
+                card.lines,
+                vec![CardLine::new(
+                    2,
+                    vec![Styled::new(format!("“{your_text}”"), Tone::Text)]
+                )]
+            );
+            assert_eq!(
+                card.buttons,
+                vec![
+                    CardButton::new("Ask again", 'a', CardAction::AskAgain),
+                    CardButton::new("Leave it", 'l', CardAction::LeaveIt),
+                ]
+            );
+            assert_eq!(f.conversation.notices().await, source);
+            assert_eq!(f.conversation.load().await.unwrap().rows[0].text, your_text);
         }
     }
 

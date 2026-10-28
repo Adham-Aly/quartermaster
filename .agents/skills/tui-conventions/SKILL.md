@@ -114,11 +114,16 @@ with `theme::tone`. Tool names are coloured by family in `widgets/tools.rs`.
   `Waiting · n`, `Done · n`, from `CrewRow::phase` and the flags), then `Secondmates · n`
   (`widgets/crew.rs` `build`). A task shows by its name (`CrewTask::name`, which the
   Quartermaster gives at start or the core derives from the title), then a dim
-  `project · kind · via S-02` line with a single crewmate's status at the right edge;
-  parts that don't fit are left out whole. Task and crewmate IDs stay in typed navigation, not
-  app-owned labels. A team lists its crewmates by kind (numbered within a repeated kind) under
-  its task name. Authored prose/titles, real paths, tool output, full briefs and editable input
-  are never scrubbed. A task whose
+  `project · kind · via web-app` line with a single crewmate's status at the right edge;
+  parts that don't fit are left out whole. Task, crewmate and secondmate IDs stay in typed
+  navigation, not app-owned labels or Copy ID menus. Secondmates use their full friendly
+  `CrewRow::label` / `SessionView::title` (the record's name), never a parsed ID prefix;
+  context-free or missing-name fallbacks say `Secondmate`. Use `presentation::Presenter::agent`
+  for standing-agent labels and `metadata` for app-owned supervisor notes/place text, preserving
+  paths. Use `app_message` for app/session messages so raw failure diagnostics stay verbatim.
+  A team lists its crewmates by kind (numbered within a repeated kind) under its task name.
+  Authored prose/titles/names, code/diffs, real paths, raw tool output, full briefs, protocol
+  payloads and editable input are never scrubbed. A task whose
   every crewmate waits in Needs you is left out. When the full list doesn't fit, each task is
   one line (`compact`). The keys move through `FrameMap::crew_spots`. Projects is one line each,
   `● api-server     PR · 3 tasks` (busy ones first, sorted in the core); a narrow line drops the

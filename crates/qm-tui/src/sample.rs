@@ -253,7 +253,7 @@ pub fn secondmate_view() -> SessionView {
     reply.acknowledgement = Some(String::from("Steered: C-0045"));
     reply.acknowledgement_by_app = true;
     let mut view = SessionView::new(secondmate_ref());
-    view.title = String::from("secondmate");
+    view.title = String::from("web-app");
     view.note = String::from("web-app frontend and its API client · idle");
     view.model = Some(model_id("claude:opus-5-5"));
     view.effort = Some(Effort::Medium);
@@ -261,7 +261,7 @@ pub fn secondmate_view() -> SessionView {
     view.status = String::from("idle");
     view.subtitle = String::from("Charter · web-app: the frontend, its API client and its build");
     view.open = true;
-    view.placeholder = String::from("message S-02 directly…");
+    view.placeholder = String::from("message web-app directly…");
     view.conversation = vec![routed, started, asked, reply];
     view
 }
@@ -453,7 +453,7 @@ fn crew() -> Vec<CrewRow> {
             ("API docs refresh", "api-server"),
             CrewPhase::Done,
         ),
-        CrewRow::new(secondmate, 1, "S-02 web-app", "idle"),
+        CrewRow::new(secondmate, 1, "web-app", "idle"),
         under(
             busy(CrewRow::new(task(45), 2, "C-0045 build", "3m")),
             45,
@@ -810,7 +810,7 @@ fn tasks() -> Vec<TaskDetail> {
     let mut detail = TaskDetail::new(task_id(42), "fix(auth): token refresh race");
     detail.rows = vec![
         TaskRow::new(Some("project"), vec![s("api-server", Tone::Text)]),
-        TaskRow::new(Some("task"), vec![s("T-0042", Tone::Text)]),
+        TaskRow::new(Some("task"), vec![s("Token refresh race", Tone::Text)]),
         TaskRow::new(Some("model"), vec![s("sonnet-5-5", Tone::Text)]),
         TaskRow::new(Some("account"), vec![s("Claude Max", Tone::Text)]),
         TaskRow::new(Some("tier"), vec![s("medium · effort Medium", Tone::Text)]),

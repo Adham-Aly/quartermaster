@@ -1177,6 +1177,9 @@ pub struct Card {
     /// After one space, dim: "· api-server · high · opus-5-5".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Opaque diagnostic in the note: display without metadata substitution.
+    #[serde(default)]
+    pub note_verbatim: bool,
     #[serde(default)]
     pub lines: Vec<CardLine>,
     #[serde(default)]
@@ -1194,6 +1197,7 @@ impl Card {
             heading: heading.into(),
             title: None,
             note: None,
+            note_verbatim: false,
             lines: Vec::new(),
             buttons: Vec::new(),
             answered: None,
@@ -1895,6 +1899,21 @@ mod chat_tests {
 #[cfg(test)]
 mod card_line_tests {
     use super::*;
+
+    #[test]
+    fn note_verbatim_defaults_to_false_and_round_trips() {
+        let mut card = Card::new(CardKind::Notice, "Something went wrong");
+        card.note = Some("fatal: bad revision 'C-0042'".into());
+        assert!(!card.note_verbatim);
+        let mut legacy = serde_json::to_value(&card).unwrap();
+        legacy.as_object_mut().unwrap().remove("note_verbatim");
+        assert_eq!(serde_json::from_value::<Card>(legacy).unwrap(), card);
+        for verbatim in [false, true] {
+            card.note_verbatim = verbatim;
+            let encoded = serde_json::to_value(&card).unwrap();
+            assert_eq!(serde_json::from_value::<Card>(encoded).unwrap(), card);
+        }
+    }
 
     #[test]
     fn verbatim_defaults_to_false_and_round_trips() {

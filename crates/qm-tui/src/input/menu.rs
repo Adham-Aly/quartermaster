@@ -18,7 +18,6 @@ use std::time::Instant;
 const OPEN_SESSION: &str = "Open session";
 const SHOW_TASK: &str = "Show task";
 const INTERRUPT: &str = "Interrupt";
-const COPY_ID: &str = "Copy ID";
 const COPY_NAME: &str = "Copy name";
 const OPEN_ACTION: &str = "Open";
 const GO_TO: &str = crate::actions::GO_TO;
@@ -50,7 +49,7 @@ pub(crate) fn items(target: MenuTarget, snapshot: &Snapshot) -> Vec<&'static str
         MenuTarget::Crew(AgentRef::Crewmate { .. }) => {
             vec![OPEN_SESSION, SHOW_TASK, INTERRUPT]
         }
-        MenuTarget::Crew(AgentRef::Secondmate { .. }) => vec![OPEN_SESSION, COPY_ID],
+        MenuTarget::Crew(AgentRef::Secondmate { .. }) => vec![OPEN_SESSION],
         MenuTarget::Crew(AgentRef::Quartermaster) if turn_running => vec![INTERRUPT],
         MenuTarget::Crew(AgentRef::Quartermaster) => Vec::new(),
         MenuTarget::Project(i) => match snapshot.projects.get(i) {
@@ -188,9 +187,6 @@ impl App {
             (OPEN_SESSION, MenuTarget::Crew(agent)) => self.open_worker_session(agent),
             (SHOW_TASK, MenuTarget::Crew(agent)) => self.open_crew(agent, false, now),
             (INTERRUPT, MenuTarget::Crew(agent)) => self.command(Command::Interrupt { agent }),
-            (COPY_ID, MenuTarget::Crew(AgentRef::Secondmate { id })) => {
-                self.copy(&id.to_string(), now);
-            }
             (AUTONOMY_NORMAL | AUTONOMY_AUTO, MenuTarget::Project(i)) => {
                 let current = self.snapshot.projects.get(i).map(|p| p.autonomy);
                 if let Some(autonomy) = item_autonomy(item)
@@ -257,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn crewmate_menu_hides_copy_id_but_keeps_typed_actions_and_other_copy_entries() {
+    fn worker_menus_hide_copy_id_but_keep_typed_actions_and_other_copy_entries() {
         use qm_types::ids::{SecondmateId, TaskId};
         let mut app = App::new();
         crate::sample::install(&mut app);
@@ -289,8 +285,13 @@ mod tests {
         };
         assert_eq!(
             items(MenuTarget::Crew(secondmate), &app.snapshot),
-            [OPEN_SESSION, COPY_ID]
+            [OPEN_SESSION]
         );
+        app.open_menu_for_row(MenuTarget::Crew(secondmate));
+        app.choose_menu_item(0, Instant::now());
+        assert!(app.take_commands().contains(&Command::ViewSession {
+            agent: Some(secondmate)
+        }));
         assert_eq!(
             items(MenuTarget::Project(0), &app.snapshot).last(),
             Some(&COPY_NAME)
