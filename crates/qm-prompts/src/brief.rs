@@ -2,15 +2,15 @@
 //!
 //! **The brief** is the crewmate's first message, rendered by the app from the facts the core
 //! recorded when the task started ([`BriefFacts`]) and saved as `tasks/C-0042/brief.md` exactly
-//! as sent. Its sections, in order: the header lines, Goal, the user's own
-//! words, the one-time instructions, Constraints, Builds on, Before your first edit, Verification,
+//! as sent. Its sections, in order: the header lines, Goal, the one-time instructions,
+//! Constraints, Builds on, Before your first edit, Verification,
 //! Delivery and Reporting. A section with nothing to say is left out (no instructions, no
-//! constraints, nothing to build on, no words of the user's); the rest change with the task's
+//! constraints, nothing to build on); the rest change with the task's
 //! kind, delivery mode and verification level.
 //!
 //! The whole brief sits inside one supervisor marker (`<qm:supervisor from="quartermaster"
 //! task="C-0042">`). Every piece of text that didn't come from this module (the goal,
-//! the goal, instructions, constraints, the summary and answer it builds on) is
+//! instructions, constraints, the summary and answer it builds on) is
 //! neutralised with [`qm_policy::markers::neutralise`] here, so nothing in it can open or close a
 //! marker, whatever the caller passed.
 //!
