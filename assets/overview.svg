@@ -81,16 +81,16 @@
   <!-- crewmates: a worktree each in a repository, in place in a plain folder -->
   <rect class="grp" x="32" y="276" width="668" height="128" rx="10"/>
   <rect class="box green" x="56" y="296" width="140" height="56" rx="8"/>
-  <text class="t m" x="126" y="320" text-anchor="middle">C-0041</text>
+  <text class="t" x="126" y="320" text-anchor="middle">Folder cleanup</text>
   <text class="s" x="126" y="338" text-anchor="middle">in place · no git</text>
   <rect class="box green" x="216" y="296" width="140" height="56" rx="8"/>
-  <text class="t m" x="286" y="320" text-anchor="middle">C-0042</text>
+  <text class="t" x="286" y="320" text-anchor="middle">Login retry</text>
   <text class="s m" x="286" y="338" text-anchor="middle">fix/login-retry</text>
   <rect class="box green" x="376" y="296" width="140" height="56" rx="8"/>
-  <text class="t m" x="446" y="320" text-anchor="middle">C-0043</text>
+  <text class="t" x="446" y="320" text-anchor="middle">Rate limit</text>
   <text class="s m" x="446" y="338" text-anchor="middle">feat/rate-limit</text>
   <rect class="box green" x="536" y="296" width="140" height="56" rx="8"/>
-  <text class="t m" x="606" y="320" text-anchor="middle">C-0044</text>
+  <text class="t" x="606" y="320" text-anchor="middle">Refresh docs</text>
   <text class="s m" x="606" y="338" text-anchor="middle">docs/readme</text>
   <text class="s" x="366" y="384" text-anchor="middle">Crewmates · in a repository, each in its own git worktree and branch · in a plain folder, in place</text>
 
