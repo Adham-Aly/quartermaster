@@ -172,7 +172,7 @@ fn target(conn: &rusqlite::Connection, held: HeldActionId) -> Result<Option<Targ
         return Ok(None);
     };
     Ok(Some(Target {
-        title: format!("{task} · {}", task_row.title),
+        title: task_row.title,
         repo: project.path,
         base,
         head,
@@ -248,5 +248,83 @@ impl ApiPart for DiffPart {
                 .diff
                 .clone_from(&self.open.lock().unwrap_or_else(PoisonError::into_inner));
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qm_store::held::{NewHeld, insert_held};
+    use qm_types::ids::{AgentId, TaskId};
+
+    #[test]
+    fn diff_projection_keeps_authored_ids_patch_paths_and_pinned_target() {
+        let mut conn = qm_store::connection::open_memory().unwrap();
+        qm_store::schema::migrate(&mut conn).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+            INSERT INTO projects (id, name, path, origin, default_branch, delivery_mode,
+                merge_method, created_at, seq) VALUES
+            (1, 'app', '/work/T-0042/C-0042', 'linked', 'main', 'branch_only', 'squash', 0, 1);
+            INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, delivery_mode,
+                status, created_at, seq, base_commit, branch) VALUES
+            (42, 1, 1, 'fix', 'authored T-0042 and C-0047', 'g', 'branch_only',
+                'settling', 0, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'work/C-0042');",
+        )
+        .unwrap();
+        let task = TaskId::new(42).unwrap();
+        let head: CommitSha = "b".repeat(40).parse().unwrap();
+        let payload = HeldPayload::Push(PushPayload {
+            task,
+            head: head.clone(),
+            branch: "work/C-0042".into(),
+            remote: "origin".into(),
+            expected_remote: None,
+        });
+        let held = insert_held(
+            &conn,
+            &NewHeld {
+                payload: payload.clone(),
+                choices: vec![],
+                title: "authored T-0042 and C-0047".into(),
+                task: Some(task),
+                asked_by: Some(AgentId::new(1)),
+                at: jiff::Timestamp::UNIX_EPOCH,
+            },
+        )
+        .unwrap();
+        let target = target(&conn, held).unwrap().unwrap();
+        assert_eq!(target.title, "authored T-0042 and C-0047");
+        assert_eq!(target.repo, PathBuf::from("/work/T-0042/C-0042"));
+        assert_eq!(target.base.as_str(), "a".repeat(40));
+        assert_eq!(target.head, head);
+        assert_eq!(load_held(&conn, held).unwrap().payload, payload);
+        let lines: Vec<String> = [
+            "diff --git a/T-0042/C-0042.rs b/T-0042/C-0042.rs",
+            "--- a/T-0042/C-0042.rs",
+            "+++ b/T-0042/C-0042.rs",
+            "@@ -1 +1 @@",
+            "-let id = \"T-0042\";",
+            "+let id = \"C-0047\";",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let mut view = DiffView::new(held, target.title);
+        fill_view(
+            &mut view,
+            RawDiff {
+                lines: lines.clone(),
+                ..RawDiff::default()
+            },
+        );
+        assert_eq!(view.held, held);
+        assert_eq!(
+            view.lines
+                .iter()
+                .map(|s| s.text.clone())
+                .collect::<Vec<_>>(),
+            lines
+        );
     }
 }

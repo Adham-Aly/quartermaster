@@ -312,13 +312,10 @@ mod tests {
         assert!(rows[0].contains("quartermaster ▾"), "{}", rows[0]);
         let title = &rows[1];
         assert!(title.starts_with(" Projects "), "{title}");
-        assert!(
-            title.contains("╭─ C-0042 · fix(auth): token refresh race "),
-            "{title}"
-        );
+        assert!(title.contains("╭─ Token refresh race "), "{title}");
         assert!(title.contains(" ← Quartermaster ─╮"), "{title}");
         assert!(
-            title.ends_with("╭─ C-0042 ─────────────────────────╮"),
+            title.ends_with("╭─ Token refresh race ─────────────╮"),
             "{title}"
         );
         assert!(rows.iter().any(|r| r.starts_with(" Crew ")));
@@ -328,9 +325,74 @@ mod tests {
         );
         assert!(
             rows.iter()
-                .any(|r| r.contains("› message C-0042 directly…"))
+                .any(|r| r.contains("› message Token refresh race directly…"))
         );
         assert!(!rows.iter().any(|r| r.contains("╭─ Quartermaster ")));
+    }
+
+    #[test]
+    fn secondmate_session_and_preview_use_names_while_routing_by_typed_agent() {
+        let mut app = App::new();
+        sample::install_secondmate(&mut app);
+        let agent = app.session_view().unwrap().agent;
+        for (w, h) in [(150, 45), (120, 40), (119, 40), (100, 30)] {
+            let rows = screen(&mut app, w, h);
+            assert!(rows[1].contains("╭─ web-app "), "{}", rows[1]);
+            let shown = rows.join("\n");
+            assert!(!shown.contains("S-02"), "{w}x{h}: {shown}");
+            assert!(shown.contains("message web-app directly…"), "{shown}");
+            assert!(
+                app.term
+                    .drawn
+                    .hits
+                    .rect_of(Hit::Session(super::SessionHit::Back))
+                    .is_some()
+            );
+            assert_eq!(app.view.middle, Middle::Session(agent));
+        }
+        let rows = screen(&mut app, 150, 45);
+        assert!(
+            rows[1].ends_with("╭─ web-app ────────────────────────╮"),
+            "{}",
+            rows[1]
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("web-app has no task of its own."))
+        );
+        let voices: Vec<_> = rows.iter().filter(|row| row.contains("web-app")).collect();
+        assert!(voices.len() >= 4, "{rows:#?}");
+        app.take_commands();
+        app.set_input("keep S-02 in this authored message".into());
+        key(&mut app, KeyCode::Enter);
+        assert!(app.take_commands().iter().any(|command| matches!(command,
+            Command::Send { to, text, .. } if *to == agent && text == "keep S-02 in this authored message"
+        )));
+    }
+
+    #[test]
+    fn session_header_keeps_projected_names_paths_and_authored_charter() {
+        let mut app = App::new();
+        sample::install_session(&mut app);
+        let view = app.snapshot.session.as_mut().unwrap();
+        view.place = "tasks/C-0042 · supervisor: Web S-99".into();
+        view.subtitle = "Authored S-02 charter".into();
+        view.lines.clear();
+        let shown = screen(&mut app, 150, 45).join("\n");
+        assert!(
+            shown.contains("tasks/C-0042 · supervisor: Web S-99"),
+            "{shown}"
+        );
+        assert!(shown.contains("Authored S-02 charter"), "{shown}");
+        let view = app.snapshot.session.as_mut().unwrap();
+        view.place.clear();
+        view.note = "tasks/C-0042 · supervisor: Web S-99".into();
+        let shown = screen(&mut app, 150, 45).join("\n");
+        assert!(
+            shown.contains("tasks/C-0042 · supervisor: Web S-99"),
+            "{shown}"
+        );
+        assert!(shown.contains("Authored S-02 charter"), "{shown}");
     }
 
     #[test]

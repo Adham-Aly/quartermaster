@@ -14,6 +14,10 @@ pub struct ActionItem {
     /// Who asked: where a Reply goes. `None` for the app's own prompts (setup, models, accounts).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<AgentRef>,
+    /// Display-ready source name, retained even when a closed task has left the crew tree.
+    /// Routing still uses `from` and `task`, never these words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<TaskId>,
     /// One line: "Merge PR #41 · feat(billing): proration preview".
@@ -43,6 +47,7 @@ impl ActionItem {
             key,
             kind,
             from: None,
+            from_label: None,
             task: None,
             title: title.into(),
             at,
@@ -55,6 +60,12 @@ impl ActionItem {
     #[must_use]
     pub fn with_from(mut self, from: AgentRef) -> Self {
         self.from = Some(from);
+        self
+    }
+
+    #[must_use]
+    pub fn with_from_label(mut self, label: impl Into<String>) -> Self {
+        self.from_label = Some(label.into());
         self
     }
 
@@ -155,6 +166,7 @@ mod tests {
             Card::new(CardKind::Approval, "Approval needed"),
             ActionOpen::Conversation,
         )
+        .with_from_label("Token refresh")
         .with_task(TaskId::new(391).unwrap())
         .with_anchor(MessageId::new(12))
         .with_from(AgentRef::Secondmate {
@@ -179,6 +191,19 @@ mod tests {
             let json = serde_json::to_string(&key).unwrap();
             assert_eq!(serde_json::from_str::<ActionKey>(&json).unwrap(), key);
         }
+    }
+
+    #[test]
+    fn an_old_action_without_a_source_label_keeps_its_routing() {
+        let item = item();
+        let mut value = serde_json::to_value(&item).unwrap();
+        value.as_object_mut().unwrap().remove("from_label");
+        let old: ActionItem = serde_json::from_value(value).unwrap();
+        assert_eq!(old.from_label, None);
+        assert_eq!(old.from, item.from);
+        assert_eq!(old.task, item.task);
+        assert_eq!(old.key, item.key);
+        assert_eq!(old.open, item.open);
     }
 
     #[test]

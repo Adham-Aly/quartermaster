@@ -305,7 +305,7 @@ fn assert_report_card(item: &qm_types::api::ActionItem, kind: TaskKind, answer: 
     assert_eq!(item.title, "Report ready · Findings");
     assert_eq!(item.card.kind, CardKind::Report);
     assert_eq!(item.card.heading, REPORT_HEADING);
-    assert_eq!(item.card.title.as_deref(), Some("C-0003 Findings"));
+    assert_eq!(item.card.title.as_deref(), Some("Findings"));
     let words: Vec<String> = item
         .card
         .lines

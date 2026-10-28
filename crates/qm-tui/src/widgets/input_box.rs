@@ -218,17 +218,13 @@ fn placeholder(app: &App) -> String {
     let Some(held) = app.view.guidance_for else {
         return PLACEHOLDER.to_owned();
     };
-    let card = app
+    let item = app
         .snapshot
         .actions
         .iter()
-        .map(|item| &item.card)
-        .find(|card| card.held == Some(held));
-    match card {
-        Some(card) => format!(
-            "your guidance for {}…",
-            card.title.as_deref().unwrap_or(&card.heading)
-        ),
+        .find(|item| item.card.held == Some(held));
+    match item {
+        Some(item) => format!("your guidance for {}…", item.title),
         None => String::from("your guidance…"),
     }
 }

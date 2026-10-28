@@ -58,6 +58,8 @@ pub(crate) struct Menu {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Flash {
     pub(crate) text: String,
+    /// Opaque diagnostic copied from a card line, not app-owned metadata.
+    pub(crate) verbatim: bool,
     pub(crate) until: Instant,
 }
 

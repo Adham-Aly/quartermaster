@@ -153,7 +153,7 @@ pub enum HeldError {
     /// No performer for this kind in this build; the card stays pending.
     #[error("That choice isn't available in this build yet")]
     NotAvailable,
-    /// The performer couldn't carry it out, in one plain sentence; the card stays pending.
+    /// The performer couldn't carry it out; may contain external diagnostics. The card stays pending.
     #[error("{0}")]
     Failed(String),
     #[error(transparent)]
@@ -208,7 +208,14 @@ struct Inner {
     /// Cards being carried out right now: a second answer waits for the first.
     busy: Mutex<HashSet<HeldActionId>>,
     /// Why the last attempt on a card failed, shown on it until it's answered.
-    failures: Mutex<HashMap<HeldActionId, String>>,
+    failures: Mutex<HashMap<HeldActionId, DisplayFailure>>,
+}
+
+/// Display bookkeeping only; the error and the stored held payload remain unchanged.
+#[derive(Clone)]
+struct DisplayFailure {
+    why: String,
+    verbatim: bool,
 }
 
 impl fmt::Debug for HeldService {
@@ -433,7 +440,7 @@ impl HeldService {
         Ok(())
     }
 
-    /// Shows why a change to a card didn't go through, on the card.
+    /// Shows why a change to a card didn't go through, on the card. The string is opaque output.
     pub fn show_failure(&self, held: HeldActionId, why: String) {
         self.remember_failure(held, why);
     }
@@ -470,7 +477,7 @@ impl HeldService {
                 Err(e) => {
                     tracing::info!(%held, reason = %e, "your answer on the card didn't go through");
                     // Shown on the card while it still waits, so you see why and can retry.
-                    service.remember_failure(held, e.to_string());
+                    service.remember_error(held, &e);
                 }
             }
             done();
@@ -606,13 +613,13 @@ impl HeldService {
     /// Runs the kind's performer on the stored row; a failure is remembered for the card.
     async fn perform(&self, row: &HeldRow, answer: &HeldAnswer) -> Result<HeldOutcome, HeldError> {
         let Some(performer) = self.performer(row.kind) else {
-            self.remember_failure(row.id, NOT_AVAILABLE.to_owned());
+            self.remember_error(row.id, &HeldError::NotAvailable);
             return Err(HeldError::NotAvailable);
         };
         match performer.perform(row, answer).await {
             Ok(outcome) => Ok(outcome),
             Err(e) => {
-                self.remember_failure(row.id, e.to_string());
+                self.remember_error(row.id, &e);
                 Err(e)
             }
         }
@@ -626,7 +633,7 @@ impl HeldService {
         match performer.on_reject(row).await {
             Ok(outcome) => Ok(outcome),
             Err(e) => {
-                self.remember_failure(row.id, e.to_string());
+                self.remember_error(row.id, &e);
                 Err(e)
             }
         }
@@ -725,11 +732,31 @@ impl HeldService {
     }
 
     fn remember_failure(&self, held: HeldActionId, why: String) {
+        self.remember_display_failure(
+            held,
+            DisplayFailure {
+                why,
+                verbatim: true,
+            },
+        );
+    }
+
+    fn remember_error(&self, held: HeldActionId, error: &HeldError) {
+        self.remember_display_failure(
+            held,
+            DisplayFailure {
+                why: error.to_string(),
+                verbatim: !matches!(error, HeldError::Refused(_) | HeldError::NotAvailable),
+            },
+        );
+    }
+
+    fn remember_display_failure(&self, held: HeldActionId, failure: DisplayFailure) {
         self.inner
             .failures
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(held, why);
+            .insert(held, failure);
     }
 
     fn forget_failure(&self, held: HeldActionId) {
@@ -740,7 +767,7 @@ impl HeldService {
             .remove(&held);
     }
 
-    fn failure(&self, held: HeldActionId) -> Option<String> {
+    fn failure(&self, held: HeldActionId) -> Option<DisplayFailure> {
         self.inner
             .failures
             .lock()
@@ -770,9 +797,10 @@ impl HeldService {
         card.answered = match row.status {
             _ if self.is_busy(row.id) => Some("Working on it…".to_owned()),
             HeldStatus::Pending => {
-                if let Some(why) = self.failure(row.id) {
-                    card.lines
-                        .push(CardLine::new(2, vec![Styled::new(why, Tone::Error)]));
+                if let Some(failure) = self.failure(row.id) {
+                    let mut line = CardLine::new(2, vec![Styled::new(failure.why, Tone::Error)]);
+                    line.verbatim = failure.verbatim;
+                    card.lines.push(line);
                 }
                 None
             }
@@ -833,7 +861,7 @@ impl HeldService {
             Card::new(CardKind::Approval, "Approval needed")
         };
         card.held = Some(row.id);
-        card.title = Some(row.title.clone());
+        card.title = Some(display_title(row));
         card.note = face.note;
         card.lines = face.lines;
         let extra = face.buttons;
@@ -874,6 +902,38 @@ impl HeldService {
             .collect()
         };
         card
+    }
+}
+
+/// A held title's presentation only. Remove only wrappers the app writes for this payload;
+/// never replace ID-looking words within authored titles, bodies or tool results.
+pub(crate) fn display_title(row: &HeldRow) -> String {
+    match &row.payload {
+        HeldPayload::Decision(p) => {
+            let (title, _) = crate::decisions::cards::split_title(&row.title);
+            if row.title.starts_with("Decision · ") {
+                title
+                    .strip_prefix(&format!("{} ", p.task))
+                    .or_else(|| title.strip_prefix(&format!("{} ", p.task.own_label())))
+                    .unwrap_or(&title)
+                    .to_owned()
+            } else {
+                title
+            }
+        }
+        HeldPayload::GithubWrite(p) => row
+            .title
+            .strip_prefix(&format!("{}: ", p.task))
+            .or_else(|| row.title.strip_prefix(&format!("{}: ", p.task.own_label())))
+            .unwrap_or(&row.title)
+            .to_owned(),
+        HeldPayload::ReleaseTag(p) => row
+            .title
+            .strip_prefix(&format!("{}: ", p.task))
+            .or_else(|| row.title.strip_prefix(&format!("{}: ", p.task.own_label())))
+            .unwrap_or(&row.title)
+            .to_owned(),
+        _ => row.title.clone(),
     }
 }
 
@@ -1101,5 +1161,293 @@ mod restart_tests {
         scheduler_job.abort();
         drop(db);
         std::fs::remove_file(path).expect("remove test database");
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    use qm_store::held::{DecisionPayload, GithubWritePayload, HoldReason, MergePayload};
+    use qm_types::api::HeldChoice;
+    use qm_types::domain::GithubWriteAction;
+    use qm_types::ids::{CommitSha, TaskId};
+
+    fn row(payload: HeldPayload, title: String) -> HeldRow {
+        HeldRow {
+            id: HeldActionId::new(7),
+            kind: payload.kind(),
+            payload,
+            choices: vec![],
+            title,
+            task: Some(TaskId::new(42).unwrap()),
+            asked_by: Some(AgentId::new(1)),
+            status: HeldStatus::Pending,
+            answer: None,
+            created_at: jiff::Timestamp::UNIX_EPOCH,
+            decided_at: None,
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoSignal;
+
+    impl WakeSignal for NoSignal {
+        fn signal(&self, _: AgentId) {}
+    }
+
+    #[derive(Debug)]
+    struct FailingPerformer {
+        app_owned: bool,
+    }
+
+    impl FailingPerformer {
+        fn error(&self) -> HeldError {
+            if self.app_owned {
+                Refusal::new("C-0042 is no longer ready").into()
+            } else {
+                HeldError::Failed("fatal: bad revision 'C-0042'".into())
+            }
+        }
+    }
+
+    impl HeldPerformer for FailingPerformer {
+        fn perform<'a>(
+            &'a self,
+            _: &'a LoadedHeld,
+            _: &'a HeldAnswer,
+        ) -> BoxFuture<'a, Result<HeldOutcome, HeldError>> {
+            Box::pin(async { Err(self.error()) })
+        }
+
+        fn on_reject<'a>(
+            &'a self,
+            _: &'a LoadedHeld,
+        ) -> BoxFuture<'a, Result<Option<HeldOutcome>, HeldError>> {
+            Box::pin(async { Err(self.error()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn failure_projection_keeps_provenance_through_perform_reject_and_background_answer() {
+        let path = std::env::temp_dir().join(format!(
+            "qm-held-provenance-{}-{}.db",
+            std::process::id(),
+            jiff::Timestamp::now().as_nanosecond()
+        ));
+        let db = Db::open(&path).unwrap();
+        let service = HeldService::new(
+            db.clone(),
+            Arc::new(qm_types::clock::SystemClock),
+            Arc::new(NoSignal),
+        );
+        let id = db
+            .call(|conn| {
+                HeldService::insert(
+                    conn,
+                    &NewHeld {
+                        payload: HeldPayload::Secondmate(qm_store::held::SecondmatePayload {
+                            name: "Reviewer".into(),
+                            scope: "Keep C-0042 exactly".into(),
+                            base_branch: None,
+                        }),
+                        choices: vec![],
+                        title: "Create Reviewer".into(),
+                        task: None,
+                        asked_by: None,
+                        at: jiff::Timestamp::UNIX_EPOCH,
+                    },
+                )
+            })
+            .await
+            .unwrap();
+        let original = db.call(move |conn| load_held(conn, id)).await.unwrap();
+        let facts = CardFacts::default();
+        assert!(matches!(
+            service.perform(&original, &HeldAnswer::Approve).await,
+            Err(HeldError::NotAvailable)
+        ));
+        assert!(
+            !service
+                .card(&original, &facts)
+                .lines
+                .last()
+                .unwrap()
+                .verbatim
+        );
+        for app_owned in [false, true] {
+            let performer = FailingPerformer { app_owned };
+            let why = performer.error().to_string();
+            service.register(original.kind, Arc::new(performer));
+            for answer in [HeldAnswer::Approve, HeldAnswer::Reject] {
+                assert_eq!(
+                    service.answer(id, answer).await.unwrap_err().to_string(),
+                    why
+                );
+                let card = service.card(&original, &facts);
+                let line = card.lines.last().unwrap();
+                assert_eq!(line.spans, vec![Styled::new(&why, Tone::Error)]);
+                assert_eq!(line.verbatim, !app_owned);
+            }
+            let (done, finished) = tokio::sync::oneshot::channel();
+            service.answer_in_background(
+                id,
+                HeldAnswer::Approve,
+                Box::new(move || {
+                    done.send(()).unwrap();
+                }),
+            );
+            tokio::time::timeout(std::time::Duration::from_secs(5), finished)
+                .await
+                .unwrap()
+                .unwrap();
+            let card = service.card(&original, &facts);
+            let line = card.lines.last().unwrap();
+            assert_eq!(line.spans, vec![Styled::new(&why, Tone::Error)]);
+            assert_eq!(line.verbatim, !app_owned);
+            assert_eq!(
+                db.call(move |conn| load_held(conn, id)).await.unwrap(),
+                original
+            );
+        }
+        let error = HeldError::Store(StoreError::Panicked("external C-0042".into()));
+        service.remember_error(id, &error);
+        let card = service.card(&original, &facts);
+        assert!(card.lines.last().unwrap().verbatim);
+        assert_eq!(card.lines.last().unwrap().spans[0].text, error.to_string());
+        service.show_failure(id, "opaque C-0042".into());
+        let card = service.card(&original, &facts);
+        assert!(card.lines.last().unwrap().verbatim);
+        assert_eq!(card.lines.last().unwrap().spans[0].text, "opaque C-0042");
+        drop(service);
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn decision_projection_preserves_authored_ids_and_original_answer_targets() {
+        let task = TaskId::new(42).unwrap();
+        let authored = "fix: preserve T-0042 and C-0047";
+        let mut row = row(
+            HeldPayload::Decision(DecisionPayload {
+                task,
+                reason: HoldReason::NeedsUser,
+                detail: "authored C-0047".into(),
+                summary: Some("authored T-0042".into()),
+            }),
+            format!("Decision · {task} {authored} · app · high · model"),
+        );
+        row.choices = vec![HeldChoice::RetryWithGuidance, HeldChoice::Discard];
+        let before = row.clone();
+        let card = crate::decisions::cards::decision_card(&row);
+        assert_eq!(card.held, Some(row.id));
+        assert_eq!(card.title.as_deref(), Some(authored));
+        assert_eq!(card.note.as_deref(), Some("· app · high · model"));
+        assert!(card.lines[0].spans[0].text.contains("authored C-0047"));
+        assert_eq!(card.lines[1].spans[0].text, "Supervisor: authored T-0042");
+        assert_eq!(
+            card.buttons[0].action,
+            CardAction::Answer {
+                answer: HeldAnswer::Choose {
+                    choice: HeldChoice::RetryWithGuidance,
+                    words: None
+                }
+            }
+        );
+        assert_eq!(row, before);
+    }
+
+    #[test]
+    fn release_projection_hides_the_wrapper_not_the_authored_case_or_approved_tag() {
+        use qm_store::held::ReleaseTagPayload;
+        use qm_types::domain::TagKind;
+        use qm_types::ids::{ProjectId, ReleaseLaunchId};
+
+        let task = TaskId::new(42).unwrap();
+        let row = row(
+            HeldPayload::ReleaseTag(ReleaseTagPayload {
+                launch: ReleaseLaunchId::new(1),
+                task,
+                project: ProjectId::new(1),
+                repo: "octo/app".into(),
+                repo_id: 123,
+                tag: "v1.0".into(),
+                commit: "a".repeat(40).parse().unwrap(),
+                branch: Some("work/C-0042".into()),
+                tag_kind: TagKind::Annotated,
+                message: Some("authored T-0042".into()),
+                summary: "authored C-0047".into(),
+            }),
+            format!("{task}: push release tag v1.0 to octo/app"),
+        );
+        let before = row.clone();
+        let card = crate::settling::cards::ReleaseTagCards.card(&row, &serde_json::Value::Null);
+        assert_eq!(
+            card.title.as_deref(),
+            Some("push release tag v1.0 to octo/app")
+        );
+        let text: Vec<_> = card
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(text.contains(&"authored T-0042"));
+        assert!(text.contains(&"authored C-0047"));
+        assert!(text.contains(&"work/C-0042"));
+        assert_eq!(card.held, Some(row.id));
+        assert_eq!(card.buttons[0].label, "Push tag v1.0");
+        assert_eq!(card.buttons[0].key, 't');
+        assert_eq!(
+            card.buttons[0].action,
+            CardAction::Answer {
+                answer: HeldAnswer::Approve
+            }
+        );
+        assert_eq!(row, before);
+        let mut legacy = row.clone();
+        legacy.title = format!("{}: push release tag v1.0 to octo/app", task.own_label());
+        assert_eq!(display_title(&legacy), display_title(&row));
+    }
+
+    #[test]
+    fn approval_projection_preserves_authored_titles_paths_and_github_body() {
+        let task = TaskId::new(42).unwrap();
+        let authored = "fix: authored T-0042 and C-0047";
+        let row = row(
+            HeldPayload::Merge(MergePayload::InPlace {
+                task,
+                branch: "work/C-0042".into(),
+                head: "a".repeat(40).parse::<CommitSha>().unwrap(),
+                checkout: "/work/T-0042/C-0042".into(),
+                target_branch: "main".into(),
+            }),
+            authored.into(),
+        );
+        let before = row.clone();
+        let card = crate::settling::cards::MergeCards.card(&row, &serde_json::Value::Null);
+        assert_eq!(card.held, Some(row.id));
+        assert_eq!(card.title.as_deref(), Some(authored));
+        assert!(card.lines[0].spans[0].text.contains("work/C-0042"));
+        assert!(card.lines[1].spans[0].text.contains("/work/T-0042/C-0042"));
+        assert_eq!(card.buttons[1].action, CardAction::ShowDiff);
+        assert_eq!(row, before);
+
+        let row = self::row(
+            HeldPayload::GithubWrite(GithubWritePayload {
+                task,
+                action: GithubWriteAction::Comment,
+                repo: "octo/app".into(),
+                number: Some(1),
+                title: None,
+                body: Some("authored T-0042 and C-0047".into()),
+                labels: vec![],
+            }),
+            format!("{task}: comment on octo/app#1"),
+        );
+        let before = row.clone();
+        let card = crate::settling::cards::GithubWriteCards.card(&row, &serde_json::Value::Null);
+        assert_eq!(card.title.as_deref(), Some("comment on octo/app#1"));
+        assert_eq!(card.lines[1].spans[0].text, "authored T-0042 and C-0047");
+        assert_eq!(row, before);
     }
 }

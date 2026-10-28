@@ -115,7 +115,7 @@ pub(crate) fn card(
         Stage::Drafting | Stage::Approved => HEADING,
     };
     let mut card = Card::new(CardKind::Plan, heading);
-    card.title = Some(format!("{task} {title}"));
+    card.title = Some(title.to_owned());
     card.note = Some(format!("· {project} · round {}", state.round.max(1)));
     // The page sends its reply itself while the endpoint it was rendered for listens.
     let sends = state.page_port.is_some();
@@ -197,5 +197,32 @@ impl ApiPart for PlanPart {
     fn fill<'a>(&'a self, _: &'a mut Snapshot) -> BoxFuture<'a, ()> {
         // Plan cards reach the UI only through the Actions list (`actions::ActionsPart`).
         Box::pin(async {})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_card_projection_preserves_authored_title_page_path_and_button_targets() {
+        let task = TaskId::new(42).unwrap();
+        let title = "plan: authored T-0042 and C-0047";
+        let state: PlanState = serde_json::from_value(serde_json::json!({
+            "uid": "fixture", "stage": "final", "round": 1
+        }))
+        .unwrap();
+        let page = Path::new("/artifacts/T-0042/C-0042/plan/plan.html");
+        let card = card(task, title, "app", &state, page);
+        assert_eq!(card.title.as_deref(), Some(title));
+        assert_eq!(card.lines[1].spans[0].text, page.display().to_string());
+        assert_eq!(card.buttons[0].action, CardAction::OpenPlan { task });
+        assert_eq!(
+            card.buttons[1].action,
+            CardAction::CopyPlanPath {
+                path: page.display().to_string()
+            }
+        );
+        assert_eq!(card.buttons[2].action, CardAction::ApprovePlan { task });
     }
 }

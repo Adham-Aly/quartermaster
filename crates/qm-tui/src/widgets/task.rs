@@ -32,8 +32,12 @@ pub(crate) fn draw(
     overlay: bool,
 ) {
     let title = match app.view.selected_crew {
-        Some(AgentRef::Crewmate { task }) => task.to_string(),
-        Some(AgentRef::Secondmate { id }) => id.to_string(),
+        Some(agent @ AgentRef::Crewmate { .. }) => {
+            super::crew::crewmate_name(app, agent).to_owned()
+        }
+        Some(agent @ AgentRef::Secondmate { .. }) => {
+            crate::presentation::Presenter(&app.snapshot).agent(agent)
+        }
         _ => String::from("Task"),
     };
     let style = pane_style(app, Pane::Task);
@@ -150,8 +154,8 @@ pub(crate) fn rows(app: &App, width: u16) -> Vec<Row> {
     };
     match app.snapshot.tasks.iter().find(|t| t.task == task) {
         Some(detail) => detail_rows(app, agent, detail, width),
-        // A task is selected (its id is the title), so "no task selected" would be wrong.
-        None => empty_lines(&[&format!("{task}'s details haven't arrived yet.")], width)
+        // Selection is kept by its typed ID while the details load; the wording is generic.
+        None => empty_lines(&["Task details haven't arrived yet."], width)
             .into_iter()
             .map(Row::plain)
             .collect(),
@@ -300,6 +304,11 @@ fn workspace(detail: &TaskDetail, max: usize) -> Vec<Row> {
         runs.extend(row.value.iter().map(|s| (s.text.clone(), theme::dim())));
         push_glyph(&mut out, "✓", theme::accent(), &runs, max);
     }
+    if let Some(row) = find(detail, "task") {
+        // The core supplies a friendly name and collaborator count. An ID-shaped authored
+        // name is still a name, not evidence that this is legacy metadata.
+        push_labelled(&mut out, Some("task"), &runs_of(row), max);
+    }
     for row in &detail.rows {
         if let Some(label) = row.label.as_deref()
             && !PLACED.contains(&label)
@@ -342,9 +351,9 @@ fn recent(detail: &TaskDetail, max: usize) -> Vec<Row> {
         .collect()
 }
 
-/// The labels `detail_rows` places in a section; any other keeps its label.
-const PLACED: [&str; 9] = [
-    "status", "tokens", "model", "account", "tier", "project", "branch", "folder", "verify",
+/// Labels handled by `detail_rows`, including the friendly task/collaborator metadata.
+const PLACED: [&str; 10] = [
+    "status", "tokens", "model", "account", "tier", "project", "branch", "folder", "verify", "task",
 ];
 
 /// Where a glyph row's value starts: the glyph, then a space.
@@ -591,6 +600,80 @@ mod layout_tests {
             " ▸ Open session   ■ Stop "
         );
         assert_eq!(buttons.hits.len(), 2);
+    }
+
+    #[test]
+    fn title_and_loading_are_friendly_without_changing_detail_content() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        sample::install(&mut app);
+        let task = app.snapshot.tasks[0].task;
+        let agent = AgentRef::Crewmate { task };
+        app.view.selected_crew = Some(agent);
+        for overlay in [false, true] {
+            let mut terminal = Terminal::new(TestBackend::new(70, 30)).unwrap();
+            let mut map = FrameMap::default();
+            terminal
+                .draw(|f| draw(f, f.area(), &app, &mut map, overlay))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let border: String = (0..70).map(|x| buffer[(x, 0)].symbol()).collect();
+            assert!(border.contains("Token refresh race"), "{border}");
+            assert!(!border.contains(&task.to_string()));
+            assert!(
+                map.hits
+                    .rect_of(Hit::TaskButton(TaskButton::OpenSession))
+                    .is_some()
+            );
+            assert!(
+                map.hits
+                    .rect_of(Hit::TaskButton(TaskButton::Stop))
+                    .is_some()
+            );
+            if overlay {
+                assert!(map.hits.rect_of(Hit::CloseOverlay).is_some());
+            }
+        }
+        app.snapshot.tasks[0].title = "Investigate T-0042 and C-0042".to_owned();
+        app.snapshot.tasks[0]
+            .rows
+            .retain(|row| row.label.as_deref() != Some("task"));
+        app.snapshot.tasks[0].rows.push(TaskRow::new(
+            Some("task"),
+            vec![qm_types::api::Styled::new(
+                "T-0099 · with 1 collaborator",
+                Tone::Text,
+            )],
+        ));
+        app.snapshot.tasks[0].rows.push(TaskRow::new(
+            Some("folder"),
+            vec![qm_types::api::Styled::new(
+                "/repo/T-0042/C-0042",
+                Tone::Text,
+            )],
+        ));
+        app.snapshot.tasks[0]
+            .activity
+            .push("Read /repo/T-0042/C-0042 → C-0042 kept".to_owned());
+        let shown = texts(&rows(&app, 100)).join("\n");
+        assert!(shown.contains("Investigate T-0042 and C-0042"));
+        assert!(shown.contains("/repo/T-0042/C-0042"));
+        assert!(shown.contains("C-0042 kept"));
+        assert!(shown.contains("T-0099 · with 1 collaborator"));
+        // Authored names, even ID-shaped ones, are kept verbatim in the friendly task row.
+        assert!(find(&app.snapshot.tasks[0], "task").is_some());
+        app.snapshot.crew.clear();
+        assert_eq!(
+            super::super::crew::crewmate_name(&app, agent),
+            "Investigate T-0042 and C-0042"
+        );
+        app.snapshot.tasks.clear();
+        assert_eq!(
+            texts(&rows(&app, 70)),
+            ["Task details haven't arrived yet."]
+        );
+        app.snapshot.crew.clear();
+        assert_eq!(super::super::crew::crewmate_name(&app, agent), "Crewmate");
     }
 
     #[test]

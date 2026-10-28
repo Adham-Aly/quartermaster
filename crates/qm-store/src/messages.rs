@@ -293,11 +293,18 @@ pub fn shown_on_turn(
     Ok(false)
 }
 
+/// The display text and provenance of an acknowledgement beside your message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Acknowledgement {
+    pub text: String,
+    pub source: MessageSource,
+}
+
 /// The newest acknowledgement replying to each of `messages` that has one.
 pub fn latest_acknowledgements(
     conn: &Connection,
     messages: &[MessageId],
-) -> Result<BTreeMap<MessageId, String>, StoreError> {
+) -> Result<BTreeMap<MessageId, Acknowledgement>, StoreError> {
     let mut out = BTreeMap::new();
     if messages.is_empty() {
         return Ok(out);
@@ -307,18 +314,24 @@ pub fn latest_acknowledgements(
         .collect::<Vec<_>>()
         .join(", ");
     let mut stmt = conn.prepare(&format!(
-        "SELECT replies_to, text FROM messages
+        "SELECT replies_to, text, source FROM messages
          WHERE kind = 'acknowledgement' AND replies_to IN ({placeholders})
          ORDER BY seq"
     ))?;
     let rows = stmt
         .query_map(params_from_iter(messages.iter()), |r| {
-            Ok((r.get::<_, MessageId>(0)?, r.get::<_, String>(1)?))
+            Ok((
+                r.get::<_, MessageId>(0)?,
+                Acknowledgement {
+                    text: r.get(1)?,
+                    source: r.get(2)?,
+                },
+            ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (message, text) in rows {
-        // Oldest first, so the newest one wins.
-        out.insert(message, text);
+    for (message, acknowledgement) in rows {
+        // Oldest first, so the newest one wins, including its provenance.
+        out.insert(message, acknowledgement);
     }
     Ok(out)
 }
@@ -453,6 +466,53 @@ mod tests {
             },
         )
         .expect("the line is stored")
+    }
+
+    #[test]
+    fn latest_acknowledgements_keep_the_winning_text_and_source_together() {
+        let mut conn = Connection::open_in_memory().expect("memory database");
+        schema::migrate(&mut conn).expect("the schema");
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        let first = line(&conn, 1, MessageSource::You, MessageKind::Message, 1_000);
+        let second = line(&conn, 1, MessageSource::You, MessageKind::Message, 2_000);
+        let unacknowledged = line(&conn, 1, MessageSource::You, MessageKind::Message, 3_000);
+        assert!(latest_acknowledgements(&conn, &[]).unwrap().is_empty());
+        for (message, source, text) in [
+            (first, MessageSource::App, "Started: C-0042"),
+            (second, MessageSource::Agent, "Keep T-0017"),
+            (first, MessageSource::Agent, "Authored C-0042 T-0017"),
+            (second, MessageSource::App, "Steered: C-0042"),
+        ] {
+            insert(
+                &conn,
+                &NewMessage {
+                    agent: AgentId::new(1),
+                    source,
+                    kind: MessageKind::Acknowledgement,
+                    text,
+                    options: &[],
+                    replies_to: Some(message),
+                    turn: None,
+                    at: Timestamp::from_millisecond(4_000).unwrap(),
+                },
+            )
+            .unwrap();
+            let acknowledgements =
+                latest_acknowledgements(&conn, &[first, second, unacknowledged]).unwrap();
+            assert_eq!(
+                acknowledgements[&message],
+                Acknowledgement {
+                    text: text.into(),
+                    source
+                }
+            );
+            assert!(!acknowledgements.contains_key(&unacknowledged));
+        }
+        let acknowledgements = latest_acknowledgements(&conn, &[first, second]).unwrap();
+        assert_eq!(acknowledgements[&first].source, MessageSource::Agent);
+        assert_eq!(acknowledgements[&first].text, "Authored C-0042 T-0017");
+        assert_eq!(acknowledgements[&second].source, MessageSource::App);
+        assert_eq!(acknowledgements[&second].text, "Steered: C-0042");
     }
 
     #[test]

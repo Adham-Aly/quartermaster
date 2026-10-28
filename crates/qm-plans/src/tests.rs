@@ -13,6 +13,7 @@ fn plan(extra: &str) -> String {
 fn meta(state: PageState) -> Meta {
     Meta {
         task: "C-0042".into(),
+        task_label: Some("Cache refresh".into()),
         plan_uid: "0123456789abcdef01234567".into(),
         round: 1,
         project: "demo".into(),
@@ -55,6 +56,88 @@ fn rendering_is_deterministic_and_self_contained() {
         html.contains("<span class=\"dot\""),
         "outline marks the section with a question"
     );
+}
+
+fn runtime_meta(html: &str) -> serde_json::Value {
+    let json = html.split("id=\"plan-meta\">").nth(1).unwrap();
+    serde_json::from_str(json.split("</script>").next().unwrap()).unwrap()
+}
+
+#[test]
+fn visible_metadata_uses_labels_not_protocol_ids_in_every_state() {
+    for task in ["C-0042", "T-0042"] {
+        for state in [
+            PageState::Open,
+            PageState::Final,
+            PageState::Approved { at: "14:02".into() },
+            PageState::Locked {
+                reason: "Closed".into(),
+            },
+        ] {
+            for (md, label, expected_title, expected_label) in [
+                ("## Approach\n\nUse a cache.", None, "Plan", "Plan"),
+                ("## Approach\n\nUse a cache.", Some(" \t"), "Plan", "Plan"),
+                ("# Cache plan\n", None, "Cache plan", "Cache plan"),
+                (
+                    "## Approach\n",
+                    Some("Cache & queue"),
+                    "Cache &amp; queue",
+                    "Cache &amp; queue",
+                ),
+                (
+                    "# Cache plan\n",
+                    Some("Cache & queue"),
+                    "Cache plan",
+                    "Cache &amp; queue",
+                ),
+            ] {
+                let mut m = sending(state.clone());
+                m.task = task.into();
+                m.task_label = label.map(str::to_owned);
+                let html = render(md, &Assets::new(), &m).unwrap().html;
+                assert!(html.contains(&format!("<title>{expected_title}</title>")));
+                assert!(html.contains(&format!(
+                    "class=\"page-meta\"><span>{expected_label}</span>"
+                )));
+                let visible = html
+                    .split("<body>")
+                    .nth(1)
+                    .unwrap()
+                    .split("<script type=\"application/json\"")
+                    .next()
+                    .unwrap();
+                assert!(
+                    !visible.contains(task),
+                    "protocol identity leaked into visible markup"
+                );
+                let json = runtime_meta(&html);
+                assert_eq!(json["task"], task);
+                assert_eq!(json["plan"], m.plan_uid);
+                assert_eq!(json["round"], m.round);
+                if m.sends_to().is_some() {
+                    assert_eq!(
+                        json["submit"]["url"],
+                        "http://127.0.0.1:41040/v1/plan-reply"
+                    );
+                    assert_eq!(json["submit"]["token"], "ab".repeat(32));
+                } else {
+                    assert!(json.get("submit").is_none());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn display_label_does_not_change_machine_metadata_or_submission() {
+    let mut m = sending(PageState::Open);
+    let before = render(&plan(""), &Assets::new(), &m).unwrap();
+    m.task_label = Some("Different friendly label".into());
+    let after = render(&plan(""), &Assets::new(), &m).unwrap();
+    assert_eq!(runtime_meta(&before.html), runtime_meta(&after.html));
+    assert_eq!(m.task, "C-0042");
+    // Both Send's envelope and Copy's protocol reply still route by the original task.
+    assert!(page::PLAN_JS.contains("JSON.stringify({ v: 1, task: meta.task, plan: meta.plan, round: meta.round, token: meta.submit.token, reply: buildReply(state, meta) })"));
 }
 
 #[test]

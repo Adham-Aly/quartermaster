@@ -53,6 +53,7 @@ fn main() -> ExitCode {
     };
     let meta = Meta {
         task: "T-0001".into(),
+        task_label: None,
         plan_uid: "0123456789abcdef01234567".into(),
         round: 1,
         project: "example".into(),

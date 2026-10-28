@@ -362,6 +362,15 @@ struct Host {
     focused_last: Option<u64>,
 }
 
+/// Builds only the notifier's display projection, preserving the authored title and typed key.
+fn waiting_item(
+    snapshot: &qm_types::api::Snapshot,
+    item: &qm_types::api::ActionItem,
+) -> WaitingItem {
+    WaitingItem::new(item.key.clone(), item.kind, &item.title, item.at)
+        .with_from(crate::presentation::Presenter(snapshot).source(item))
+}
+
 /// Waits for a notification click; never, without a notifier.
 async fn recv_opened(opened: &mut Option<mpsc::UnboundedReceiver<ActionKey>>) -> Option<ActionKey> {
     match opened {
@@ -422,10 +431,7 @@ impl Host {
             .snapshot
             .actions
             .iter()
-            .map(|item| {
-                WaitingItem::new(item.key.clone(), item.kind, &item.title, item.at)
-                    .with_from(item.from.map(crate::session::draw::agent_label))
-            })
+            .map(|item| waiting_item(&self.app.snapshot, item))
             .collect();
         let focused: Vec<&Window> = self.windows.iter().filter(|w| w.focused).collect();
         let looking = if focused.is_empty() {
@@ -798,6 +804,51 @@ mod tests {
     use super::*;
     use qm_types::wire::{InputEvent, KeyCode, KeyKind, Modifiers};
     use tokio::io::DuplexStream;
+
+    #[test]
+    fn closed_report_notifications_keep_the_retained_name_and_typed_key() {
+        use qm_types::api::{
+            ActionItem, ActionKind, ActionOpen, AgentRef, Card, CardKind, CrewRow, CrewTask,
+            Snapshot,
+        };
+        use qm_types::ids::{TaskId, TaskLabelId};
+        let task = TaskId::new(47).unwrap();
+        let mut item = ActionItem::new(
+            ActionKey::Report { task },
+            ActionKind::Report,
+            "Authored T-0017 / C-0047 report",
+            jiff::Timestamp::UNIX_EPOCH,
+            Card::new(CardKind::Report, "Report ready"),
+            ActionOpen::Conversation,
+        )
+        .with_from(AgentRef::Crewmate { task })
+        .with_task(task)
+        .with_from_label("Upload retry");
+        let mut snapshot = Snapshot::default();
+        let notice = waiting_item(&snapshot, &item);
+        assert_eq!(notice.from.as_deref(), Some("Upload retry"));
+        assert_eq!(notice.title, item.title);
+        assert_eq!(notice.key, ActionKey::Report { task });
+        let mut row = CrewRow::new(AgentRef::Crewmate { task }, 1, "C-0047 fix", "idle");
+        row.task = Some(
+            CrewTask::new(TaskLabelId::new(17).unwrap(), "T-0017").named("Live name", "project"),
+        );
+        snapshot.crew.push(row);
+        assert_eq!(
+            waiting_item(&snapshot, &item).from.as_deref(),
+            Some("Upload retry")
+        );
+        item.from_label = None;
+        assert_eq!(
+            waiting_item(&snapshot, &item).from.as_deref(),
+            Some("Live name")
+        );
+        snapshot.crew.clear();
+        assert_eq!(
+            waiting_item(&snapshot, &item).from.as_deref(),
+            Some("Crewmate")
+        );
+    }
 
     async fn window(
         windows: &mpsc::UnboundedSender<Box<dyn Conn>>,

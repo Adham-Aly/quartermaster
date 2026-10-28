@@ -2,7 +2,7 @@
 //! conversation and input (the projects, crew and task columns stay):
 //!
 //! ```text
-//! ╭─ C-0042 · fix(auth): token refresh race ─────────────────────  ← Quartermaster ─╮
+//! ╭─ Token refresh race ───────────────────────────────────────  ← Quartermaster ─╮
 //! │ Talking to this crewmate directly. You override its supervisor; it will  (warn) │
 //! │ reconcile.                                                                      │
 //! │                                                                                 │
@@ -20,7 +20,7 @@
 //! │ ╰─────────────────────────────────────────────────────────────────────────────╯ │
 //! ╰─ running 14m · job J3 idle ─────────────────────────────────────── Interrupt ───╯
 //! ╭─────────────────────────────────────────────────────────────────────────────────╮
-//! │ › message C-0042 directly…                                                      │
+//! │ › message Token refresh race directly…                                          │
 //! ╰─────────────────────────────────────────────────────────────────────────────────╯
 //! ```
 //!
@@ -67,28 +67,25 @@ pub(crate) fn draw(
     input(frame, input_area, app, agent, view, map);
 }
 
-/// How the agent is named: `C-0042`, `S-02`.
+/// A context-free agent label, also used by notification callers without an `App`.
+/// Crewmates use a friendly task name in UI chrome, or this generic fallback.
 pub(crate) fn agent_label(agent: AgentRef) -> String {
     match agent {
-        AgentRef::Crewmate { task } => task.to_string(),
-        AgentRef::Secondmate { id } => id.to_string(),
+        AgentRef::Crewmate { .. } => "Crewmate".to_owned(),
+        AgentRef::Secondmate { .. } => "Secondmate".to_owned(),
         AgentRef::Quartermaster => "Quartermaster".to_owned(),
     }
 }
 
-/// The box's title: `C-0042 · fix(auth): token refresh race`.
+/// The box's title: a friendly task name for a crewmate, the standing agent's name otherwise.
 fn title(app: &App, agent: AgentRef, view: Option<&SessionView>) -> String {
-    let words = view
-        .map(|v| v.title.clone())
-        .filter(|t| !t.is_empty())
-        .or_else(|| {
-            // Before the core's view arrives: the crew row's words.
-            app.snapshot
-                .tasks
-                .iter()
-                .find(|t| AgentRef::Crewmate { task: t.task } == agent)
-                .map(|t| t.title.clone())
-        });
+    if matches!(agent, AgentRef::Crewmate { .. }) {
+        return crate::widgets::crew::crewmate_name(app, agent).to_owned();
+    }
+    if matches!(agent, AgentRef::Secondmate { .. }) {
+        return crate::presentation::Presenter(&app.snapshot).agent(agent);
+    }
+    let words = view.map(|v| v.title.as_str()).filter(|t| !t.is_empty());
     match words {
         Some(words) => format!("{} · {words}", agent_label(agent)),
         None => agent_label(agent),
@@ -144,7 +141,10 @@ fn session_pane(
     let chats = view.map_or(&[][..], |v| v.conversation.as_slice());
     // The chat's header leads its rows, once the core's view has said what to put in it.
     let top = view.map_or_else(Vec::new, |v| {
-        chat_header::rows(app, &chat_header::Facts::session(app, v), rows_area.width)
+        // The core has already projected supervisor names. Do not reinterpret an authored
+        // project, branch or supervisor name just because it resembles an internal ID.
+        let facts = chat_header::Facts::session(app, v);
+        chat_header::rows(app, &facts, rows_area.width)
     });
     if lines.is_empty() && chats.is_empty() {
         let text = if view.is_some() {
@@ -172,12 +172,18 @@ fn session_pane(
     } else {
         // A secondmate's conversation, from its side: its own replies under its name, the
         // Quartermaster's messages under the Quartermaster's.
-        let name = view.map_or_else(String::new, |v| agent_label(v.agent));
+        let name = crate::presentation::Presenter(&app.snapshot).agent(agent);
         let voices = conversation::Voices {
             agent: &name,
             supervisor: "quartermaster",
         };
-        let mut rows = conversation::rows(chats, &notes, rows_area.width, &voices);
+        let mut rows = conversation::rows_presented(
+            &crate::presentation::Presenter(&app.snapshot),
+            chats,
+            &notes,
+            rows_area.width,
+            &voices,
+        );
         if compacting.is_none() && view.is_some_and(|v| v.thinking) {
             rows.extend(conversation::thinking_rows(chats, app, agent));
         }
@@ -601,10 +607,24 @@ fn marked(out: &mut Rows, line: &SessionLine, max: u16, app: &App) {
     } else {
         "[from app]"
     };
+    let text = if line.kind == SessionLineKind::App {
+        crate::presentation::Presenter(&app.snapshot).app_message(&line.text)
+    } else {
+        // Compatibility with existing/sample collapsed briefs. Their detail is verbatim.
+        let prefix = app.session_view().and_then(|view| match view.agent {
+            AgentRef::Crewmate { task } => Some(format!("Brief · {task} · ")),
+            _ => None,
+        });
+        prefix
+            .as_deref()
+            .and_then(|prefix| line.text.strip_prefix(prefix))
+            .filter(|_| line.detail.is_some())
+            .map_or_else(|| line.text.clone(), |title| format!("Brief · {title}"))
+    };
     let runs = vec![
         (label.to_owned(), theme::blue()),
         (" ".to_owned(), theme::text()),
-        (line.text.clone(), theme::text()),
+        (text, theme::text()),
     ];
     let wrapped = wrap_styled(&runs, usize::from(max));
     let count = wrapped.len();
@@ -686,6 +706,43 @@ fn expand_button(line: &SessionLine, app: &App) -> Option<(&'static str, Hit)> {
     Some((label, Hit::Session(SessionHit::Expand(line.id))))
 }
 
+/// Only the known app-owned placeholder templates are relabelled. Never touch draft text.
+fn placeholder(app: &App, agent: AgentRef, view: Option<&SessionView>) -> String {
+    let supplied = view.map(|v| v.placeholder.as_str()).unwrap_or_default();
+    if let AgentRef::Crewmate { task } = agent {
+        let name = crate::widgets::crew::crewmate_name(app, agent);
+        if supplied.is_empty()
+            || supplied == "message this crewmate directly…"
+            || supplied == format!("message {task} directly…")
+        {
+            return format!("message {name} directly…");
+        }
+        if let Some(reason) = supplied.strip_prefix(&format!("{task} is ")) {
+            return format!("{name} is {reason}");
+        }
+    }
+    if let AgentRef::Secondmate { id } = agent {
+        let name = crate::presentation::Presenter(&app.snapshot).agent(agent);
+        if supplied == format!("message {id} directly…") {
+            return format!("message {name} directly…");
+        }
+        if supplied == format!("{id}'s session isn't available yet.") {
+            return format!("{name}'s session isn't available yet.");
+        }
+        if supplied.is_empty() {
+            return if view.is_some_and(|view| view.open) {
+                format!("message {name} directly…")
+            } else {
+                format!("{name}'s session isn't available yet.")
+            };
+        }
+    }
+    if !supplied.is_empty() {
+        return supplied.to_owned();
+    }
+    format!("message {} directly…", agent_label(agent))
+}
+
 /// Your message to the worker: the shared prompt field, the Accent border while focused; the
 /// reason, dim, once the session takes no more text.
 fn input(
@@ -698,13 +755,7 @@ fn input(
 ) {
     let open = app.session_open();
     let focused = app.focus == Pane::Input;
-    let placeholder = view
-        .map(|v| v.placeholder.clone())
-        .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| match agent {
-            AgentRef::Secondmate { id } => format!("{id}'s session isn't available yet."),
-            _ => format!("message {} directly…", agent_label(agent)),
-        });
+    let placeholder = placeholder(app, agent, view);
     let field = input_box::Field {
         placeholder,
         open,
@@ -727,6 +778,155 @@ mod tests {
 
     fn tool(id: u64, text: &str) -> SessionLine {
         SessionLine::new(id, SessionLineKind::Tool, jiff::Timestamp::UNIX_EPOCH, text)
+    }
+
+    #[test]
+    fn friendly_session_chrome_preserves_prose_tools_briefs_and_drafts() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        sample::install_session(&mut app);
+        let agent = app.session_view().unwrap().agent;
+        assert_eq!(agent_label(agent), "Crewmate");
+        assert_eq!(title(&app, agent, app.session_view()), "Token refresh race");
+        assert_eq!(
+            placeholder(&app, agent, app.session_view()),
+            "message Token refresh race directly…"
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        let mut map = FrameMap::default();
+        terminal
+            .draw(|f| draw(f, f.area(), &app, agent, &mut map))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let border: String = (0..100).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert!(border.contains("Token refresh race"));
+        assert!(!border.contains("C-0042"));
+        assert!(map.hits.rect_of(Hit::Session(SessionHit::Back)).is_some());
+        assert!(
+            map.hits
+                .rect_of(Hit::Session(SessionHit::Interrupt))
+                .is_some()
+        );
+
+        let text = "Keep T-0042, C-0042 and S-02 in prose and /repo/T-0042/C-0042/S-02";
+        let mut brief = SessionLine::new(
+            101,
+            SessionLineKind::Supervisor,
+            jiff::Timestamp::UNIX_EPOCH,
+            "Brief · authored title",
+        );
+        brief.detail = Some(text.to_owned());
+        let lines = [
+            brief,
+            SessionLine::new(102, SessionLineKind::You, jiff::Timestamp::UNIX_EPOCH, text),
+            SessionLine::new(
+                103,
+                SessionLineKind::Agent,
+                jiff::Timestamp::UNIX_EPOCH,
+                text,
+            ),
+            SessionLine::new(104, SessionLineKind::App, jiff::Timestamp::UNIX_EPOCH, text),
+            tool(105, &format!("Read {text}")),
+        ];
+        let collapsed = rows(&lines, &[], 120, &app, false);
+        assert!(collapsed.iter().any(|row| {
+            row.hits
+                .iter()
+                .any(|(_, _, hit)| *hit == Hit::Session(SessionHit::Expand(101)))
+        }));
+        app.toggle_expanded(101);
+        app.toggle_tool_group(105);
+        let shown = texts(&rows(&lines, &[], 120, &app, false)).join("\n");
+        assert!(shown.matches(text).count() >= 4, "{shown}");
+        assert!(shown.contains("Keep Token refresh race, Token refresh race and web-app in prose"));
+        app.draft.text = text.to_owned();
+        let mut map = FrameMap::default();
+        terminal
+            .draw(|f| input(f, f.area(), &app, agent, app.session_view(), &mut map))
+            .unwrap();
+        assert_eq!(app.draft.text, text);
+        let view = app.snapshot.session.as_mut().unwrap();
+        view.placeholder = "C-0042 is reported, so it takes no more messages.".to_owned();
+        assert_eq!(
+            placeholder(&app, agent, app.session_view()),
+            "Token refresh race is reported, so it takes no more messages."
+        );
+        app.snapshot.crew.clear();
+        app.snapshot.tasks.clear();
+        assert_eq!(
+            title(&app, agent, app.session_view()),
+            "fix(auth): token refresh race"
+        );
+        app.snapshot.session = None;
+        assert_eq!(title(&app, agent, None), "Crewmate");
+        assert_eq!(placeholder(&app, agent, None), "message Crewmate directly…");
+    }
+
+    #[test]
+    fn secondmate_chrome_uses_friendly_names_and_context_free_fallbacks() {
+        let mut app = App::new();
+        sample::install_secondmate(&mut app);
+        let agent = app.session_view().unwrap().agent;
+        assert_eq!(agent_label(agent), "Secondmate");
+        assert_eq!(title(&app, agent, app.session_view()), "web-app");
+        app.snapshot.session.as_mut().unwrap().placeholder = "message S-02 directly…".into();
+        assert_eq!(
+            placeholder(&app, agent, app.session_view()),
+            "message web-app directly…"
+        );
+        app.snapshot.session.as_mut().unwrap().placeholder =
+            "S-02's session isn't available yet.".into();
+        assert_eq!(
+            placeholder(&app, agent, app.session_view()),
+            "web-app's session isn't available yet."
+        );
+        // A loaded session retains the record's full name even without the crew list.
+        app.snapshot.crew.clear();
+        app.snapshot.session.as_mut().unwrap().title = "Web app S-02 notes".into();
+        assert_eq!(title(&app, agent, app.session_view()), "Web app S-02 notes");
+        app.snapshot.session.as_mut().unwrap().placeholder = "Keep S-02 verbatim".into();
+        assert_eq!(
+            placeholder(&app, agent, app.session_view()),
+            "Keep S-02 verbatim"
+        );
+        app.snapshot.session = None;
+        assert_eq!(title(&app, agent, None), "Secondmate");
+        assert_eq!(
+            placeholder(&app, agent, None),
+            "Secondmate's session isn't available yet."
+        );
+    }
+
+    #[test]
+    fn session_app_messages_preserve_raw_failure_diagnostics() {
+        let mut app = App::new();
+        sample::install_secondmate(&mut app);
+        let diagnostic = "fatal: bad revision 'S-02' (C-0042, T-0042)";
+        let lines = [
+            SessionLine::new(
+                201,
+                SessionLineKind::App,
+                jiff::Timestamp::UNIX_EPOCH,
+                format!("The turn stopped early: {diagnostic}"),
+            ),
+            SessionLine::new(
+                202,
+                SessionLineKind::App,
+                jiff::Timestamp::UNIX_EPOCH,
+                format!("A turn after S-02 reported stopped: {diagnostic}"),
+            ),
+        ];
+        let shown = texts(&rows(&lines, &[], 200, &app, false)).join("\n");
+        assert!(
+            shown.contains(&format!("The turn stopped early: {diagnostic}")),
+            "{shown}"
+        );
+        assert!(
+            shown.contains(&format!(
+                "A turn after web-app reported stopped: {diagnostic}"
+            )),
+            "{shown}"
+        );
     }
 
     #[test]
@@ -850,8 +1050,10 @@ mod tests {
         let mut app = App::new();
         sample::install_secondmate(&mut app);
         let chats = app.session_view().unwrap().conversation.clone();
+        let name =
+            crate::presentation::Presenter(&app.snapshot).agent(app.session_view().unwrap().agent);
         let voices = conversation::Voices {
-            agent: "S-02",
+            agent: &name,
             supervisor: "supervisor",
         };
         let rows = conversation::rows(&chats, &[], 100, &voices);

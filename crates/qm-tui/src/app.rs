@@ -165,6 +165,7 @@ impl App {
     pub(crate) fn flash(&mut self, text: impl Into<String>, now: Instant) {
         self.term.flash = Some(Flash {
             text: text.into(),
+            verbatim: false,
             until: now + FLASH_FOR,
         });
         self.dirty = true;
