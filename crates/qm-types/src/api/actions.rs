@@ -90,7 +90,7 @@ pub enum ActionKey {
     Plan { task: TaskId },
     /// A review task's report waiting on your go-ahead.
     Review { task: TaskId },
-    /// A finished answer task's report (lookup, research, reproduce, teach) you haven't opened.
+    /// A finished answer task's report (lookup, research, reproduce, teach) you haven't dismissed.
     Report { task: TaskId },
     /// An agent's question, by its message.
     Question { message: MessageId },

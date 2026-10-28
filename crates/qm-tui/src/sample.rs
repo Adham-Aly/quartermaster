@@ -778,8 +778,8 @@ fn report_item() -> ActionItem {
         CardLine::new(
             2,
             vec![s(
-                "The lookup is done. Open its report in your browser; once you open or dismiss \
-                 it, it leaves Actions.",
+                "The lookup is done. Open its report in your browser as often as you like. \
+                 Dismiss removes the report and its completed crewmate.",
                 Tone::Dim,
             )],
         ),

@@ -223,7 +223,7 @@ impl ActionsPart {
         out
     }
 
-    /// Finished answer tasks' reports you haven't opened or dismissed, while their page is there.
+    /// Finished answer tasks' reports you haven't dismissed, while their page is there.
     async fn reports(&self) -> Vec<ActionItem> {
         let kinds = crate::reports::api::card_kinds();
         let read = self

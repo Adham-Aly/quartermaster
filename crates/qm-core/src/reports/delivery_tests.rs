@@ -117,11 +117,6 @@ impl Delivery {
         assert_eq!(closed.status, TaskStatus::Closed);
     }
 
-    /// Gives the sweep a read report starts in the background time to run.
-    async fn settle_sweeps(&self) {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    }
-
     /// Waits (up to five seconds) for that sweep to take the page.
     async fn wait_until_swept(&self) {
         for _ in 0..250 {
@@ -193,6 +188,31 @@ impl Delivery {
                     "UPDATE tasks SET reported_at = report_read_at + 1 WHERE id = 3",
                     [],
                 )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn assert_pending(&self, kind: TaskKind, answer: &str) {
+        let snapshot = self.fill().await;
+        assert_eq!(snapshot.tasks.len(), 1);
+        assert!(snapshot.tasks[0].report_available);
+        assert_eq!(snapshot.crew.len(), 1);
+        assert!(!snapshot.crew[0].busy);
+        assert!(!snapshot.crew[0].needs_you);
+        let actions = self.actions().await;
+        assert_eq!(actions.len(), 1);
+        assert_report_card(&actions[0], kind, answer);
+        assert!(self.page().is_file());
+        self.fixture
+            .db()
+            .call(|conn| {
+                let read: Option<i64> =
+                    conn.query_row("SELECT report_read_at FROM tasks WHERE id = 3", [], |r| {
+                        r.get(0)
+                    })?;
+                assert!(read.is_none());
                 Ok(())
             })
             .await
@@ -377,29 +397,29 @@ async fn four_answer_kinds_refuse_missing_or_template_then_deliver_and_surface()
         assert_eq!(snapshot.tasks.len(), 1);
         assert_eq!(snapshot.crew.len(), 1);
         assert!(snapshot.tasks[0].running, "fill preserves live task detail");
-        // Dismissing it takes the card away; a newer report than the one you read brings it back.
-        part.handle(&Command::DismissReport {
-            task: delivery.caller.task.unwrap(),
-        })
-        .unwrap()
-        .await;
-        delivery.assert_no_card().await;
-        delivery.report_again().await;
-        assert_report_card(&delivery.actions().await[0], kind, answer);
-        // The open task's report stays through the sweep its dismissal started.
-        delivery.settle_sweeps().await;
-        assert!(delivery.page().is_file());
+        let task = delivery.caller.task.unwrap();
+        // Success (including repeated opens) and browser failure never acknowledge the report.
+        for opener in ["/usr/bin/true", "/usr/bin/true", "/usr/bin/false"] {
+            part.open_with(task, opener).await;
+            delivery.assert_pending(kind, answer).await;
+        }
 
-        // Its supervisor retires it: it leaves the crew and the task pane at once. The card stays
-        // until you read it, with nowhere to go, and so does the page it opens.
+        // Supervisor closure retires the task, but its pending report keeps the crew identity,
+        // task pane, card and page available until explicit dismissal.
         delivery.close().await;
-        let snapshot = delivery.fill().await;
-        assert_eq!(snapshot.tasks, [] as [TaskDetail; 0]);
-        assert_eq!(snapshot.crew, [] as [CrewRow; 0]);
+        delivery.assert_pending(kind, answer).await;
         let actions = delivery.actions().await;
-        assert_report_card(&actions[0], kind, answer);
         assert_eq!(actions[0].open, ActionOpen::Conversation);
-        assert!(delivery.page().is_file(), "an unread report stays");
+        for when in [
+            crate::retention::When::Startup,
+            crate::retention::When::Running,
+        ] {
+            let deps = delivery.host.0.deps();
+            crate::retention::sweep(&deps.db, &deps.data_dir, deps.clock.as_ref(), when).await;
+            delivery.assert_pending(kind, answer).await;
+        }
+        part.open_with(task, "/usr/bin/true").await;
+        delivery.assert_pending(kind, answer).await;
         // Once you dismiss it, nothing needs its files: they go, and so does the card.
         part.handle(&Command::DismissReport {
             task: delivery.caller.task.unwrap(),
@@ -410,12 +430,14 @@ async fn four_answer_kinds_refuse_missing_or_template_then_deliver_and_surface()
         assert!(!delivery.artifacts().exists(), "its whole artifacts folder");
         assert!(part.page(delivery.caller.task.unwrap()).await.is_err());
         delivery.assert_no_card().await;
-        assert_eq!(delivery.fill().await.crew, [] as [CrewRow; 0]);
+        let snapshot = delivery.fill().await;
+        assert_eq!(snapshot.crew, [] as [CrewRow; 0]);
+        assert_eq!(snapshot.tasks, [] as [TaskDetail; 0]);
     }
 }
 
 #[tokio::test]
-async fn retiring_a_read_report_removes_its_crew_row_and_artifacts_at_once() {
+async fn dismiss_retires_reported_task_and_later_supervisor_close_is_idempotent() {
     let delivery = Delivery::new(TaskKind::Lookup).await;
     delivery.write_page();
     qm_types::data_dir::private_folder(&delivery.artifacts().join("evidence")).unwrap();
@@ -428,15 +450,33 @@ async fn retiring_a_read_report_removes_its_crew_row_and_artifacts_at_once() {
         .await;
     assert!(!accepted.is_error, "{accepted:?}");
     assert_eq!(delivery.fill().await.crew.len(), 1);
-    // You read it before its supervisor closes it.
+    // Dismiss itself retires the reported task, without waiting for its supervisor.
     ReportPart::new(delivery.host.0.clone())
         .handle(&Command::DismissReport {
             task: delivery.caller.task.unwrap(),
         })
         .unwrap()
         .await;
+    delivery.wait_until_swept().await;
+    delivery
+        .fixture
+        .db()
+        .call(|conn| {
+            let row = tasks::load(conn, TaskId::new(3).unwrap())?.unwrap();
+            assert_eq!(row.status, TaskStatus::Closed);
+            assert_eq!(row.outcome, Some(TaskOutcome::Answered));
+            let acknowledged: bool = conn.query_row(
+                "SELECT report_read_at >= reported_at FROM tasks WHERE id = 3",
+                [],
+                |r| r.get(0),
+            )?;
+            assert!(acknowledged);
+            Ok(())
+        })
+        .await
+        .unwrap();
     delivery.close().await;
-    // The close's own sweep took everything; nothing waits for a later one.
+    // A later supervisor close is harmless; Dismiss already released the files.
     assert!(!delivery.artifacts().exists());
     assert!(
         fs::read_dir(delivery.host.0.deps().data_dir.artifacts_dir())
@@ -451,6 +491,96 @@ async fn retiring_a_read_report_removes_its_crew_row_and_artifacts_at_once() {
     delivery.assert_no_card().await;
     assert_eq!(fs::read_to_string(&outside).unwrap(), "keep me");
     fs::remove_file(outside).unwrap();
+}
+
+#[tokio::test]
+async fn a_newer_report_after_dismissal_surfaces_again() {
+    let delivery = Delivery::new(TaskKind::Research).await;
+    delivery.write_page();
+    let accepted = delivery
+        .report(json!({"outcome": "done", "answer": "Found it."}))
+        .await;
+    assert!(!accepted.is_error, "{accepted:?}");
+    let part = ReportPart::new(delivery.host.0.clone());
+    let task = delivery.caller.task.unwrap();
+    part.handle(&Command::DismissReport { task }).unwrap().await;
+    delivery.wait_until_swept().await;
+    delivery.assert_no_card().await;
+
+    // Model a newer persisted report, including its new page: dismissal swept the old files.
+    qm_types::data_dir::private_folder(delivery.page().parent().unwrap()).unwrap();
+    delivery.write_page();
+    delivery.report_again().await;
+    let snapshot = delivery.fill().await;
+    assert_eq!(snapshot.crew.len(), 1);
+    assert_eq!(snapshot.tasks.len(), 1);
+    assert!(snapshot.tasks[0].report_available);
+    let actions = delivery.actions().await;
+    assert_eq!(actions.len(), 1);
+    assert_report_card(&actions[0], TaskKind::Research, "Found it.");
+    part.open_with(task, "/usr/bin/true").await;
+    assert_eq!(delivery.actions().await.len(), 1);
+    part.handle(&Command::DismissReport { task }).unwrap().await;
+    delivery.wait_until_swept().await;
+    delivery.assert_no_card().await;
+    let snapshot = delivery.fill().await;
+    assert_eq!(snapshot.crew, [] as [CrewRow; 0]);
+    assert_eq!(snapshot.tasks, [] as [TaskDetail; 0]);
+}
+
+#[tokio::test]
+async fn dismiss_ignores_incomplete_answers_and_review_or_build_tasks() {
+    for (kind, status, reported) in [
+        (TaskKind::Lookup, "running", false),
+        (TaskKind::Research, "waiting", false),
+        (TaskKind::Review, "reported", true),
+        (TaskKind::Build, "reported", true),
+    ] {
+        let delivery = Delivery::new(kind).await;
+        // Even a page and a reported timestamp cannot give non-answer kinds Dismiss authority.
+        qm_types::data_dir::private_folder(delivery.page().parent().unwrap()).unwrap();
+        delivery.write_page();
+        delivery
+            .fixture
+            .db()
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE tasks SET status = ?1, reported_at = ?2 WHERE id = 3",
+                    (status, reported.then_some(2)),
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let part = ReportPart::new(delivery.host.0.clone());
+        part.handle(&Command::DismissReport {
+            task: delivery.caller.task.unwrap(),
+        })
+        .unwrap()
+        .await;
+        delivery
+            .fixture
+            .db()
+            .call(move |conn| {
+                let row = tasks::load(conn, TaskId::new(3).unwrap())?.unwrap();
+                assert_eq!(row.status.as_str(), status);
+                assert!(row.closed_at.is_none());
+                let read: Option<i64> =
+                    conn.query_row("SELECT report_read_at FROM tasks WHERE id = 3", [], |r| {
+                        r.get(0)
+                    })?;
+                assert!(read.is_none());
+                let retired: Option<i64> =
+                    conn.query_row("SELECT retired_at FROM agents WHERE id = 3", [], |r| {
+                        r.get(0)
+                    })?;
+                assert!(retired.is_none());
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(delivery.page().is_file());
+    }
 }
 
 #[tokio::test]

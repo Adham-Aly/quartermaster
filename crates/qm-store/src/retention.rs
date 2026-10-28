@@ -1,5 +1,5 @@
 //! What the retention sweep (`qm_core::retention`) must know before it deletes anything: which
-//! tasks are open and what they build on or retry, which closed tasks' reports the user hasn't read
+//! tasks are open and what they build on or retry, which closed tasks' reports the user hasn't dismissed
 //! yet, and which provider-engine session each live agent is on.
 
 use crate::StoreError;
@@ -37,14 +37,14 @@ pub struct LiveSession {
 /// Every fact the sweep decides by, read in one go so the decisions agree with each other.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
-    /// Closed tasks whose report the user hasn't opened or dismissed yet: its card still waits in
+    /// Closed tasks whose report the user hasn't dismissed yet: its card still waits in
     /// Actions, so its page must stay.
     pub unread_reports: Vec<TaskId>,
     pub open: Vec<OpenTask>,
     pub sessions: Vec<LiveSession>,
 }
 
-/// Reads the [`Facts`]. `report_kinds` are the kinds whose report has a card until it is read
+/// Reads the [`Facts`]. `report_kinds` are the kinds whose report has a card until it is dismissed
 /// (`qm_core::reports::api::has_report_card`): a closed one keeps its card only when it answered.
 pub fn facts(conn: &Connection, report_kinds: &[TaskKind]) -> Result<Facts, StoreError> {
     let kinds =

@@ -1,11 +1,9 @@
 //! Completed static reports: the task pane's Open report, and their cards in the Actions panel.
 //!
 //! A finished answer task's report (lookup, research, reproduce, teach) has a card
-//! ([`report_card`]: Open, Dismiss) until you open it, from the card or the task pane, or dismiss
-//! it; `tasks.report_read_at` records when. The card stays after the task closes, since its
-//! supervisor usually closes it as soon as it reports, and comes back if the task reports again.
-//! A closed task has no row in the crew and no task pane: once its card is read, its report goes
-//! with its other files ([`crate::retention`]).
+//! ([`report_card`]: Open, Dismiss) until you explicitly dismiss it. Opening never consumes it.
+//! `tasks.report_read_at` records dismissal; a newer report brings the card back. Completed
+//! crewmates stay visible with their reports until dismissal, even after supervisor closure.
 //! A review's report under normal autonomy has its own card while it waits on your go-ahead
 //! ([`review_card`]; [`crate::tasks::review`]): Open, and Go ahead.
 
@@ -52,9 +50,13 @@ impl ReportPart {
     }
 
     async fn open(&self, task: TaskId) {
+        self.open_with(task, "/usr/bin/open").await;
+    }
+
+    async fn open_with(&self, task: TaskId, opener: &str) {
         let problem = match self.page(task).await {
             Ok(page) => {
-                let result = tokio::process::Command::new("/usr/bin/open")
+                let result = tokio::process::Command::new(opener)
                     .arg("--")
                     .arg(page)
                     .stdin(std::process::Stdio::null())
@@ -63,7 +65,6 @@ impl ReportPart {
                     .status()
                     .await;
                 if result.is_ok_and(|status| status.success()) {
-                    self.mark_read(task, true).await;
                     return;
                 }
                 format!("{task}'s report couldn't be opened in your browser on this Mac.")
@@ -73,10 +74,24 @@ impl ReportPart {
         self.note(&problem).await;
     }
 
-    /// You opened (`opened`) or dismissed `task`'s report: its card leaves Actions, and a closed
-    /// task's report then goes.
-    async fn mark_read(&self, task: TaskId, opened: bool) {
+    /// Only explicit dismissal acknowledges the report and releases its retained files.
+    async fn dismiss(&self, task: TaskId) {
         let deps = self.svc.deps();
+        let Ok(Some(row)) = deps.db.call(move |conn| tasks::load(conn, task)).await else {
+            return;
+        };
+        if !has_report_card(&row) {
+            return;
+        }
+        if row.status == TaskStatus::Reported
+            && let Err(e) =
+                crate::tasks::close::retire(&self.svc, task, crate::tasks::close::Exit::Answered)
+                    .await
+        {
+            self.note(&format!("{task}'s report couldn't be dismissed: {e}"))
+                .await;
+            return;
+        }
         let at = deps.clock.now();
         if let Err(e) = deps
             .db
@@ -86,11 +101,10 @@ impl ReportPart {
             tracing::error!(error = %e, %task, "couldn't record that a report was read");
             return;
         }
-        crate::retention::after_report_read(
+        crate::retention::after_report_dismissed(
             deps.db.clone(),
             deps.data_dir.clone(),
             deps.clock.clone(),
-            opened,
         );
     }
 
@@ -185,8 +199,8 @@ pub const REPORT_HEADING: &str = "Report ready";
 /// The longest piece of the answer a report's card quotes.
 const ANSWER_CHARS: usize = 160;
 
-/// Whether `row`'s report has a card in Actions until you read it: a finished answer task, still
-/// reported or closed with its answer. Whether it is unread is the store's
+/// Whether `row`'s report has a card in Actions until you dismiss it: a finished answer task, still
+/// reported or closed with its answer. Whether it is pending dismissal is the store's
 /// ([`tasks::unread_reports`]); whether its page is there is [`report_page`]'s.
 pub(crate) fn has_report_card(row: &tasks::TaskRow) -> bool {
     crate::reports::answers_with_report(row.kind)
@@ -204,7 +218,7 @@ pub(crate) fn card_kinds() -> Vec<TaskKind> {
         .collect()
 }
 
-/// The card for a finished answer task's report you haven't read: the answer's first line, and
+/// The card for a finished answer task's report you haven't dismissed: the answer's first line, and
 /// Open and Dismiss.
 pub(crate) fn report_card(
     task: TaskId,
@@ -233,8 +247,8 @@ pub(crate) fn report_card(
         2,
         vec![Styled::new(
             format!(
-                "The {kind} is done. Open its report in your browser; once you open or dismiss \
-                 it, it leaves Actions."
+                "The {kind} is done. Open its report in your browser as often as you like. \
+                 Dismiss removes the report and its completed crewmate."
             ),
             Tone::Dim,
         )],
@@ -276,7 +290,7 @@ impl ApiPart for ReportPart {
                 Handled::Changed
             })),
             Command::DismissReport { task } => Some(Box::pin(async move {
-                self.mark_read(*task, false).await;
+                self.dismiss(*task).await;
                 Handled::Changed
             })),
             Command::ApproveReview { task } => Some(Box::pin(async move {
@@ -289,8 +303,14 @@ impl ApiPart for ReportPart {
 
     fn fill<'a>(&'a self, snapshot: &'a mut Snapshot) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            // Only an open task's report: a closed task has left the crew, and its unread
-            // report is opened from its card in Actions.
+            // Closed answer tasks keep their report and completed crew identity until dismissal.
+            let pending = self
+                .svc
+                .deps()
+                .db
+                .call(|conn| tasks::unread_reports(conn, &card_kinds()))
+                .await
+                .unwrap_or_default();
             let mut reports = Vec::new();
             for (_, task, _) in self.svc.deps().data_dir.filed_artifacts() {
                 if let Ok(Some(row)) = self
@@ -299,7 +319,9 @@ impl ApiPart for ReportPart {
                     .db
                     .call(move |conn| tasks::load(conn, task))
                     .await
-                    && row.status != TaskStatus::Closed
+                    && (row.status != TaskStatus::Closed
+                        || (has_report_card(&row)
+                            && pending.iter().any(|pending| pending.id == task)))
                     && has_report(&row)
                     && report_page(&self.svc.paths_of(&row)).is_ok()
                 {

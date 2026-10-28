@@ -22,12 +22,28 @@ pub struct Kept {
     pub predicate: &'static str,
 }
 
+// `report_read_at` records explicit dismissal, not merely opening a report. A newer report
+// reopens the obligation. Keep this rule shared by mirroring and history forgetting.
+macro_rules! pending_report {
+    () => {
+        "kind IN ('lookup', 'research', 'reproduce', 'teach') AND reported_at IS NOT NULL \
+         AND (status = 'reported' OR (status = 'closed' AND outcome = 'answered')) \
+         AND (report_read_at IS NULL OR report_read_at < reported_at)"
+    };
+}
+
+pub(crate) const PENDING_REPORT: &str = pending_report!();
+
 // Keep task dependencies under exactly the same rule as the task itself. This is expanded in
 // SQL subqueries too, since a live working database still contains delivered closed tasks.
 macro_rules! retained_task {
     () => {
-        "status <> 'closed' OR id IN (SELECT task_id FROM events WHERE task_id IS NOT NULL \
-         AND seq > (SELECT COALESCE(MAX(event_seq), 0) FROM parent_channel_cursor))"
+        concat!(
+            "status <> 'closed' OR (",
+            pending_report!(),
+            ") OR id IN (SELECT task_id FROM events WHERE task_id IS NOT NULL \
+             AND seq > (SELECT COALESCE(MAX(event_seq), 0) FROM parent_channel_cursor))"
+        )
     };
 }
 
@@ -140,8 +156,8 @@ pub const KEPT: &[Kept] = &[
                     WHERE removed_at IS NULL OR id IN (SELECT project_id FROM tasks WHERE status <> 'closed'))",
     },
     Kept {
-        // A closed task stays while the pump hasn't read an event of it: its request is
-        // what the fact is sent under.
+        // A closed task stays for undismissed reports as well as unread parent facts.
+        // Its request and agents must survive under the same rule.
         table: "tasks",
         predicate: retained_task!(),
     },
@@ -163,7 +179,11 @@ pub const KEPT: &[Kept] = &[
     },
     Kept {
         table: "reports",
-        predicate: "task_id IN (SELECT id FROM tasks WHERE status <> 'closed')",
+        predicate: concat!(
+            "task_id IN (SELECT id FROM tasks WHERE status <> 'closed' OR (",
+            pending_report!(),
+            "))"
+        ),
     },
     Kept {
         table: "held_actions",
@@ -202,26 +222,26 @@ pub const KEPT: &[Kept] = &[
         // Evaluated on the running store too, where closed tasks are still present: so the task
         // side repeats `tasks`' own predicate, and matches the same requests either way.
         table: "secondmate_requests",
-        predicate: "(secondmate_id IN (SELECT id FROM secondmates WHERE retired_at IS NULL) \
-                     AND status = 'open') \
-                    OR id IN (SELECT secondmate_request_id FROM tasks \
-                              WHERE status <> 'closed' \
-                                 OR id IN (SELECT task_id FROM events WHERE task_id IS NOT NULL \
-                                           AND seq > (SELECT COALESCE(MAX(event_seq), 0) \
-                                                      FROM parent_channel_cursor)))",
+        predicate: concat!(
+            "(secondmate_id IN (SELECT id FROM secondmates WHERE retired_at IS NULL) \
+              AND status = 'open') \
+             OR id IN (SELECT secondmate_request_id FROM tasks WHERE ",
+            retained_task!(),
+            ")"
+        ),
     },
     Kept {
         // The requests this table keeps (see `secondmate_requests`): the rows follow their request
         // on disk too, not only at load.
         table: "parent_channel",
-        predicate: "correlation_id IN (SELECT id FROM secondmate_requests \
-                                       WHERE (secondmate_id IN (SELECT id FROM secondmates WHERE retired_at IS NULL) \
-                                              AND status = 'open') \
-                                          OR id IN (SELECT secondmate_request_id FROM tasks \
-                                                    WHERE status <> 'closed' \
-                                                       OR id IN (SELECT task_id FROM events WHERE task_id IS NOT NULL \
-                                                                 AND seq > (SELECT COALESCE(MAX(event_seq), 0) \
-                                                                            FROM parent_channel_cursor))))",
+        predicate: concat!(
+            "correlation_id IN (SELECT id FROM secondmate_requests \
+              WHERE (secondmate_id IN (SELECT id FROM secondmates WHERE retired_at IS NULL) \
+                     AND status = 'open') \
+                 OR id IN (SELECT secondmate_request_id FROM tasks WHERE ",
+            retained_task!(),
+            "))"
+        ),
     },
     Kept {
         table: "jobs",

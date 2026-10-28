@@ -799,6 +799,70 @@ mod tests {
     }
 
     #[test]
+    fn pending_closed_reports_survive_clear_and_restarts_until_dismissal() {
+        for kind in ["lookup", "research", "reproduce", "teach"] {
+            let scratch = Scratch::new(&format!("pending-report-{kind}"));
+            let (mut mem, mut mirror) = Mirror::open(&scratch.state()).expect("mirror");
+            quartermaster(&mem);
+            mem.execute_batch(STEERED_CREWMATE)
+                .expect("task and retired crew");
+            mem.execute(
+                "UPDATE tasks SET kind = ?1, outcome = 'answered', reported_at = 20,
+                     report_read_at = 10 WHERE id = 5",
+                [kind],
+            )
+            .expect("a report newer than its previous dismissal");
+            mem.execute_batch(
+                "INSERT INTO reports (id, task_id, agent_id, source, final_text, created_at, seq)
+                 VALUES (1, 5, 6, 'final_text', 'durable answer', 20, 1);",
+            )
+            .expect("report");
+            assert_eq!(
+                crate::history::forget_closed_task_details(&mut mem).expect("clear"),
+                Vec::<u32>::new()
+            );
+            mirror.flush(&mem).expect("flush");
+            assert_eq!(count(&mirror.disk, "reports"), 1);
+            drop((mem, mirror));
+
+            let (mut mem, mut mirror) = Mirror::open(&scratch.state()).expect("restart");
+            assert_eq!(count(&mem, "tasks"), 1);
+            assert_eq!(count(&mem, "agents"), 2, "retired report author stays");
+            assert_eq!(
+                count(
+                    &mem,
+                    "reports WHERE final_text = 'durable answer' AND agent_id = 6"
+                ),
+                1
+            );
+            assert_eq!(count(&mem, "pragma_foreign_key_check"), 0);
+            assert_eq!(
+                crate::history::forget_closed_tasks(&mut mem, 0).expect("cap"),
+                Vec::<u32>::new()
+            );
+            assert_eq!(
+                crate::history::forget_closed_task_details(&mut mem).expect("clear again"),
+                Vec::<u32>::new()
+            );
+            mem.execute("UPDATE tasks SET report_read_at = reported_at", [])
+                .expect("dismiss");
+            mirror.flush(&mem).expect("dismissal flush");
+            assert_eq!(count(&mirror.disk, "tasks"), 0);
+            assert_eq!(count(&mirror.disk, "reports"), 0);
+            assert_eq!(
+                crate::history::forget_closed_task_details(&mut mem).expect("clear dismissed"),
+                vec![5]
+            );
+            mirror.flush(&mem).expect("clear flush");
+            drop((mem, mirror));
+            let (mem, _) = Mirror::open(&scratch.state()).expect("restart after dismissal");
+            assert_eq!(count(&mem, "tasks"), 0);
+            assert_eq!(count(&mem, "reports"), 0);
+            assert_eq!(count(&mem, "pragma_foreign_key_check"), 0);
+        }
+    }
+
+    #[test]
     fn a_crewmate_whose_task_is_gone_leaves_with_its_wakes() {
         // Through the running store: the task closes and its facts are read, but steers the
         // crewmate never took still name it.

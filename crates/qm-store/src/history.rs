@@ -141,14 +141,16 @@ pub fn forget_before_turn_except(
 /// jobs, processes, routing decisions, wakes and held actions, and the crewmates that worked on it
 /// with their conversations, and the task labels no crewmate names any more. Tasks with unread
 /// parent-channel facts stay even beyond the cap, until the pump advances its durable cursor.
+/// Tasks with undismissed reports stay regardless of the cap.
 /// Returns the forgotten crewmate numbers.
 pub fn forget_closed_tasks(conn: &mut Connection, keep: usize) -> Result<Vec<u32>, StoreError> {
     forget_closed(conn, keep, false)
 }
 
-/// Explicit clear/compaction: discards every closed task's details, even with unread facts.
-/// Minimal pending parent outcomes are delivered to durable, task-independent wakes first.
-/// Unlike cap eviction, this never waits for the parent pump or block watermarks.
+/// Explicit clear/compaction: discards closed task details except undismissed reports' tasks,
+/// even with unread facts. Minimal pending parent outcomes are delivered to durable,
+/// task-independent wakes first. Unlike cap eviction, this never waits for the parent pump
+/// or block watermarks.
 pub fn forget_closed_task_details(conn: &mut Connection) -> Result<Vec<u32>, StoreError> {
     forget_closed(conn, 0, true)
 }
@@ -162,13 +164,15 @@ fn forget_closed(
     let forgotten = with_guards_lifted(conn, |tx| {
         tx.execute_batch("PRAGMA defer_foreign_keys = ON;")?;
         let ids: Vec<i64> = tx
-            .prepare(
+            .prepare(&format!(
                 "SELECT id FROM (SELECT id FROM tasks WHERE status = 'closed' \
-                 ORDER BY seq DESC LIMIT -1 OFFSET ?1) \
-                 WHERE (?2 OR id NOT IN (SELECT task_id FROM events WHERE task_id IS NOT NULL \
-                                  AND seq > (SELECT COALESCE(MAX(event_seq), 0) \
-                                             FROM parent_channel_cursor)))",
-            )?
+                     ORDER BY seq DESC LIMIT -1 OFFSET ?1) \
+                     WHERE id NOT IN (SELECT id FROM tasks WHERE {}) \
+                     AND (?2 OR id NOT IN (SELECT task_id FROM events WHERE task_id IS NOT NULL \
+                                      AND seq > (SELECT COALESCE(MAX(event_seq), 0) \
+                                                 FROM parent_channel_cursor)))",
+                kept::PENDING_REPORT
+            ))?
             .query_map(params![keep, explicit], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         if ids.is_empty() {

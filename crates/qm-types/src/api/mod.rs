@@ -107,13 +107,11 @@ pub enum Command {
     OpenPlan {
         task: TaskId,
     },
-    /// Open only this task's completed static report in the browser on this Mac. Once it opens,
-    /// the report's card leaves Actions.
+    /// Open this task's completed static report without dismissing its card or deleting files.
     OpenReport {
         task: TaskId,
     },
-    /// Take a finished report's card out of Actions without opening it. While its task is open,
-    /// the task pane still opens the report; once it is closed, the report goes.
+    /// Dismiss a finished report, removing its card and completed crewmate and releasing its files.
     DismissReport {
         task: TaskId,
     },
@@ -1067,7 +1065,7 @@ pub enum CardKind {
     Plan,
     /// "✎ Review ready": a review's static report, waiting on your go-ahead (normal autonomy).
     Review,
-    /// "✓ Report ready": a finished answer task's static report you haven't opened yet.
+    /// "✓ Report ready": a finished answer task's static report you haven't dismissed yet.
     Report,
 }
 
@@ -1099,7 +1097,7 @@ pub enum CardAction {
     OpenReport { task: TaskId },
     /// A review card's "Go ahead": sends `Command::ApproveReview`.
     ApproveReview { task: TaskId },
-    /// A report card's "Open": sends `Command::OpenReport`, and the card goes once it opens.
+    /// A report card's "Open": sends `Command::OpenReport` without consuming the card.
     ReadReport { task: TaskId },
     /// A report card's "Dismiss": sends `Command::DismissReport`.
     DismissReport { task: TaskId },
