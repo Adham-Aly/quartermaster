@@ -7,6 +7,18 @@
 >
 > Then run `quartermaster`. To update later, run the same command again.
 
+## What's new in 0.9.2
+
+Changes since [0.9.1](https://github.com/Adham-Aly/quartermaster/releases/tag/v0.9.1):
+
+- **Reports and code settle independently.** Lookup, research, reproduce and teach reports
+  stay visible while their code awaits approval, settles or has landed. **Dismiss** hides the
+  report card without closing the code task or changing its approval. Dismissal and undismissed
+  report cards survive restarting Quartermaster.
+- **Unfinished dependencies survive restart.** Tasks that build on another task keep their
+  dependency gate after restarting Quartermaster. A dependent task cannot settle until the
+  unfinished work it builds on is ready.
+
 ## What's new in 0.9.1
 
 Changes since [0.9.0](https://github.com/Adham-Aly/quartermaster/releases/tag/v0.9.0):
