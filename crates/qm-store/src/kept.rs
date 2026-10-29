@@ -35,12 +35,25 @@ macro_rules! pending_report {
 
 pub(crate) const PENDING_REPORT: &str = pending_report!();
 
+// A closed blocker's outcome still gates settlement while its dependent is open.
+// Share this rule with history forgetting so neither restart nor compaction drops the gate.
+macro_rules! needed_blocker {
+    () => {
+        "id IN (SELECT blocker FROM task_links WHERE blocked IN \
+         (SELECT id FROM tasks WHERE status <> 'closed'))"
+    };
+}
+
+pub(crate) const NEEDED_BLOCKER: &str = needed_blocker!();
+
 // Keep task dependencies under exactly the same rule as the task itself. This is expanded in
 // SQL subqueries too, since a live working database still contains delivered closed tasks.
 macro_rules! retained_task {
     () => {
         concat!(
-            "status <> 'closed' OR (",
+            "status <> 'closed' OR ",
+            needed_blocker!(),
+            " OR (",
             pending_report!(),
             ") OR id IN (SELECT task_id FROM events WHERE task_id IS NOT NULL \
              AND seq > (SELECT COALESCE(MAX(event_seq), 0) FROM parent_channel_cursor))"
@@ -157,8 +170,8 @@ pub const KEPT: &[Kept] = &[
                     WHERE removed_at IS NULL OR id IN (SELECT project_id FROM tasks WHERE status <> 'closed'))",
     },
     Kept {
-        // A closed task stays for undismissed reports as well as unread parent facts.
-        // Its request and agents must survive under the same rule.
+        // A closed task stays for open dependents, undismissed reports and unread parent facts.
+        // Its outcome, request and agents must survive under the same rule.
         table: "tasks",
         predicate: retained_task!(),
     },
@@ -175,7 +188,7 @@ pub const KEPT: &[Kept] = &[
     },
     Kept {
         table: "task_links",
-        predicate: "blocker IN (SELECT id FROM tasks WHERE status <> 'closed') \
+        predicate: "blocker IN (SELECT id FROM tasks) \
                     AND blocked IN (SELECT id FROM tasks WHERE status <> 'closed')",
     },
     Kept {
