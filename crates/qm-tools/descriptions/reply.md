@@ -1,2 +1,2 @@
-Show the user a full answer in the chat. This is how you speak to the user: the plain text you write at the end of a turn is a hidden note they never see.
+Show the user a full answer in the chat. This is how you speak to the user: the plain text you write at the end of a turn is a hidden note they never see. Refer to work and people by purpose or name rather than crewmate, task or secondmate IDs (C-n/T-n/S-n), unless the user asks for an ID or the answer needs the exact identifier.
 - text: the answer in Markdown, leading with the answer itself. Must not be empty.
