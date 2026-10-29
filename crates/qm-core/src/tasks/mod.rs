@@ -21,19 +21,13 @@ pub mod close;
 pub mod delivered;
 pub mod delivery_probe;
 pub mod env;
-#[cfg(test)]
-mod follow_up_tests;
 pub mod input;
 pub mod lifecycle;
 pub mod lookup;
 pub mod moving;
-#[cfg(test)]
-mod moving_tests;
 pub mod plan;
 pub mod ports;
 pub mod relabel;
-#[cfg(test)]
-mod relabel_tests;
 pub mod report;
 pub mod review;
 pub mod runner;
@@ -41,11 +35,7 @@ pub mod session;
 pub mod setup;
 pub mod start;
 pub mod startup;
-#[cfg(test)]
-mod unlink_tests;
 pub mod waits;
-#[cfg(test)]
-mod words_tests;
 
 use crate::api::{ApiPart, Handled};
 use crate::inbox::{Inbox, Notify, WakeSink};

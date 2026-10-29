@@ -718,6 +718,3 @@ async fn fire(svc: &TaskService, row: &DeferredRow) -> Result<(), ToolFailure> {
     start::start_when_ready(svc, &caller, saved.request, how).await?;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

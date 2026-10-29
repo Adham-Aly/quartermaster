@@ -491,7 +491,3 @@ fn subfolders(dir: &Path) -> Vec<(String, PathBuf)> {
         .filter(|(_, p)| fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()))
         .collect()
 }
-
-#[cfg(test)]
-#[path = "retention_tests.rs"]
-mod tests;

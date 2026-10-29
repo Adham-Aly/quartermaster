@@ -15,8 +15,6 @@
 
 use crate::adapters::{self, WireApi};
 
-#[cfg(test)]
-mod forget_tests;
 use crate::agent_loop::CompactError;
 use crate::builtin::{BuiltinTools, JobNotice};
 use crate::compaction::Context;

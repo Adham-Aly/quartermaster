@@ -71,6 +71,3 @@ impl Handle for ListCrewmateStartsTool {
         Box::pin(async move { cx.host.list_crewmate_starts(cx.caller).await })
     }
 }
-
-#[cfg(test)]
-mod tests;

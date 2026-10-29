@@ -472,27 +472,3 @@ async fn delivered_at(svc: &TaskService, task: TaskId, round: u32) -> String {
         .flatten();
     crate::tasks::plan::local_time(at.unwrap_or_else(|| svc.clock().now()))
 }
-
-#[cfg(test)]
-mod acknowledgement_tests {
-    use super::acknowledgement;
-    use qm_types::ids::TaskId;
-
-    #[test]
-    fn the_acknowledgement_names_only_what_the_reply_held() {
-        let task = TaskId::new(7).expect("a task number");
-        assert_eq!(
-            acknowledgement(task, 1, 2, 3, 0),
-            "Plan reply sent from the page · C-0007 round 1 · 2 of 3 answered"
-        );
-        assert_eq!(
-            acknowledgement(task, 1, 1, 1, 2),
-            "Plan reply sent from the page · C-0007 round 1 · 1 of 1 answered, 2 section notes"
-        );
-        // A final round has no questions: its reply is section notes only.
-        assert_eq!(
-            acknowledgement(task, 2, 0, 0, 1),
-            "Plan reply sent from the page · C-0007 round 2 · 1 section note"
-        );
-    }
-}

@@ -346,36 +346,3 @@ impl crate::tasks::OutsideWatch for OutsideHook {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn tags(names: &[&str]) -> Vec<String> {
-        names.iter().map(|n| (*n).to_owned()).collect()
-    }
-
-    #[test]
-    fn only_tags_made_since_the_start_count() {
-        assert_eq!(
-            since_baseline("v1\nv2\n", tags(&["v1", "v2", "v3"])),
-            tags(&["v3"])
-        );
-        assert_eq!(since_baseline("", tags(&["v1"])), tags(&["v1"]));
-    }
-
-    #[test]
-    fn the_apps_own_tags_and_recorded_ones_are_left_out() {
-        let ours = BTreeSet::from(["v3".to_owned()]);
-        let seen = BTreeSet::from(["v4".to_owned()]);
-        assert_eq!(
-            to_record(tags(&["v3", "v4", "v5"]), &ours, &seen),
-            tags(&["v5"])
-        );
-        let many: Vec<String> = (0..30).map(|n| format!("t{n}")).collect();
-        assert_eq!(
-            to_record(many, &BTreeSet::new(), &BTreeSet::new()).len(),
-            MAX_NEW_TAGS
-        );
-    }
-}

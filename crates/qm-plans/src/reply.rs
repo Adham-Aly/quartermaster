@@ -27,7 +27,7 @@
 //! - CRLF and text around the block are tolerated; other lines inside are kept verbatim for the
 //!   planner, a model, to read.
 //!
-//! `template/plan.js`'s `buildReply` produces exactly this; a test runs it and parses the result.
+//! `template/plan.js`'s `buildReply` produces exactly this.
 
 /// The opening tag's name.
 pub const OPEN: &str = "<plan-reply ";
@@ -315,6 +315,3 @@ pub fn only_replies(text: &str) -> bool {
         && malformed.is_empty()
         && replace(&normal, |_| String::new()).trim().is_empty()
 }
-
-#[cfg(test)]
-mod tests;

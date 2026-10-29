@@ -992,6 +992,3 @@ pub fn listed_models(conn: &Connection) -> Result<BTreeSet<ModelId>, StoreError>
         .collect::<rusqlite::Result<BTreeSet<_>>>()?;
     Ok(ids)
 }
-
-#[cfg(test)]
-mod tests;

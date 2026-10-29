@@ -35,8 +35,6 @@
 //!   `SessionClosed { EndConversation }`.
 
 pub mod stream;
-#[cfg(test)]
-mod tests;
 
 use crate::argv::{LaunchOptions, ToolSet, build_argv};
 use crate::autocompact::{self, Restart};

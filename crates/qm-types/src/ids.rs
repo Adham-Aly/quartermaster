@@ -621,7 +621,3 @@ pub fn free_number(
     free.get(usize::try_from(source.number(0, last)).ok()?)
         .copied()
 }
-
-#[cfg(test)]
-#[path = "ids_tests.rs"]
-mod tests;

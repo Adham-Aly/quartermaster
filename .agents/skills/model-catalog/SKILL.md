@@ -97,5 +97,6 @@ collapse combinations to canonical IDs or expand them into unsupported effort co
 
 ## Verify
 
-`cargo xtask check` and `cargo build` (the routing tests cover the defaults), then open Settings ▸
-Model levels in a throwaway run (skill `run-by-hand`) and check the tiers and efforts shown.
+`cargo xtask check` and `cargo build`, then open Settings ▸
+Model levels in a throwaway run (skill `run-by-hand`) and check the tiers and efforts shown
+against the configured routing kinds and their defaults.

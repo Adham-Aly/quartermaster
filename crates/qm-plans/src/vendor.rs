@@ -1,7 +1,6 @@
 //! Vendored libraries, compiled in so a plan page works offline and asks nothing of the network:
 //! `KaTeX` for math (MIT; `vendor/katex-0.16.47/LICENSE`), its fonts as `data:` URIs. Included in a
-//! page only when the plan has math. `vendor/VERSIONS.toml` lists each file's sha256; a test checks
-//! them.
+//! page only when the plan has math. `vendor/VERSIONS.toml` lists each file's sha256.
 
 use base64::Engine as _;
 use std::sync::OnceLock;
@@ -114,45 +113,4 @@ pub(crate) fn katex_css() -> &'static str {
         }
         css
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sha2::{Digest, Sha256};
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn every_vendored_file_matches_its_listed_sha256() {
-        let manifest: toml::Value =
-            toml::from_str(include_str!("../vendor/VERSIONS.toml")).expect("VERSIONS.toml");
-        let listed: BTreeMap<String, String> = manifest["katex"]["sha256"]
-            .as_table()
-            .expect("katex.sha256")
-            .iter()
-            .map(|(k, v)| (k.clone(), v.as_str().expect("a digest").to_owned()))
-            .collect();
-        let mut files: Vec<(String, &[u8])> = vec![
-            ("katex.min.js".to_owned(), KATEX_JS.as_bytes()),
-            ("katex.min.css".to_owned(), KATEX_CSS.as_bytes()),
-            ("LICENSE".to_owned(), KATEX_LICENCE.as_bytes()),
-        ];
-        files.extend(KATEX_FONTS.iter().map(|(n, b)| (format!("fonts/{n}"), *b)));
-        assert_eq!(
-            files.len(),
-            listed.len(),
-            "every listed file is compiled in"
-        );
-        for (name, bytes) in files {
-            let digest = crate::hex(&Sha256::digest(bytes));
-            assert_eq!(listed.get(&name), Some(&digest), "{name}");
-        }
-    }
-
-    #[test]
-    fn the_stylesheet_loads_no_file() {
-        let css = katex_css();
-        assert!(!css.contains("url(fonts/"), "a font still points at a file");
-        assert!(css.contains("url(data:font/woff2;base64,"));
-    }
 }

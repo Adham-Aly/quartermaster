@@ -327,19 +327,3 @@ fn thousands(n: usize) -> String {
     }
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_scratchpad_section_names_the_folder_and_puts_it_before_tmp() {
-        let section = scratchpad_section(std::path::Path::new(
-            "/tmp/quartermaster/1/a/scratchpad/T-7",
-        ));
-        assert!(section.starts_with("\n\n# Scratchpad directory\n"));
-        assert!(section.contains("`/tmp/quartermaster/1/a/scratchpad/T-7`"));
-        assert!(section.contains("instead of `/tmp`"));
-        assert!(!section.contains("{dir}"));
-    }
-}

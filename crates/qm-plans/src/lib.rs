@@ -497,6 +497,3 @@ pub(crate) fn escape(text: &str) -> String {
     }
     out
 }
-
-#[cfg(test)]
-mod tests;

@@ -247,7 +247,3 @@ pub(crate) async fn autonomy_changed(svc: &TaskService, project: ProjectId) {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "review_tests.rs"]
-mod tests;

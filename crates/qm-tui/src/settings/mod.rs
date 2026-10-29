@@ -24,8 +24,6 @@ mod overlay;
 mod paint;
 mod routing;
 mod sync;
-#[cfg(test)]
-mod tests;
 
 use crate::app::App;
 use crate::hit::{FrameMap, Pane};

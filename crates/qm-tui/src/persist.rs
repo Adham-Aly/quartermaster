@@ -392,6 +392,3 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

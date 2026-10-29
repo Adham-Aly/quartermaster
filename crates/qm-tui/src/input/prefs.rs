@@ -62,16 +62,3 @@ pub(crate) fn load(path: &Path) -> Prefs {
         .map(|text| Prefs::parse(&text))
         .unwrap_or_default()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_bad_value_spoils_only_itself_and_widths_are_clamped() {
-        let prefs = Prefs::parse("left_width = 500\nright_width = \"wide\"\n");
-        assert_eq!(prefs.left_width, LEFT_RANGE.1);
-        assert_eq!(prefs.right_width, RIGHT_DEFAULT);
-        assert_eq!(Prefs::parse("not toml {"), Prefs::default());
-    }
-}

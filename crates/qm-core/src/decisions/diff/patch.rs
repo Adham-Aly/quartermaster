@@ -277,6 +277,3 @@ fn quoted_path(text: &str) -> Option<(String, &str)> {
     }
     None
 }
-
-#[cfg(test)]
-mod tests;

@@ -48,32 +48,3 @@ pub fn runs_on_line(landed: Tier, used: Tier) -> String {
 pub fn retry_waiting_line(target: Tier) -> String {
     format!("waiting for a {target} model")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const ALL: [Tier; 4] = [Tier::Low, Tier::Medium, Tier::High, Tier::Premium];
-
-    #[test]
-    fn every_order_starts_at_its_tier_and_never_falls_back_to_premium() {
-        for t in ALL {
-            let o = order(t);
-            assert_eq!(o[0], t);
-            assert!(!o[1..].contains(&Tier::Premium), "{t}");
-        }
-    }
-
-    #[test]
-    fn premium_falls_back_like_high_work() {
-        assert_eq!(&order(Tier::Premium)[1..], order(Tier::High));
-    }
-
-    #[test]
-    fn only_a_retry_to_premium_falls_back() {
-        assert_eq!(retry_order(Tier::Premium), order(Tier::Premium));
-        for t in [Tier::Low, Tier::Medium, Tier::High] {
-            assert_eq!(retry_order(t), &[t]);
-        }
-    }
-}

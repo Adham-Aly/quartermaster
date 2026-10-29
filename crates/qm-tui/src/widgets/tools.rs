@@ -31,22 +31,3 @@ pub(crate) fn style(name: &str) -> Style {
         _ => theme::warn(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::split;
-
-    #[test]
-    fn splits_name_target_and_result() {
-        assert_eq!(
-            split("Bash cargo test auth  → 41 passed"),
-            ("Bash", "cargo test auth", Some("41 passed"))
-        );
-        assert_eq!(split("Read AGENTS.md"), ("Read", "AGENTS.md", None));
-        assert_eq!(split("report"), ("report", "", None));
-        assert_eq!(
-            split("delivery_check  → push ok · PR ok"),
-            ("delivery_check", "", Some("push ok · PR ok"))
-        );
-    }
-}

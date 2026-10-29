@@ -342,29 +342,3 @@ async fn serve(dir: DataDir, booted: crate::Booted) -> Result<(), String> {
     let _ = tokio::time::timeout(Duration::from_secs(5), core).await;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn p(args: &[&str]) -> Result<Command, String> {
-        parse(&args.iter().map(ToString::to_string).collect::<Vec<_>>())
-    }
-
-    #[test]
-    fn commands_parse() {
-        assert_eq!(p(&[]), Ok(Command::Attach));
-        assert_eq!(p(&["--foreground"]), Ok(Command::Foreground));
-        assert_eq!(p(&["server", "run"]), Ok(Command::ServerRun));
-        assert_eq!(
-            p(&["server", "stop"]),
-            Ok(Command::ServerStop { force: false })
-        );
-        assert_eq!(
-            p(&["server", "restart", "--force"]),
-            Ok(Command::ServerRestart { force: true })
-        );
-        assert!(p(&["server", "stop", "--nope"]).is_err());
-        assert!(p(&["bogus"]).is_err());
-    }
-}

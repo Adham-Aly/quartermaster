@@ -101,7 +101,7 @@ These override anything else. Security comes first.
 9. Bug fixes start by reproducing the bug end to end in the real binary, the way a user sees it.
 10. Be picky about the UI, down to the cell. If something looks off, even if it isn't yours, fix it or report it.
 11. Fix any lint failure or warning you see, even if it isn't yours. No blanket `allow`s.
-
+12. Test files, unit tests and test suites must not be written unless the user explicitly asks for them for that specific task.
 ## Invariants the code relies on
 
 - **The UI is a client.** `qm-tui` sees only `qm_types::api` (`Command` in; `Update`/`Snapshot`

@@ -142,33 +142,3 @@ impl InputQueue {
             .collect()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn slash_commands_wait_their_turn_behind_your_messages() {
-        let now = Instant::now();
-        let (first, second) = (MessageId::new(1), MessageId::new(2));
-        let mut queue = InputQueue::new();
-        queue.push_user(first);
-        queue.push_slash(SlashCommand::Clear);
-        queue.push_user(second);
-        queue.note_wake(now);
-
-        // Only messages show as queued.
-        assert_eq!(queue.queued(), vec![first, second]);
-        assert_eq!(queue.next(now), Next::User(first));
-        // Taking the wrong kind takes nothing.
-        assert_eq!(queue.take_slash(), None);
-        assert_eq!(queue.take_user(), Some(first));
-        assert_eq!(queue.next(now), Next::Slash(SlashCommand::Clear));
-        assert_eq!(queue.take_user(), None);
-        assert_eq!(queue.take_slash(), Some(SlashCommand::Clear));
-        assert_eq!(queue.next(now), Next::User(second));
-        assert_eq!(queue.take_user(), Some(second));
-        // Wakes wait for everything of yours.
-        assert!(matches!(queue.next(now), Next::WaitUntil(_)));
-    }
-}

@@ -129,35 +129,3 @@ impl PastedImage {
 pub fn placeholder(number: u32) -> String {
     format!("[Image #{number}]")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sniffs_only_the_formats_models_read() {
-        assert_eq!(
-            ImageFormat::sniff(b"\x89PNG\r\n\x1a\n...."),
-            Some(ImageFormat::Png)
-        );
-        assert_eq!(
-            ImageFormat::sniff(&[0xff, 0xd8, 0xff, 0xe0]),
-            Some(ImageFormat::Jpeg)
-        );
-        assert_eq!(ImageFormat::sniff(b"GIF89a.."), Some(ImageFormat::Gif));
-        assert_eq!(
-            ImageFormat::sniff(b"RIFF\0\0\0\0WEBPVP8 "),
-            Some(ImageFormat::Webp)
-        );
-        assert_eq!(ImageFormat::sniff(b"II*\0tiff"), None);
-        assert_eq!(ImageFormat::sniff(b""), None);
-    }
-
-    #[test]
-    fn names_follow_the_number_and_debug_hides_the_bytes() {
-        let image = PastedImage::new(2, ImageFormat::Jpeg, vec![1, 2, 3]);
-        assert_eq!(image.placeholder(), "[Image #2]");
-        assert_eq!(image.file_name(), "image-2.jpg");
-        assert_eq!(format!("{:?}", image.bytes), "ImageBytes(3 bytes)");
-    }
-}

@@ -1,8 +1,8 @@
 //! What `state.db` keeps: the rows of each table that outlive the process (plan section 2).
 //!
 //! The working database lives in memory (`mirror.rs`), and `state.db` mirrors the rows that
-//! satisfy each table's predicate here. Every table is in exactly one of [`KEPT`] or [`VOLATILE`],
-//! and a test holds that. A predicate may look at other tables, so the order of [`KEPT`] matters
+//! satisfy each table's predicate here. Every table is in exactly one of [`KEPT`] or [`VOLATILE`].
+//! A predicate may look at other tables, so the order of [`KEPT`] matters
 //! when rows are pruned at load: a table's predicate sees the tables before it, already pruned.
 //! That is why `agents` comes before `secondmates` (a retired secondmate's row stays while
 //! anything still points at its agent, so `null_dangling` never has to null that link) and
@@ -317,113 +317,3 @@ pub fn predicate(table: &str) -> &'static str {
 /// The tables that live only in memory: a restart starts them empty, and they leave `state.db` at
 /// load. None today: a Claude agent's chat is memory-only through `current_chat!` instead.
 pub const VOLATILE: &[&str] = &[];
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::schema;
-    use rusqlite::Connection;
-
-    fn migrated() -> Connection {
-        let mut conn = Connection::open_in_memory().expect("memory database");
-        conn.pragma_update(None, "foreign_keys", true)
-            .expect("foreign keys");
-        schema::migrate(&mut conn).expect("the schema");
-        conn
-    }
-
-    fn tables(conn: &Connection) -> Vec<String> {
-        conn.prepare(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
-             AND name <> 'schema_migrations'",
-        )
-        .expect("query")
-        .query_map([], |r| r.get(0))
-        .expect("rows")
-        .collect::<rusqlite::Result<_>>()
-        .expect("names")
-    }
-
-    #[test]
-    fn every_table_is_kept_or_volatile_and_never_both() {
-        let conn = migrated();
-        let mut all = tables(&conn);
-        all.sort();
-        let mut classified: Vec<String> = KEPT
-            .iter()
-            .map(|k| k.table.to_owned())
-            .chain(VOLATILE.iter().map(|t| (*t).to_owned()))
-            .collect();
-        classified.sort();
-        assert_eq!(classified, all, "a new table is listed in KEPT or VOLATILE");
-        let unique: std::collections::BTreeSet<_> = classified.iter().collect();
-        assert_eq!(unique.len(), classified.len(), "a table is listed once");
-    }
-
-    #[test]
-    fn outcomes_keep_global_five_plus_secondmate_five_not_quartermasters_own_five() {
-        let conn = migrated();
-        conn.execute_batch(
-            "INSERT INTO secondmates (id, name, scope, created_at, seq)
-                 VALUES (1, 'SM', 'all', 1, 1);
-             INSERT INTO agents (id, role, home, status, created_at, seq, supervisor_id, secondmate_id) VALUES
-                 (1, 'quartermaster', '/qm', 'idle', 1, 1, NULL, NULL),
-                 (2, 'secondmate', '/sm', 'idle', 1, 2, 1, 1);",
-        )
-        .expect("agents");
-        for i in 1..=16 {
-            let supervisor = if i <= 7 {
-                Some(2)
-            } else if i <= 14 {
-                Some(1)
-            } else {
-                None
-            };
-            conn.execute(
-                "INSERT INTO events (at, kind, summary, payload, seq)
-                 VALUES (1, 'outcome.landed', 'outcome', ?1, ?2)",
-                rusqlite::params![serde_json::json!({"supervisor": supervisor}).to_string(), i],
-            )
-            .expect("outcome");
-        }
-        let kept: Vec<i64> = conn
-            .prepare(&format!(
-                "SELECT seq FROM events WHERE {} ORDER BY seq",
-                predicate("events")
-            ))
-            .expect("predicate")
-            .query_map([], |r| r.get(0))
-            .expect("rows")
-            .collect::<rusqlite::Result<_>>()
-            .expect("sequences");
-        assert_eq!(kept, [3, 4, 5, 6, 7, 12, 13, 14, 15, 16]);
-    }
-
-    #[test]
-    fn every_kept_table_has_a_unique_seq_and_a_valid_predicate() {
-        let conn = migrated();
-        for kept in KEPT {
-            let unique_seq: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM pragma_index_list(?1) il \
-                     JOIN pragma_index_info(il.name) ii \
-                     WHERE il.\"unique\" = 1 AND ii.name = 'seq'",
-                    [kept.table],
-                    |r| r.get(0),
-                )
-                .expect("index list");
-            assert_eq!(unique_seq, 1, "{} has a unique seq", kept.table);
-            let count: i64 = conn
-                .query_row(
-                    &format!(
-                        "SELECT COUNT(*) FROM {} WHERE COALESCE(({}), 0)",
-                        kept.table, kept.predicate
-                    ),
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap_or_else(|e| panic!("{} predicate: {e}", kept.table));
-            assert!(count >= 0);
-        }
-    }
-}

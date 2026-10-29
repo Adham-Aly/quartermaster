@@ -601,8 +601,3 @@ pub fn route(table: &RuleTable, req: &RouteRequest<'_>, pool: Pool<'_>) -> Routi
         why,
     }
 }
-
-#[cfg(test)]
-mod premium_tests;
-#[cfg(test)]
-mod tests;

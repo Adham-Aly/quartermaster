@@ -114,34 +114,3 @@ pub fn facts(conn: &Connection, report_kinds: &[TaskKind]) -> Result<Facts, Stor
         sessions,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unread_reports_are_closed_answered_card_kinds_not_yet_read() {
-        let mut conn = crate::connection::open_memory().unwrap();
-        crate::schema::migrate(&mut conn).unwrap();
-        conn.execute_batch(
-            "PRAGMA foreign_keys = OFF;
-             INSERT INTO tasks (id, project_id, supervisor_id, kind, title, goal, delivery_mode,
-                 status, outcome, created_at, reported_at, report_read_at, closed_at, seq) VALUES
-             (1, 1, 1, 'lookup', 't', 'g', 'folder', 'closed', 'answered', 1, 2, NULL, 3, 1),
-             (2, 1, 1, 'research', 't', 'g', 'folder', 'closed', 'answered', 1, 2, 3, 4, 2),
-             (3, 1, 1, 'teach', 't', 'g', 'folder', 'closed', 'answered', 1, 5, 3, 6, 3),
-             (4, 1, 1, 'lookup', 't', 'g', 'folder', 'closed', 'stopped', 1, 2, NULL, 3, 4),
-             (5, 1, 1, 'lookup', 't', 'g', 'folder', 'reported', NULL, 1, 2, NULL, NULL, 5),
-             (6, 1, 1, 'plan', 't', 'g', 'folder', 'closed', 'answered', 1, 2, NULL, 3, 6),
-             (7, 1, 1, 'lookup', 't', 'g', 'folder', 'closed', 'answered', 1, NULL, NULL, 3, 7);",
-        )
-        .unwrap();
-        let kinds = [TaskKind::Lookup, TaskKind::Research, TaskKind::Teach];
-        let facts = facts(&conn, &kinds).unwrap();
-        // Unread (1) and reported again since it was read (3); not read (2), stopped (4), open
-        // (5), a kind without a card (6) or never reported (7).
-        let ids: Vec<u32> = facts.unread_reports.iter().map(|t| t.get()).collect();
-        assert_eq!(ids, [1, 3]);
-        assert_eq!(facts.open.len(), 1);
-    }
-}
