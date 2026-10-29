@@ -4,6 +4,8 @@
 //! ([`report_card`]: Open, Dismiss) until you explicitly dismiss it. Opening never consumes it.
 //! `tasks.report_read_at` records dismissal; a newer report brings the card back. Completed
 //! crewmates stay visible with their reports until dismissal, even after supervisor closure.
+//! When an answer-kind task also delivers code, its report card stays through code settlement;
+//! dismissing it acknowledges only the artifact, never the code's approval or retirement.
 //! A review's report under normal autonomy has its own card while it waits on your go-ahead
 //! ([`review_card`]; [`crate::tasks::review`]): Open, and Go ahead.
 
@@ -83,7 +85,24 @@ impl ReportPart {
         if !has_report_card(&row) {
             return;
         }
+        let classification = {
+            let row = row.clone();
+            deps.db
+                .call(move |conn| crate::tasks::delivered::of_task(conn, &row))
+                .await
+        };
+        let delivered = match classification {
+            Ok(delivered) => delivered,
+            Err(e) => {
+                self.note(&format!("{task}'s report couldn't be dismissed: {e}"))
+                    .await;
+                return;
+            }
+        };
+        // An answer-only task can finish here. Code keeps its own settlement and approval:
+        // acknowledging its report must never retire it or invalidate a pending merge.
         if row.status == TaskStatus::Reported
+            && delivered == qm_policy::delivery::Deliverable::Answer
             && let Err(e) =
                 crate::tasks::close::retire(&self.svc, task, crate::tasks::close::Exit::Answered)
                     .await
@@ -199,14 +218,13 @@ pub const REPORT_HEADING: &str = "Report ready";
 /// The longest piece of the answer a report's card quotes.
 const ANSWER_CHARS: usize = 160;
 
-/// Whether `row`'s report has a card in Actions until you dismiss it: a finished report task,
-/// still reported or closed with any outcome. Closing or stopping work is not dismissal.
+/// Whether `row`'s report has a card in Actions until you dismiss it: any reported answer-kind
+/// task, including one whose code is still awaiting approval, settling or landed.
+/// Closing or stopping work is not dismissal.
 /// Whether it is pending dismissal is the store's ([`tasks::unread_reports`]); whether its
 /// page is there is [`report_page`]'s.
 pub(crate) fn has_report_card(row: &tasks::TaskRow) -> bool {
-    crate::reports::answers_with_report(row.kind)
-        && row.reported_at.is_some()
-        && matches!(row.status, TaskStatus::Reported | TaskStatus::Closed)
+    crate::reports::answers_with_report(row.kind) && row.reported_at.is_some()
 }
 
 /// The kinds whose reports get a card, for [`tasks::unread_reports`].
@@ -248,7 +266,8 @@ pub(crate) fn report_card(
         vec![Styled::new(
             format!(
                 "The {kind} is done. Open its report in your browser as often as you like. \
-                 Dismiss removes the report and its completed crewmate."
+                 Dismiss hides the report card and, once closed, its crewmate. \
+                 Any code approval and settlement continue independently."
             ),
             Tone::Dim,
         )],
