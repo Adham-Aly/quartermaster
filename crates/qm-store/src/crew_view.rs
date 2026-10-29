@@ -533,7 +533,7 @@ pub struct SecondmateView {
 pub struct CrewData {
     /// The Quartermaster's agent row, if it exists yet.
     pub quartermaster: Option<AgentId>,
-    /// Every live task and closed answered report awaiting dismissal, oldest first.
+    /// Every live task and closed report awaiting dismissal, oldest first.
     /// Other closed tasks and side exits are left out.
     pub tasks: Vec<OpenTask>,
     /// Active secondmates, in the order they were created.
@@ -551,7 +551,7 @@ pub struct PendingHold {
 }
 
 /// The statuses normally hidden in the crew tree and under a project. The crew query alone
-/// makes an exception for closed answered reports awaiting explicit dismissal.
+/// makes an exception for closed reports awaiting explicit dismissal.
 pub(crate) const HIDDEN: &str = "('closed', 'failed', 'stopped', 'discarded')";
 
 /// Reads the crew tree's data.
@@ -576,7 +576,7 @@ pub fn crew_data(conn: &Connection) -> Result<CrewData, StoreError> {
                 (SELECT l.name FROM task_labels AS l WHERE l.id = COALESCE(t.label_id, t.id))
          FROM tasks AS t JOIN projects AS p ON p.id = t.project_id
          WHERE t.status NOT IN {HIDDEN}
-            OR (t.status = 'closed' AND t.outcome = 'answered'
+            OR (t.status = 'closed'
                 AND t.kind IN ('lookup', 'research', 'reproduce', 'teach')
                 AND t.reported_at IS NOT NULL
                 AND (t.report_read_at IS NULL OR t.report_read_at < t.reported_at))

@@ -195,16 +195,6 @@ pub(crate) async fn settle(
             row.status
         )));
     };
-    let Some(reported_head) = report
-        .head_commit
-        .as_deref()
-        .and_then(|h| h.parse::<CommitSha>().ok())
-    else {
-        return Err(refuse(format!(
-            "{task}'s done report names no head commit, so there's nothing to settle"
-        )));
-    };
-
     // 4. Blockers: every one landed (or closed as landed or answered).
     let blockers = svc
         .delivery()
@@ -222,6 +212,16 @@ pub(crate) async fn settle(
         let folder = loaded.project.path.to_string_lossy().into_owned();
         return settle_folder(svc, task, row, &report, folder, loaded.project.autonomy).await;
     }
+
+    let Some(reported_head) = report
+        .head_commit
+        .as_deref()
+        .and_then(|h| h.parse::<CommitSha>().ok())
+    else {
+        return Err(refuse(format!(
+            "{task}'s done report names no head commit, so there's nothing to settle"
+        )));
+    };
 
     // 5. Names at settling on exactly the commits being settled (the task's own up to the reported
     // head, which the agreed-head check below holds every other head to), and the facts of the

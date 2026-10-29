@@ -2,7 +2,7 @@
 //!
 //! [`load`] reads `qm_store::crew_view::crew_data` and builds the rows under the Quartermaster's
 //! root row (which `api.rs` writes): its visible crewmates at depth 1, then its secondmates at depth
-//! 1, each followed by its own visible crewmates at depth 2. Open tasks and closed answered reports
+//! 1, each followed by its own visible crewmates at depth 2. Open tasks and closed reports
 //! awaiting explicit dismissal stay visible. Under each supervisor the crewmates are
 //! kept together by task (`T-`), tasks in the order their oldest crewmate there was made and
 //! crewmates oldest first, and each row carries its task's heading ([`CrewTask`]), which the tree

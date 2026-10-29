@@ -18,7 +18,7 @@ use qm_types::api::{
     TaskDetail, Tone,
 };
 use qm_types::data_dir::TaskPaths;
-use qm_types::domain::{TaskKind, TaskOutcome, TaskStatus};
+use qm_types::domain::{TaskKind, TaskStatus};
 use qm_types::ids::TaskId;
 use std::path::PathBuf;
 
@@ -199,14 +199,14 @@ pub const REPORT_HEADING: &str = "Report ready";
 /// The longest piece of the answer a report's card quotes.
 const ANSWER_CHARS: usize = 160;
 
-/// Whether `row`'s report has a card in Actions until you dismiss it: a finished answer task, still
-/// reported or closed with its answer. Whether it is pending dismissal is the store's
-/// ([`tasks::unread_reports`]); whether its page is there is [`report_page`]'s.
+/// Whether `row`'s report has a card in Actions until you dismiss it: a finished report task,
+/// still reported or closed with any outcome. Closing or stopping work is not dismissal.
+/// Whether it is pending dismissal is the store's ([`tasks::unread_reports`]); whether its
+/// page is there is [`report_page`]'s.
 pub(crate) fn has_report_card(row: &tasks::TaskRow) -> bool {
     crate::reports::answers_with_report(row.kind)
         && row.reported_at.is_some()
-        && (row.status == TaskStatus::Reported
-            || (row.status == TaskStatus::Closed && row.outcome == Some(TaskOutcome::Answered)))
+        && matches!(row.status, TaskStatus::Reported | TaskStatus::Closed)
 }
 
 /// The kinds whose reports get a card, for [`tasks::unread_reports`].
@@ -303,7 +303,7 @@ impl ApiPart for ReportPart {
 
     fn fill<'a>(&'a self, snapshot: &'a mut Snapshot) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            // Closed answer tasks keep their report and completed crew identity until dismissal.
+            // Closed report tasks keep their report and completed crew identity until dismissal.
             let pending = self
                 .svc
                 .deps()

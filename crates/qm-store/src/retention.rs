@@ -45,7 +45,7 @@ pub struct Facts {
 }
 
 /// Reads the [`Facts`]. `report_kinds` are the kinds whose report has a card until it is dismissed
-/// (`qm_core::reports::api::has_report_card`): a closed one keeps its card only when it answered.
+/// (`qm_core::reports::api::has_report_card`): closing work never dismisses its report.
 pub fn facts(conn: &Connection, report_kinds: &[TaskKind]) -> Result<Facts, StoreError> {
     let kinds =
         serde_json::Value::from(report_kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>())
@@ -53,7 +53,7 @@ pub fn facts(conn: &Connection, report_kinds: &[TaskKind]) -> Result<Facts, Stor
     let unread_reports = conn
         .prepare(
             "SELECT id FROM tasks
-             WHERE status = 'closed' AND outcome = 'answered'
+             WHERE status = 'closed'
                AND kind IN (SELECT value FROM json_each(?1)) AND reported_at IS NOT NULL
                AND (report_read_at IS NULL OR report_read_at < reported_at)
              ORDER BY seq",
