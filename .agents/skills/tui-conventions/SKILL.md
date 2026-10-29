@@ -110,11 +110,12 @@ with `theme::tone`. Tool names are coloured by family in `widgets/tools.rs`.
   projects hint under its title; `Esc` or any click closes it. A new popup or menu entry: see
   the notes at the top of `popups.rs`. A badge: make `App::entry_badge` true for the entry; the
   menu button follows (Update's comes from the core, `UpdateView::badge`).
-- The left column's lists: Crew is the Quartermaster, then tasks by phase (`Working · n`,
+- The left column's lists: Crew is the Quartermaster, then top-level tasks by phase (`Working · n`,
   `Waiting · n`, `Done · n`, from `CrewRow::phase` and the flags), then `Secondmates · n`
+  with each secondmate’s tasks directly below it, indented two cells in full and compact layouts
   (`widgets/crew.rs` `build`). A task shows by its name (`CrewTask::name`, which the
   Quartermaster gives at start or the core derives from the title), then a dim
-  `project · kind · via web-app` line with a single crewmate's status at the right edge;
+  `project · kind` line with a single crewmate's status at the right edge;
   parts that don't fit are left out whole. Task, crewmate and secondmate IDs stay in typed
   navigation, not app-owned labels or Copy ID menus. Secondmates use their full friendly
   `CrewRow::label` / `SessionView::title` (the record's name), never a parsed ID prefix;
