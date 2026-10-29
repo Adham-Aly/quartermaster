@@ -23,11 +23,12 @@ pub struct Kept {
 }
 
 // `report_read_at` records explicit dismissal, not merely opening a report. A newer report
-// reopens the obligation. Keep this rule shared by mirroring and history forgetting.
+// reopens the obligation. Closing or stopping work is not dismissal, whatever its outcome.
+// Keep this rule shared by mirroring and history forgetting.
 macro_rules! pending_report {
     () => {
         "kind IN ('lookup', 'research', 'reproduce', 'teach') AND reported_at IS NOT NULL \
-         AND (status = 'reported' OR (status = 'closed' AND outcome = 'answered')) \
+         AND status IN ('reported', 'closed') \
          AND (report_read_at IS NULL OR report_read_at < reported_at)"
     };
 }
