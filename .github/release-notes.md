@@ -7,6 +7,21 @@
 >
 > Then run `quartermaster`. To update later, run the same command again.
 
+## What's new in 0.9.1
+
+Changes since [0.9.0](https://github.com/Adham-Aly/quartermaster/releases/tag/v0.9.0):
+
+- **Reports survive supervisor cleanup.** Finished lookup, research, reproduce and teach reports
+  keep their action cards, files and completed crewmates until you click **Dismiss**, even when
+  the supervisor stops the task or closes it with another outcome. Opening a report is repeatable,
+  including after restarting Quartermaster.
+- **Folder tasks settle without a commit.** Reports with change headings no longer get stuck
+  asking for a head commit when the task works in a plain folder. Verification and dependency
+  checks still apply.
+- **Managed crew stay under their secondmate.** A secondmate's working, waiting and completed
+  crewmates are grouped beneath it, and orchestrator acknowledgements use names rather than
+  internal IDs.
+
 ## What's new in 0.9.0
 
 Changes since [0.8.0](https://github.com/Adham-Aly/quartermaster/releases/tag/v0.8.0):
