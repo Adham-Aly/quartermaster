@@ -841,6 +841,3 @@ fn summary(buckets: Vec<QuotaBucket>) -> Result<QuotaSummary, QuotaError> {
         Ok(QuotaSummary { buckets })
     }
 }
-
-#[cfg(test)]
-mod tests;

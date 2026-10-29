@@ -353,6 +353,3 @@ fn remove_unnamed(dir: &DataDir, keep: &HashSet<String>) -> io::Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

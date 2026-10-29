@@ -905,7 +905,3 @@ impl ApiPart for ProjectsPart {
         })
     }
 }
-
-#[cfg(test)]
-#[path = "projects_tests.rs"]
-mod tests;

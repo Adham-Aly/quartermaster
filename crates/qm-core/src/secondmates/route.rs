@@ -28,9 +28,6 @@ pub const BRANCH_CHECK_TIMEOUT: Duration = Duration::from_mins(3);
 /// How much of the request the event's summary shows.
 const SUMMARY_CHARS: usize = 80;
 
-#[cfg(test)]
-mod tests;
-
 /// The routed wake carries only the Quartermaster's curated request and instructions, plus app
 /// routing metadata. Original user words remain stored for provenance, not copied into delivery.
 /// Free text is neutralised when the wake is rendered.

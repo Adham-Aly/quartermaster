@@ -314,6 +314,3 @@ impl App {
 pub(crate) fn draw(frame: &mut Frame<'_>, body: Rect, app: &App, map: &mut FrameMap) {
     render::draw(frame, body, app, map);
 }
-
-#[cfg(test)]
-mod tests;

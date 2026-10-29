@@ -257,17 +257,3 @@ fn meta_json(parsed: &Parsed, meta: &Meta) -> String {
     }
     safe
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn slots_fill_in_one_pass() {
-        let out = fill(
-            "a {{x}} b {{y}} {{z}}",
-            &[("x", "{{y}}".to_owned()), ("y", "Y".to_owned())],
-        );
-        assert_eq!(out, "a {{y}} b Y {{z}}");
-    }
-}

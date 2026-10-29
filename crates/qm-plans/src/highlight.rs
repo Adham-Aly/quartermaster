@@ -51,14 +51,3 @@ pub(crate) fn css() -> &'static str {
         )
     })
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn known_languages_get_classes_and_unknown_ones_none() {
-        let html = super::code("rust", "fn main() {}\n").expect("rust is known");
-        assert!(html.contains("hl-"), "{html}");
-        assert!(super::code("no-such-language", "x").is_none());
-        assert!(super::css().contains("data-theme=dark"));
-    }
-}

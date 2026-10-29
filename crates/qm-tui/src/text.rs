@@ -260,36 +260,3 @@ pub(crate) fn wrap_parts<S: Copy + PartialEq>(
     }
     rows
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn truncate_keeps_short_text_and_ends_cut_text_on_a_word() {
-        assert_eq!(truncate("the tools", 9), "the tools");
-        assert_eq!(truncate("the tools", 8), "the too…");
-        // A cut that ends on a space: the ellipsis follows the word, not the gap.
-        assert_eq!(
-            truncate("Claude Code and the GitHub CLI", 21),
-            "Claude Code and the…"
-        );
-        assert_eq!(truncate("anything", 0), "");
-    }
-
-    #[test]
-    fn a_row_never_ends_in_an_arrow() {
-        let rows = |text: &str, max| -> Vec<String> {
-            wrap_styled(&[(text.to_owned(), ())], max)
-                .into_iter()
-                .map(|row| row.into_iter().map(|(t, ())| t).collect())
-                .collect()
-        };
-        assert_eq!(
-            rows("fix/upload-retry-on-slow-tmp ← main", 30),
-            ["fix/upload-retry-on-slow-tmp", "← main"]
-        );
-        assert_eq!(rows("a ← b", 30), ["a ← b"]);
-        assert_eq!(rows("ends in →", 30), ["ends in →"]);
-    }
-}

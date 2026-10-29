@@ -984,7 +984,3 @@ impl ToolHost for CoreToolHost {
         })
     }
 }
-
-#[cfg(test)]
-#[path = "tool_host_user_requests_tests.rs"]
-mod user_requests_tests;

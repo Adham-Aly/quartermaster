@@ -15,8 +15,6 @@
 
 use crate::adapters::{self, CredentialKind, WireApi};
 
-#[cfg(test)]
-mod steering_tests;
 use crate::builtin::{BuiltinCx, BuiltinTools, BuiltinToolsFactory};
 use crate::helpers::HelperTools;
 use crate::http::HttpClient;

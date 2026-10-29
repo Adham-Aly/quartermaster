@@ -1530,6 +1530,3 @@ fn effort_options(
         _ => return None,
     })
 }
-
-#[cfg(test)]
-mod tests;

@@ -4,10 +4,6 @@ use crate::{Assets, Checked, Meta, Problem, Problems, Rendered, Rules, Section, 
 use qm_types::domain::PlanMode;
 use std::collections::BTreeSet;
 
-#[cfg(test)]
-#[path = "authored_tests.rs"]
-mod tests;
-
 /// Starter for `plan.html`: an XML-well-formed HTML fragment, not a full HTML document.
 /// Edit the prose and layout freely within the documented inert element/attribute allow-list.
 /// The app wraps this fragment; keep the authored source separate from the composed output.

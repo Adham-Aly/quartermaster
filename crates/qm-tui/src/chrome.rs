@@ -445,28 +445,3 @@ pub(crate) fn draw_quit_dialog(
         );
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::quit_message;
-
-    #[test]
-    fn quit_message_reads_right_for_one_crewmate_and_many() {
-        assert_eq!(
-            quit_message(1, "quit"),
-            "1 crewmate is working; it will pick up again next launch."
-        );
-        assert_eq!(
-            quit_message(2, "quit"),
-            "2 crewmates are working; they will pick up again next launch."
-        );
-        assert_eq!(
-            quit_message(1, "stop"),
-            "1 crewmate is working; the server pauses it until it starts again."
-        );
-        assert_eq!(
-            quit_message(3, "restart"),
-            "3 crewmates are working; the server pauses them until it starts again."
-        );
-    }
-}

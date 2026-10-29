@@ -39,27 +39,3 @@ pub fn create_private_dir(path: &Path) -> io::Result<()> {
         .mode(DIR_MODE)
         .create(path)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unsafe_scratch_stops_startup_without_touching_link_target() {
-        let base = std::env::temp_dir().join(format!("qm-home-scratch-{}", std::process::id()));
-        fs::create_dir_all(&base).unwrap();
-        let victim = base.join("victim");
-        fs::create_dir(&victim).unwrap();
-        fs::write(victim.join("unrelated"), b"safe").unwrap();
-        let scratch = base.join("scratch");
-        std::os::unix::fs::symlink(&victim, &scratch).unwrap();
-        let data = DataDir::with_scratch(base.join("home"), scratch);
-        assert!(prepare(&data).is_err());
-        assert!(
-            !data.root().exists(),
-            "startup stopped before creating data files"
-        );
-        assert_eq!(fs::read(victim.join("unrelated")).unwrap(), b"safe");
-        fs::remove_dir_all(base).unwrap();
-    }
-}

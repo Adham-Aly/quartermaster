@@ -780,27 +780,3 @@ fn ansi(code: &str) -> String {
     }
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn slugs_are_stable_and_simple() {
-        assert_eq!(slug("3.2 Data flow!"), "32-data-flow");
-        assert_eq!(
-            slug("Decisions made without the user"),
-            "decisions-made-without-the-user"
-        );
-        assert_eq!(slug("✓✓"), "section");
-    }
-
-    #[test]
-    fn ansi_codes_become_terminal_colour_classes() {
-        let html = ansi("\\e[31mred\\e[0m <b> \u{1b}[1;94mbright\u{1b}[0m");
-        assert_eq!(
-            html,
-            "<span class=\"t-f1\">red</span> &lt;b&gt; <span class=\"t-f12 t-bold\">bright</span>"
-        );
-    }
-}

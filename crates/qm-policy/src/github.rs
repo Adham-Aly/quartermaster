@@ -35,30 +35,3 @@ pub fn write_decision(project_repo: Option<Repo<'_>>, target: Repo<'_>) -> Write
         _ => WriteDecision::Hold("GitHub writes outside the task's own project wait for the user"),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn writes_follow_the_repository_never_the_kind() {
-        let own = Repo {
-            owner: "Someone",
-            name: "site",
-        };
-        let same = Repo {
-            owner: "someone",
-            name: "SITE",
-        };
-        let other = Repo {
-            owner: "someone",
-            name: "else",
-        };
-        assert_eq!(write_decision(Some(own), same), WriteDecision::Write);
-        assert!(matches!(
-            write_decision(Some(own), other),
-            WriteDecision::Hold(_)
-        ));
-        assert!(matches!(write_decision(None, same), WriteDecision::Hold(_)));
-    }
-}

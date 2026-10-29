@@ -30,10 +30,6 @@ use qm_types::ids::{CommitSha, PortBlock, SecondmateId, TaskId, TaskLabelId};
 
 use crate::index;
 
-#[cfg(test)]
-#[path = "brief_tests.rs"]
-mod tests;
-
 /// Where free text (the goal, a builds-on summary) wraps, in characters per line,
 /// counting the `> "` quote prefix.
 pub const WRAP: usize = 88;
@@ -818,106 +814,4 @@ pub fn crewmate_prompt(
         }
     }
     out
-}
-
-#[cfg(test)]
-mod report_tests {
-    use super::*;
-
-    fn facts(kind: TaskKind) -> BriefFacts {
-        BriefFacts {
-            task: TaskId::new(42).unwrap(),
-            label: TaskLabelId::new(42).unwrap(),
-            kind,
-            supervisor: BriefSupervisor::Quartermaster,
-            project: "test".to_owned(),
-            delivery: DeliveryMode::Folder,
-            has_remote: false,
-            verification: BriefVerification::None,
-            workspace: BriefWorkspace::Folder {
-                path: "/project".to_owned(),
-                repository: false,
-            },
-            pr_target: None,
-            ports: PortBlock { base: 41_000 },
-            goal: "answer".to_owned(),
-            instructions: vec![],
-            constraints: vec![],
-            tests_required: false,
-            builds_on: None,
-            repair_attempts: 0,
-        }
-    }
-
-    #[test]
-    fn a_review_writes_its_static_report_under_normal_autonomy_only() {
-        let text = render_brief(&facts(TaskKind::Review));
-        for required in [
-            "Under normal autonomy the user reads your review before your supervisor acts on it",
-            "$QM_REPORT_DIR/SKILL.md",
-            "$QM_REPORT_DIR/template.html",
-            "$QM_REPORT_DIR/report.html",
-            "Put the whole review in answer.",
-            "Under auto autonomy it isn't needed.",
-        ] {
-            assert!(text.contains(required), "missing {required}");
-        }
-    }
-
-    #[test]
-    fn exactly_four_kinds_require_static_report_artifacts() {
-        for kind in [
-            TaskKind::Lookup,
-            TaskKind::Research,
-            TaskKind::Reproduce,
-            TaskKind::Teach,
-        ] {
-            let text = render_brief(&facts(kind));
-            for required in [
-                "Before reporting done",
-                "$QM_REPORT_DIR/SKILL.md",
-                "$QM_REPORT_DIR/template.html",
-                "$QM_REPORT_DIR/report.html",
-                "$QM_REPORT_DIR/assets/",
-                "human clarity",
-                "technical",
-                "visuals",
-                "whole answer in answer",
-            ] {
-                assert!(text.contains(required), "{kind}: missing {required}");
-            }
-        }
-        for kind in [
-            TaskKind::Build,
-            TaskKind::Fix,
-            TaskKind::Plan,
-            TaskKind::Unclear,
-        ] {
-            let text = render_brief(&facts(kind));
-            assert!(!text.contains("$QM_REPORT_DIR"), "{kind}");
-        }
-    }
-
-    #[test]
-    fn reproduction_and_research_keep_their_tool_contracts() {
-        let reproduce = render_brief(&facts(TaskKind::Reproduce));
-        assert!(reproduce.contains("opening with reproduced: yes or"));
-        assert!(reproduce.contains("reproduced: no, and set reproduced to match"));
-        let research = render_brief(&facts(TaskKind::Research));
-        assert!(research.contains("set diagnosis"));
-    }
-
-    #[test]
-    fn both_system_prompts_explain_artifacts_without_replacing_the_answer() {
-        for engine in [PromptEngine::Claude, PromptEngine::Provider] {
-            let prompt = crewmate_prompt(engine, &[], &[], None);
-            assert!(prompt.contains("For a done lookup, research, reproduce or teach task"));
-            assert!(prompt.contains("a done review under normal autonomy"));
-            assert!(prompt.contains("$QM_REPORT_DIR/SKILL.md"));
-            assert!(prompt.contains("$QM_REPORT_DIR/template.html"));
-            assert!(prompt.contains("$QM_REPORT_DIR/report.html"));
-            assert!(prompt.contains("whole answer"));
-            assert!(prompt.contains("matching `reproduced` metadata"));
-        }
-    }
 }

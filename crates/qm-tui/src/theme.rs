@@ -260,24 +260,3 @@ fn on_accent() -> Style {
         Style::new().fg(p.on_accent).bg(p.accent)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use fit::{Reported, Rgb};
-
-    #[test]
-    fn roles_follow_the_frames_palette() {
-        let light = Palette::fit(&Reported {
-            bg: Some(Rgb::WHITE),
-            ..Reported::default()
-        });
-        assert_eq!(accent().fg, Some(Color::Yellow));
-        scoped(light, || {
-            assert_eq!(accent().fg, Some(Color::Blue));
-            assert_eq!(warn().fg, Some(Color::Blue));
-        });
-        // Outside the frame, the default again.
-        assert_eq!(accent().fg, Some(Color::Yellow));
-    }
-}

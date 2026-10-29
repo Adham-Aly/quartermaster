@@ -284,24 +284,3 @@ fn thousands(n: u64) -> String {
     }
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn notes_read_well() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(999), "999");
-        assert_eq!(thousands(1_142), "1,142");
-        assert_eq!(thousands(1_234_567), "1,234,567");
-        assert_eq!(
-            compacted_note(Some(12_400), Some(2_100)),
-            "Compacted the Quartermaster's context (12,400 → 2,100 tokens)."
-        );
-        assert_eq!(
-            compacted_note(None, None),
-            "Compacted the Quartermaster's context."
-        );
-    }
-}

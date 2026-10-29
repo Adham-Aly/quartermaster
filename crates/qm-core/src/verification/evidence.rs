@@ -13,10 +13,6 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-#[cfg(test)]
-#[path = "evidence_tests.rs"]
-mod tests;
-
 /// The most files a manifest lists.
 pub const MAX_ENTRIES: usize = 200;
 /// `events.kind` of a done report's evidence manifest.

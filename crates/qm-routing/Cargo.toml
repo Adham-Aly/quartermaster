@@ -10,8 +10,5 @@ publish.workspace = true
 qm-types.workspace = true
 serde.workspace = true
 
-[dev-dependencies]
-toml.workspace = true
-
 [lints]
 workspace = true

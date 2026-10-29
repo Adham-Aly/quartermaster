@@ -29,8 +29,7 @@ use std::fmt;
 
 /// The core's services, as tool handlers need them.
 ///
-/// Implemented by `qm-core` (`crates/qm-core/src/tool_host.rs`); handlers are tested against fake
-/// hosts.
+/// Implemented by `qm-core` (`crates/qm-core/src/tool_host.rs`).
 ///
 /// **Additive by rule:** every method has a default body that fails with
 /// [`ToolFailure::not_available`], so adding one never breaks the core's host; the core overrides

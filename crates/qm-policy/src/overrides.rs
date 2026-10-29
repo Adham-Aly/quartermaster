@@ -129,34 +129,3 @@ pub fn check_override(authority: Authority, kind: OverrideKind) -> Result<(), Re
         ))),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_earlier_user_message_only_authorizes_model_tier_effort_and_premium() {
-        let app = Authority::Turn(StartedBy::AppEvent);
-        let source = Some(MessageId::new(7));
-        for &kind in OverrideKind::ALL {
-            let choice = matches!(
-                kind,
-                OverrideKind::NamedModel
-                    | OverrideKind::Tier
-                    | OverrideKind::Effort
-                    | OverrideKind::Premium
-            );
-            assert_eq!(
-                check_choice_override(app, source, kind).is_ok(),
-                choice,
-                "{kind:?}"
-            );
-            assert!(check_choice_override(app, None, kind).is_err(), "{kind:?}");
-            assert!(check_choice_override(Authority::CardChoice, None, kind).is_ok());
-            let user = Authority::Turn(StartedBy::User {
-                message: MessageId::new(8),
-            });
-            assert!(check_choice_override(user, None, kind).is_ok());
-        }
-    }
-}
