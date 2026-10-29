@@ -1,5 +1,5 @@
 //! The crew list: the Quartermaster, then the tasks in three groups (what is moving, what waits,
-//! what is done), then the secondmates.
+//! what is done), then the secondmates with their own tasks indented underneath.
 //!
 //! ```text
 //! ◆ Quartermaster          ready
@@ -7,7 +7,7 @@
 //! ⎈ Token refresh race
 //!   api-server · fix · 12m
 //! ● Rate limit middleware
-//!   web-app · via web-app
+//!   web-app
 //!   ● build                     3m
 //!   ○ review                 waits
 //! Done · 1
@@ -15,6 +15,8 @@
 //!   Downloads · research · reported
 //! Secondmates · 1
 //! ○ web-app                idle
+//!   ● Resumable uploads
+//!     web-app · build          3m
 //! ```
 //!
 //! Each task is one entry under its name (two or three words the Quartermaster gave it, else made
@@ -86,7 +88,7 @@ pub(crate) fn height(app: &App, inner_width: u16, compact: bool) -> usize {
 struct Entry<'a> {
     task: Option<&'a CrewTask>,
     crew: Vec<&'a CrewRow>,
-    via: Option<&'a str>,
+    supervisor: Option<AgentRef>,
 }
 
 impl Entry<'_> {
@@ -143,13 +145,13 @@ pub(crate) fn crewmate_name(app: &App, agent: AgentRef) -> &str {
 /// supervisor make one entry; a row without a task (an older server) is an entry of its own.
 fn entries(crew: &[CrewRow]) -> Vec<Entry<'_>> {
     let mut out: Vec<Entry<'_>> = Vec::new();
-    let mut via: Option<&str> = None;
+    let mut via = None;
     let mut last: Option<(u8, qm_types::ids::TaskLabelId)> = None;
     for row in crew {
         match row.agent {
             AgentRef::Quartermaster => continue,
             AgentRef::Secondmate { .. } => {
-                via = Some(row.label.as_str());
+                via = Some(row.agent);
                 last = None;
                 continue;
             }
@@ -162,7 +164,7 @@ fn entries(crew: &[CrewRow]) -> Vec<Entry<'_>> {
             _ => out.push(Entry {
                 task: row.task.as_ref(),
                 crew: vec![row],
-                via: supervisor,
+                supervisor,
             }),
         }
         last = key;
@@ -272,7 +274,10 @@ pub(crate) fn build(app: &App, inner_width: u16, compact: bool) -> Built {
         (CrewPhase::Waiting, "Waiting", theme::title()),
         (CrewPhase::Done, "Done", theme::title()),
     ] {
-        let group: Vec<&Entry<'_>> = shown.iter().filter(|e| e.phase() == phase).collect();
+        let group: Vec<&Entry<'_>> = shown
+            .iter()
+            .filter(|e| e.supervisor.is_none() && e.phase() == phase)
+            .collect();
         if group.is_empty() {
             continue;
         }
@@ -304,6 +309,9 @@ pub(crate) fn build(app: &App, inner_width: u16, compact: bool) -> Built {
                 0,
                 None,
             );
+            for entry in shown.iter().filter(|e| e.supervisor == Some(row.agent)) {
+                push_entry(app, &mut out, entry, inner, compact);
+            }
         }
     }
     out
@@ -379,6 +387,18 @@ fn push_agent(
 /// One task's lines: its name, then its meta line, then its crewmates when it has more than one;
 /// in `compact`, its name and status on one line.
 fn push_entry(app: &App, out: &mut Built, entry: &Entry<'_>, inner: usize, compact: bool) {
+    let indent = if entry.supervisor.is_some() { 2 } else { 0 };
+    let from = out.rows.len();
+    push_entry_lines(app, out, entry, inner.saturating_sub(indent), compact);
+    if indent > 0 {
+        for row in &mut out.rows[from..] {
+            row.line.spans.insert(0, Span::raw(" ".repeat(indent)));
+        }
+    }
+}
+
+/// Render within the space left after the supervisor's child indent.
+fn push_entry_lines(app: &App, out: &mut Built, entry: &Entry<'_>, inner: usize, compact: bool) {
     let first = entry.crew[0];
     let single = entry.crew.len() == 1;
     if compact {
@@ -485,7 +505,7 @@ fn worker_kind(row: &CrewRow) -> &str {
     }
 }
 
-/// The dim line under a task's name: `api-server · fix · via web-app`, with a single
+/// The dim line under a task's name: `api-server · fix`, with a single
 /// crewmate's status at the right edge in its flag's colour. Parts that don't fit are left out
 /// whole, never cut.
 fn meta_line(entry: &Entry<'_>, inner: usize) -> Line<'static> {
@@ -493,18 +513,14 @@ fn meta_line(entry: &Entry<'_>, inner: usize) -> Line<'static> {
     let single = entry.crew.len() == 1;
     let room = inner.saturating_sub(2);
     let status = if single { first.status.as_str() } else { "" };
-    // What fits beside the status: omit whole parts, the kind first, then who it came
-    // through, then the project. The task's name is already above; no ID chip is needed.
-    let via = entry.via.map(|s| format!("via {s}"));
+    // What fits beside the status: omit whole parts, the kind first, then the project.
+    // The supervisor is already the parent row; no repeated name or ID chip is needed.
     let mut parts: Vec<(u8, String)> = Vec::new();
     if let Some(task) = entry.task {
         parts.push((2, task.project.clone()));
     }
     if single {
         parts.push((0, first.kind.clone()));
-    }
-    if let Some(via) = via {
-        parts.push((1, via));
     }
     parts.retain(|(_, p)| !p.is_empty());
     let sep = " · ";
